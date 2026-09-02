@@ -14,8 +14,11 @@ ZigFS 使用 YAML 配置，并在代码中维护完整默认值。
 
 ```yaml
 server:
-  s3_address: "0.0.0.0:9000"
-  management_address: "127.0.0.1:9001"
+  api_address: "0.0.0.0:9000"
+
+observability:
+  metrics_enabled: true
+  metrics_address: "127.0.0.1:9090"
 
 storage:
   data_root: "data"
@@ -23,8 +26,9 @@ storage:
 
 | 字段 | 默认值 | 类型 | 说明 |
 |---|---|---|---|
-| `server.s3_address` | `0.0.0.0:9000` | string | S3/Data API 监听地址 |
-| `server.management_address` | `127.0.0.1:9001` | string | Management API 监听地址 |
+| `server.api_address` | `0.0.0.0:9000` | string | ZigFS API 监听地址，承载 S3/Data、Management 和 Health 路由 |
+| `observability.metrics_enabled` | `true` | bool | 是否启用 Prometheus Metrics Listener |
+| `observability.metrics_address` | `127.0.0.1:9090` | string | Prometheus Metrics 监听地址 |
 | `storage.data_root` | `data` | string | ZigFS 独占数据根目录 |
 
-V1 解析器只支持该 Schema 所需的 YAML 映射和字符串标量子集，并拒绝未知字段。完整 YAML 特性不属于 V1 配置契约。
+V1 解析器只支持该 Schema 所需的 YAML 映射、字符串和布尔标量子集，并拒绝未知字段。完整 YAML 特性不属于 V1 配置契约。

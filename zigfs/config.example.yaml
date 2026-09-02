@@ -1,7 +1,10 @@
 # ZigFS loads built-in defaults first, then applies values from this file.
 server:
-  s3_address: "0.0.0.0:9000"
-  management_address: "127.0.0.1:9001"
+  api_address: "0.0.0.0:9000"
+
+observability:
+  metrics_enabled: true
+  metrics_address: "127.0.0.1:9090"
 
 storage:
   data_root: "data"

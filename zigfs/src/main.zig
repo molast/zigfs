@@ -9,8 +9,8 @@ pub fn main(init: std.process.Init) !void {
     try app.initialize(init.io);
 
     std.log.info(
-        "zigfs {s} initialized (data_root={s}, s3={s}, management={s})",
-        .{ zigfs.version, config.data_root, config.s3_address, config.management_address },
+        "zigfs {s} initialized (data_root={s}, api={s}, metrics={s}, metrics_enabled={})",
+        .{ zigfs.version, config.data_root, config.api_address, config.metrics_address, config.metrics_enabled },
     );
 }
 

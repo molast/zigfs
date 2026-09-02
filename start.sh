@@ -25,7 +25,7 @@ start_fs() {
 }
 
 start_admin() {
-  local endpoint="${ZIGFS_ENDPOINT:-http://127.0.0.1:9001}"
+  local endpoint="${ZIGFS_ENDPOINT:-http://127.0.0.1:9000}"
   endpoint="${endpoint%/}"
 
   require_command curl

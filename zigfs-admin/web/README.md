@@ -8,4 +8,4 @@ npm run dev
 npm run build
 ```
 
-The development server proxies `/api` and `/health` to `127.0.0.1:8080`.
+The development server proxies `/api` and `/health` to `127.0.0.1:9001`.

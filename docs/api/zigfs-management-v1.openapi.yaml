@@ -7,7 +7,7 @@ info:
     可以在不部署 Admin 的情况下直接调用。本文件描述已初始化的 V1 契约，
     Zig Handler 当前尚未实现。
 servers:
-  - url: http://127.0.0.1:9001
+  - url: http://127.0.0.1:9000
 security:
   - managementBearer: []
 paths:

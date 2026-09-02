@@ -10,6 +10,12 @@
 | GET | `/_admin/v1/system` | Management 凭证 | 版本、运行时间和对象统计 |
 | GET | `/_admin/v1/storage` | Management 凭证 | 容量与磁盘状态 |
 
+Prometheus 默认通过独立的 `127.0.0.1:9090` Listener 拉取指标：
+
+| Method | Path | 认证 | 含义 |
+|---|---|---|---|
+| GET | `/metrics` | 默认使用网络限制 | Prometheus 文本格式运行指标 |
+
 ## Admin
 
 | Method | Path | 认证 | 含义 |

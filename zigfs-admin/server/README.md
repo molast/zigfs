@@ -5,8 +5,8 @@ Go + Gin control-plane service for ZigFS.
 ## Environment
 
 ```text
-ZIGFS_ADMIN_LISTEN=:8080
-ZIGFS_ENDPOINT=http://127.0.0.1:9001
+ZIGFS_ADMIN_LISTEN=:9001
+ZIGFS_ENDPOINT=http://127.0.0.1:9000
 ZIGFS_ADMIN_TOKEN=<zig-management-token>
 ZIGFS_WEB_ADMIN_TOKEN=<browser-admin-token>
 ZIGFS_WEB_ROOT=../web/dist

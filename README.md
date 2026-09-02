@@ -36,7 +36,7 @@ S3 HTTP Server、Signature V4、对象持久化、元数据事务和 ZigFS Manag
 `Ctrl+C` 停止；需要同时运行时，请分别在两个终端中执行脚本。
 
 Admin 启动前会检查 ZigFS Management API 的
-`http://127.0.0.1:9001/health/ready`。可以通过 `ZIGFS_ENDPOINT` 修改检查和连接地址。
+`http://127.0.0.1:9000/health/ready`。可以通过 `ZIGFS_ENDPOINT` 修改检查和连接地址。
 如果 ZigFS 未就绪，Admin 不会启动。
 
 首次启动 Admin 前，需要安装并锁定前端依赖：
@@ -76,6 +76,16 @@ File SDK / S3 Client
 
 多语言 SDK 面向 Android、iOS、Web 和业务服务中的文件上传下载。AK/SK 的创建、禁用和删除属于管理操作，不进入文件 SDK。
 
+默认端口：
+
+| 端口 | 服务 |
+|---|---|
+| `9000` | ZigFS S3/Data、Management 和 Health API |
+| `9001` | ZigFS Admin Web Console |
+| `9090` | ZigFS Prometheus Metrics，默认仅监听本机 |
+
+监听地址和端口均可配置，但服务职责保持不变。
+
 ## ZigFS
 
 要求：Zig 0.16.0 或更新版本。
@@ -91,8 +101,11 @@ ZigFS 默认读取 `config.yaml`。文件不存在时使用代码默认值；通
 
 ```yaml
 server:
-  s3_address: "0.0.0.0:9000"
-  management_address: "127.0.0.1:9001"
+  api_address: "0.0.0.0:9000"
+
+observability:
+  metrics_enabled: true
+  metrics_address: "127.0.0.1:9090"
 
 storage:
   data_root: "data"
@@ -115,7 +128,7 @@ go test ./...
 
 ZIGFS_WEB_ADMIN_TOKEN=local-admin-token \
 ZIGFS_ADMIN_TOKEN=zigfs-management-token \
-ZIGFS_ENDPOINT=http://127.0.0.1:9001 \
+ZIGFS_ENDPOINT=http://127.0.0.1:9000 \
 go run ./cmd/admin
 ```
 
@@ -123,8 +136,8 @@ go run ./cmd/admin
 
 | 变量 | 默认值 | 用途 |
 |---|---|---|
-| `ZIGFS_ADMIN_LISTEN` | `:8080` | Admin HTTP 监听地址 |
-| `ZIGFS_ENDPOINT` | `http://127.0.0.1:9001` | ZigFS Management API 地址 |
+| `ZIGFS_ADMIN_LISTEN` | `:9001` | Admin HTTP 监听地址 |
+| `ZIGFS_ENDPOINT` | `http://127.0.0.1:9000` | ZigFS API 地址 |
 | `ZIGFS_ADMIN_TOKEN` | 空 | 调用 ZigFS 的管理凭证 |
 | `ZIGFS_WEB_ADMIN_TOKEN` | 无，必须提供 | 网页访问凭证 |
 | `ZIGFS_WEB_ROOT` | `../web/dist` | React 构建产物目录 |
@@ -140,7 +153,7 @@ npm run typecheck
 npm run dev
 ```
 
-开发服务器默认监听 `http://127.0.0.1:5173`，并把 `/api` 和 `/health` 代理到 `http://127.0.0.1:8080`。
+开发服务器默认监听 `http://127.0.0.1:5173`，并把 `/api` 和 `/health` 代理到 `http://127.0.0.1:9001`。
 
 ## 项目结构
 

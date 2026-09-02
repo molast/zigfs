@@ -6,7 +6,7 @@ info:
     React Admin 的网页适配接口。所有 Bucket、Object、AK/SK 和 System 操作
     都转交 ZigFS Management API；Admin 不持久化这些状态。
 servers:
-  - url: http://127.0.0.1:8080
+  - url: http://127.0.0.1:9001
 security:
   - webBearer: []
 paths:
