@@ -1,0 +1,147 @@
+openapi: 3.1.0
+info:
+  title: ZigFS Admin BFF API
+  version: 0.1.0
+  description: >-
+    React Admin 的网页适配接口。所有 Bucket、Object、AK/SK 和 System 操作
+    都转交 ZigFS Management API；Admin 不持久化这些状态。
+servers:
+  - url: http://127.0.0.1:8080
+security:
+  - webBearer: []
+paths:
+  /api/v1/system:
+    get:
+      operationId: getSystem
+      responses:
+        "200":
+          description: 系统信息
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/SystemInfo"
+  /api/v1/buckets:
+    get:
+      operationId: listBuckets
+      responses:
+        "200":
+          description: Bucket 列表
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/ListBucketsResponse"
+    post:
+      operationId: createBucket
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/CreateBucketRequest"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/Bucket"
+  /api/v1/buckets/{name}:
+    delete:
+      operationId: deleteBucket
+      parameters:
+        - $ref: "./zigfs-management-v1.openapi.yaml#/components/parameters/BucketName"
+      responses:
+        "204":
+          description: 已删除或不存在
+  /api/v1/buckets/{name}/objects:
+    get:
+      operationId: listObjects
+      parameters:
+        - $ref: "./zigfs-management-v1.openapi.yaml#/components/parameters/BucketName"
+        - name: prefix
+          in: query
+          schema:
+            type: string
+        - name: continuation_token
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 对象列表
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/ListObjectsResponse"
+  /api/v1/objects/presign:
+    post:
+      operationId: presignObject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/PresignObjectRequest"
+      responses:
+        "200":
+          description: ZigFS 直连 URL
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/PresignObjectResponse"
+  /api/v1/access-keys:
+    get:
+      operationId: listAccessKeys
+      responses:
+        "200":
+          description: Access Key 列表
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/ListAccessKeysResponse"
+    post:
+      operationId: createAccessKey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/CreateAccessKeyRequest"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/CreateAccessKeyResponse"
+  /api/v1/access-keys/{id}:
+    patch:
+      operationId: updateAccessKey
+      parameters:
+        - $ref: "./zigfs-management-v1.openapi.yaml#/components/parameters/AccessKeyID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/UpdateAccessKeyRequest"
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/AccessKey"
+    delete:
+      operationId: deleteAccessKey
+      parameters:
+        - $ref: "./zigfs-management-v1.openapi.yaml#/components/parameters/AccessKeyID"
+      responses:
+        "204":
+          description: 已删除或不存在
+components:
+  securitySchemes:
+    webBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-web-token

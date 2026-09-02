@@ -1,0 +1,7 @@
+# ZigFS loads built-in defaults first, then applies values from this file.
+server:
+  s3_address: "0.0.0.0:9000"
+  management_address: "127.0.0.1:9001"
+
+storage:
+  data_root: "data"

@@ -1,0 +1,39 @@
+# Local architecture and requirements documents
+.docs/
+
+# Zig build output and cache
+.zig-cache/
+zig-cache/
+zig-out/
+
+# Go build and test output
+bin/
+*.test
+*.out
+coverage/
+
+# Node.js / Vite
+node_modules/
+dist/
+.vite/
+
+# Runtime storage and temporary files
+data/
+tmp/
+*.log
+*.pid
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+/zigfs/config.yaml
+*.key
+*.pem
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

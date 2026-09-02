@@ -1,0 +1,398 @@
+openapi: 3.1.0
+info:
+  title: ZigFS Management API
+  version: 0.1.0
+  description: >-
+    ZigFS 独立提供的管理接口。Admin 只是调用方之一；授权用户和自动化系统
+    可以在不部署 Admin 的情况下直接调用。本文件描述已初始化的 V1 契约，
+    Zig Handler 当前尚未实现。
+servers:
+  - url: http://127.0.0.1:9001
+security:
+  - managementBearer: []
+paths:
+  /_admin/v1/buckets:
+    get:
+      operationId: listBuckets
+      summary: 列出 Bucket
+      responses:
+        "200":
+          description: Bucket 列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListBucketsResponse"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createBucket
+      summary: 创建 Bucket
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBucketRequest"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bucket"
+        default:
+          $ref: "#/components/responses/Error"
+  /_admin/v1/buckets/{name}:
+    delete:
+      operationId: deleteBucket
+      summary: 删除空 Bucket
+      parameters:
+        - $ref: "#/components/parameters/BucketName"
+      responses:
+        "204":
+          description: 已删除或不存在
+        default:
+          $ref: "#/components/responses/Error"
+  /_admin/v1/buckets/{name}/objects:
+    get:
+      operationId: listObjects
+      summary: 获取管理视图中的对象列表
+      parameters:
+        - $ref: "#/components/parameters/BucketName"
+        - name: prefix
+          in: query
+          schema:
+            type: string
+        - name: continuation_token
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 对象列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListObjectsResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /_admin/v1/objects/presign:
+    post:
+      operationId: presignObject
+      summary: 生成直接访问 ZigFS 的对象 URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PresignObjectRequest"
+      responses:
+        "200":
+          description: Presigned URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PresignObjectResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /_admin/v1/access-keys:
+    get:
+      operationId: listAccessKeys
+      summary: 列出 Access Key
+      responses:
+        "200":
+          description: Access Key 列表，不包含 Secret Key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListAccessKeysResponse"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createAccessKey
+      summary: 创建 AK/SK
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAccessKeyRequest"
+      responses:
+        "201":
+          description: Secret Key 只在此响应返回一次
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateAccessKeyResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /_admin/v1/access-keys/{id}:
+    patch:
+      operationId: updateAccessKey
+      summary: 启用或禁用 Access Key
+      parameters:
+        - $ref: "#/components/parameters/AccessKeyID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAccessKeyRequest"
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessKey"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteAccessKey
+      summary: 删除 Access Key
+      parameters:
+        - $ref: "#/components/parameters/AccessKeyID"
+      responses:
+        "204":
+          description: 已删除或不存在
+        default:
+          $ref: "#/components/responses/Error"
+  /_admin/v1/storage:
+    get:
+      operationId: getStorage
+      summary: 获取存储容量和状态
+      responses:
+        "200":
+          description: 存储状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageInfo"
+        default:
+          $ref: "#/components/responses/Error"
+  /_admin/v1/system:
+    get:
+      operationId: getSystem
+      summary: 获取系统汇总信息
+      responses:
+        "200":
+          description: 系统信息
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemInfo"
+        default:
+          $ref: "#/components/responses/Error"
+  /_admin/v1/health:
+    get:
+      operationId: getManagementHealth
+      summary: 获取 Metadata Engine 和 Storage Backend 健康状态
+      responses:
+        "200":
+          description: 健康状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    managementBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-management-token
+  parameters:
+    BucketName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 3
+        maxLength: 63
+    AccessKeyID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    Error:
+      description: 失败
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Bucket:
+      type: object
+      required: [name, created_at]
+      properties:
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    ListBucketsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Bucket"
+    CreateBucketRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+    Object:
+      type: object
+      required: [key, size, etag, last_modified]
+      properties:
+        key:
+          type: string
+        size:
+          type: integer
+          format: int64
+          minimum: 0
+        etag:
+          type: string
+        last_modified:
+          type: string
+          format: date-time
+    ListObjectsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Object"
+        continuation_token:
+          type: string
+    PresignObjectRequest:
+      type: object
+      additionalProperties: false
+      required: [bucket, key, method, expires_seconds]
+      properties:
+        bucket:
+          type: string
+        key:
+          type: string
+        method:
+          type: string
+          enum: [GET, PUT]
+        expires_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 604800
+    PresignObjectResponse:
+      type: object
+      required: [url, expires_at]
+      properties:
+        url:
+          type: string
+          format: uri
+        expires_at:
+          type: string
+          format: date-time
+    AccessKey:
+      type: object
+      required: [id, access_key, enabled, created_at]
+      properties:
+        id:
+          type: string
+        access_key:
+          type: string
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+    ListAccessKeysResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccessKey"
+    CreateAccessKeyRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+    CreateAccessKeyResponse:
+      allOf:
+        - $ref: "#/components/schemas/AccessKey"
+        - type: object
+          required: [secret_key]
+          properties:
+            secret_key:
+              type: string
+              writeOnly: true
+    UpdateAccessKeyRequest:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+    StorageInfo:
+      type: object
+      required: [total, used, available]
+      properties:
+        total:
+          type: integer
+          format: int64
+        used:
+          type: integer
+          format: int64
+        available:
+          type: integer
+          format: int64
+    SystemInfo:
+      type: object
+      required: [version, uptime, storage_used, objects, buckets]
+      properties:
+        version:
+          type: string
+        uptime:
+          type: integer
+          format: int64
+        storage_used:
+          type: integer
+          format: int64
+        objects:
+          type: integer
+          format: int64
+        buckets:
+          type: integer
+          format: int64
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ready, degraded, recovery]
+    Error:
+      type: object
+      required: [code, message, request_id, details]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        request_id:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
