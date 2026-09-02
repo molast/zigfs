@@ -216,6 +216,6 @@ test "reject unknown yaml key" {
     var config: Config = .{};
     try std.testing.expectError(error.UnknownKey, config.applyYaml(
         \\storage:
-        \\  database: "sqlite"
+        \\  database: "external"
     ));
 }

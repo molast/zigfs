@@ -12,6 +12,8 @@ pub fn main(init: std.process.Init) !void {
         "zigfs {s} initialized (data_root={s}, api={s}, metrics={s}, metrics_enabled={})",
         .{ zigfs.version, config.data_root, config.api_address, config.metrics_address, config.metrics_enabled },
     );
+
+    try zigfs.transport.http.serve(init.io, config);
 }
 
 test {

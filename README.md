@@ -17,12 +17,14 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 - YAML 配置与代码内默认值
 - Domain、Ports、Adapters、Metadata、Transport 模块骨架
 - 本地数据目录初始化
+- ZigFS 常驻 HTTP Server、Health API 和 Prometheus Metrics Listener
+- HTTP Request ID 透传/生成与基础访问日志
 - ZigFS Management API 路由清单
 - Go 1.27 + Gin 1.12 管理 BFF
 - Bucket、Object、AK/SK 和 System 类型化 Zig Client
 - React 管理界面骨架
 
-S3 HTTP Server、Signature V4、对象持久化、元数据事务和 ZigFS Management API Handler 尚未实现。
+Signature V4、S3 业务 Handler、对象持久化、元数据事务和 ZigFS Management API Handler 尚未实现。尚未实现的 S3 与 Management 路由当前返回 `501 Not Implemented`。
 
 ## 启动脚本
 
