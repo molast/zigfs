@@ -6,6 +6,7 @@ pub fn main(init: std.process.Init) !void {
     const config = try zigfs.config.Config.load(init.io, init.arena.allocator(), args);
 
     var app = zigfs.application.Application.init(config);
+    defer app.deinit(init.io);
     try app.initialize(init.io);
 
     std.log.info(

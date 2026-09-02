@@ -17,6 +17,9 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 - YAML 配置与代码内默认值
 - Domain、Ports、Adapters、Metadata、Transport 模块骨架
 - 本地数据目录初始化
+- 固定版本的 `.zigfs/format.meta`、持久化 Instance ID 和 SHA-256 损坏检测
+- 数据根目录 OS 独占锁，同一目录禁止两个 ZigFS 写进程同时运行
+- 显式 little-endian 编解码的版本化 Metadata Record Envelope
 - ZigFS 常驻 HTTP Server、Health API 和 Prometheus Metrics Listener
 - HTTP Request ID 透传/生成与基础访问日志
 - ZigFS Management API 路由清单
@@ -185,6 +188,7 @@ npm run dev
 
 ## 设计原则
 
+- 第一原则：先把 ZigFS 的 S3 API 做到标准、稳定、完整，再实现多语言 SDK；SDK 不定义第二套文件协议。
 - ZigFS 是对象数据、元数据、Bucket 和 AK/SK 的唯一事实来源。
 - 不使用 SQLite 或其他外部数据库保存对象存储元数据。
 - Admin 不直接访问数据目录，不代理对象文件流。

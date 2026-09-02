@@ -1,7 +1,15 @@
 const std = @import("std");
+const format = @import("../metadata/format.zig");
 
 pub const EnsureReadyError = std.Io.Dir.CreateDirPathOpenError ||
-    std.Io.Dir.CreateDirPathError;
+    std.Io.Dir.CreateDirPathError ||
+    std.Io.File.OpenError ||
+    std.Io.File.LockError ||
+    format.Error ||
+    error{
+        AlreadyInitialized,
+        DataRootLocked,
+    };
 
 pub const StorageBackend = struct {
     context: *anyopaque,

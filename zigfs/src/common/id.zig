@@ -10,8 +10,24 @@ pub fn randomV4(io: std.Io) std.Io.RandomSecureError!Uuid {
     return value;
 }
 
+pub fn isValidV4(value: Uuid) bool {
+    return value[6] & 0xf0 == 0x40 and value[8] & 0xc0 == 0x80;
+}
+
 test "uuid v4 sets version and variant" {
     const value = try randomV4(std.testing.io);
-    try std.testing.expectEqual(@as(u8, 0x40), value[6] & 0xf0);
-    try std.testing.expectEqual(@as(u8, 0x80), value[8] & 0xc0);
+    try std.testing.expect(isValidV4(value));
+}
+
+test "uuid v4 validation rejects invalid version and variant" {
+    var value = [_]u8{0} ** 16;
+    value[6] = 0x40;
+    value[8] = 0x80;
+    try std.testing.expect(isValidV4(value));
+
+    value[6] = 0x30;
+    try std.testing.expect(!isValidV4(value));
+    value[6] = 0x40;
+    value[8] = 0xc0;
+    try std.testing.expect(!isValidV4(value));
 }
