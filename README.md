@@ -24,6 +24,32 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 
 S3 HTTP Server、Signature V4、对象持久化、元数据事务和 ZigFS Management API Handler 尚未实现。
 
+## 启动脚本
+
+根目录提供统一的交互式启动脚本：
+
+```bash
+./start.sh
+```
+
+运行后可选择启动 ZigFS 或 ZigFS Admin。两个服务均以前台方式运行，可使用
+`Ctrl+C` 停止；需要同时运行时，请分别在两个终端中执行脚本。
+
+Admin 启动前会检查 ZigFS Management API 的
+`http://127.0.0.1:9001/health/ready`。可以通过 `ZIGFS_ENDPOINT` 修改检查和连接地址。
+如果 ZigFS 未就绪，Admin 不会启动。
+
+首次启动 Admin 前，需要安装并锁定前端依赖：
+
+```bash
+cd zigfs-admin/web
+npm install
+```
+
+脚本会使用现有依赖构建前端，不会自动安装依赖。`ZIGFS_WEB_ADMIN_TOKEN` 未设置时，
+脚本会交互式读取网页管理凭证；调用 ZigFS Management API 所需的凭证仍通过
+`ZIGFS_ADMIN_TOKEN` 设置。
+
 ## 架构边界
 
 ```text
@@ -150,3 +176,7 @@ npm run dev
 - 模块只依赖明确的 Port，协议层不能直接操作文件系统。
 - 优先使用标准库，第三方依赖按必要性逐项引入。
 - 所有网络接口必须同步维护契约文档和兼容性测试。
+
+## 开源协议
+
+本项目基于 [Apache License 2.0](LICENSE) 开源。
