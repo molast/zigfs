@@ -15,12 +15,21 @@ pub fn main(init: std.process.Init) !void {
         std.log.warn("ZigFS is using the default local administrator credentials; change the admin section in config.yaml before external exposure", .{});
     }
 
+    const recovery_state = app.recoveryState();
     std.log.info(
-        "zigfs {s} initialized (data_root={s}, api={s}, metrics={s}, metrics_enabled={})",
-        .{ zigfs.version, config.data_root, config.api_address, config.metrics_address, config.metrics_enabled },
+        "zigfs {s} initialized (data_root={s}, api={s}, metrics={s}, metrics_enabled={}, recovery={s}, failure={s})",
+        .{
+            zigfs.version,
+            config.data_root,
+            config.api_address,
+            config.metrics_address,
+            config.metrics_enabled,
+            @tagName(recovery_state.status),
+            @tagName(recovery_state.failure),
+        },
     );
 
-    try zigfs.transport.http.serve(init.io, config);
+    try zigfs.transport.http.serve(init.io, &app);
 }
 
 test {

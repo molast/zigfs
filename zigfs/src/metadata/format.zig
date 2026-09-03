@@ -142,7 +142,7 @@ test "format metadata rejects malformed fields and corruption" {
     try std.testing.expectError(error.UnsupportedFlags, decode(&changed));
 
     changed = valid;
-    changed[6] = 0;
+    changed[22] = 0;
     writeChecksum(&changed);
     try std.testing.expectError(error.InvalidInstanceId, decode(&changed));
 

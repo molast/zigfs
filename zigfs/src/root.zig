@@ -11,7 +11,12 @@ pub const domain = @import("domain/mod.zig");
 pub const metadata = @import("metadata/mod.zig");
 pub const ports = @import("ports/mod.zig");
 pub const transport = @import("transport/mod.zig");
+pub const testing = @import("testing/mod.zig");
 
 test "version follows semantic versioning shape" {
     try std.testing.expect(std.mem.count(u8, version, ".") == 2);
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }

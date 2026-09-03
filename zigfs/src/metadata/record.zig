@@ -65,7 +65,8 @@ pub fn encode(
     @memcpy(bytes[header_length .. header_length + payload.len], payload);
 
     const checksum_offset = header_length + payload.len;
-    std.crypto.hash.sha2.Sha256.hash(bytes[0..checksum_offset], bytes[checksum_offset..], .{});
+    const checksum: *[checksum_length]u8 = @ptrCast(bytes[checksum_offset..].ptr);
+    std.crypto.hash.sha2.Sha256.hash(bytes[0..checksum_offset], checksum, .{});
     return bytes;
 }
 

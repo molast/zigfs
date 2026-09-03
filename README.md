@@ -22,15 +22,46 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 - 固定版本的 `.zigfs/format.meta`、持久化 Instance ID 和 SHA-256 损坏检测
 - 数据根目录 OS 独占锁，同一目录禁止两个 ZigFS 写进程同时运行
 - 显式 little-endian 编解码的版本化 Metadata Record Envelope
+- 自有 Metadata Repository、Transaction Journal 与单调 Generation
+- Intent/Commit/Abort、临时文件 fsync、原子 Record 发布和父目录同步
+- Bucket、Object、Upload ID、Access Key 四类可重建内存索引
+- Object Key 有序索引及 Prefix、Delimiter、Start After、分页基础语义
+- 启动 Journal 回放、未完成事务恢复、孤儿临时文件清理和 Tombstone 过滤
+- Recovery 状态机；损坏数据保持进程存活并让 Ready 返回 `503`
+- S3 兼容 Bucket Name 校验和版本化 Bucket Metadata Payload
+- `BucketStore` Port、Metadata Adapter，以及与 HTTP 解耦的 Create、Head、List、Delete Bucket Core
+- Bucket 同 Owner 幂等创建、跨 Owner 同名冲突、非空删除保护、Tombstone 和删除后重建
+- Bucket 持久化与索引原子发布；重启可恢复，损坏 Bucket Payload 会阻止 Ready
+- 完整 1024-byte S3 Object Key、Content-Type 和有界 User Metadata 校验
+- `ZFOB` V1.0 Object Metadata、Object/Data Generation UUID、MD5 ETag 与 SHA-256
+- `ObjectStore`、流式 `ObjectDataStore` Port 和 UUID 分代的本地数据布局
+- 固定缓冲的 Object Put/Get/Head/Delete、Content-MD5 校验、覆盖与 Tombstone
+- 64 路 Object 读写锁；长上传期间 GET 继续读取旧 Data Generation
+- Object 重启恢复、暂存数据清理和损坏 Metadata/Data 检测
+- List Objects V2 Core：Prefix、Delimiter、Max Keys、Start After 和 Continuation Token
+- `ZFCT` V1.0 URL-safe 分页 Token，绑定 Bucket/Prefix/Delimiter 并校验 SHA-256
+- 严格 UUID Generation 扫描和幂等 GC，回收覆盖旧版、删除对象数据与无 Metadata 孤儿
+- 全 Object 锁 GC 屏障，保护活跃 GET 和 PUT 的 Data/Metadata 提交窗口
 - ZigFS 常驻 HTTP Server、Health API 和 Prometheus Metrics Listener
 - HTTP Request ID 透传/生成与基础访问日志
+- `ZFCR` V1.0 AK/SK Metadata、AES-256-GCM Secret 加密和数据根随机 Master Key
+- AK/SK 创建、查询、更新、禁用、删除、重启恢复和最小 Bucket/Object Policy
+- Signature V4 Header 验签、Canonical URI/Query/Header、Region Scope、Payload Hash 和时钟偏差校验
+- Path-style S3 Router、稳定 XML 错误，以及 Bucket/Object/List V2 HTTP Handler
+- S3 Put/Get 流式传输、Content-MD5/SHA-256 校验、ETag、用户元数据和分页响应
+- 真实环回 TCP S3 集成测试，覆盖鉴权拒绝、CRUD、分页、Policy 与 Credential 禁用
 - ZigFS Management API 路由清单
 - ZigFS YAML 管理员身份、Management 登录和短期会话校验
 - Go 1.27 + Gin 1.12 管理 BFF
 - Bucket、Object、AK/SK 和 System 类型化 Zig Client
 - React 管理界面骨架
 
-Signature V4、S3 业务 Handler、对象持久化、元数据事务和 ZigFS Management API Handler 尚未实现。尚未实现的 S3 与 Management 路由当前返回 `501 Not Implemented`。
+当前 Phase 4 S3 Protocol and Authentication 正在收口。核心 Bucket/Object/List V2
+Path-style HTTP API、Signature V4 Header、AK/SK 加密持久化和 Policy 已实现并通过真实
+TCP 回归测试；AWS 官方 SigV4 GET Object 向量已通过。Phase 4 剩余 Gate 是在安装
+AWS SDK、MinIO Client 和 rclone 后执行外部客户端兼容矩阵。Multipart、Range、条件请求、
+Presigned URL、Temporary Credentials、Virtual-hosted-style 和 AWS Streaming Signature
+仍未实现，并明确返回错误或记录为不支持；其余 Management 业务路由仍返回 `501`。
 
 ## 启动脚本
 
@@ -121,6 +152,11 @@ observability:
 
 storage:
   data_root: "data"
+  stream_buffer_size: 65536
+
+s3:
+  region: "us-east-1"
+  request_time_skew_seconds: 900
 
 admin:
   username: "admin"
@@ -194,7 +230,7 @@ pnpm run dev
 │   │   └── internal/
 │   └── web/
 │       └── src/
-├── docs/
+├── .docs/
 └── README.md
 ```
 

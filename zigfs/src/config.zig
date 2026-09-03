@@ -3,14 +3,20 @@ const std = @import("std");
 pub const Config = struct {
     pub const default_path = "config.yaml";
     pub const max_file_size = 1024 * 1024;
+    pub const min_stream_buffer_size = 4 * 1024;
+    pub const max_stream_buffer_size = 1024 * 1024;
     const max_admin_username_length = 128;
     const max_admin_password_length = 1024;
     const max_admin_session_secret_length = 4096;
+    const max_s3_region_length = 63;
 
     data_root: []const u8 = "data",
+    stream_buffer_size: usize = 64 * 1024,
     api_address: []const u8 = "0.0.0.0:9000",
     metrics_enabled: bool = true,
     metrics_address: []const u8 = "127.0.0.1:9090",
+    s3_region: []const u8 = "us-east-1",
+    s3_request_time_skew_seconds: u64 = 15 * 60,
     admin_username: []const u8 = "admin",
     admin_password: []const u8 = "zigfs-admin",
     admin_session_secret: []const u8 = "zigfs-local-session-secret-change-before-production",
@@ -22,6 +28,8 @@ pub const Config = struct {
         UnknownArgument,
         UnknownKey,
         InvalidAdminConfig,
+        InvalidStorageConfig,
+        InvalidS3Config,
     };
 
     pub const LoadError = ParseError || std.Io.Dir.ReadFileAllocError;
@@ -61,7 +69,7 @@ pub const Config = struct {
     }
 
     pub fn applyYaml(self: *Config, source: []const u8) ParseError!void {
-        var section: enum { none, server, observability, storage, admin } = .none;
+        var section: enum { none, server, observability, storage, s3, admin } = .none;
         var lines = std.mem.splitScalar(u8, source, '\n');
 
         while (lines.next()) |raw_line| {
@@ -80,6 +88,8 @@ pub const Config = struct {
                     .observability
                 else if (std.mem.eql(u8, name, "storage"))
                     .storage
+                else if (std.mem.eql(u8, name, "s3"))
+                    .s3
                 else if (std.mem.eql(u8, name, "admin"))
                     .admin
                 else
@@ -112,6 +122,21 @@ pub const Config = struct {
                 .storage => {
                     if (std.mem.eql(u8, key, "data_root")) {
                         self.data_root = value;
+                    } else if (std.mem.eql(u8, key, "stream_buffer_size")) {
+                        self.stream_buffer_size = std.fmt.parseInt(usize, value, 10) catch {
+                            return error.InvalidYaml;
+                        };
+                    } else {
+                        return error.UnknownKey;
+                    }
+                },
+                .s3 => {
+                    if (std.mem.eql(u8, key, "region")) {
+                        self.s3_region = value;
+                    } else if (std.mem.eql(u8, key, "request_time_skew_seconds")) {
+                        self.s3_request_time_skew_seconds = std.fmt.parseInt(u64, value, 10) catch {
+                            return error.InvalidYaml;
+                        };
                     } else {
                         return error.UnknownKey;
                     }
@@ -203,6 +228,18 @@ pub const Config = struct {
     }
 
     fn validate(self: Config) ParseError!void {
+        if (self.stream_buffer_size < min_stream_buffer_size or
+            self.stream_buffer_size > max_stream_buffer_size)
+        {
+            return error.InvalidStorageConfig;
+        }
+        if (self.s3_region.len == 0 or self.s3_region.len > max_s3_region_length or
+            !isValidS3Region(self.s3_region) or
+            self.s3_request_time_skew_seconds < 60 or
+            self.s3_request_time_skew_seconds > 60 * 60)
+        {
+            return error.InvalidS3Config;
+        }
         if (self.admin_username.len == 0 or
             self.admin_username.len > max_admin_username_length or
             !isValidAdminUsername(self.admin_username) or
@@ -230,14 +267,29 @@ pub const Config = struct {
         }
         return true;
     }
+
+    fn isValidS3Region(region: []const u8) bool {
+        for (region) |character| {
+            if (!std.ascii.isLower(character) and
+                !std.ascii.isDigit(character) and
+                character != '-')
+            {
+                return false;
+            }
+        }
+        return region[0] != '-' and region[region.len - 1] != '-';
+    }
 };
 
 test "built-in defaults are stable" {
     const config: Config = .{};
     try std.testing.expectEqualStrings("data", config.data_root);
+    try std.testing.expectEqual(@as(usize, 64 * 1024), config.stream_buffer_size);
     try std.testing.expectEqualStrings("0.0.0.0:9000", config.api_address);
     try std.testing.expect(config.metrics_enabled);
     try std.testing.expectEqualStrings("127.0.0.1:9090", config.metrics_address);
+    try std.testing.expectEqualStrings("us-east-1", config.s3_region);
+    try std.testing.expectEqual(@as(u64, 900), config.s3_request_time_skew_seconds);
     try std.testing.expectEqualStrings("admin", config.admin_username);
     try std.testing.expectEqualStrings("zigfs-admin", config.admin_password);
     try std.testing.expectEqual(@as(u64, 8 * 60 * 60), config.admin_session_ttl_seconds);
@@ -253,6 +305,10 @@ test "yaml values override defaults" {
         \\  metrics_address: "127.0.0.1:19090"
         \\storage:
         \\  data_root: "test-data"
+        \\  stream_buffer_size: 131072
+        \\s3:
+        \\  region: "eu-central-1"
+        \\  request_time_skew_seconds: 600
         \\admin:
         \\  username: "operator"
         \\  password: "local-password"
@@ -261,7 +317,10 @@ test "yaml values override defaults" {
     );
 
     try std.testing.expectEqualStrings("test-data", config.data_root);
+    try std.testing.expectEqual(@as(usize, 131072), config.stream_buffer_size);
     try std.testing.expectEqualStrings("127.0.0.1:19000", config.api_address);
+    try std.testing.expectEqualStrings("eu-central-1", config.s3_region);
+    try std.testing.expectEqual(@as(u64, 600), config.s3_request_time_skew_seconds);
     try std.testing.expect(!config.metrics_enabled);
     try std.testing.expectEqualStrings("127.0.0.1:19090", config.metrics_address);
     try std.testing.expectEqualStrings("operator", config.admin_username);
@@ -297,6 +356,15 @@ test "reject invalid admin session configuration" {
         \\  session_secret: "too-short"
     );
     try std.testing.expectError(error.InvalidAdminConfig, config.validate());
+}
+
+test "reject unsafe stream buffer configuration" {
+    var config: Config = .{};
+    try config.applyYaml(
+        \\storage:
+        \\  stream_buffer_size: 1024
+    );
+    try std.testing.expectError(error.InvalidStorageConfig, config.validate());
 }
 
 test "reject unsafe admin username" {

@@ -1,21 +1,83 @@
 const std = @import("std");
+const id = @import("../common/id.zig");
+
+pub const min_name_length: usize = 3;
+pub const max_name_length: usize = 63;
+pub const max_owner_length: usize = 256;
+
+pub const Status = enum(u8) {
+    active = 1,
+};
+
+pub const Bucket = struct {
+    id: id.Uuid,
+    name: []u8,
+    owner: []u8,
+    status: Status,
+    created_at_unix_seconds: i64,
+    generation: u64,
+
+    pub fn deinit(self: Bucket, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.owner);
+    }
+};
 
 pub const ValidationError = error{
     InvalidLength,
     InvalidCharacter,
     InvalidBoundary,
+    AdjacentPeriods,
+    IpAddress,
+    ReservedPrefix,
+    ReservedSuffix,
+};
+
+pub const OwnerValidationError = error{
+    InvalidOwner,
 };
 
 pub fn validateName(name: []const u8) ValidationError!void {
-    if (name.len < 3 or name.len > 63) return error.InvalidLength;
-    if (!isAlphaNumeric(name[0]) or !isAlphaNumeric(name[name.len - 1])) {
-        return error.InvalidBoundary;
+    if (name.len < min_name_length or name.len > max_name_length) {
+        return error.InvalidLength;
     }
-
     for (name) |character| {
         if (!isAlphaNumeric(character) and character != '-' and character != '.') {
             return error.InvalidCharacter;
         }
+    }
+    if (!isAlphaNumeric(name[0]) or !isAlphaNumeric(name[name.len - 1])) {
+        return error.InvalidBoundary;
+    }
+    if (std.mem.indexOf(u8, name, "..") != null) return error.AdjacentPeriods;
+    if (isIpv4Address(name)) return error.IpAddress;
+
+    const reserved_prefixes = [_][]const u8{
+        "xn--",
+        "sthree-",
+        "amzn-s3-demo-",
+    };
+    for (reserved_prefixes) |prefix| {
+        if (std.mem.startsWith(u8, name, prefix)) return error.ReservedPrefix;
+    }
+    const reserved_suffixes = [_][]const u8{
+        "-s3alias",
+        "--ol-s3",
+        ".mrap",
+        "--x-s3",
+        "--table-s3",
+    };
+    for (reserved_suffixes) |suffix| {
+        if (std.mem.endsWith(u8, name, suffix)) return error.ReservedSuffix;
+    }
+}
+
+pub fn validateOwner(owner: []const u8) OwnerValidationError!void {
+    if (owner.len == 0 or
+        owner.len > max_owner_length or
+        std.mem.indexOfScalar(u8, owner, 0) != null)
+    {
+        return error.InvalidOwner;
     }
 }
 
@@ -24,10 +86,37 @@ fn isAlphaNumeric(character: u8) bool {
         (character >= '0' and character <= '9');
 }
 
-test "accept valid bucket name" {
-    try validateName("project-assets-01");
+fn isIpv4Address(name: []const u8) bool {
+    _ = std.Io.net.Ip4Address.parse(name, 0) catch return false;
+    return true;
 }
 
-test "reject uppercase bucket name" {
-    try std.testing.expectError(error.InvalidCharacter, validateName("Project-assets"));
+test "accept S3 compatible bucket names" {
+    const valid_names = [_][]const u8{
+        "project-assets-01",
+        "logs.example.internal",
+        "123-bucket",
+    };
+    for (valid_names) |name| try validateName(name);
+}
+
+test "reject invalid bucket syntax" {
+    try std.testing.expectError(error.InvalidLength, validateName("ab"));
+    try std.testing.expectError(error.InvalidLength, validateName(&([_]u8{'a'} ** 64)));
+    try std.testing.expectError(error.InvalidCharacter, validateName("project-Assets"));
+    try std.testing.expectError(error.InvalidCharacter, validateName("project_assets"));
+    try std.testing.expectError(error.InvalidBoundary, validateName("-project"));
+    try std.testing.expectError(error.InvalidBoundary, validateName("project-"));
+    try std.testing.expectError(error.AdjacentPeriods, validateName("project..assets"));
+    try std.testing.expectError(error.IpAddress, validateName("192.168.10.2"));
+}
+
+test "reject S3 reserved bucket aliases and invalid owners" {
+    try std.testing.expectError(error.ReservedPrefix, validateName("xn--project"));
+    try std.testing.expectError(error.ReservedPrefix, validateName("sthree-project"));
+    try std.testing.expectError(error.ReservedSuffix, validateName("project-s3alias"));
+    try std.testing.expectError(error.ReservedSuffix, validateName("project--x-s3"));
+    try std.testing.expectError(error.InvalidOwner, validateOwner(""));
+    try std.testing.expectError(error.InvalidOwner, validateOwner("owner\x00id"));
+    try validateOwner("root");
 }

@@ -19,13 +19,26 @@ ZigFS loads built-in defaults first and then applies `config.yaml`. Use
 flags override YAML values.
 
 The process remains in the foreground after initialization and listens on the
-configured API and Metrics addresses. The first server milestone provides:
+configured API and Metrics addresses. Implemented endpoints include:
 
 ```text
 GET /health/live
 GET /health/ready
 GET /metrics              (Metrics listener only)
+
+GET    /
+PUT    /{bucket}
+HEAD   /{bucket}
+DELETE /{bucket}
+GET    /{bucket}?list-type=2
+PUT    /{bucket}/{object}
+GET    /{bucket}/{object}
+HEAD   /{bucket}/{object}
+DELETE /{bucket}/{object}
 ```
 
-S3 and Management routes currently return `501 Not Implemented` until their
-handlers are connected to the object and metadata layers.
+S3 endpoints use path-style requests and Signature V4 Header authentication.
+Multipart, Range, conditional requests, presigned URLs, temporary credentials,
+virtual-hosted-style requests, and streaming chunk signatures are not yet
+implemented. Management authentication endpoints are available; remaining
+Management business routes return `501 Not Implemented`.

@@ -10,4 +10,6 @@ ZigFS 维护三套相互独立的网络契约：
 
 Health 与监控契约见 [operations.md](operations.md)。
 
-当前处于项目初始化阶段。接口进入代码骨架不代表已经实现；具体状态以 S3 兼容矩阵和 OpenAPI Operation 描述为准。
+当前 S3 Bucket/Object/List V2 Path-style Handler 与 Signature V4 Header 鉴权已实现；
+Multipart、Range、Presigned URL 和 ZigFS Management 业务接口仍按阶段推进。具体状态以
+S3 兼容矩阵和 OpenAPI Operation 描述为准。

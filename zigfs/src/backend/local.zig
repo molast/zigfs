@@ -60,6 +60,7 @@ pub const LocalStorageBackend = struct {
         const format_metadata = try format.loadOrCreate(root, io);
         try root.createDirPath(io, ".zigfs/system/credentials");
         try root.createDirPath(io, ".zigfs/system/configuration");
+        try root.createDirPath(io, ".zigfs/system/configuration/records");
         try root.createDirPath(io, ".zigfs/journal");
         try root.createDirPath(io, ".zigfs/indexes");
         try root.createDirPath(io, ".zigfs/tmp");
@@ -102,4 +103,27 @@ test "local backend reopens after lock owner exits" {
     try second.ensureReadyIn(std.testing.io, tmp.dir);
     defer second.deinit(std.testing.io);
     try std.testing.expectEqualSlices(u8, &original_id, &second.instanceId().?);
+}
+
+test "local backend creates phase 2b metadata layout" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var backend = LocalStorageBackend.init("data");
+    try backend.ensureReadyIn(std.testing.io, tmp.dir);
+    defer backend.deinit(std.testing.io);
+
+    const required_directories = [_][]const u8{
+        "data/.zigfs/system/configuration/records",
+        "data/.zigfs/system/credentials",
+        "data/.zigfs/journal",
+        "data/.zigfs/tmp",
+        "data/metadata/buckets",
+        "data/metadata/objects",
+        "data/metadata/multipart",
+    };
+    for (required_directories) |path| {
+        var directory = try tmp.dir.openDir(std.testing.io, path, .{});
+        directory.close(std.testing.io);
+    }
 }
