@@ -5,15 +5,18 @@ const LocalStorageBackend = @import("../backend/local.zig").LocalStorageBackend;
 const CredentialMasterKey = @import("../backend/credential_master_key.zig").MasterKey;
 const credential_master_key = @import("../backend/credential_master_key.zig");
 const LocalObjectDataStore = @import("../backend/local_object_data.zig").LocalObjectDataStore;
+const LocalMultipartDataStore = @import("../backend/local_multipart_data.zig").LocalMultipartDataStore;
 const LocalTransactionJournal = @import("../metadata/local_journal.zig").LocalTransactionJournal;
 const LocalRecoveryStore = @import("../metadata/local_recovery_store.zig").LocalRecoveryStore;
 const LocalMetadataRepository = @import("../metadata/local_repository.zig").LocalMetadataRepository;
 const MetadataBucketStore = @import("../metadata/bucket_store.zig").MetadataBucketStore;
 const MetadataCredentialStore = @import("../metadata/credential_store.zig").MetadataCredentialStore;
 const MetadataObjectStore = @import("../metadata/object_store.zig").MetadataObjectStore;
+const MetadataMultipartStore = @import("../metadata/multipart_store.zig").MetadataMultipartStore;
 const index_module = @import("../metadata/index.zig");
 const recovery = @import("../metadata/recovery.zig");
 const local_layout = @import("../metadata/local_layout.zig");
+const multipart_domain = @import("../domain/multipart.zig");
 const MetadataRepository = @import("../ports/metadata_repository.zig").MetadataRepository;
 
 pub const bucket_service = @import("bucket_service.zig");
@@ -22,6 +25,7 @@ pub const credential_service = @import("credential_service.zig");
 pub const object_gc = @import("object_gc.zig");
 pub const object_lock_pool = @import("object_lock_pool.zig");
 pub const object_listing = @import("object_listing.zig");
+pub const multipart_service = @import("multipart_service.zig");
 pub const object_service = @import("object_service.zig");
 
 pub const Application = struct {
@@ -35,12 +39,15 @@ pub const Application = struct {
     bucket_store: ?MetadataBucketStore = null,
     credential_store: ?MetadataCredentialStore = null,
     object_store: ?MetadataObjectStore = null,
+    multipart_store: ?MetadataMultipartStore = null,
     master_key: ?CredentialMasterKey = null,
     local_object_data: ?LocalObjectDataStore = null,
+    local_multipart_data: ?LocalMultipartDataStore = null,
     metadata_index: ?index_module.MetadataIndex = null,
     io: ?std.Io = null,
     state_mutex: std.Io.Mutex = .init,
     object_locks: object_lock_pool.ObjectLockPool = .{},
+    multipart_locks: object_lock_pool.ObjectLockPool = .{},
     recovery_state: recovery.State = .{},
     recovery_report: ?recovery.Report = null,
 
@@ -75,7 +82,14 @@ pub const Application = struct {
         self.bucket_store = MetadataBucketStore.init(self.local_repository.?.interface());
         self.credential_store = MetadataCredentialStore.init(self.local_repository.?.interface());
         self.object_store = MetadataObjectStore.init(self.local_repository.?.interface());
+        self.multipart_store = MetadataMultipartStore.init(self.local_repository.?.interface());
         self.local_object_data = LocalObjectDataStore.init(
+            self.allocator,
+            self.data_root.?,
+            io,
+            self.config.stream_buffer_size,
+        );
+        self.local_multipart_data = LocalMultipartDataStore.init(
             self.allocator,
             self.data_root.?,
             io,
@@ -99,6 +113,11 @@ pub const Application = struct {
             if (!builtin.is_test) {
                 std.log.err("ZigFS staged object cleanup failed: {t}", .{err});
             }
+            return;
+        };
+        _ = self.local_multipart_data.?.interface().cleanupStaged() catch |err| {
+            self.recovery_state.markRequired(error.Unavailable);
+            if (!builtin.is_test) std.log.err("ZigFS staged multipart cleanup failed: {t}", .{err});
             return;
         };
         self.master_key = credential_master_key.loadOrCreate(self.data_root.?, io) catch |err| {
@@ -131,7 +150,25 @@ pub const Application = struct {
             return;
         };
         self.metadata_index = rebuilt_index;
+        self.cleanupTombstonedMultipartUploads() catch |err| {
+            self.recovery_state.markRequired(err);
+            if (!builtin.is_test) std.log.err("ZigFS completed multipart cleanup failed: {t}", .{err});
+            return;
+        };
         self.recovery_state.markReady();
+        const now = std.Io.Clock.real.now(io).toSeconds();
+        _ = self.multipartService().?.cleanupExpired(
+            now,
+            self.config.s3_multipart_expiry_seconds,
+        ) catch |err| {
+            self.recovery_state.markRequired(switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.CorruptMetadata, error.CorruptData => error.CorruptRecord,
+                else => error.Unavailable,
+            });
+            if (!builtin.is_test) std.log.err("ZigFS multipart recovery cleanup failed: {t}", .{err});
+            return;
+        };
     }
 
     pub fn deinit(self: *Application, io: std.Io) void {
@@ -142,7 +179,9 @@ pub const Application = struct {
         self.bucket_store = null;
         self.credential_store = null;
         self.object_store = null;
+        self.multipart_store = null;
         self.local_object_data = null;
+        self.local_multipart_data = null;
         self.local_repository = null;
         self.local_recovery_store = null;
         self.local_journal = null;
@@ -244,6 +283,27 @@ pub const Application = struct {
         );
     }
 
+    pub fn multipartService(self: *Application) ?multipart_service.MultipartService {
+        if (!self.recovery_state.isReady()) return null;
+        const io = self.io orelse return null;
+        const bucket_store = if (self.bucket_store) |*store| store.interface() else return null;
+        const multipart_store = if (self.multipart_store) |*store| store.interface() else return null;
+        const data_store = if (self.local_multipart_data) |*store| store.interface() else return null;
+        const objects = self.objectService() orelse return null;
+        const index = if (self.metadata_index) |*metadata_index| metadata_index else return null;
+        return multipart_service.MultipartService.init(
+            self.allocator,
+            io,
+            bucket_store,
+            multipart_store,
+            data_store,
+            objects,
+            index,
+            &self.state_mutex,
+            &self.multipart_locks,
+        );
+    }
+
     pub fn objectListing(self: *Application) ?object_listing.ObjectListingService {
         if (!self.recovery_state.isReady()) return null;
         const io = self.io orelse return null;
@@ -298,6 +358,26 @@ pub const Application = struct {
     pub fn recoveryState(self: *const Application) *const recovery.State {
         return &self.recovery_state;
     }
+
+    fn cleanupTombstonedMultipartUploads(self: *Application) recovery.Error!void {
+        const repository = if (self.local_repository) |*value| value.interface() else return error.Unavailable;
+        const data_store = if (self.local_multipart_data) |*value| value.interface() else return error.Unavailable;
+        const records = repository.scan(self.allocator, .multipart) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.CorruptRecord, error.CorruptJournal => error.CorruptRecord,
+            else => error.Unavailable,
+        };
+        defer records.deinit(self.allocator);
+        for (records.records) |record| {
+            if (!record.tombstone) continue;
+            const upload_id = multipart_domain.parseUploadId(record.key) orelse return error.CorruptRecord;
+            data_store.deleteUpload(upload_id) catch |err| return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.InvalidValue, error.CorruptData => error.CorruptRecord,
+                else => error.Unavailable,
+            };
+        }
+    }
 };
 
 fn testDataRootPath(
@@ -328,9 +408,280 @@ test "application becomes ready only after recovery and index rebuild" {
     try std.testing.expect(app.bucketService() != null);
     try std.testing.expect(app.credentialService() != null);
     try std.testing.expect(app.objectService() != null);
+    try std.testing.expect(app.multipartService() != null);
     try std.testing.expect(app.objectListing() != null);
     try std.testing.expect(app.objectGc() != null);
     try std.testing.expect(app.recovery_report != null);
+}
+
+test "multipart lifecycle streams concurrent parts completes and aborts without changing the object" {
+    const test_streams = @import("../testing/streams.zig");
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(data_root);
+    var app = Application.initWithAllocator(
+        .{ .data_root = data_root, .metrics_enabled = false },
+        std.testing.allocator,
+    );
+    defer app.deinit(std.testing.io);
+    try app.initialize(std.testing.io);
+    const bucket = try app.bucketService().?.create("project-assets", "owner-a");
+    defer bucket.deinit(std.testing.allocator);
+    const multiparts = app.multipartService().?;
+    const upload = try multiparts.create("project-assets", "large/archive.bin", .{
+        .content_type = "application/octet-stream",
+        .user_metadata = &.{.{ .name = "client-id", .value = "mobile" }},
+    });
+    defer upload.deinit(std.testing.allocator);
+    var upload_id_buffer: [32]u8 = undefined;
+    const upload_id = multipart_domain.formatUploadId(upload.id, &upload_id_buffer);
+
+    const UploadTask = struct {
+        service: multipart_service.MultipartService,
+        upload_id: []const u8,
+        part_number: u16,
+        size: u64,
+        byte: u8,
+        result: ?multipart_domain.Part = null,
+        failure: ?multipart_service.Error = null,
+
+        fn run(self: *@This()) void {
+            var source = test_streams.RepeatingSource.init(self.size, self.byte);
+            self.result = self.service.uploadPart(
+                "project-assets",
+                "large/archive.bin",
+                self.upload_id,
+                self.part_number,
+                source.interface(),
+                .{},
+            ) catch |err| {
+                self.failure = err;
+                return;
+            };
+        }
+    };
+    var first_task: UploadTask = .{
+        .service = multiparts,
+        .upload_id = upload_id,
+        .part_number = 1,
+        .size = multipart_domain.min_nonfinal_part_size,
+        .byte = 'A',
+    };
+    var second_task: UploadTask = .{
+        .service = multiparts,
+        .upload_id = upload_id,
+        .part_number = 2,
+        .size = 8,
+        .byte = 'B',
+    };
+    var first_future = try std.testing.io.concurrent(UploadTask.run, .{&first_task});
+    var second_future = try std.testing.io.concurrent(UploadTask.run, .{&second_task});
+    first_future.await(std.testing.io);
+    second_future.await(std.testing.io);
+    try std.testing.expect(first_task.failure == null);
+    try std.testing.expect(second_task.failure == null);
+
+    var replacement_source = test_streams.SliceSource.init("tail");
+    const second = try multiparts.uploadPart(
+        "project-assets",
+        "large/archive.bin",
+        upload_id,
+        2,
+        replacement_source.interface(),
+        .{},
+    );
+    const listed = try multiparts.listParts("project-assets", "large/archive.bin", upload_id);
+    defer listed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), listed.parts.len);
+    try std.testing.expectEqual(@as(u64, 4), listed.parts[1].size);
+    try std.testing.expectError(error.InvalidPartOrder, multiparts.complete(
+        "project-assets",
+        "large/archive.bin",
+        upload_id,
+        &.{
+            .{ .number = 2, .etag_md5 = second.etag_md5 },
+            .{ .number = 1, .etag_md5 = first_task.result.?.etag_md5 },
+        },
+    ));
+    try std.testing.expectError(error.InvalidPart, multiparts.complete(
+        "project-assets",
+        "large/archive.bin",
+        upload_id,
+        &.{
+            .{ .number = 1, .etag_md5 = .{0} ** 16 },
+            .{ .number = 2, .etag_md5 = second.etag_md5 },
+        },
+    ));
+    var composite = std.crypto.hash.Md5.init(.{});
+    composite.update(&first_task.result.?.etag_md5);
+    composite.update(&second.etag_md5);
+    var expected_etag: [16]u8 = undefined;
+    composite.final(&expected_etag);
+    const object = try multiparts.complete(
+        "project-assets",
+        "large/archive.bin",
+        upload_id,
+        &.{
+            .{ .number = 1, .etag_md5 = first_task.result.?.etag_md5 },
+            .{ .number = 2, .etag_md5 = second.etag_md5 },
+        },
+    );
+    defer object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(multipart_domain.min_nonfinal_part_size + 4, object.size);
+    try std.testing.expectEqual(@as(u16, 2), object.etag_part_count);
+    try std.testing.expectEqualSlices(u8, &expected_etag, &object.etag_md5);
+    try std.testing.expectError(
+        error.UploadNotFound,
+        multiparts.listParts("project-assets", "large/archive.bin", upload_id),
+    );
+    var sink = test_streams.CollectingSink.init(std.testing.allocator);
+    defer sink.deinit();
+    const downloaded = try app.objectService().?.get("project-assets", "large/archive.bin", sink.interface());
+    defer downloaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, @intCast(object.size)), sink.bytes.items.len);
+    try std.testing.expectEqual(@as(u8, 'A'), sink.bytes.items[0]);
+    try std.testing.expectEqualStrings("tail", sink.bytes.items[sink.bytes.items.len - 4 ..]);
+
+    const aborted = try multiparts.create("project-assets", "large/archive.bin", .{});
+    defer aborted.deinit(std.testing.allocator);
+    var aborted_id_buffer: [32]u8 = undefined;
+    const aborted_id = multipart_domain.formatUploadId(aborted.id, &aborted_id_buffer);
+    var aborted_source = test_streams.SliceSource.init("discarded");
+    _ = try multiparts.uploadPart("project-assets", "large/archive.bin", aborted_id, 1, aborted_source.interface(), .{});
+    try multiparts.abort("project-assets", "large/archive.bin", aborted_id);
+    const after_abort = try app.objectService().?.head("project-assets", "large/archive.bin");
+    defer after_abort.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(u8, &object.etag_md5, &after_abort.etag_md5);
+}
+
+test "startup recovery expires multipart metadata and part data" {
+    const multipart_payload = @import("../metadata/multipart_payload.zig");
+    const test_streams = @import("../testing/streams.zig");
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(data_root);
+    const config: Config = .{
+        .data_root = data_root,
+        .metrics_enabled = false,
+        .s3_multipart_expiry_seconds = 60,
+    };
+    const upload_id = [_]u8{ 50, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 };
+    const generation = [_]u8{ 51, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 };
+    var upload_id_buffer: [32]u8 = undefined;
+    const upload_id_text = multipart_domain.formatUploadId(upload_id, &upload_id_buffer);
+
+    var writer = Application.initWithAllocator(config, std.testing.allocator);
+    var writer_live = true;
+    defer if (writer_live) writer.deinit(std.testing.io);
+    try writer.initialize(std.testing.io);
+    const bucket = try writer.bucketService().?.create("project-assets", "owner-a");
+    defer bucket.deinit(std.testing.allocator);
+    var source = test_streams.SliceSource.init("stale-part");
+    const staged = try writer.local_multipart_data.?.interface().stage(generation, source.interface());
+    try writer.local_multipart_data.?.interface().publish(staged, .{
+        .upload_id = upload_id,
+        .part_number = 1,
+        .data_generation = generation,
+    });
+    const initiated_at = std.Io.Clock.real.now(std.testing.io).toSeconds() - 61;
+    const payload = try multipart_payload.encode(std.testing.allocator, .{
+        .id = upload_id,
+        .bucket_id = bucket.bucket.id,
+        .bucket_name = "project-assets",
+        .key = "stale.bin",
+        .content_type = "application/octet-stream",
+        .user_metadata = &.{},
+        .initiated_at_unix_seconds = initiated_at,
+        .parts = &.{.{
+            .number = 1,
+            .size = staged.size,
+            .etag_md5 = staged.etag_md5,
+            .checksum_sha256 = staged.checksum_sha256,
+            .data_generation = generation,
+            .last_modified_unix_seconds = initiated_at,
+        }},
+    });
+    defer std.testing.allocator.free(payload);
+    _ = try writer.metadataRepository().?.put(
+        std.testing.allocator,
+        .multipart,
+        upload_id_text,
+        .missing,
+        payload,
+    );
+    writer.deinit(std.testing.io);
+    writer_live = false;
+
+    var recovered = Application.initWithAllocator(config, std.testing.allocator);
+    defer recovered.deinit(std.testing.io);
+    try recovered.initialize(std.testing.io);
+    try std.testing.expect(recovered.recoveryState().isReady());
+    try std.testing.expect(!recovered.metadataIndex().?.containsUpload(upload_id_text));
+    var sink = test_streams.CollectingSink.init(std.testing.allocator);
+    defer sink.deinit();
+    try std.testing.expectError(error.NotFound, recovered.local_multipart_data.?.interface().readRange(.{
+        .upload_id = upload_id,
+        .part_number = 1,
+        .data_generation = generation,
+    }, 0, 1, sink.interface()));
+}
+
+test "startup recovery removes part data left after multipart tombstone commit" {
+    const test_streams = @import("../testing/streams.zig");
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(data_root);
+    const config: Config = .{ .data_root = data_root, .metrics_enabled = false };
+
+    var writer = Application.initWithAllocator(config, std.testing.allocator);
+    var writer_live = true;
+    defer if (writer_live) writer.deinit(std.testing.io);
+    try writer.initialize(std.testing.io);
+    const bucket = try writer.bucketService().?.create("project-assets", "owner-a");
+    defer bucket.deinit(std.testing.allocator);
+    const multiparts = writer.multipartService().?;
+    const upload = try multiparts.create("project-assets", "interrupted.bin", .{});
+    defer upload.deinit(std.testing.allocator);
+    var upload_id_buffer: [32]u8 = undefined;
+    const upload_id = multipart_domain.formatUploadId(upload.id, &upload_id_buffer);
+    var source = test_streams.SliceSource.init("part-left-after-tombstone");
+    const part = try multiparts.uploadPart(
+        "project-assets",
+        "interrupted.bin",
+        upload_id,
+        1,
+        source.interface(),
+        .{},
+    );
+    const current = try multiparts.listParts("project-assets", "interrupted.bin", upload_id);
+    defer current.deinit(std.testing.allocator);
+
+    _ = try writer.multipart_store.?.interface().tombstone(
+        std.testing.allocator,
+        upload_id,
+        current.metadata_generation,
+    );
+    writer.deinit(std.testing.io);
+    writer_live = false;
+
+    var recovered = Application.initWithAllocator(config, std.testing.allocator);
+    defer recovered.deinit(std.testing.io);
+    try recovered.initialize(std.testing.io);
+    try std.testing.expect(recovered.recoveryState().isReady());
+    try std.testing.expect(!recovered.metadataIndex().?.containsUpload(upload_id));
+    var sink = test_streams.CollectingSink.init(std.testing.allocator);
+    defer sink.deinit();
+    try std.testing.expectError(error.NotFound, recovered.local_multipart_data.?.interface().readRange(.{
+        .upload_id = upload.id,
+        .part_number = part.number,
+        .data_generation = part.data_generation,
+    }, 0, 1, sink.interface()));
 }
 
 test "application stays alive but not ready when journal is corrupt" {

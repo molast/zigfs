@@ -37,12 +37,20 @@ PUT    /{bucket}/{object}
 GET    /{bucket}/{object}
 HEAD   /{bucket}/{object}
 DELETE /{bucket}/{object}
+
+POST   /{bucket}/{object}?uploads
+PUT    /{bucket}/{object}?partNumber=N&uploadId=ID
+GET    /{bucket}/{object}?uploadId=ID
+POST   /{bucket}/{object}?uploadId=ID
+DELETE /{bucket}/{object}?uploadId=ID
 ```
 
 S3 endpoints use path-style requests and Signature V4 Header authentication. Object-level
 GET and PUT also accept Signature V4 Presigned Query authentication with a maximum lifetime
-of seven days. Signed aws-chunked PutObject, DeleteObjects, and single-range GetObject are
-supported. Multipart, conditional requests, temporary credentials, virtual-hosted-style
-requests, S3 POST Policy uploads, and signed streaming trailers are not yet implemented.
-Management authentication endpoints are available; remaining
-Management business routes return `501 Not Implemented`.
+of seven days. DeleteObjects, single-range GetObject, the complete Multipart lifecycle, and
+signed aws-chunked PutObject/UploadPart are supported, including the CRC64NVME signed trailer
+variant. Interrupted fixed-length uploads fail without publishing Object/Part data, and a
+canceled GetObject releases its read lease. Conditional requests, temporary credentials,
+virtual-hosted-style requests, S3 POST Policy uploads, and non-CRC64NVME streaming trailer
+checksums are not yet implemented. Management authentication endpoints are available;
+remaining Management business routes return `501 Not Implemented`.

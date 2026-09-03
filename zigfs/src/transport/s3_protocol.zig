@@ -13,6 +13,11 @@ pub const Operation = enum {
     get_object,
     head_object,
     delete_object,
+    create_multipart_upload,
+    upload_part,
+    list_parts,
+    complete_multipart_upload,
+    abort_multipart_upload,
     unsupported,
 };
 
@@ -110,7 +115,6 @@ fn classify(
     key: ?[]const u8,
     parameters: []const QueryParameter,
 ) Operation {
-    if (hasMultipartQuery(parameters)) return .unsupported;
     if (bucket == null) return if (method == .GET) .list_buckets else .unsupported;
     if (key == null) {
         return switch (method) {
@@ -130,6 +134,27 @@ fn classify(
             else => .unsupported,
         };
     }
+    const uploads = queryShape(parameters, "uploads");
+    const upload_id = queryShape(parameters, "uploadId");
+    const part_number = queryShape(parameters, "partNumber");
+    if (uploads != .missing or upload_id != .missing or part_number != .missing) {
+        if (method == .POST and uploads == .empty and upload_id == .missing and part_number == .missing) {
+            return .create_multipart_upload;
+        }
+        if (method == .PUT and uploads == .missing and upload_id == .non_empty and part_number == .non_empty) {
+            return .upload_part;
+        }
+        if (method == .GET and uploads == .missing and upload_id == .non_empty and part_number == .missing) {
+            return .list_parts;
+        }
+        if (method == .POST and uploads == .missing and upload_id == .non_empty and part_number == .missing) {
+            return .complete_multipart_upload;
+        }
+        if (method == .DELETE and uploads == .missing and upload_id == .non_empty and part_number == .missing) {
+            return .abort_multipart_upload;
+        }
+        return .unsupported;
+    }
     return switch (method) {
         .PUT => .put_object,
         .GET => .get_object,
@@ -139,16 +164,16 @@ fn classify(
     };
 }
 
-fn hasMultipartQuery(parameters: []const QueryParameter) bool {
+const QueryShape = enum { missing, empty, non_empty, duplicate };
+
+fn queryShape(parameters: []const QueryParameter, name: []const u8) QueryShape {
+    var result: QueryShape = .missing;
     for (parameters) |parameter| {
-        if (std.mem.eql(u8, parameter.name, "uploads") or
-            std.mem.eql(u8, parameter.name, "uploadId") or
-            std.mem.eql(u8, parameter.name, "partNumber"))
-        {
-            return true;
-        }
+        if (!std.mem.eql(u8, parameter.name, name)) continue;
+        if (result != .missing) return .duplicate;
+        result = if (parameter.value.len == 0) .empty else .non_empty;
     }
-    return false;
+    return result;
 }
 
 fn hasQueryValue(
@@ -254,6 +279,10 @@ pub const ErrorKind = enum {
     bad_digest,
     x_amz_content_sha256_mismatch,
     invalid_range,
+    no_such_upload,
+    invalid_part,
+    invalid_part_order,
+    entity_too_small,
     not_implemented,
     service_unavailable,
     internal_error,
@@ -288,6 +317,10 @@ pub fn describe(kind: ErrorKind) ErrorDescriptor {
         .bad_digest => .{ .code = "BadDigest", .message = "The checksum you specified did not match what we received.", .status = .bad_request },
         .x_amz_content_sha256_mismatch => .{ .code = "XAmzContentSHA256Mismatch", .message = "The provided x-amz-content-sha256 does not match what was computed.", .status = .bad_request },
         .invalid_range => .{ .code = "InvalidRange", .message = "The requested range is not satisfiable.", .status = .range_not_satisfiable },
+        .no_such_upload => .{ .code = "NoSuchUpload", .message = "The specified multipart upload does not exist.", .status = .not_found },
+        .invalid_part => .{ .code = "InvalidPart", .message = "One or more of the specified parts could not be found or did not match the provided ETag.", .status = .bad_request },
+        .invalid_part_order => .{ .code = "InvalidPartOrder", .message = "The list of parts was not in ascending order.", .status = .bad_request },
+        .entity_too_small => .{ .code = "EntityTooSmall", .message = "Your proposed upload is smaller than the minimum allowed object size.", .status = .bad_request },
         .not_implemented => .{ .code = "NotImplemented", .message = "A header or operation you provided implies functionality that is not implemented.", .status = .not_implemented },
         .service_unavailable => .{ .code = "ServiceUnavailable", .message = "Please reduce your request rate.", .status = .service_unavailable },
         .internal_error => .{ .code = "InternalError", .message = "We encountered an internal error. Please try again.", .status = .internal_server_error },
@@ -358,6 +391,18 @@ test "S3 target parsing separates path-style buckets objects and List V2" {
     const delete_objects = try parseTarget(std.testing.allocator, .POST, "/project-assets?delete=");
     defer delete_objects.deinit();
     try std.testing.expectEqual(.delete_objects, delete_objects.operation);
+
+    const create_multipart = try parseTarget(std.testing.allocator, .POST, "/project-assets/large.bin?uploads");
+    defer create_multipart.deinit();
+    try std.testing.expectEqual(.create_multipart_upload, create_multipart.operation);
+
+    const upload_part = try parseTarget(std.testing.allocator, .PUT, "/project-assets/large.bin?partNumber=1&uploadId=opaque");
+    defer upload_part.deinit();
+    try std.testing.expectEqual(.upload_part, upload_part.operation);
+
+    const complete = try parseTarget(std.testing.allocator, .POST, "/project-assets/large.bin?uploadId=opaque");
+    defer complete.deinit();
+    try std.testing.expectEqual(.complete_multipart_upload, complete.operation);
 }
 
 test "S3 XML errors escape resources and expose stable request IDs" {

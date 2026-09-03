@@ -3,16 +3,19 @@ const Application = @import("../application/mod.zig").Application;
 const bucket_service = @import("../application/bucket_service.zig");
 const credential_service = @import("../application/credential_service.zig");
 const object_listing = @import("../application/object_listing.zig");
+const multipart_service = @import("../application/multipart_service.zig");
 const object_service = @import("../application/object_service.zig");
 const policy = @import("../auth/policy.zig");
 const sigv4 = @import("../auth/sigv4.zig");
 const time = @import("../common/time.zig");
 const credential_domain = @import("../domain/credential.zig");
 const object_domain = @import("../domain/object.zig");
+const multipart_domain = @import("../domain/multipart.zig");
 const byte_stream = @import("../ports/byte_stream.zig");
 const aws_chunked = @import("aws_chunked.zig");
 const protocol = @import("s3_protocol.zig");
 const delete_objects = @import("s3_delete_objects.zig");
+const s3_multipart = @import("s3_multipart.zig");
 
 pub const service_name = "s3";
 
@@ -20,6 +23,11 @@ const ByteRange = struct {
     start: u64,
     end: u64,
     length: u64,
+};
+
+const ChecksumRequest = struct {
+    header_crc64nvme: ?u64 = null,
+    trailer: aws_chunked.Trailer = .none,
 };
 
 pub fn serveRequest(
@@ -212,6 +220,50 @@ pub fn serveRequest(
             headers.items,
             request_id,
         ),
+        .create_multipart_upload => serveCreateMultipartUpload(
+            request,
+            application,
+            parsed,
+            auth_material.owner,
+            headers.items,
+            request_id,
+        ),
+        .upload_part => serveUploadPart(
+            request,
+            application,
+            parsed,
+            auth_material.owner,
+            headers.items,
+            authorization,
+            auth_material.secret_key,
+            payload_hash,
+            request_id,
+        ),
+        .list_parts => serveListParts(
+            request,
+            application,
+            parsed,
+            auth_material.owner,
+            headers.items,
+            request_id,
+        ),
+        .complete_multipart_upload => serveCompleteMultipartUpload(
+            request,
+            application,
+            parsed,
+            auth_material.owner,
+            headers.items,
+            payload_hash,
+            request_id,
+        ),
+        .abort_multipart_upload => serveAbortMultipartUpload(
+            request,
+            application,
+            parsed,
+            auth_material.owner,
+            headers.items,
+            request_id,
+        ),
         .unsupported => respondError(request, allocator, .not_implemented, request_id),
     };
 }
@@ -229,6 +281,9 @@ fn actionFor(operation: protocol.Operation) ?credential_domain.Action {
         .get_object => .get_object,
         .head_object => .head_object,
         .delete_object => .delete_object,
+        .create_multipart_upload, .upload_part, .complete_multipart_upload => .put_object,
+        .list_parts => .get_object,
+        .abort_multipart_upload => .delete_object,
         .unsupported => null,
     };
 }
@@ -500,10 +555,12 @@ fn servePutObject(
     const expected_md5 = parseContentMd5(headers) catch {
         return respondError(request, application.allocator, .invalid_digest, request_id);
     };
-    const expected_crc64nvme = parseCrc64Nvme(headers) catch |err| switch (err) {
+    const checksum_request = parseChecksumRequest(headers) catch |err| switch (err) {
         error.InvalidDigest => return respondError(request, application.allocator, .invalid_digest, request_id),
         error.UnsupportedChecksum => return respondError(request, application.allocator, .not_implemented, request_id),
+        error.InvalidRequest => return respondError(request, application.allocator, .invalid_request, request_id),
     };
+    const expected_crc64nvme = checksum_request.header_crc64nvme;
     const expected_sha256: ?[32]u8 = switch (payload_hash) {
         .digest => |digest| digest,
         .unsigned => null,
@@ -520,7 +577,10 @@ fn servePutObject(
         return respondError(request, application.allocator, .invalid_request, request_id);
     };
     request.head.target = stable_resource;
-    var http_source: HttpSource = .{ .reader = body_reader };
+    var http_source: HttpSource = .{
+        .reader = body_reader,
+        .remaining = request.head.content_length,
+    };
     var streaming_source: aws_chunked.Source = undefined;
     var streaming_source_active = false;
     defer if (streaming_source_active) streaming_source.deinit();
@@ -540,7 +600,12 @@ fn servePutObject(
             ) catch |err| {
                 return respondError(request, application.allocator, mapSignatureVerifyError(err), request_id);
             };
-            streaming_source = aws_chunked.Source.init(body_reader, verifier, decoded_length);
+            streaming_source = aws_chunked.Source.init(
+                body_reader,
+                verifier,
+                decoded_length,
+                checksum_request.trailer,
+            );
             streaming_source_active = true;
             break :streamed streaming_source.interface();
         },
@@ -556,16 +621,7 @@ fn servePutObject(
         .expected_crc64nvme = expected_crc64nvme,
     }) catch |err| {
         const kind: protocol.ErrorKind = if (err == error.InputReadFailed and streaming_source_active)
-            switch (streaming_source.failure) {
-                .signature_mismatch => .signature_does_not_match,
-                .none,
-                .malformed_chunk_header,
-                .unexpected_end,
-                .invalid_chunk_ending,
-                .invalid_final_ending,
-                .decoded_length_mismatch,
-                => .invalid_request,
-            }
+            mapStreamingFailure(streaming_source.failure)
         else if (err == error.ChecksumMismatch)
             if (expected_md5 != null or expected_crc64nvme != null)
                 .bad_digest
@@ -578,7 +634,11 @@ fn servePutObject(
     defer object.deinit(application.allocator);
     var etag_buffer: [34]u8 = undefined;
     const etag = formatEtag(object.etag_md5, &etag_buffer);
-    if (expected_crc64nvme) |checksum| {
+    const response_crc64nvme = expected_crc64nvme orelse if (streaming_source_active)
+        streaming_source.verified_crc64nvme
+    else
+        null;
+    if (response_crc64nvme) |checksum| {
         var checksum_bytes: [8]u8 = undefined;
         std.mem.writeInt(u64, &checksum_bytes, checksum, .big);
         var encoded_buffer: [12]u8 = undefined;
@@ -708,6 +768,355 @@ fn serveDeleteObject(
     };
     _ = objects.delete(bucket_name, key) catch |err| {
         return respondError(request, application.allocator, mapObjectError(err), request_id);
+    };
+    return respondEmpty(request, .no_content, request_id, &.{});
+}
+
+fn serveCreateMultipartUpload(
+    request: *std.http.Server.Request,
+    application: *Application,
+    parsed: protocol.ParsedTarget,
+    owner: []const u8,
+    headers: []const sigv4.Header,
+    request_id: []const u8,
+) !std.http.Status {
+    const uploads = parsed.query("uploads") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    if (uploads.len != 0 or ensureEmptyRequest(request, headers) != null) {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    }
+    const bucket = ensureBucketOwner(application, parsed.bucket.?, owner) catch |err| {
+        return respondError(request, application.allocator, mapBucketError(err), request_id);
+    };
+    bucket.deinit(application.allocator);
+    var put_headers = collectPutHeaders(application.allocator, request) catch |err| switch (err) {
+        error.OutOfMemory => return respondError(request, application.allocator, .internal_error, request_id),
+        error.InvalidMetadata => return respondError(request, application.allocator, .invalid_request, request_id),
+    };
+    defer put_headers.deinit(application.allocator);
+    const multiparts = application.multipartService() orelse {
+        return respondError(request, application.allocator, .service_unavailable, request_id);
+    };
+    const upload = multiparts.create(parsed.bucket.?, parsed.key.?, .{
+        .content_type = put_headers.content_type,
+        .user_metadata = put_headers.views,
+    }) catch |err| {
+        return respondError(request, application.allocator, mapMultipartError(err), request_id);
+    };
+    defer upload.deinit(application.allocator);
+    var upload_id_buffer: [32]u8 = undefined;
+    const upload_id = multipart_domain.formatUploadId(upload.id, &upload_id_buffer);
+    var xml: std.Io.Writer.Allocating = .init(application.allocator);
+    defer xml.deinit();
+    const writer = &xml.writer;
+    writer.writeAll("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<InitiateMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Bucket>") catch {
+        return respondError(request, application.allocator, .internal_error, request_id);
+    };
+    protocol.writeXmlEscaped(writer, parsed.bucket.?) catch return error.WriteFailed;
+    writer.writeAll("</Bucket><Key>") catch return error.WriteFailed;
+    protocol.writeXmlEscaped(writer, parsed.key.?) catch return error.WriteFailed;
+    writer.writeAll("</Key><UploadId>") catch return error.WriteFailed;
+    protocol.writeXmlEscaped(writer, upload_id) catch return error.WriteFailed;
+    writer.writeAll("</UploadId></InitiateMultipartUploadResult>\n") catch return error.WriteFailed;
+    return respondXml(request, xml.written(), .ok, request_id, &.{});
+}
+
+fn serveUploadPart(
+    request: *std.http.Server.Request,
+    application: *Application,
+    parsed: protocol.ParsedTarget,
+    owner: []const u8,
+    headers: []const sigv4.Header,
+    authorization: ?sigv4.Authorization,
+    secret_key: []const u8,
+    payload_hash: sigv4.PayloadHash,
+    request_id: []const u8,
+) !std.http.Status {
+    const upload_id = parsed.query("uploadId") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    const part_number_text = parsed.query("partNumber") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    const part_number = std.fmt.parseInt(u16, part_number_text, 10) catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    if (part_number == 0 or part_number > multipart_domain.max_parts) {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    }
+    const bucket = ensureBucketOwner(application, parsed.bucket.?, owner) catch |err| {
+        return respondError(request, application.allocator, mapBucketError(err), request_id);
+    };
+    bucket.deinit(application.allocator);
+    const expected_md5 = parseContentMd5(headers) catch {
+        return respondError(request, application.allocator, .invalid_digest, request_id);
+    };
+    const checksum_request = parseChecksumRequest(headers) catch |err| switch (err) {
+        error.InvalidDigest => return respondError(request, application.allocator, .invalid_digest, request_id),
+        error.UnsupportedChecksum => return respondError(request, application.allocator, .not_implemented, request_id),
+        error.InvalidRequest => return respondError(request, application.allocator, .invalid_request, request_id),
+    };
+    const expected_crc64nvme = checksum_request.header_crc64nvme;
+    const expected_sha256: ?[32]u8 = switch (payload_hash) {
+        .digest => |digest| digest,
+        .unsigned, .streaming => null,
+    };
+    var read_buffer: [16 * 1024]u8 = undefined;
+    const stable_resource = request.head.target;
+    const body_reader = request.readerExpectContinue(&read_buffer) catch {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    };
+    request.head.target = stable_resource;
+    var http_source: HttpSource = .{
+        .reader = body_reader,
+        .remaining = request.head.content_length,
+    };
+    var streaming_source: aws_chunked.Source = undefined;
+    var streaming_source_active = false;
+    defer if (streaming_source_active) streaming_source.deinit();
+    const source = switch (payload_hash) {
+        .digest, .unsigned => http_source.interface(),
+        .streaming => streamed: {
+            const decoded_length = parseStreamingDecodedLength(headers) catch {
+                return respondError(request, application.allocator, .invalid_request, request_id);
+            };
+            const verifier = sigv4.StreamingVerifier.init(
+                application.allocator,
+                headers,
+                authorization orelse return respondError(request, application.allocator, .invalid_request, request_id),
+                secret_key,
+            ) catch |err| {
+                return respondError(request, application.allocator, mapSignatureVerifyError(err), request_id);
+            };
+            streaming_source = aws_chunked.Source.init(
+                body_reader,
+                verifier,
+                decoded_length,
+                checksum_request.trailer,
+            );
+            streaming_source_active = true;
+            break :streamed streaming_source.interface();
+        },
+    };
+    const multiparts = application.multipartService() orelse {
+        return respondError(request, application.allocator, .service_unavailable, request_id);
+    };
+    const part = multiparts.uploadPart(
+        parsed.bucket.?,
+        parsed.key.?,
+        upload_id,
+        part_number,
+        source,
+        .{
+            .expected_md5 = expected_md5,
+            .expected_sha256 = expected_sha256,
+            .expected_crc64nvme = expected_crc64nvme,
+        },
+    ) catch |err| {
+        const kind: protocol.ErrorKind = if (err == error.InputReadFailed and streaming_source_active)
+            mapStreamingFailure(streaming_source.failure)
+        else if (err == error.ChecksumMismatch)
+            if (expected_md5 != null or expected_crc64nvme != null) .bad_digest else .x_amz_content_sha256_mismatch
+        else
+            mapMultipartError(err);
+        return respondError(request, application.allocator, kind, request_id);
+    };
+    var etag_buffer: [34]u8 = undefined;
+    const etag = formatEtag(part.etag_md5, &etag_buffer);
+    const response_crc64nvme = expected_crc64nvme orelse if (streaming_source_active)
+        streaming_source.verified_crc64nvme
+    else
+        null;
+    if (response_crc64nvme) |checksum| {
+        var checksum_bytes: [8]u8 = undefined;
+        std.mem.writeInt(u64, &checksum_bytes, checksum, .big);
+        var encoded_buffer: [12]u8 = undefined;
+        const encoded = std.base64.standard.Encoder.encode(&encoded_buffer, &checksum_bytes);
+        const extra = [_]std.http.Header{
+            .{ .name = "etag", .value = etag },
+            .{ .name = "x-amz-checksum-crc64nvme", .value = encoded },
+        };
+        return respondEmpty(request, .ok, request_id, &extra);
+    }
+    const extra = [_]std.http.Header{.{ .name = "etag", .value = etag }};
+    return respondEmpty(request, .ok, request_id, &extra);
+}
+
+fn serveListParts(
+    request: *std.http.Server.Request,
+    application: *Application,
+    parsed: protocol.ParsedTarget,
+    owner: []const u8,
+    headers: []const sigv4.Header,
+    request_id: []const u8,
+) !std.http.Status {
+    if (ensureEmptyRequest(request, headers) != null) {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    }
+    const upload_id = parsed.query("uploadId") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    const marker_text = parsed.query("part-number-marker") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    const max_parts_text = parsed.query("max-parts") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    const marker = if (marker_text) |value| std.fmt.parseInt(u16, value, 10) catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } else 0;
+    const max_parts = if (max_parts_text) |value| std.fmt.parseInt(usize, value, 10) catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } else 1000;
+    if (marker > multipart_domain.max_parts or max_parts > 1000) {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    }
+    const bucket = ensureBucketOwner(application, parsed.bucket.?, owner) catch |err| {
+        return respondError(request, application.allocator, mapBucketError(err), request_id);
+    };
+    bucket.deinit(application.allocator);
+    const multiparts = application.multipartService() orelse {
+        return respondError(request, application.allocator, .service_unavailable, request_id);
+    };
+    const upload = multiparts.listParts(parsed.bucket.?, parsed.key.?, upload_id) catch |err| {
+        return respondError(request, application.allocator, mapMultipartError(err), request_id);
+    };
+    defer upload.deinit(application.allocator);
+    var start: usize = 0;
+    while (start < upload.parts.len and upload.parts[start].number <= marker) start += 1;
+    const end = @min(upload.parts.len, start + max_parts);
+    const truncated = end < upload.parts.len;
+    const next_marker: u16 = if (end > start) upload.parts[end - 1].number else marker;
+    var xml: std.Io.Writer.Allocating = .init(application.allocator);
+    defer xml.deinit();
+    const writer = &xml.writer;
+    writer.writeAll("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListPartsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Bucket>") catch {
+        return respondError(request, application.allocator, .internal_error, request_id);
+    };
+    protocol.writeXmlEscaped(writer, parsed.bucket.?) catch return error.WriteFailed;
+    writer.writeAll("</Bucket><Key>") catch return error.WriteFailed;
+    protocol.writeXmlEscaped(writer, parsed.key.?) catch return error.WriteFailed;
+    writer.writeAll("</Key><UploadId>") catch return error.WriteFailed;
+    protocol.writeXmlEscaped(writer, upload_id) catch return error.WriteFailed;
+    writer.writeAll("</UploadId><Initiator><ID>") catch return error.WriteFailed;
+    protocol.writeXmlEscaped(writer, owner) catch return error.WriteFailed;
+    writer.writeAll("</ID><DisplayName>") catch return error.WriteFailed;
+    protocol.writeXmlEscaped(writer, owner) catch return error.WriteFailed;
+    writer.writeAll("</DisplayName></Initiator><Owner><ID>") catch return error.WriteFailed;
+    protocol.writeXmlEscaped(writer, owner) catch return error.WriteFailed;
+    writer.writeAll("</ID><DisplayName>") catch return error.WriteFailed;
+    protocol.writeXmlEscaped(writer, owner) catch return error.WriteFailed;
+    writer.print(
+        "</DisplayName></Owner><StorageClass>STANDARD</StorageClass><PartNumberMarker>{d}</PartNumberMarker><NextPartNumberMarker>{d}</NextPartNumberMarker><MaxParts>{d}</MaxParts><IsTruncated>{s}</IsTruncated>",
+        .{ marker, next_marker, max_parts, if (truncated) "true" else "false" },
+    ) catch return error.WriteFailed;
+    for (upload.parts[start..end]) |part| {
+        var etag: [34]u8 = undefined;
+        writer.print("<Part><PartNumber>{d}</PartNumber><LastModified>", .{part.number}) catch return error.WriteFailed;
+        protocol.writeIsoTime(writer, part.last_modified_unix_seconds) catch return error.WriteFailed;
+        writer.print("</LastModified><ETag>{s}</ETag><Size>{d}</Size></Part>", .{
+            formatEtag(part.etag_md5, &etag),
+            part.size,
+        }) catch return error.WriteFailed;
+    }
+    writer.writeAll("</ListPartsResult>\n") catch return error.WriteFailed;
+    return respondXml(request, xml.written(), .ok, request_id, &.{});
+}
+
+fn serveCompleteMultipartUpload(
+    request: *std.http.Server.Request,
+    application: *Application,
+    parsed: protocol.ParsedTarget,
+    owner: []const u8,
+    headers: []const sigv4.Header,
+    payload_hash: sigv4.PayloadHash,
+    request_id: []const u8,
+) !std.http.Status {
+    const upload_id = parsed.query("uploadId") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    const bucket = ensureBucketOwner(application, parsed.bucket.?, owner) catch |err| {
+        return respondError(request, application.allocator, mapBucketError(err), request_id);
+    };
+    bucket.deinit(application.allocator);
+    if (payload_hash == .streaming or (request.head.content_length orelse 0) > s3_multipart.max_payload_size) {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    }
+    var read_buffer: [16 * 1024]u8 = undefined;
+    const stable_resource = request.head.target;
+    const body_reader = request.readerExpectContinue(&read_buffer) catch {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    };
+    request.head.target = stable_resource;
+    const body = body_reader.allocRemaining(application.allocator, .limited(s3_multipart.max_payload_size)) catch {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    };
+    defer application.allocator.free(body);
+    if (!verifyPayloadHash(body, payload_hash)) {
+        return respondError(request, application.allocator, .x_amz_content_sha256_mismatch, request_id);
+    }
+    if (parseContentMd5(headers) catch {
+        return respondError(request, application.allocator, .invalid_digest, request_id);
+    }) |expected_md5| {
+        var actual_md5: [16]u8 = undefined;
+        std.crypto.hash.Md5.hash(body, &actual_md5, .{});
+        if (!std.crypto.timing_safe.eql([16]u8, expected_md5, actual_md5)) {
+            return respondError(request, application.allocator, .bad_digest, request_id);
+        }
+    }
+    const completion = s3_multipart.parse(application.allocator, body) catch |err| switch (err) {
+        error.OutOfMemory => return respondError(request, application.allocator, .internal_error, request_id),
+        error.MalformedXml, error.TooManyParts => return respondError(request, application.allocator, .malformed_xml, request_id),
+    };
+    defer completion.deinit(application.allocator);
+    const multiparts = application.multipartService() orelse {
+        return respondError(request, application.allocator, .service_unavailable, request_id);
+    };
+    const object = multiparts.complete(parsed.bucket.?, parsed.key.?, upload_id, completion.parts) catch |err| {
+        return respondError(request, application.allocator, mapMultipartError(err), request_id);
+    };
+    defer object.deinit(application.allocator);
+    var etag_buffer: [40]u8 = undefined;
+    const etag = formatObjectEtag(&object, &etag_buffer);
+    var xml: std.Io.Writer.Allocating = .init(application.allocator);
+    defer xml.deinit();
+    const writer = &xml.writer;
+    writer.writeAll("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CompleteMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Location>") catch {
+        return respondError(request, application.allocator, .internal_error, request_id);
+    };
+    protocol.writeXmlEscaped(writer, request.head.target) catch return error.WriteFailed;
+    writer.writeAll("</Location><Bucket>") catch return error.WriteFailed;
+    protocol.writeXmlEscaped(writer, parsed.bucket.?) catch return error.WriteFailed;
+    writer.writeAll("</Bucket><Key>") catch return error.WriteFailed;
+    protocol.writeXmlEscaped(writer, parsed.key.?) catch return error.WriteFailed;
+    writer.print("</Key><ETag>{s}</ETag></CompleteMultipartUploadResult>\n", .{etag}) catch return error.WriteFailed;
+    return respondXml(request, xml.written(), .ok, request_id, &.{});
+}
+
+fn serveAbortMultipartUpload(
+    request: *std.http.Server.Request,
+    application: *Application,
+    parsed: protocol.ParsedTarget,
+    owner: []const u8,
+    headers: []const sigv4.Header,
+    request_id: []const u8,
+) !std.http.Status {
+    if (ensureEmptyRequest(request, headers) != null) {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    }
+    const upload_id = parsed.query("uploadId") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    const bucket = ensureBucketOwner(application, parsed.bucket.?, owner) catch |err| {
+        return respondError(request, application.allocator, mapBucketError(err), request_id);
+    };
+    bucket.deinit(application.allocator);
+    const multiparts = application.multipartService() orelse {
+        return respondError(request, application.allocator, .service_unavailable, request_id);
+    };
+    multiparts.abort(parsed.bucket.?, parsed.key.?, upload_id) catch |err| {
+        return respondError(request, application.allocator, mapMultipartError(err), request_id);
     };
     return respondEmpty(request, .no_content, request_id, &.{});
 }
@@ -884,6 +1293,18 @@ fn ensureEmptyRequestWithHash(
     };
 }
 
+fn verifyPayloadHash(body: []const u8, payload_hash: sigv4.PayloadHash) bool {
+    return switch (payload_hash) {
+        .unsigned => true,
+        .streaming => false,
+        .digest => |expected| verified: {
+            var actual: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(body, &actual, .{});
+            break :verified std.crypto.timing_safe.eql([32]u8, expected, actual);
+        },
+    };
+}
+
 fn validateCreateBucketPayload(
     request: *std.http.Server.Request,
     allocator: std.mem.Allocator,
@@ -965,11 +1386,14 @@ fn hasUnsupportedHeaders(
     operation: protocol.Operation,
     headers: []const sigv4.Header,
 ) bool {
-    const supported_streaming = operation == .put_object and hasHeaderValue(
+    const upload_operation = operation == .put_object or operation == .upload_part;
+    const signed_streaming = hasHeaderValue(headers, "x-amz-content-sha256", sigv4.streaming_payload);
+    const signed_streaming_trailer = hasHeaderValue(
         headers,
         "x-amz-content-sha256",
-        sigv4.streaming_payload,
+        sigv4.streaming_trailer_payload,
     );
+    const supported_streaming = upload_operation and (signed_streaming or signed_streaming_trailer);
     for (headers) |header| {
         if (std.ascii.eqlIgnoreCase(header.name, "x-amz-content-sha256") and
             std.mem.startsWith(u8, header.value, "STREAMING-"))
@@ -977,22 +1401,25 @@ fn hasUnsupportedHeaders(
             if (!supported_streaming) return true;
             continue;
         }
-        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-security-token") or
-            std.ascii.eqlIgnoreCase(header.name, "x-amz-trailer"))
-        {
+        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-security-token")) {
             return true;
+        }
+        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-trailer")) {
+            if (!upload_operation or !signed_streaming_trailer or
+                !std.ascii.eqlIgnoreCase(header.value, "x-amz-checksum-crc64nvme")) return true;
+            continue;
         }
         if (std.ascii.eqlIgnoreCase(header.name, "x-amz-decoded-content-length")) {
             if (!supported_streaming) return true;
             continue;
         }
         if (std.ascii.eqlIgnoreCase(header.name, "x-amz-sdk-checksum-algorithm")) {
-            if (operation != .put_object or
+            if ((operation != .put_object and operation != .upload_part) or
                 !std.ascii.eqlIgnoreCase(header.value, "CRC64NVME")) return true;
             continue;
         }
         if (std.ascii.eqlIgnoreCase(header.name, "x-amz-checksum-crc64nvme")) {
-            if (operation != .put_object) return true;
+            if (operation != .put_object and operation != .upload_part) return true;
             continue;
         }
         if (std.ascii.eqlIgnoreCase(header.name, "x-amz-checksum-mode")) {
@@ -1012,11 +1439,7 @@ fn hasUnsupportedHeaders(
         if (std.ascii.eqlIgnoreCase(header.name, "range") and operation != .get_object) {
             return true;
         }
-        if (operation == .put_object and
-            std.ascii.eqlIgnoreCase(header.name, "x-amz-copy-source"))
-        {
-            return true;
-        }
+        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-copy-source")) return true;
     }
     return false;
 }
@@ -1124,9 +1547,17 @@ fn parseContentMd5(headers: []const sigv4.Header) error{InvalidDigest}!?[16]u8 {
 
 fn parseCrc64Nvme(
     headers: []const sigv4.Header,
-) error{ InvalidDigest, UnsupportedChecksum }!?u64 {
+) error{ InvalidDigest, UnsupportedChecksum, InvalidRequest }!?u64 {
+    return (try parseChecksumRequest(headers)).header_crc64nvme;
+}
+
+fn parseChecksumRequest(
+    headers: []const sigv4.Header,
+) error{ InvalidDigest, UnsupportedChecksum, InvalidRequest }!ChecksumRequest {
     var algorithm: ?[]const u8 = null;
     var encoded: ?[]const u8 = null;
+    var trailer_name: ?[]const u8 = null;
+    var content_encoding: ?[]const u8 = null;
     for (headers) |header| {
         if (std.ascii.eqlIgnoreCase(header.name, "x-amz-sdk-checksum-algorithm")) {
             if (algorithm != null) return error.InvalidDigest;
@@ -1134,20 +1565,47 @@ fn parseCrc64Nvme(
         } else if (std.ascii.eqlIgnoreCase(header.name, "x-amz-checksum-crc64nvme")) {
             if (encoded != null) return error.InvalidDigest;
             encoded = header.value;
+        } else if (std.ascii.eqlIgnoreCase(header.name, "x-amz-trailer")) {
+            if (trailer_name != null) return error.InvalidDigest;
+            trailer_name = header.value;
+        } else if (std.ascii.eqlIgnoreCase(header.name, "content-encoding")) {
+            if (content_encoding != null) return error.InvalidRequest;
+            content_encoding = header.value;
         }
     }
     if (algorithm) |value| {
         if (!std.ascii.eqlIgnoreCase(value, "CRC64NVME")) return error.UnsupportedChecksum;
-        if (encoded == null) return error.InvalidDigest;
     }
-    const value = encoded orelse return null;
+    const payload_hash_value = singleHeader(headers, "x-amz-content-sha256") catch {
+        return error.InvalidDigest;
+    };
+    const signed_trailer = if (payload_hash_value) |value|
+        std.mem.eql(u8, value, sigv4.streaming_trailer_payload)
+    else
+        false;
+    if (trailer_name) |name| {
+        if (!signed_trailer) return error.InvalidRequest;
+        if (content_encoding == null or
+            !std.ascii.eqlIgnoreCase(content_encoding.?, "aws-chunked"))
+        {
+            return error.InvalidRequest;
+        }
+        if (!std.ascii.eqlIgnoreCase(name, "x-amz-checksum-crc64nvme")) {
+            return error.UnsupportedChecksum;
+        }
+        if (encoded != null) return error.InvalidDigest;
+        return .{ .trailer = .crc64nvme };
+    }
+    if (signed_trailer) return error.InvalidRequest;
+    if (algorithm != null and encoded == null) return error.InvalidDigest;
+    const value = encoded orelse return .{};
     const decoded_size = std.base64.standard.Decoder.calcSizeForSlice(value) catch {
         return error.InvalidDigest;
     };
     if (decoded_size != 8) return error.InvalidDigest;
     var digest: [8]u8 = undefined;
     std.base64.standard.Decoder.decode(&digest, value) catch return error.InvalidDigest;
-    return std.mem.readInt(u64, &digest, .big);
+    return .{ .header_crc64nvme = std.mem.readInt(u64, &digest, .big) };
 }
 
 const PutHeaders = struct {
@@ -1215,6 +1673,7 @@ fn collectPutHeaders(
 
 const HttpSource = struct {
     reader: *std.Io.Reader,
+    remaining: ?u64,
 
     fn interface(self: *HttpSource) byte_stream.Source {
         return .{ .context = self, .vtable = &.{ .read = read } };
@@ -1222,7 +1681,14 @@ const HttpSource = struct {
 
     fn read(context: *anyopaque, buffer: []u8) byte_stream.Source.Error!usize {
         const self: *HttpSource = @ptrCast(@alignCast(context));
-        return self.reader.readSliceShort(buffer) catch return error.ReadFailed;
+        if (self.remaining == 0) return 0;
+        const count = self.reader.readSliceShort(buffer) catch return error.ReadFailed;
+        if (count == 0 and self.remaining != null) return error.ReadFailed;
+        if (self.remaining) |remaining| {
+            if (count > remaining) return error.ReadFailed;
+            self.remaining = remaining - count;
+        }
+        return count;
     }
 };
 
@@ -1242,7 +1708,8 @@ const HttpSink = struct {
 const ObjectResponseHeaders = struct {
     headers: []std.http.Header,
     owned_names: [][]u8,
-    etag: [34]u8,
+    etag: [40]u8,
+    etag_length: usize,
     last_modified: [29]u8,
     content_length: [20]u8,
     content_length_length: usize,
@@ -1260,6 +1727,7 @@ const ObjectResponseHeaders = struct {
             .headers = undefined,
             .owned_names = undefined,
             .etag = undefined,
+            .etag_length = 0,
             .last_modified = undefined,
             .content_length = undefined,
             .content_length_length = 0,
@@ -1267,7 +1735,7 @@ const ObjectResponseHeaders = struct {
             .content_range_length = 0,
             .include_content_length = include_content_length,
         };
-        _ = formatEtag(object.etag_md5, &result.etag);
+        result.etag_length = formatObjectEtag(object, &result.etag).len;
         _ = time.formatHttpDate(object.last_modified_unix_seconds, &result.last_modified) catch {
             return error.InvalidTimestamp;
         };
@@ -1327,7 +1795,7 @@ const ObjectResponseHeaders = struct {
             };
             index += 1;
         }
-        self.headers[index] = .{ .name = "etag", .value = &self.etag };
+        self.headers[index] = .{ .name = "etag", .value = self.etag[0..self.etag_length] };
         index += 1;
         self.headers[index] = .{ .name = "last-modified", .value = &self.last_modified };
         index += 1;
@@ -1359,6 +1827,25 @@ fn formatEtag(etag_md5: [16]u8, buffer: *[34]u8) []const u8 {
     @memcpy(buffer[1..33], &hex);
     buffer[33] = '"';
     return buffer;
+}
+
+fn formatObjectEtag(object: *const object_domain.Object, buffer: *[40]u8) []const u8 {
+    return formatStoredEtag(object.etag_md5, object.etag_part_count, buffer);
+}
+
+fn formatStoredEtag(etag_md5: [16]u8, etag_part_count: u16, buffer: *[40]u8) []const u8 {
+    buffer[0] = '"';
+    const hex = std.fmt.bytesToHex(etag_md5, .lower);
+    @memcpy(buffer[1..33], &hex);
+    if (etag_part_count == 0) {
+        buffer[33] = '"';
+        return buffer[0..34];
+    }
+    buffer[33] = '-';
+    const count = std.fmt.bufPrint(buffer[34 .. buffer.len - 1], "{d}", .{etag_part_count}) catch unreachable;
+    const end = 34 + count.len;
+    buffer[end] = '"';
+    return buffer[0 .. end + 1];
 }
 
 fn buildListObjectsXml(
@@ -1409,9 +1896,9 @@ fn buildListObjectsXml(
         writeEncodedXml(writer, object.key, url_encoding) catch return error.OutOfMemory;
         writer.writeAll("</Key><LastModified>") catch return error.OutOfMemory;
         protocol.writeIsoTime(writer, object.last_modified_unix_seconds) catch return error.OutOfMemory;
-        var etag: [34]u8 = undefined;
+        var etag: [40]u8 = undefined;
         writer.print("</LastModified><ETag>{s}</ETag><Size>{d}</Size><StorageClass>STANDARD</StorageClass>", .{
-            formatEtag(object.etag_md5, &etag),
+            formatStoredEtag(object.etag_md5, object.etag_part_count, &etag),
             object.size,
         }) catch return error.OutOfMemory;
         if (include_owner) {
@@ -1546,6 +2033,21 @@ fn mapSignatureVerifyError(err: sigv4.Error) protocol.ErrorKind {
     };
 }
 
+fn mapStreamingFailure(failure: aws_chunked.Failure) protocol.ErrorKind {
+    return switch (failure) {
+        .signature_mismatch, .trailer_signature_mismatch => .signature_does_not_match,
+        .checksum_mismatch => .bad_digest,
+        .none,
+        .malformed_chunk_header,
+        .unexpected_end,
+        .invalid_chunk_ending,
+        .invalid_final_ending,
+        .malformed_trailer,
+        .decoded_length_mismatch,
+        => .invalid_request,
+    };
+}
+
 fn mapPresignedParseError(err: sigv4.Error) protocol.ErrorKind {
     return switch (err) {
         error.OutOfMemory => .internal_error,
@@ -1615,6 +2117,30 @@ fn mapObjectError(err: object_service.Error) protocol.ErrorKind {
     };
 }
 
+fn mapMultipartError(err: multipart_service.Error) protocol.ErrorKind {
+    return switch (err) {
+        error.InvalidBucketName => .invalid_bucket_name,
+        error.InvalidUploadId, error.UploadNotFound => .no_such_upload,
+        error.InvalidPart => .invalid_part,
+        error.InvalidPartOrder => .invalid_part_order,
+        error.EntityTooSmall => .entity_too_small,
+        error.InvalidPartNumber,
+        error.InvalidObjectKey,
+        error.InvalidContentType,
+        error.InvalidUserMetadata,
+        error.InputReadFailed,
+        => .invalid_request,
+        error.BucketNotFound => .no_such_bucket,
+        error.ChecksumMismatch => .bad_digest,
+        error.Unavailable => .service_unavailable,
+        error.OutOfMemory,
+        error.Conflict,
+        error.CorruptMetadata,
+        error.CorruptData,
+        => .internal_error,
+    };
+}
+
 fn mapListingError(err: object_listing.Error) protocol.ErrorKind {
     return switch (err) {
         error.InvalidBucketName => .invalid_bucket_name,
@@ -1631,6 +2157,8 @@ test "S3 operation policy mapping keeps Bucket and Object permissions separate" 
     try std.testing.expectEqual(credential_domain.Action.list_buckets, actionFor(.list_buckets).?);
     try std.testing.expectEqual(credential_domain.Action.head_bucket, actionFor(.get_bucket_location).?);
     try std.testing.expectEqual(credential_domain.Action.put_object, actionFor(.put_object).?);
+    try std.testing.expectEqual(credential_domain.Action.put_object, actionFor(.upload_part).?);
+    try std.testing.expectEqual(credential_domain.Action.get_object, actionFor(.list_parts).?);
     try std.testing.expectEqual(credential_domain.Action.delete_object, actionFor(.delete_objects).?);
     try std.testing.expect(actionFor(.unsupported) == null);
 }
@@ -1678,6 +2206,53 @@ test "S3 supported checksum headers remain distinct from streaming checksums" {
     }};
     try std.testing.expect(!hasUnsupportedHeaders(.put_object, &streaming));
     try std.testing.expect(hasUnsupportedHeaders(.get_object, &streaming));
+
+    const signed_trailer = [_]sigv4.Header{
+        .{ .name = "content-encoding", .value = "aws-chunked" },
+        .{ .name = "x-amz-content-sha256", .value = sigv4.streaming_trailer_payload },
+        .{ .name = "x-amz-sdk-checksum-algorithm", .value = "CRC64NVME" },
+        .{ .name = "x-amz-trailer", .value = "x-amz-checksum-crc64nvme" },
+    };
+    try std.testing.expect(!hasUnsupportedHeaders(.put_object, &signed_trailer));
+    try std.testing.expect(!hasUnsupportedHeaders(.upload_part, &signed_trailer));
+    try std.testing.expect(hasUnsupportedHeaders(.get_object, &signed_trailer));
+    try std.testing.expectEqual(
+        aws_chunked.Trailer.crc64nvme,
+        (try parseChecksumRequest(&signed_trailer)).trailer,
+    );
+
+    const unsupported_trailer = [_]sigv4.Header{
+        .{ .name = "content-encoding", .value = "aws-chunked" },
+        .{ .name = "x-amz-content-sha256", .value = sigv4.streaming_trailer_payload },
+        .{ .name = "x-amz-sdk-checksum-algorithm", .value = "CRC32C" },
+        .{ .name = "x-amz-trailer", .value = "x-amz-checksum-crc32c" },
+    };
+    try std.testing.expect(hasUnsupportedHeaders(.put_object, &unsupported_trailer));
+    try std.testing.expectError(error.UnsupportedChecksum, parseChecksumRequest(&unsupported_trailer));
+
+    const missing_trailer = [_]sigv4.Header{.{
+        .name = "x-amz-content-sha256",
+        .value = sigv4.streaming_trailer_payload,
+    }};
+    try std.testing.expectError(error.InvalidRequest, parseChecksumRequest(&missing_trailer));
+
+    const missing_content_encoding = [_]sigv4.Header{
+        .{ .name = "x-amz-content-sha256", .value = sigv4.streaming_trailer_payload },
+        .{ .name = "x-amz-trailer", .value = "x-amz-checksum-crc64nvme" },
+    };
+    try std.testing.expectError(
+        error.InvalidRequest,
+        parseChecksumRequest(&missing_content_encoding),
+    );
+}
+
+test "S3 streaming failure mapping separates signatures checksums and framing" {
+    try std.testing.expectEqual(
+        protocol.ErrorKind.signature_does_not_match,
+        mapStreamingFailure(.trailer_signature_mismatch),
+    );
+    try std.testing.expectEqual(protocol.ErrorKind.bad_digest, mapStreamingFailure(.checksum_mismatch));
+    try std.testing.expectEqual(protocol.ErrorKind.invalid_request, mapStreamingFailure(.malformed_trailer));
 }
 
 test "S3 streaming decoded length is singular and canonical" {

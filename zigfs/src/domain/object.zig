@@ -7,6 +7,7 @@ pub const max_user_metadata_entries: usize = 64;
 pub const max_user_metadata_name_length: usize = 128;
 pub const max_user_metadata_value_length: usize = 2048;
 pub const max_user_metadata_bytes: usize = 8 * 1024;
+pub const max_multipart_parts: u16 = 10_000;
 
 pub const Status = enum(u8) {
     active = 1,
@@ -34,6 +35,7 @@ pub const View = struct {
     key: []const u8,
     size: u64,
     etag_md5: [16]u8,
+    etag_part_count: u16 = 0,
     checksum_sha256: [32]u8,
     content_type: []const u8,
     last_modified_unix_seconds: i64,
@@ -49,6 +51,7 @@ pub const Object = struct {
     key: []u8,
     size: u64,
     etag_md5: [16]u8,
+    etag_part_count: u16 = 0,
     checksum_sha256: [32]u8,
     content_type: []u8,
     last_modified_unix_seconds: i64,
@@ -73,6 +76,7 @@ pub const Object = struct {
             .key = self.key,
             .size = self.size,
             .etag_md5 = self.etag_md5,
+            .etag_part_count = self.etag_part_count,
             .checksum_sha256 = self.checksum_sha256,
             .content_type = self.content_type,
             .last_modified_unix_seconds = self.last_modified_unix_seconds,
@@ -114,6 +118,7 @@ pub fn cloneFromView(
         .key = key,
         .size = source.size,
         .etag_md5 = source.etag_md5,
+        .etag_part_count = source.etag_part_count,
         .checksum_sha256 = source.checksum_sha256,
         .content_type = content_type,
         .last_modified_unix_seconds = source.last_modified_unix_seconds,

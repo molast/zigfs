@@ -32,6 +32,12 @@ pub const PutOptions = struct {
     expected_md5: ?[16]u8 = null,
     expected_sha256: ?[32]u8 = null,
     expected_crc64nvme: ?u64 = null,
+    multipart_etag: ?MultipartEtag = null,
+};
+
+pub const MultipartEtag = struct {
+    digest: [16]u8,
+    part_count: u16,
 };
 
 pub const DeleteResult = struct {
@@ -201,7 +207,8 @@ pub const ObjectService = struct {
             .bucket_name = bucket_name,
             .key = key,
             .size = staged.size,
-            .etag_md5 = staged.etag_md5,
+            .etag_md5 = if (options.multipart_etag) |etag| etag.digest else staged.etag_md5,
+            .etag_part_count = if (options.multipart_etag) |etag| etag.part_count else 0,
             .checksum_sha256 = staged.checksum_sha256,
             .content_type = options.content_type,
             .last_modified_unix_seconds = modified_at,
@@ -412,6 +419,11 @@ fn validateRequest(
     object_domain.validateUserMetadata(options.user_metadata) catch {
         return error.InvalidUserMetadata;
     };
+    if (options.multipart_etag) |etag| {
+        if (etag.part_count == 0 or etag.part_count > object_domain.max_multipart_parts) {
+            return error.InvalidUserMetadata;
+        }
+    }
 }
 
 fn locationFor(object: object_domain.Object) data_store_port.Location {

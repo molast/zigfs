@@ -2,6 +2,8 @@ const std = @import("std");
 const bucket_payload = @import("bucket_payload.zig");
 const credential_payload = @import("credential_payload.zig");
 const metadata_record = @import("record.zig");
+const multipart_domain = @import("../domain/multipart.zig");
+const multipart_payload = @import("multipart_payload.zig");
 const object_key = @import("object_key.zig");
 const object_payload = @import("object_payload.zig");
 const repository_port = @import("../ports/metadata_repository.zig");
@@ -38,6 +40,15 @@ pub const PreparedAccessKey = struct {
     pub fn deinit(self: *PreparedAccessKey, allocator: std.mem.Allocator) void {
         if (self.access_key) |access_key| allocator.free(access_key);
         self.access_key = null;
+    }
+};
+
+pub const PreparedUpload = struct {
+    upload_id: ?[]u8,
+
+    pub fn deinit(self: *PreparedUpload, allocator: std.mem.Allocator) void {
+        if (self.upload_id) |upload_id| allocator.free(upload_id);
+        self.upload_id = null;
     }
 };
 
@@ -206,6 +217,41 @@ pub const MetadataIndex = struct {
 
     pub fn containsUpload(self: *const MetadataIndex, upload_id: []const u8) bool {
         return findNamed(self.uploads.items, upload_id) != null;
+    }
+
+    pub fn uploadGeneration(self: *const MetadataIndex, upload_id: []const u8) ?u64 {
+        const position = findNamed(self.uploads.items, upload_id) orelse return null;
+        return self.uploads.items[position].generation;
+    }
+
+    pub fn uploadEntries(self: *const MetadataIndex) []const NamedEntry {
+        return self.uploads.items;
+    }
+
+    pub fn prepareUpload(self: *MetadataIndex, upload_id: []const u8) Error!PreparedUpload {
+        self.uploads.ensureUnusedCapacity(self.allocator, 1) catch return error.OutOfMemory;
+        return .{ .upload_id = self.allocator.dupe(u8, upload_id) catch return error.OutOfMemory };
+    }
+
+    pub fn publishUpload(self: *MetadataIndex, prepared: *PreparedUpload, generation: u64) void {
+        const upload_id = prepared.upload_id orelse unreachable;
+        const position = lowerBoundNamed(self.uploads.items, upload_id);
+        if (position < self.uploads.items.len and
+            std.mem.eql(u8, self.uploads.items[position].name, upload_id))
+        {
+            self.uploads.items[position].generation = generation;
+            self.allocator.free(upload_id);
+        } else {
+            self.uploads.insertAssumeCapacity(position, .{ .name = upload_id, .generation = generation });
+        }
+        prepared.upload_id = null;
+    }
+
+    pub fn removeUpload(self: *MetadataIndex, upload_id: []const u8) bool {
+        const position = findNamed(self.uploads.items, upload_id) orelse return false;
+        const removed = self.uploads.orderedRemove(position);
+        self.allocator.free(removed.name);
+        return true;
     }
 
     pub fn containsAccessKey(self: *const MetadataIndex, access_key: []const u8) bool {
@@ -498,7 +544,18 @@ pub const MetadataIndex = struct {
                     return error.OutOfMemory;
                 };
             },
-            .multipart => try appendNamed(self.allocator, &self.uploads, record.key, record.generation),
+            .multipart => {
+                const decoded = multipart_payload.decode(self.allocator, record.payload) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return error.CorruptRecord,
+                };
+                defer decoded.deinit(self.allocator);
+                var encoded: [32]u8 = undefined;
+                if (!std.mem.eql(u8, multipart_domain.formatUploadId(decoded.value.id, &encoded), record.key)) {
+                    return error.CorruptRecord;
+                }
+                try appendNamed(self.allocator, &self.uploads, record.key, record.generation);
+            },
             .credential => {
                 const decoded = credential_payload.decode(record.payload) catch {
                     return error.CorruptRecord;
@@ -742,6 +799,25 @@ fn putTestObject(
     );
 }
 
+fn putTestMultipart(repository: repository_port.MetadataRepository) ![]const u8 {
+    const upload_id = [_]u8{ 50, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 };
+    var upload_id_buffer: [32]u8 = undefined;
+    const upload_id_text = multipart_domain.formatUploadId(upload_id, &upload_id_buffer);
+    const payload = try multipart_payload.encode(std.testing.allocator, .{
+        .id = upload_id,
+        .bucket_id = .{ 40, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 },
+        .bucket_name = "photos",
+        .key = "large.bin",
+        .content_type = "application/octet-stream",
+        .user_metadata = &.{},
+        .initiated_at_unix_seconds = 1_800_000_000,
+        .parts = &.{},
+    });
+    defer std.testing.allocator.free(payload);
+    _ = try repository.put(std.testing.allocator, .multipart, upload_id_text, .missing, payload);
+    return "320102030405460788090a0b0c0d0e0f";
+}
+
 test "index rebuild skips tombstones and list objects is stable" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -777,7 +853,7 @@ test "index rebuild skips tombstones and list objects is stable" {
         "photos/deleted.txt",
         .{ .exact = removed_object_generation },
     );
-    _ = try repository.put(std.testing.allocator, .multipart, "upload-1", .missing, "upload");
+    const multipart_upload_id = try putTestMultipart(repository);
     const test_credential_payload = try credential_payload.encode(std.testing.allocator, .{
         .access_key = "ZF0123456789ABCDEF",
         .owner = "owner-a",
@@ -810,7 +886,7 @@ test "index rebuild skips tombstones and list objects is stable" {
     try std.testing.expect(!index.containsBucket("removed"));
     try std.testing.expect(index.containsObject("photos", "dir/a.jpg"));
     try std.testing.expect(!index.containsObject("photos", "deleted.txt"));
-    try std.testing.expect(index.containsUpload("upload-1"));
+    try std.testing.expect(index.containsUpload(multipart_upload_id));
     try std.testing.expect(index.containsAccessKey("ZF0123456789ABCDEF"));
 
     const first_page = try index.listObjects(std.testing.allocator, "photos", .{

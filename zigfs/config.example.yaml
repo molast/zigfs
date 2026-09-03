@@ -13,6 +13,7 @@ storage:
 s3:
   region: "us-east-1"
   request_time_skew_seconds: 900
+  multipart_expiry_seconds: 604800
 
 # Bootstrap administrator identity is owned and verified by ZigFS.
 # Change these values before exposing either API outside a trusted local network.

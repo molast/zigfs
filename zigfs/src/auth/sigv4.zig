@@ -2,7 +2,9 @@ const std = @import("std");
 
 pub const algorithm = "AWS4-HMAC-SHA256";
 pub const streaming_payload = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD";
+pub const streaming_trailer_payload = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER";
 pub const streaming_algorithm = "AWS4-HMAC-SHA256-PAYLOAD";
+pub const streaming_trailer_algorithm = "AWS4-HMAC-SHA256-TRAILER";
 pub const terminal = "aws4_request";
 pub const service = "s3";
 pub const default_max_clock_skew_seconds: i64 = 15 * 60;
@@ -138,6 +140,35 @@ pub const StreamingVerifier = struct {
                 &previous_hex,
                 &empty_hex,
                 &chunk_hex,
+            },
+        ) catch return error.InvalidPayloadHash;
+        var expected_signature: [32]u8 = undefined;
+        HmacSha256.create(&expected_signature, string_to_sign, &self.signing_key);
+        if (!std.crypto.timing_safe.eql([32]u8, expected_signature, signature)) {
+            return error.SignatureDoesNotMatch;
+        }
+        self.previous_signature = signature;
+    }
+
+    pub fn verifyTrailerHash(
+        self: *StreamingVerifier,
+        trailer_hash: [32]u8,
+        signature_hex: []const u8,
+    ) Error!void {
+        var signature: [32]u8 = undefined;
+        try decodeLowerHex(signature_hex, &signature);
+        const previous_hex = std.fmt.bytesToHex(self.previous_signature, .lower);
+        const trailer_hex = std.fmt.bytesToHex(trailer_hash, .lower);
+        var string_buffer: [512]u8 = undefined;
+        const string_to_sign = std.fmt.bufPrint(
+            &string_buffer,
+            "{s}\n{s}\n{s}\n{s}\n{s}",
+            .{
+                streaming_trailer_algorithm,
+                &self.amz_date,
+                self.scope_buffer[0..self.scope_length],
+                &previous_hex,
+                &trailer_hex,
             },
         ) catch return error.InvalidPayloadHash;
         var expected_signature: [32]u8 = undefined;
@@ -1090,6 +1121,31 @@ test "streaming payload signatures remain distinguishable for protocol rejection
             .name = "x-amz-content-sha256",
             .value = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD",
         }}),
+    );
+}
+
+test "streaming verifier validates the AWS signed trailer vector" {
+    const previous_signature_hex = "e05ab64fe1dfdbf0b5870abbaabdb063c371d4e96f2767e6934d90529c5ae850";
+    var previous_signature: [32]u8 = undefined;
+    try decodeLowerHex(previous_signature_hex, &previous_signature);
+    var verifier = try StreamingVerifier.init(
+        std.testing.allocator,
+        &.{.{ .name = "x-amz-date", .value = "20130524T000000Z" }},
+        .{
+            .access_key = "AKIAIOSFODNN7EXAMPLE",
+            .scope_date = "20130524",
+            .region = "us-east-1",
+            .signed_headers = "host;x-amz-content-sha256;x-amz-date;x-amz-trailer",
+            .signature = previous_signature,
+        },
+        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    );
+    defer verifier.deinit();
+    var trailer_hash: [32]u8 = undefined;
+    Sha256.hash("x-amz-checksum-crc32c:wdBDMA==\n", &trailer_hash, .{});
+    try verifier.verifyTrailerHash(
+        trailer_hash,
+        "41e14ac611e27a8bb3d66c3bad6856f209297767d5dd4fc87d8fa9e422e03faf",
     );
 }
 

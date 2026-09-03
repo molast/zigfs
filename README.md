@@ -49,6 +49,8 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 - Signature V4 Header/Presigned Query 验签、Canonical URI/Query/Header、Region Scope、Payload Hash、有效期和时钟偏差校验
 - Path-style S3 Router、稳定 XML 错误，以及 Bucket/Object/List V2 HTTP Handler
 - S3 Put/Get 流式传输、Content-MD5/SHA-256/CRC64NVME 校验、ETag、用户元数据和分页响应
+- AWS SigV4 aws-chunked 签名链，以及 CRC64NVME signed trailer 的签名与 checksum 校验
+- S3 Multipart Create、并发 UploadPart、ListParts、Complete、Abort、复合 ETag 和启动超时清理
 - 真实环回 TCP S3 集成测试，覆盖鉴权拒绝、CRUD、分页、Policy 与 Credential 禁用
 - ZigFS Management API 路由清单
 - ZigFS YAML 管理员身份、Management 登录和短期会话校验
@@ -59,11 +61,14 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 Phase 4 S3 Protocol and Authentication 已完成约定的三客户端矩阵。核心 Bucket/Object/List V2
 Path-style HTTP API、Signature V4 Header、AK/SK 加密持久化和 Policy 已实现并通过真实
 TCP 回归测试；AWS CLI 2.36.38、rclone 1.75.0 和 mc 2025-08-13 已通过当前声明范围，
-包括 mc 默认的签名流式 Put 和 DeleteObjects 删除。Phase 5 已启动，单 Range GetObject
+包括 mc 默认的签名流式 Put 和 DeleteObjects 删除。Phase 5 已完成，单 Range GetObject
 及 `206/416` 语义已通过 AWS CLI；对象级 Presigned GET/PUT 已实现，AWS CLI、mc、rclone
-生成的 Presigned GET 均通过匿名下载与字节一致性验证。Multipart、条件请求、Temporary
-Credentials、Virtual-hosted-style 和带 trailer 的 AWS Streaming Signature 仍未实现，并明确
-返回错误或记录为不支持；独立 AWS SDK 仍待扩展，其余 Management 业务路由仍返回 `501`。
+生成的 Presigned GET 均通过匿名下载与字节一致性验证。Multipart 完整生命周期也已通过
+AWS CLI、mc 和 rclone 的并发大文件上传与下载校验。CRC64NVME signed streaming trailer
+已完成原生 TCP 正向、错误 checksum、错误 trailer 签名及失败不发布回归；Object/Part 中途
+断流不会发布数据或遗留暂存文件，下载取消会释放读取租约。其他 trailer checksum 算法、
+条件请求、Temporary Credentials 和 Virtual-hosted-style 仍明确返回 `NotImplemented` 或不在
+当前兼容范围；独立 AWS SDK trailer 矩阵作为补充验证继续维护。Phase 6 Management and Admin 为下一阶段。
 
 ## 启动脚本
 
@@ -159,6 +164,7 @@ storage:
 s3:
   region: "us-east-1"
   request_time_skew_seconds: 900
+  multipart_expiry_seconds: 604800
 
 admin:
   username: "admin"

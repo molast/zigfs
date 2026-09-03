@@ -5,8 +5,9 @@ const id = @import("../common/id.zig");
 
 pub const magic = [4]u8{ 'Z', 'F', 'O', 'B' };
 pub const major_version: u16 = 1;
-pub const minor_version: u16 = 0;
-pub const header_length: usize = 136;
+pub const minor_version: u16 = 1;
+pub const legacy_header_length: usize = 136;
+pub const header_length: usize = 140;
 
 const flags_offset: usize = 8;
 const status_offset: usize = 10;
@@ -23,6 +24,7 @@ const key_length_offset: usize = 126;
 const content_type_length_offset: usize = 128;
 const metadata_count_offset: usize = 130;
 const metadata_length_offset: usize = 132;
+const etag_part_count_offset: usize = 136;
 
 pub const Value = object_domain.View;
 
@@ -105,7 +107,8 @@ pub fn encode(allocator: std.mem.Allocator, value: Value) EncodeError![]u8 {
     std.mem.writeInt(u16, bytes[key_length_offset..content_type_length_offset], @intCast(value.key.len), .little);
     std.mem.writeInt(u16, bytes[content_type_length_offset..metadata_count_offset], @intCast(value.content_type.len), .little);
     std.mem.writeInt(u16, bytes[metadata_count_offset..metadata_length_offset], @intCast(value.user_metadata.len), .little);
-    std.mem.writeInt(u32, bytes[metadata_length_offset..header_length], @intCast(metadata_length), .little);
+    std.mem.writeInt(u32, bytes[metadata_length_offset..etag_part_count_offset], @intCast(metadata_length), .little);
+    std.mem.writeInt(u16, bytes[etag_part_count_offset .. etag_part_count_offset + 2], value.etag_part_count, .little);
 
     var offset = header_length;
     copyField(bytes, &offset, value.bucket_name);
@@ -123,14 +126,20 @@ pub fn encode(allocator: std.mem.Allocator, value: Value) EncodeError![]u8 {
 }
 
 pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decoded {
-    if (bytes.len < header_length) return error.InvalidLength;
+    if (bytes.len < legacy_header_length) return error.InvalidLength;
     if (!std.mem.eql(u8, bytes[0..magic.len], &magic)) return error.InvalidMagic;
     if (std.mem.readInt(u16, bytes[4..6], .little) != major_version) {
         return error.UnsupportedMajorVersion;
     }
-    if (std.mem.readInt(u16, bytes[6..8], .little) != minor_version) {
+    const encoded_minor_version = std.mem.readInt(u16, bytes[6..8], .little);
+    if (encoded_minor_version > minor_version) {
         return error.UnsupportedMinorVersion;
     }
+    const encoded_header_length = if (encoded_minor_version == 0)
+        legacy_header_length
+    else
+        header_length;
+    if (bytes.len < encoded_header_length) return error.InvalidLength;
     if (std.mem.readInt(u16, bytes[flags_offset..status_offset], .little) != 0 or
         bytes[reserved_offset] != 0)
     {
@@ -158,12 +167,17 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
     @memcpy(&etag_md5, bytes[etag_offset..checksum_offset]);
     var checksum_sha256: [32]u8 = undefined;
     @memcpy(&checksum_sha256, bytes[checksum_offset..bucket_name_length_offset]);
+    const etag_part_count = if (encoded_minor_version == 0)
+        0
+    else
+        std.mem.readInt(u16, bytes[etag_part_count_offset .. etag_part_count_offset + 2], .little);
+    if (etag_part_count > object_domain.max_multipart_parts) return error.UnsupportedFlags;
 
     const bucket_name_length = std.mem.readInt(u16, bytes[bucket_name_length_offset..key_length_offset], .little);
     const key_length = std.mem.readInt(u16, bytes[key_length_offset..content_type_length_offset], .little);
     const content_type_length = std.mem.readInt(u16, bytes[content_type_length_offset..metadata_count_offset], .little);
     const metadata_count = std.mem.readInt(u16, bytes[metadata_count_offset..metadata_length_offset], .little);
-    const metadata_length = std.mem.readInt(u32, bytes[metadata_length_offset..header_length], .little);
+    const metadata_length = std.mem.readInt(u32, bytes[metadata_length_offset..etag_part_count_offset], .little);
     if (metadata_count > object_domain.max_user_metadata_entries or
         metadata_length > object_domain.max_user_metadata_bytes +
             object_domain.max_user_metadata_entries * 6)
@@ -179,12 +193,12 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
     const variable_length = std.math.add(usize, fields_length, metadata_length) catch {
         return error.InvalidLength;
     };
-    const expected_length = std.math.add(usize, header_length, variable_length) catch {
+    const expected_length = std.math.add(usize, encoded_header_length, variable_length) catch {
         return error.InvalidLength;
     };
     if (bytes.len != expected_length) return error.InvalidLength;
 
-    var offset = header_length;
+    var offset = encoded_header_length;
     const bucket_name = takeField(bytes, &offset, bucket_name_length) orelse return error.InvalidLength;
     const key = takeField(bytes, &offset, key_length) orelse return error.InvalidLength;
     const content_type = takeField(bytes, &offset, content_type_length) orelse return error.InvalidLength;
@@ -217,6 +231,7 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
             .key = key,
             .size = size,
             .etag_md5 = etag_md5,
+            .etag_part_count = etag_part_count,
             .checksum_sha256 = checksum_sha256,
             .content_type = content_type,
             .last_modified_unix_seconds = modified_at,
@@ -233,6 +248,7 @@ fn validateValue(value: Value) EncodeError!void {
     if (!id.isValidV4(value.bucket_id)) return error.InvalidBucketId;
     if (!id.isValidV4(value.data_generation)) return error.InvalidDataGeneration;
     if (value.last_modified_unix_seconds <= 0) return error.InvalidModifiedAt;
+    if (value.etag_part_count > object_domain.max_multipart_parts) return error.PayloadTooLarge;
     try bucket_domain.validateName(value.bucket_name);
     try object_domain.validateKey(value.key);
     try object_domain.validateContentType(value.content_type);
@@ -304,7 +320,7 @@ test "object payload rejects incompatible and malformed records" {
     changed[0] = 'X';
     try std.testing.expectError(error.InvalidMagic, decode(std.testing.allocator, changed));
     @memcpy(changed, bytes);
-    std.mem.writeInt(u16, changed[6..8], 1, .little);
+    std.mem.writeInt(u16, changed[6..8], minor_version + 1, .little);
     try std.testing.expectError(error.UnsupportedMinorVersion, decode(std.testing.allocator, changed));
     @memcpy(changed, bytes);
     changed[status_offset] = 255;
@@ -312,4 +328,18 @@ test "object payload rejects incompatible and malformed records" {
     @memcpy(changed, bytes);
     changed[object_id_offset + 6] = 0;
     try std.testing.expectError(error.InvalidObjectId, decode(std.testing.allocator, changed));
+}
+
+test "object payload reads V1.0 records without multipart ETag fields" {
+    const current = try encode(std.testing.allocator, testValue());
+    defer std.testing.allocator.free(current);
+    const legacy = try std.testing.allocator.alloc(u8, current.len - (header_length - legacy_header_length));
+    defer std.testing.allocator.free(legacy);
+    @memcpy(legacy[0..legacy_header_length], current[0..legacy_header_length]);
+    std.mem.writeInt(u16, legacy[6..8], 0, .little);
+    @memcpy(legacy[legacy_header_length..], current[header_length..]);
+    const decoded = try decode(std.testing.allocator, legacy);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 0), decoded.value.etag_part_count);
+    try std.testing.expectEqualStrings(testValue().key, decoded.value.key);
 }

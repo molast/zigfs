@@ -3,6 +3,7 @@ const Application = @import("../application/mod.zig").Application;
 const Config = @import("../config.zig").Config;
 const management_session = @import("../auth/management_session.zig");
 const sigv4 = @import("../auth/sigv4.zig");
+const Crc64Nvme = @import("../common/checksum.zig").Crc64Nvme;
 const request_id = @import("../common/request_id.zig");
 const recovery = @import("../metadata/recovery.zig");
 const s3 = @import("s3.zig");
@@ -109,7 +110,7 @@ fn serveConnection(context: *ListenerContext, stream: std.Io.net.Stream) void {
     var server = std.http.Server.init(&connection_reader.interface, &connection_writer.interface);
 
     while (server.reader.state == .ready) {
-        var request = server.receiveHead() catch |err| switch (err) {
+        var request = receiveHeadAllowAwsChunked(&server) catch |err| switch (err) {
             error.HttpConnectionClosing => return,
             else => {
                 std.log.warn("closing invalid HTTP connection: {t}", .{err});
@@ -145,6 +146,51 @@ fn serveConnection(context: *ListenerContext, stream: std.Io.net.Stream) void {
         );
         if (!request.head.keep_alive) return;
     }
+}
+
+const MaskedAwsChunked = struct {
+    value: []u8,
+    original: ["aws-chunked".len]u8,
+
+    fn restore(self: *MaskedAwsChunked) void {
+        @memcpy(self.value, &self.original);
+    }
+};
+
+fn receiveHeadAllowAwsChunked(
+    server: *std.http.Server,
+) std.http.Server.ReceiveHeadError!std.http.Server.Request {
+    const head_buffer = try server.reader.receiveHead();
+    var masked = maskAwsChunkedContentEncoding(head_buffer);
+    defer if (masked) |*value| value.restore();
+    const head = std.http.Server.Request.Head.parse(head_buffer) catch {
+        return error.HttpHeadersInvalid;
+    };
+    return .{
+        .server = server,
+        .head_buffer = head_buffer,
+        .head = head,
+    };
+}
+
+fn maskAwsChunkedContentEncoding(head_buffer: []const u8) ?MaskedAwsChunked {
+    var lines = std.mem.splitSequence(u8, head_buffer, "\r\n");
+    _ = lines.next();
+    while (lines.next()) |line| {
+        if (line.len == 0) break;
+        const separator = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        if (!std.ascii.eqlIgnoreCase(line[0..separator], "content-encoding")) continue;
+        const value = std.mem.trim(u8, line[separator + 1 ..], " \t");
+        if (!std.ascii.eqlIgnoreCase(value, "aws-chunked")) return null;
+        var masked: MaskedAwsChunked = .{
+            .value = @constCast(value),
+            .original = undefined,
+        };
+        @memcpy(&masked.original, value);
+        @memcpy(masked.value, "identity   ");
+        return masked;
+    }
+    return null;
 }
 
 fn serveRequest(
@@ -560,6 +606,8 @@ const TestSignedRequest = struct {
     payload_hash_override: ?[]const u8 = null,
     timestamp: ?i64 = null,
     corrupt_signature: bool = false,
+    declared_content_length: ?usize = null,
+    shutdown_send_after_body: bool = false,
 };
 
 fn sendTestSignedRequest(
@@ -663,7 +711,7 @@ fn sendTestSignedRequest(
             amz_date,
             payload_hash,
             authorization,
-            options.body.len,
+            options.declared_content_length orelse options.body.len,
         },
     );
     for (options.extra_headers) |header| {
@@ -671,7 +719,239 @@ fn sendTestSignedRequest(
     }
     try writer.writeAll("\r\n");
     try writer.writeAll(options.body);
+    return sendTestRawRequestImpl(
+        allocator,
+        io,
+        address,
+        request_bytes.written(),
+        options.shutdown_send_after_body,
+    );
+}
+
+const TestSignedTrailerRequest = struct {
+    target: []const u8,
+    access_key: []const u8,
+    secret_key: []const u8,
+    body: []const u8,
+    timestamp: ?i64 = null,
+    corrupt_checksum: bool = false,
+    corrupt_trailer_signature: bool = false,
+};
+
+fn sendTestSignedTrailerRequest(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    address: std.Io.net.IpAddress,
+    options: TestSignedTrailerRequest,
+) !TestHttpResponse {
+    const host = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{address.getPort()});
+    defer allocator.free(host);
+    var date_buffer: [16]u8 = undefined;
+    const timestamp = options.timestamp orelse std.Io.Clock.real.now(io).toSeconds();
+    const amz_date = try @import("../common/time.zig").formatAmzDate(timestamp, &date_buffer);
+    const scope_date = amz_date[0..8];
+    const scope = try std.fmt.allocPrint(
+        allocator,
+        "{s}/us-east-1/s3/aws4_request",
+        .{scope_date},
+    );
+    defer allocator.free(scope);
+    const decoded_length = try std.fmt.allocPrint(allocator, "{d}", .{options.body.len});
+    defer allocator.free(decoded_length);
+    const query_start = std.mem.indexOfScalar(u8, options.target, '?') orelse options.target.len;
+    const canonical_uri = options.target[0..query_start];
+    const canonical_query = if (query_start < options.target.len)
+        options.target[query_start + 1 ..]
+    else
+        "";
+    const signed_headers =
+        "content-encoding;host;x-amz-content-sha256;x-amz-date;" ++
+        "x-amz-decoded-content-length;x-amz-trailer";
+    const canonical = try std.fmt.allocPrint(
+        allocator,
+        "PUT\n{s}\n{s}\ncontent-encoding:aws-chunked\nhost:{s}\n" ++
+            "x-amz-content-sha256:{s}\nx-amz-date:{s}\n" ++
+            "x-amz-decoded-content-length:{s}\n" ++
+            "x-amz-trailer:x-amz-checksum-crc64nvme\n\n{s}\n{s}",
+        .{
+            canonical_uri,
+            canonical_query,
+            host,
+            sigv4.streaming_trailer_payload,
+            amz_date,
+            decoded_length,
+            signed_headers,
+            sigv4.streaming_trailer_payload,
+        },
+    );
+    defer allocator.free(canonical);
+    var canonical_digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(canonical, &canonical_digest, .{});
+    const canonical_hash = std.fmt.bytesToHex(canonical_digest, .lower);
+    const string_to_sign = try std.fmt.allocPrint(
+        allocator,
+        "AWS4-HMAC-SHA256\n{s}\n{s}\n{s}",
+        .{ amz_date, scope, &canonical_hash },
+    );
+    defer allocator.free(string_to_sign);
+
+    const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
+    const prefixed_secret = try std.fmt.allocPrint(allocator, "AWS4{s}", .{options.secret_key});
+    defer {
+        std.crypto.secureZero(u8, prefixed_secret);
+        allocator.free(prefixed_secret);
+    }
+    var date_key: [32]u8 = undefined;
+    var region_key: [32]u8 = undefined;
+    var service_key: [32]u8 = undefined;
+    var signing_key: [32]u8 = undefined;
+    defer {
+        std.crypto.secureZero(u8, &date_key);
+        std.crypto.secureZero(u8, &region_key);
+        std.crypto.secureZero(u8, &service_key);
+        std.crypto.secureZero(u8, &signing_key);
+    }
+    HmacSha256.create(&date_key, scope_date, prefixed_secret);
+    HmacSha256.create(&region_key, "us-east-1", &date_key);
+    HmacSha256.create(&service_key, "s3", &region_key);
+    HmacSha256.create(&signing_key, "aws4_request", &service_key);
+    var seed_signature: [32]u8 = undefined;
+    HmacSha256.create(&seed_signature, string_to_sign, &signing_key);
+    const data_signature = testStreamingChunkSignature(
+        &signing_key,
+        amz_date,
+        scope,
+        seed_signature,
+        options.body,
+    );
+    const final_signature = testStreamingChunkSignature(
+        &signing_key,
+        amz_date,
+        scope,
+        data_signature,
+        "",
+    );
+
+    var checksum = Crc64Nvme.hash(options.body);
+    if (options.corrupt_checksum) checksum +%= 1;
+    var checksum_bytes: [8]u8 = undefined;
+    std.mem.writeInt(u64, &checksum_bytes, checksum, .big);
+    var checksum_base64_buffer: [12]u8 = undefined;
+    const checksum_base64 = std.base64.standard.Encoder.encode(
+        &checksum_base64_buffer,
+        &checksum_bytes,
+    );
+    const canonical_trailer = try std.fmt.allocPrint(
+        allocator,
+        "x-amz-checksum-crc64nvme:{s}\n",
+        .{checksum_base64},
+    );
+    defer allocator.free(canonical_trailer);
+    const trailer_signature = testStreamingTrailerSignature(
+        &signing_key,
+        amz_date,
+        scope,
+        final_signature,
+        canonical_trailer,
+    );
+    var trailer_signature_hex = std.fmt.bytesToHex(trailer_signature, .lower);
+    if (options.corrupt_trailer_signature) {
+        trailer_signature_hex[0] = if (trailer_signature_hex[0] == '0') '1' else '0';
+    }
+    const seed_signature_hex = std.fmt.bytesToHex(seed_signature, .lower);
+    const data_signature_hex = std.fmt.bytesToHex(data_signature, .lower);
+    const final_signature_hex = std.fmt.bytesToHex(final_signature, .lower);
+    const encoded_body = try std.fmt.allocPrint(
+        allocator,
+        "{x};chunk-signature={s}\r\n{s}\r\n0;chunk-signature={s}\r\n" ++
+            "{s}\r\nx-amz-trailer-signature:{s}\r\n\r\n",
+        .{
+            options.body.len,
+            &data_signature_hex,
+            options.body,
+            &final_signature_hex,
+            canonical_trailer,
+            &trailer_signature_hex,
+        },
+    );
+    defer allocator.free(encoded_body);
+    const authorization = try std.fmt.allocPrint(
+        allocator,
+        "AWS4-HMAC-SHA256 Credential={s}/{s}, SignedHeaders={s}, Signature={s}",
+        .{ options.access_key, scope, signed_headers, &seed_signature_hex },
+    );
+    defer allocator.free(authorization);
+
+    var request_bytes: std.Io.Writer.Allocating = .init(allocator);
+    defer request_bytes.deinit();
+    const writer = &request_bytes.writer;
+    try writer.print(
+        "PUT {s} HTTP/1.1\r\nHost: {s}\r\nConnection: close\r\n" ++
+            "Content-Encoding: aws-chunked\r\nContent-Length: {d}\r\n" ++
+            "X-Amz-Content-Sha256: {s}\r\nX-Amz-Date: {s}\r\n" ++
+            "X-Amz-Decoded-Content-Length: {s}\r\n" ++
+            "X-Amz-Trailer: x-amz-checksum-crc64nvme\r\n" ++
+            "Authorization: {s}\r\n\r\n",
+        .{
+            options.target,
+            host,
+            encoded_body.len,
+            sigv4.streaming_trailer_payload,
+            amz_date,
+            decoded_length,
+            authorization,
+        },
+    );
+    try writer.writeAll(encoded_body);
     return sendTestRawRequest(allocator, io, address, request_bytes.written());
+}
+
+fn testStreamingChunkSignature(
+    signing_key: *const [32]u8,
+    amz_date: []const u8,
+    scope: []const u8,
+    previous_signature: [32]u8,
+    payload: []const u8,
+) [32]u8 {
+    const Sha256 = std.crypto.hash.sha2.Sha256;
+    var empty_hash: [32]u8 = undefined;
+    Sha256.hash("", &empty_hash, .{});
+    var payload_hash: [32]u8 = undefined;
+    Sha256.hash(payload, &payload_hash, .{});
+    const previous_hex = std.fmt.bytesToHex(previous_signature, .lower);
+    const empty_hex = std.fmt.bytesToHex(empty_hash, .lower);
+    const payload_hex = std.fmt.bytesToHex(payload_hash, .lower);
+    var string_buffer: [512]u8 = undefined;
+    const string_to_sign = std.fmt.bufPrint(
+        &string_buffer,
+        "AWS4-HMAC-SHA256-PAYLOAD\n{s}\n{s}\n{s}\n{s}\n{s}",
+        .{ amz_date, scope, &previous_hex, &empty_hex, &payload_hex },
+    ) catch unreachable;
+    var signature: [32]u8 = undefined;
+    std.crypto.auth.hmac.sha2.HmacSha256.create(&signature, string_to_sign, signing_key);
+    return signature;
+}
+
+fn testStreamingTrailerSignature(
+    signing_key: *const [32]u8,
+    amz_date: []const u8,
+    scope: []const u8,
+    previous_signature: [32]u8,
+    canonical_trailer: []const u8,
+) [32]u8 {
+    var trailer_hash: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(canonical_trailer, &trailer_hash, .{});
+    const previous_hex = std.fmt.bytesToHex(previous_signature, .lower);
+    const trailer_hex = std.fmt.bytesToHex(trailer_hash, .lower);
+    var string_buffer: [512]u8 = undefined;
+    const string_to_sign = std.fmt.bufPrint(
+        &string_buffer,
+        "AWS4-HMAC-SHA256-TRAILER\n{s}\n{s}\n{s}\n{s}",
+        .{ amz_date, scope, &previous_hex, &trailer_hex },
+    ) catch unreachable;
+    var signature: [32]u8 = undefined;
+    std.crypto.auth.hmac.sha2.HmacSha256.create(&signature, string_to_sign, signing_key);
+    return signature;
 }
 
 const TestPresignedRequest = struct {
@@ -732,6 +1012,75 @@ fn sendTestPresignedRequest(
     return sendTestRawRequest(allocator, io, address, request_bytes.written());
 }
 
+fn sendTestPresignedGetAndDisconnect(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    address: std.Io.net.IpAddress,
+    target: []const u8,
+    access_key: []const u8,
+    secret_key: []const u8,
+) !void {
+    const host = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{address.getPort()});
+    defer allocator.free(host);
+    var date_buffer: [16]u8 = undefined;
+    const amz_date = try @import("../common/time.zig").formatAmzDate(
+        std.Io.Clock.real.now(io).toSeconds(),
+        &date_buffer,
+    );
+    const signing_headers = [_]sigv4.Header{.{ .name = "host", .value = host }};
+    const signed_target = try sigv4.presignTarget(allocator, .{
+        .method = "GET",
+        .target = target,
+        .headers = &signing_headers,
+        .access_key = access_key,
+        .secret_key = secret_key,
+        .amz_date = amz_date,
+        .region = "us-east-1",
+        .expires_seconds = 60,
+    });
+    defer allocator.free(signed_target);
+    const request_bytes = try std.fmt.allocPrint(
+        allocator,
+        "GET {s} HTTP/1.1\r\nHost: {s}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        .{ signed_target, host },
+    );
+    defer allocator.free(request_bytes);
+
+    const stream = try address.connect(io, .{ .mode = .stream });
+    defer stream.close(io);
+    var receive_buffer: [16 * 1024]u8 = undefined;
+    var send_buffer: [16 * 1024]u8 = undefined;
+    var stream_reader = stream.reader(io, &receive_buffer);
+    var stream_writer = stream.writer(io, &send_buffer);
+    try stream_writer.interface.writeAll(request_bytes);
+    try stream_writer.interface.flush();
+
+    var response_prefix: [16 * 1024]u8 = undefined;
+    var response_length: usize = 0;
+    while (std.mem.indexOf(u8, response_prefix[0..response_length], "\r\n\r\n") == null) {
+        if (response_length == response_prefix.len) return error.InvalidHttpResponse;
+        const count = try stream_reader.interface.readSliceShort(response_prefix[response_length..]);
+        if (count == 0) return error.InvalidHttpResponse;
+        response_length += count;
+    }
+    if (!std.mem.startsWith(u8, response_prefix[0..response_length], "HTTP/1.1 200 ")) {
+        return error.InvalidHttpResponse;
+    }
+}
+
+fn expectNoStagedPayloadFiles(root: std.Io.Dir, io: std.Io) !void {
+    var directory = try root.openDir(io, "data/.zigfs/tmp", .{ .iterate = true });
+    defer directory.close(io);
+    var iterator = directory.iterate();
+    while (try iterator.next(io)) |entry| {
+        const staged_object = std.mem.startsWith(u8, entry.name, "object-") and
+            std.mem.endsWith(u8, entry.name, ".data");
+        const staged_part = std.mem.startsWith(u8, entry.name, "multipart-") and
+            std.mem.endsWith(u8, entry.name, ".data");
+        try std.testing.expect(!staged_object and !staged_part);
+    }
+}
+
 fn sendTestUnsignedRequest(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -754,6 +1103,16 @@ fn sendTestRawRequest(
     address: std.Io.net.IpAddress,
     request_bytes: []const u8,
 ) !TestHttpResponse {
+    return sendTestRawRequestImpl(allocator, io, address, request_bytes, false);
+}
+
+fn sendTestRawRequestImpl(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    address: std.Io.net.IpAddress,
+    request_bytes: []const u8,
+    shutdown_send_after_request: bool,
+) !TestHttpResponse {
     const stream = try address.connect(io, .{ .mode = .stream });
     defer stream.close(io);
     var receive_buffer: [16 * 1024]u8 = undefined;
@@ -762,6 +1121,7 @@ fn sendTestRawRequest(
     var stream_writer = stream.writer(io, &send_buffer);
     try stream_writer.interface.writeAll(request_bytes);
     try stream_writer.interface.flush();
+    if (shutdown_send_after_request) try stream.shutdown(io, .send);
     const bytes = try stream_reader.interface.allocRemaining(allocator, .limited(2 * 1024 * 1024));
     errdefer allocator.free(bytes);
     const head_end = std.mem.indexOf(u8, bytes, "\r\n\r\n") orelse return error.InvalidHttpResponse;
@@ -1490,4 +1850,684 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
     defer disabled_request.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.forbidden, disabled_request.status);
     try std.testing.expect(std.mem.indexOf(u8, disabled_request.body, "<Code>AccessDenied</Code>") != null);
+}
+
+test "S3 HTTP verifies signed CRC64NVME trailers before publishing objects and parts" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try std.fmt.allocPrint(
+        std.testing.allocator,
+        ".zig-cache/tmp/{s}/data",
+        .{tmp.sub_path},
+    );
+    defer std.testing.allocator.free(data_root);
+    const config: Config = .{ .data_root = data_root, .metrics_enabled = false };
+    var application = Application.init(config);
+    defer application.deinit(std.testing.io);
+    try application.initialize(std.testing.io);
+    var credential = try application.credentialService().?.create("tenant-a", .all);
+    defer credential.deinit(application.allocator);
+
+    const loopback: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
+    var listener = try loopback.listen(std.testing.io, .{ .reuse_address = true });
+    defer listener.deinit(std.testing.io);
+    var context: ListenerContext = .{
+        .io = std.testing.io,
+        .kind = .api,
+        .config = config,
+        .application = &application,
+    };
+    var server_tasks: std.Io.Group = .init;
+    defer server_tasks.cancel(std.testing.io);
+    server_tasks.async(std.testing.io, serveLoopBackground, .{ &listener, &context });
+    const address = listener.socket.address;
+
+    const create_bucket = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/streaming",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer create_bucket.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, create_bucket.status);
+
+    const object_body = "signed trailer payload over TCP";
+    var checksum_bytes: [8]u8 = undefined;
+    std.mem.writeInt(u64, &checksum_bytes, Crc64Nvme.hash(object_body), .big);
+    var checksum_base64_buffer: [12]u8 = undefined;
+    const checksum_base64 = std.base64.standard.Encoder.encode(
+        &checksum_base64_buffer,
+        &checksum_bytes,
+    );
+    const put_object = try sendTestSignedTrailerRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .target = "/streaming/verified.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = object_body,
+        },
+    );
+    defer put_object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, put_object.status);
+    try std.testing.expectEqualStrings(
+        checksum_base64,
+        put_object.header("x-amz-checksum-crc64nvme").?,
+    );
+    const get_object = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/streaming/verified.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer get_object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, get_object.status);
+    try std.testing.expectEqualStrings(object_body, get_object.body);
+
+    const bad_checksum = try sendTestSignedTrailerRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .target = "/streaming/bad-checksum.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = object_body,
+            .corrupt_checksum = true,
+        },
+    );
+    defer bad_checksum.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.bad_request, bad_checksum.status);
+    try std.testing.expect(std.mem.indexOf(u8, bad_checksum.body, "<Code>BadDigest</Code>") != null);
+    const missing_bad_checksum = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .HEAD,
+            .target = "/streaming/bad-checksum.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer missing_bad_checksum.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.not_found, missing_bad_checksum.status);
+
+    const bad_signature = try sendTestSignedTrailerRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .target = "/streaming/bad-signature.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = object_body,
+            .corrupt_trailer_signature = true,
+        },
+    );
+    defer bad_signature.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.forbidden, bad_signature.status);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        bad_signature.body,
+        "<Code>SignatureDoesNotMatch</Code>",
+    ) != null);
+    const missing_bad_signature = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .HEAD,
+            .target = "/streaming/bad-signature.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer missing_bad_signature.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.not_found, missing_bad_signature.status);
+
+    const create_upload = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .POST,
+            .target = "/streaming/multipart.bin?uploads=",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer create_upload.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, create_upload.status);
+    const upload_id_start = std.mem.indexOf(u8, create_upload.body, "<UploadId>") orelse {
+        return error.TestUnexpectedResult;
+    };
+    const upload_id_end = std.mem.indexOfPos(
+        u8,
+        create_upload.body,
+        upload_id_start,
+        "</UploadId>",
+    ) orelse return error.TestUnexpectedResult;
+    const upload_id = create_upload.body[upload_id_start + "<UploadId>".len .. upload_id_end];
+    const upload_part_target = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "/streaming/multipart.bin?partNumber=1&uploadId={s}",
+        .{upload_id},
+    );
+    defer std.testing.allocator.free(upload_part_target);
+    const list_parts_target = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "/streaming/multipart.bin?uploadId={s}",
+        .{upload_id},
+    );
+    defer std.testing.allocator.free(list_parts_target);
+
+    const bad_part = try sendTestSignedTrailerRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .target = upload_part_target,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = object_body,
+            .corrupt_checksum = true,
+        },
+    );
+    defer bad_part.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.bad_request, bad_part.status);
+    try std.testing.expect(std.mem.indexOf(u8, bad_part.body, "<Code>BadDigest</Code>") != null);
+    const parts_after_failure = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = list_parts_target,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer parts_after_failure.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, parts_after_failure.status);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        parts_after_failure.body,
+        "<PartNumber>1</PartNumber>",
+    ) == null);
+
+    const put_part = try sendTestSignedTrailerRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .target = upload_part_target,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = object_body,
+        },
+    );
+    defer put_part.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, put_part.status);
+    try std.testing.expectEqualStrings(
+        checksum_base64,
+        put_part.header("x-amz-checksum-crc64nvme").?,
+    );
+    const parts_after_success = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = list_parts_target,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer parts_after_success.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, parts_after_success.status);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        parts_after_success.body,
+        "<PartNumber>1</PartNumber>",
+    ) != null);
+}
+
+test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try std.fmt.allocPrint(
+        std.testing.allocator,
+        ".zig-cache/tmp/{s}/data",
+        .{tmp.sub_path},
+    );
+    defer std.testing.allocator.free(data_root);
+    const config: Config = .{ .data_root = data_root, .metrics_enabled = false };
+    var application = Application.init(config);
+    defer application.deinit(std.testing.io);
+    try application.initialize(std.testing.io);
+    var credential = try application.credentialService().?.create("tenant-a", .all);
+    defer credential.deinit(application.allocator);
+
+    const loopback: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
+    var listener = try loopback.listen(std.testing.io, .{ .reuse_address = true });
+    defer listener.deinit(std.testing.io);
+    var context: ListenerContext = .{
+        .io = std.testing.io,
+        .kind = .api,
+        .config = config,
+        .application = &application,
+    };
+    var server_tasks: std.Io.Group = .init;
+    defer server_tasks.cancel(std.testing.io);
+    server_tasks.async(std.testing.io, serveLoopBackground, .{ &listener, &context });
+    const address = listener.socket.address;
+
+    const create_bucket = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/project-assets",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer create_bucket.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, create_bucket.status);
+
+    const create = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .POST,
+            .target = "/project-assets/multipart.bin?uploads=",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer create.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, create.status);
+    const upload_id_start = std.mem.indexOf(u8, create.body, "<UploadId>") orelse return error.TestUnexpectedResult;
+    const upload_id_end = std.mem.indexOfPos(u8, create.body, upload_id_start, "</UploadId>") orelse return error.TestUnexpectedResult;
+    const upload_id = create.body[upload_id_start + "<UploadId>".len .. upload_id_end];
+    try std.testing.expectEqual(@as(usize, 32), upload_id.len);
+
+    const part_body = "one small final part";
+    const upload_target = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "/project-assets/multipart.bin?partNumber=1&uploadId={s}",
+        .{upload_id},
+    );
+    defer std.testing.allocator.free(upload_target);
+    const uploaded = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = upload_target,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = part_body,
+        },
+    );
+    defer uploaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, uploaded.status);
+    const etag = uploaded.header("etag") orelse return error.TestUnexpectedResult;
+
+    const list_target = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "/project-assets/multipart.bin?uploadId={s}",
+        .{upload_id},
+    );
+    defer std.testing.allocator.free(list_target);
+    const listed = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = list_target,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer listed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, listed.status);
+    try std.testing.expect(std.mem.indexOf(u8, listed.body, "<PartNumber>1</PartNumber>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed.body, etag) != null);
+
+    const invalid_completion =
+        "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber>" ++
+        "<ETag>\"00000000000000000000000000000000\"</ETag></Part></CompleteMultipartUpload>";
+    const invalid = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .POST,
+            .target = list_target,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = invalid_completion,
+        },
+    );
+    defer invalid.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.bad_request, invalid.status);
+    try std.testing.expect(std.mem.indexOf(u8, invalid.body, "<Code>InvalidPart</Code>") != null);
+
+    const completion_body = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{s}</ETag></Part></CompleteMultipartUpload>",
+        .{etag},
+    );
+    defer std.testing.allocator.free(completion_body);
+    const complete = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .POST,
+            .target = list_target,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = completion_body,
+        },
+    );
+    defer complete.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, complete.status);
+    try std.testing.expect(std.mem.indexOf(u8, complete.body, "-1\"</ETag>") != null);
+
+    const downloaded = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/project-assets/multipart.bin",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer downloaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, downloaded.status);
+    try std.testing.expectEqualStrings(part_body, downloaded.body);
+    try std.testing.expect(std.mem.endsWith(u8, downloaded.header("etag").?, "-1\""));
+
+    const after_complete = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = list_target,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer after_complete.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.not_found, after_complete.status);
+    try std.testing.expect(std.mem.indexOf(u8, after_complete.body, "<Code>NoSuchUpload</Code>") != null);
+
+    const abort_create = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .POST,
+            .target = "/project-assets/aborted.bin?uploads=",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer abort_create.deinit(std.testing.allocator);
+    const abort_id_start = std.mem.indexOf(u8, abort_create.body, "<UploadId>") orelse return error.TestUnexpectedResult;
+    const abort_id_end = std.mem.indexOfPos(u8, abort_create.body, abort_id_start, "</UploadId>") orelse return error.TestUnexpectedResult;
+    const abort_id = abort_create.body[abort_id_start + "<UploadId>".len .. abort_id_end];
+    const abort_target = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "/project-assets/aborted.bin?uploadId={s}",
+        .{abort_id},
+    );
+    defer std.testing.allocator.free(abort_target);
+    const aborted = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .DELETE,
+            .target = abort_target,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer aborted.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.no_content, aborted.status);
+}
+
+test "S3 HTTP interrupted uploads do not publish and canceled downloads release leases" {
+    const test_streams = @import("../testing/streams.zig");
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try std.fmt.allocPrint(
+        std.testing.allocator,
+        ".zig-cache/tmp/{s}/data",
+        .{tmp.sub_path},
+    );
+    defer std.testing.allocator.free(data_root);
+    const config: Config = .{ .data_root = data_root, .metrics_enabled = false };
+    var application = Application.init(config);
+    defer application.deinit(std.testing.io);
+    try application.initialize(std.testing.io);
+    var credential = try application.credentialService().?.create("tenant-a", .all);
+    defer credential.deinit(application.allocator);
+
+    const loopback: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
+    var listener = try loopback.listen(std.testing.io, .{ .reuse_address = true });
+    defer listener.deinit(std.testing.io);
+    var context: ListenerContext = .{
+        .io = std.testing.io,
+        .kind = .api,
+        .config = config,
+        .application = &application,
+    };
+    var server_tasks: std.Io.Group = .init;
+    defer server_tasks.cancel(std.testing.io);
+    server_tasks.async(std.testing.io, serveLoopBackground, .{ &listener, &context });
+    const address = listener.socket.address;
+
+    const create_bucket = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/project-assets",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer create_bucket.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, create_bucket.status);
+
+    const partial_object_body = "only the first object bytes";
+    const interrupted_object = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/project-assets/interrupted.bin",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = partial_object_body,
+            .declared_content_length = partial_object_body.len + 4096,
+            .shutdown_send_after_body = true,
+        },
+    );
+    defer interrupted_object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.bad_request, interrupted_object.status);
+    try std.testing.expect(std.mem.indexOf(u8, interrupted_object.body, "<Code>InvalidRequest</Code>") != null);
+
+    const missing_object = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/project-assets/interrupted.bin",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer missing_object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.not_found, missing_object.status);
+    try std.testing.expect(std.mem.indexOf(u8, missing_object.body, "<Code>NoSuchKey</Code>") != null);
+
+    const create_upload = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .POST,
+            .target = "/project-assets/interrupted-part.bin?uploads=",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer create_upload.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, create_upload.status);
+    const upload_id_start = std.mem.indexOf(u8, create_upload.body, "<UploadId>") orelse {
+        return error.TestUnexpectedResult;
+    };
+    const upload_id_end = std.mem.indexOfPos(
+        u8,
+        create_upload.body,
+        upload_id_start,
+        "</UploadId>",
+    ) orelse return error.TestUnexpectedResult;
+    const upload_id = create_upload.body[upload_id_start + "<UploadId>".len .. upload_id_end];
+    const part_target = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "/project-assets/interrupted-part.bin?partNumber=1&uploadId={s}",
+        .{upload_id},
+    );
+    defer std.testing.allocator.free(part_target);
+    const partial_part_body = "only the first part bytes";
+    const interrupted_part = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = part_target,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = partial_part_body,
+            .declared_content_length = partial_part_body.len + 4096,
+            .shutdown_send_after_body = true,
+        },
+    );
+    defer interrupted_part.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.bad_request, interrupted_part.status);
+    try std.testing.expect(std.mem.indexOf(u8, interrupted_part.body, "<Code>InvalidRequest</Code>") != null);
+
+    const list_target = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "/project-assets/interrupted-part.bin?uploadId={s}",
+        .{upload_id},
+    );
+    defer std.testing.allocator.free(list_target);
+    const parts = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = list_target,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer parts.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, parts.status);
+    try std.testing.expect(std.mem.indexOf(u8, parts.body, "<Part>") == null);
+    try expectNoStagedPayloadFiles(tmp.dir, std.testing.io);
+
+    var large_source: test_streams.RepeatingSource = .{
+        .remaining = 16 * 1024 * 1024,
+        .byte = 'z',
+    };
+    const large_object = try application.objectService().?.put(
+        "project-assets",
+        "cancel-download.bin",
+        large_source.interface(),
+        .{},
+    );
+    large_object.deinit(application.allocator);
+    try sendTestPresignedGetAndDisconnect(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        "/project-assets/cancel-download.bin",
+        credential.credential.access_key,
+        &credential.secret_key,
+    );
+
+    const replacement_body = "replacement after canceled download";
+    const replacement = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/project-assets/cancel-download.bin",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = replacement_body,
+        },
+    );
+    defer replacement.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, replacement.status);
+
+    const replacement_get = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/project-assets/cancel-download.bin",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer replacement_get.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, replacement_get.status);
+    try std.testing.expectEqualStrings(replacement_body, replacement_get.body);
+
+    const ready = try sendTestUnsignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .GET,
+        health_ready_path,
+    );
+    defer ready.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, ready.status);
 }

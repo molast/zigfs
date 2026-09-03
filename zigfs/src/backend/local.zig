@@ -67,6 +67,7 @@ pub const LocalStorageBackend = struct {
         try root.createDirPath(io, "metadata/buckets");
         try root.createDirPath(io, "metadata/objects");
         try root.createDirPath(io, "metadata/multipart");
+        try root.createDirPath(io, "multipart");
         try root.createDirPath(io, "objects");
 
         self.lock_file = lock_file;
@@ -121,6 +122,7 @@ test "local backend creates phase 2b metadata layout" {
         "data/metadata/buckets",
         "data/metadata/objects",
         "data/metadata/multipart",
+        "data/multipart",
     };
     for (required_directories) |path| {
         var directory = try tmp.dir.openDir(std.testing.io, path, .{});

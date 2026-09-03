@@ -30,6 +30,7 @@ pub const Entry = struct {
     key: []u8,
     size: u64,
     etag_md5: [16]u8,
+    etag_part_count: u16,
     last_modified_unix_seconds: i64,
 
     pub fn deinit(self: Entry, allocator: std.mem.Allocator) void {
@@ -147,6 +148,7 @@ pub const ObjectListingService = struct {
                 .key = self.allocator.dupe(u8, object.key) catch return error.OutOfMemory,
                 .size = object.size,
                 .etag_md5 = object.etag_md5,
+                .etag_part_count = object.etag_part_count,
                 .last_modified_unix_seconds = object.last_modified_unix_seconds,
             };
             initialized_objects += 1;
