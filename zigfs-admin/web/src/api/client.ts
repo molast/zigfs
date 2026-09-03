@@ -1,5 +1,6 @@
 import type {
   AccessKey,
+  AdminSession,
   ApiErrorBody,
   Bucket,
   CreatedAccessKey,
@@ -16,16 +17,16 @@ export class ApiError extends Error {
   }
 }
 
-export function createApiClient(token: string) {
+export function createApiClient() {
   async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers)
     headers.set('Accept', 'application/json')
-    headers.set('Authorization', `Bearer ${token}`)
     if (init.body) headers.set('Content-Type', 'application/json')
 
     const response = await fetch(path, {
       ...init,
       headers,
+      credentials: 'same-origin',
     })
 
     if (!response.ok) {
@@ -43,6 +44,13 @@ export function createApiClient(token: string) {
   }
 
   return {
+    login: (username: string, password: string) =>
+      request<AdminSession>('/api/v1/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+      }),
+    session: () => request<AdminSession>('/api/v1/auth/session'),
+    logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
     system: () => request<SystemInfo>('/api/v1/system'),
     listBuckets: async () => (await request<{ items: Bucket[] }>('/api/v1/buckets')).items,
     createBucket: (name: string) =>

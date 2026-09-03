@@ -10,25 +10,37 @@ import (
 	"time"
 
 	"zigfs-admin/server/internal/contract"
+	"zigfs-admin/server/internal/managementauth"
+	"zigfs-admin/server/internal/port"
 	"zigfs-admin/server/internal/requestid"
 )
 
 type Client struct {
 	endpoint   string
-	adminToken string
 	httpClient *http.Client
 }
 
-func New(endpoint, adminToken string, timeout time.Duration) *Client {
+func New(endpoint string, timeout time.Duration) *Client {
 	return &Client{
 		endpoint:   endpoint,
-		adminToken: adminToken,
 		httpClient: &http.Client{Timeout: timeout},
 	}
 }
 
 func (client *Client) Ready(ctx context.Context) error {
 	return client.requestJSON(ctx, http.MethodGet, "/health/ready", nil, nil)
+}
+
+func (client *Client) Login(ctx context.Context, request contract.LoginRequest) (contract.LoginResponse, error) {
+	var response contract.LoginResponse
+	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/auth/login", request, &response)
+	return response, err
+}
+
+func (client *Client) Session(ctx context.Context) (contract.SessionResponse, error) {
+	var response contract.SessionResponse
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/auth/session", nil, &response)
+	return response, err
 }
 
 func (client *Client) System(ctx context.Context) (contract.SystemResponse, error) {
@@ -119,8 +131,8 @@ func (client *Client) requestJSON(ctx context.Context, method, path string, body
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	if client.adminToken != "" {
-		request.Header.Set("Authorization", "Bearer "+client.adminToken)
+	if token := managementauth.Token(ctx); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
 	}
 	if id := requestid.FromContext(ctx); id != "" {
 		request.Header.Set("X-Request-ID", id)
@@ -133,7 +145,7 @@ func (client *Client) requestJSON(ctx context.Context, method, path string, body
 	defer response.Body.Close()
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("zig service returned status %d", response.StatusCode)
+		return &port.StatusError{StatusCode: response.StatusCode}
 	}
 	if target == nil || response.StatusCode == http.StatusNoContent {
 		return nil

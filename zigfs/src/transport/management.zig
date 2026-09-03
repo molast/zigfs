@@ -10,6 +10,8 @@ pub const Route = struct {
 };
 
 pub const routes = [_]Route{
+    .{ .method = .post, .path = "/_admin/v1/auth/login" },
+    .{ .method = .get, .path = "/_admin/v1/auth/session" },
     .{ .method = .get, .path = "/_admin/v1/buckets" },
     .{ .method = .post, .path = "/_admin/v1/buckets" },
     .{ .method = .delete, .path = "/_admin/v1/buckets/:name" },

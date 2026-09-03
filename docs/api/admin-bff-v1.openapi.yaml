@@ -3,13 +3,57 @@ info:
   title: ZigFS Admin BFF API
   version: 0.1.0
   description: >-
-    React Admin 的网页适配接口。所有 Bucket、Object、AK/SK 和 System 操作
-    都转交 ZigFS Management API；Admin 不持久化这些状态。
+    React Admin 的网页适配接口。登录、身份、权限以及所有 Bucket、Object、
+    AK/SK 和 System 操作都由 ZigFS 处理。Admin 只中转 ZigFS Token，
+    不签发或验证 Token，也不持久化任何用户或业务状态。
 servers:
   - url: http://127.0.0.1:9001
 security:
-  - webBearer: []
+  - zigfsSessionCookie: []
 paths:
+  /api/v1/auth/login:
+    post:
+      operationId: loginAdminWeb
+      summary: 转发登录到 ZigFS
+      description: >-
+        Admin 将凭证转发给 ZigFS。ZigFS 校验并签发 Token 后，Admin 仅将其写入
+        HttpOnly、SameSite=Strict Cookie；响应正文不暴露 Token。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: ZigFS 已确认登录，响应同时设置会话 Cookie
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/SessionResponse"
+  /api/v1/auth/logout:
+    post:
+      operationId: logoutAdminWeb
+      summary: 删除浏览器中的 ZigFS 会话 Cookie
+      responses:
+        "204":
+          description: Cookie 已删除
+  /api/v1/auth/session:
+    get:
+      operationId: getAdminWebSession
+      summary: 由 ZigFS 校验当前会话
+      responses:
+        "200":
+          description: ZigFS 确认的当前身份和过期时间
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/SessionResponse"
   /api/v1/system:
     get:
       operationId: getSystem
@@ -141,7 +185,8 @@ paths:
           description: 已删除或不存在
 components:
   securitySchemes:
-    webBearer:
-      type: http
-      scheme: bearer
-      bearerFormat: opaque-web-token
+    zigfsSessionCookie:
+      type: apiKey
+      in: cookie
+      name: zigfs_admin_session
+      description: ZigFS 签发、Admin 仅中转的短期 Management Token。

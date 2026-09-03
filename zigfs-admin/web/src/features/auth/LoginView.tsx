@@ -1,16 +1,28 @@
 import { type FormEvent, useState } from 'react'
 
 interface LoginViewProps {
-  onLogin: (token: string) => void
+  onLogin: (username: string, password: string) => Promise<void>
 }
 
 export function LoginView({ onLogin }: LoginViewProps) {
-  const [token, setToken] = useState('')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault()
-    const value = token.trim()
-    if (value) onLogin(value)
+    if (!username.trim() || !password) return
+
+    setSubmitting(true)
+    setError('')
+    try {
+      await onLogin(username.trim(), password)
+    } catch {
+      setError('账号或密码错误，或 ZigFS 当前不可用')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -21,19 +33,30 @@ export function LoginView({ onLogin }: LoginViewProps) {
           <p className="eyebrow">ZigFS</p>
           <h1>管理中心</h1>
         </div>
-        <label htmlFor="admin-token">管理凭证</label>
+        <label htmlFor="admin-username">管理员账号</label>
         <input
-          id="admin-token"
-          name="admin-token"
-          type="password"
-          autoComplete="current-password"
-          value={token}
-          onChange={(event) => setToken(event.target.value)}
+          id="admin-username"
+          name="username"
+          type="text"
+          autoComplete="username"
+          value={username}
+          onChange={(event) => setUsername(event.target.value)}
           required
           autoFocus
         />
-        <button className="primary-button" type="submit">
-          登录
+        <label htmlFor="admin-password">管理员密码</label>
+        <input
+          id="admin-password"
+          name="password"
+          type="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+          required
+        />
+        {error && <p className="form-error" role="alert">{error}</p>}
+        <button className="primary-button" type="submit" disabled={submitting}>
+          {submitting ? '登录中...' : '登录'}
         </button>
       </form>
     </main>

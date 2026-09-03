@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"zigfs-admin/server/internal/managementauth"
 	"zigfs-admin/server/internal/zigclient"
 )
 
@@ -23,8 +24,9 @@ func TestSystem(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := zigclient.New(server.URL, "internal-token", time.Second)
-	response, err := client.System(context.Background())
+	client := zigclient.New(server.URL, time.Second)
+	ctx := managementauth.WithToken(context.Background(), "internal-token")
+	response, err := client.System(ctx)
 	if err != nil {
 		t.Fatalf("system request failed: %v", err)
 	}

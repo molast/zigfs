@@ -1,5 +1,6 @@
 const std = @import("std");
 const Config = @import("../config.zig").Config;
+const management_session = @import("../auth/management_session.zig");
 const request_id = @import("../common/request_id.zig");
 
 pub const health_live_path = "/health/live";
@@ -14,11 +15,14 @@ const ListenerKind = enum {
 const ListenerContext = struct {
     io: std.Io,
     kind: ListenerKind,
+    config: Config,
 };
 
 const Route = enum {
     live,
     ready,
+    management_login,
+    management_session,
     management,
     s3,
     metrics,
@@ -38,7 +42,7 @@ pub fn serve(io: std.Io, config: Config) !void {
     var api_listener = try api_address.listen(io, .{ .reuse_address = true });
     defer api_listener.deinit(io);
 
-    var api_context: ListenerContext = .{ .io = io, .kind = .api };
+    var api_context: ListenerContext = .{ .io = io, .kind = .api, .config = config };
     std.log.info("ZigFS API listening on http://{s}", .{config.api_address});
 
     if (!config.metrics_enabled) {
@@ -50,7 +54,7 @@ pub fn serve(io: std.Io, config: Config) !void {
     var metrics_listener = try metrics_address.listen(io, .{ .reuse_address = true });
     defer metrics_listener.deinit(io);
 
-    var metrics_context: ListenerContext = .{ .io = io, .kind = .metrics };
+    var metrics_context: ListenerContext = .{ .io = io, .kind = .metrics, .config = config };
     var listeners: std.Io.Group = .init;
     defer listeners.cancel(io);
 
@@ -102,7 +106,7 @@ fn serveConnection(context: *ListenerContext, stream: std.Io.net.Stream) void {
             return;
         };
 
-        const status = serveRequest(&request, context.kind, current_request_id) catch |err| {
+        const status = serveRequest(&request, context, current_request_id) catch |err| {
             const duration_ms = started.untilNow(io).raw.toMilliseconds();
             std.log.warn(
                 "http request failed method={s} path={s} request_id={s} duration_ms={d} error={t}",
@@ -121,11 +125,11 @@ fn serveConnection(context: *ListenerContext, stream: std.Io.net.Stream) void {
 
 fn serveRequest(
     request: *std.http.Server.Request,
-    kind: ListenerKind,
+    context: *const ListenerContext,
     current_request_id: []const u8,
 ) !std.http.Status {
     const path = requestPath(request.head.target);
-    const route = classifyRoute(kind, path);
+    const route = classifyRoute(context.kind, path);
 
     return switch (route) {
         .live => respondReadOnly(
@@ -146,14 +150,19 @@ fn serveRequest(
             "text/plain; version=0.0.4; charset=utf-8",
             current_request_id,
         ),
-        .management => respond(
-            request,
-            "{\"code\":\"NotImplemented\",\"message\":\"management API is not implemented yet\"}\n",
-            .not_implemented,
-            "application/json; charset=utf-8",
-            current_request_id,
-            null,
-        ),
+        .management_login => serveManagementLogin(request, context, current_request_id),
+        .management_session => serveManagementSession(request, context, current_request_id),
+        .management => if (managementTokenExpiration(request, context)) |_|
+            respond(
+                request,
+                "{\"code\":\"NotImplemented\",\"message\":\"management API is not implemented yet\"}\n",
+                .not_implemented,
+                "application/json; charset=utf-8",
+                current_request_id,
+                null,
+            )
+        else
+            respondUnauthorized(request, current_request_id),
         .s3 => respond(
             request,
             "S3 API is not implemented yet\n",
@@ -171,6 +180,153 @@ fn serveRequest(
             null,
         ),
     };
+}
+
+fn serveManagementLogin(
+    request: *std.http.Server.Request,
+    context: *const ListenerContext,
+    current_request_id: []const u8,
+) !std.http.Status {
+    if (request.head.method != .POST) {
+        return respond(
+            request,
+            "method not allowed\n",
+            .method_not_allowed,
+            "text/plain; charset=utf-8",
+            current_request_id,
+            "POST",
+        );
+    }
+
+    var read_buffer: [4096]u8 = undefined;
+    const body_reader = try request.readerExpectContinue(&read_buffer);
+    const body = body_reader.allocRemaining(std.heap.smp_allocator, .limited(4096)) catch |err| switch (err) {
+        error.StreamTooLong => return respond(
+            request,
+            "{\"code\":\"PayloadTooLarge\",\"message\":\"login request is too large\"}\n",
+            .payload_too_large,
+            "application/json; charset=utf-8",
+            current_request_id,
+            null,
+        ),
+        else => return err,
+    };
+    defer std.heap.smp_allocator.free(body);
+
+    const LoginRequest = struct {
+        username: []const u8,
+        password: []const u8,
+    };
+    const parsed = std.json.parseFromSlice(LoginRequest, std.heap.smp_allocator, body, .{}) catch {
+        return respond(
+            request,
+            "{\"code\":\"InvalidRequest\",\"message\":\"valid username and password are required\"}\n",
+            .bad_request,
+            "application/json; charset=utf-8",
+            current_request_id,
+            null,
+        );
+    };
+    defer parsed.deinit();
+
+    const config = context.config;
+    if (!management_session.authenticate(
+        config.admin_username,
+        config.admin_password,
+        parsed.value.username,
+        parsed.value.password,
+    )) {
+        return respondUnauthorized(request, current_request_id);
+    }
+
+    const now = std.Io.Clock.real.now(context.io).toSeconds();
+    const issued = try management_session.issue(
+        context.io,
+        config.admin_session_secret,
+        config.admin_session_ttl_seconds,
+        now,
+    );
+    var response_buffer: [512]u8 = undefined;
+    const response_body = try std.fmt.bufPrint(
+        &response_buffer,
+        "{{\"token\":\"{s}\",\"token_type\":\"Bearer\",\"username\":\"{s}\",\"expires_at\":{d}}}\n",
+        .{ issued.value(), config.admin_username, issued.expires_at_unix_seconds },
+    );
+    return respond(
+        request,
+        response_body,
+        .ok,
+        "application/json; charset=utf-8",
+        current_request_id,
+        null,
+    );
+}
+
+fn serveManagementSession(
+    request: *std.http.Server.Request,
+    context: *const ListenerContext,
+    current_request_id: []const u8,
+) !std.http.Status {
+    if (request.head.method != .GET) {
+        return respond(
+            request,
+            "method not allowed\n",
+            .method_not_allowed,
+            "text/plain; charset=utf-8",
+            current_request_id,
+            "GET",
+        );
+    }
+    const expires_at = managementTokenExpiration(request, context) orelse {
+        return respondUnauthorized(request, current_request_id);
+    };
+
+    var response_buffer: [256]u8 = undefined;
+    const response_body = try std.fmt.bufPrint(
+        &response_buffer,
+        "{{\"authenticated\":true,\"username\":\"{s}\",\"expires_at\":{d}}}\n",
+        .{ context.config.admin_username, expires_at },
+    );
+    return respond(
+        request,
+        response_body,
+        .ok,
+        "application/json; charset=utf-8",
+        current_request_id,
+        null,
+    );
+}
+
+fn managementTokenExpiration(
+    request: *const std.http.Server.Request,
+    context: *const ListenerContext,
+) ?i64 {
+    const prefix = "Bearer ";
+    var headers = request.iterateHeaders();
+    while (headers.next()) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, "authorization")) continue;
+        if (!std.mem.startsWith(u8, header.value, prefix)) return null;
+        return management_session.validate(
+            context.config.admin_session_secret,
+            header.value[prefix.len..],
+            std.Io.Clock.real.now(context.io).toSeconds(),
+        );
+    }
+    return null;
+}
+
+fn respondUnauthorized(
+    request: *std.http.Server.Request,
+    current_request_id: []const u8,
+) !std.http.Status {
+    return respond(
+        request,
+        "{\"code\":\"Unauthorized\",\"message\":\"valid ZigFS administrator credentials are required\"}\n",
+        .unauthorized,
+        "application/json; charset=utf-8",
+        current_request_id,
+        null,
+    );
 }
 
 fn respondReadOnly(
@@ -250,6 +406,10 @@ fn classifyRoute(kind: ListenerKind, path: []const u8) Route {
             .live
         else if (std.mem.eql(u8, path, health_ready_path))
             .ready
+        else if (std.mem.eql(u8, path, "/_admin/v1/auth/login"))
+            .management_login
+        else if (std.mem.eql(u8, path, "/_admin/v1/auth/session"))
+            .management_session
         else if (std.mem.eql(u8, path, "/_admin/v1") or
             std.mem.startsWith(u8, path, "/_admin/v1/"))
             .management
@@ -262,6 +422,8 @@ fn classifyRoute(kind: ListenerKind, path: []const u8) Route {
 test "route classification isolates API and metrics listeners" {
     try std.testing.expectEqual(.live, classifyRoute(.api, "/health/live"));
     try std.testing.expectEqual(.ready, classifyRoute(.api, "/health/ready"));
+    try std.testing.expectEqual(.management_login, classifyRoute(.api, "/_admin/v1/auth/login"));
+    try std.testing.expectEqual(.management_session, classifyRoute(.api, "/_admin/v1/auth/session"));
     try std.testing.expectEqual(.management, classifyRoute(.api, "/_admin/v1/system"));
     try std.testing.expectEqual(.s3, classifyRoute(.api, "/bucket/object"));
     try std.testing.expectEqual(.metrics, classifyRoute(.metrics, "/metrics"));

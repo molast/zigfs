@@ -1,15 +1,16 @@
 package middleware
 
 import (
-	"crypto/subtle"
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 
 	"zigfs-admin/server/internal/contract"
+	"zigfs-admin/server/internal/managementauth"
 	"zigfs-admin/server/internal/requestid"
 )
+
+const AdminSessionCookie = "zigfs_admin_session"
 
 func SecurityHeaders() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
@@ -20,25 +21,19 @@ func SecurityHeaders() gin.HandlerFunc {
 	}
 }
 
-func RequireAdminToken(expected string) gin.HandlerFunc {
+func RequireAdminSession() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
-		provided := strings.TrimPrefix(ctx.GetHeader("Authorization"), "Bearer ")
-		if !equalToken(provided, expected) {
+		token, err := ctx.Cookie(AdminSessionCookie)
+		if err != nil || token == "" {
 			ctx.AbortWithStatusJSON(http.StatusUnauthorized, contract.ErrorResponse{
 				Code:      "Unauthorized",
-				Message:   "valid admin credentials are required",
+				Message:   "a valid ZigFS administrator session is required",
 				RequestID: requestid.FromContext(ctx.Request.Context()),
 				Details:   map[string]any{},
 			})
 			return
 		}
+		ctx.Request = ctx.Request.WithContext(managementauth.WithToken(ctx.Request.Context(), token))
 		ctx.Next()
 	}
-}
-
-func equalToken(provided, expected string) bool {
-	if provided == "" || expected == "" || len(provided) != len(expected) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
 }

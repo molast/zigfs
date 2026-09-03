@@ -5,6 +5,12 @@ export interface ApiErrorBody {
   details: Record<string, unknown>
 }
 
+export interface AdminSession {
+  authenticated: boolean
+  username: string
+  expires_at: number
+}
+
 export interface SystemInfo {
   version: string
   uptime: number

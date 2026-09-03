@@ -8,3 +8,11 @@ observability:
 
 storage:
   data_root: "data"
+
+# Bootstrap administrator identity is owned and verified by ZigFS.
+# Change these values before exposing either API outside a trusted local network.
+admin:
+  username: "admin"
+  password: "zigfs-admin"
+  session_secret: "zigfs-local-session-secret-change-before-production"
+  session_ttl_seconds: 28800

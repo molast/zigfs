@@ -3,17 +3,25 @@ const std = @import("std");
 pub const Config = struct {
     pub const default_path = "config.yaml";
     pub const max_file_size = 1024 * 1024;
+    const max_admin_username_length = 128;
+    const max_admin_password_length = 1024;
+    const max_admin_session_secret_length = 4096;
 
     data_root: []const u8 = "data",
     api_address: []const u8 = "0.0.0.0:9000",
     metrics_enabled: bool = true,
     metrics_address: []const u8 = "127.0.0.1:9090",
+    admin_username: []const u8 = "admin",
+    admin_password: []const u8 = "zigfs-admin",
+    admin_session_secret: []const u8 = "zigfs-local-session-secret-change-before-production",
+    admin_session_ttl_seconds: u64 = 8 * 60 * 60,
 
     pub const ParseError = error{
         InvalidYaml,
         MissingValue,
         UnknownArgument,
         UnknownKey,
+        InvalidAdminConfig,
     };
 
     pub const LoadError = ParseError || std.Io.Dir.ReadFileAllocError;
@@ -39,17 +47,21 @@ pub const Config = struct {
         ) catch |err| switch (err) {
             error.FileNotFound => {
                 if (arguments.config_path_explicit) return err;
-                return applyOverrides(config, args);
+                config = try applyOverrides(config, args);
+                try config.validate();
+                return config;
             },
             else => return err,
         };
 
         try config.applyYaml(source);
-        return applyOverrides(config, args);
+        config = try applyOverrides(config, args);
+        try config.validate();
+        return config;
     }
 
     pub fn applyYaml(self: *Config, source: []const u8) ParseError!void {
-        var section: enum { none, server, observability, storage } = .none;
+        var section: enum { none, server, observability, storage, admin } = .none;
         var lines = std.mem.splitScalar(u8, source, '\n');
 
         while (lines.next()) |raw_line| {
@@ -68,6 +80,8 @@ pub const Config = struct {
                     .observability
                 else if (std.mem.eql(u8, name, "storage"))
                     .storage
+                else if (std.mem.eql(u8, name, "admin"))
+                    .admin
                 else
                     return error.UnknownKey;
                 continue;
@@ -98,6 +112,21 @@ pub const Config = struct {
                 .storage => {
                     if (std.mem.eql(u8, key, "data_root")) {
                         self.data_root = value;
+                    } else {
+                        return error.UnknownKey;
+                    }
+                },
+                .admin => {
+                    if (std.mem.eql(u8, key, "username")) {
+                        self.admin_username = value;
+                    } else if (std.mem.eql(u8, key, "password")) {
+                        self.admin_password = value;
+                    } else if (std.mem.eql(u8, key, "session_secret")) {
+                        self.admin_session_secret = value;
+                    } else if (std.mem.eql(u8, key, "session_ttl_seconds")) {
+                        self.admin_session_ttl_seconds = std.fmt.parseInt(u64, value, 10) catch {
+                            return error.InvalidYaml;
+                        };
                     } else {
                         return error.UnknownKey;
                     }
@@ -172,6 +201,35 @@ pub const Config = struct {
         if (std.mem.eql(u8, value, "false")) return false;
         return error.InvalidYaml;
     }
+
+    fn validate(self: Config) ParseError!void {
+        if (self.admin_username.len == 0 or
+            self.admin_username.len > max_admin_username_length or
+            !isValidAdminUsername(self.admin_username) or
+            self.admin_password.len == 0 or
+            self.admin_password.len > max_admin_password_length or
+            self.admin_session_secret.len < 32 or
+            self.admin_session_secret.len > max_admin_session_secret_length or
+            self.admin_session_ttl_seconds < 60 or
+            self.admin_session_ttl_seconds > 24 * 60 * 60)
+        {
+            return error.InvalidAdminConfig;
+        }
+    }
+
+    fn isValidAdminUsername(username: []const u8) bool {
+        for (username) |character| {
+            if (!std.ascii.isAlphanumeric(character) and
+                character != '.' and
+                character != '_' and
+                character != '-' and
+                character != '@')
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 };
 
 test "built-in defaults are stable" {
@@ -180,6 +238,9 @@ test "built-in defaults are stable" {
     try std.testing.expectEqualStrings("0.0.0.0:9000", config.api_address);
     try std.testing.expect(config.metrics_enabled);
     try std.testing.expectEqualStrings("127.0.0.1:9090", config.metrics_address);
+    try std.testing.expectEqualStrings("admin", config.admin_username);
+    try std.testing.expectEqualStrings("zigfs-admin", config.admin_password);
+    try std.testing.expectEqual(@as(u64, 8 * 60 * 60), config.admin_session_ttl_seconds);
 }
 
 test "yaml values override defaults" {
@@ -192,12 +253,21 @@ test "yaml values override defaults" {
         \\  metrics_address: "127.0.0.1:19090"
         \\storage:
         \\  data_root: "test-data"
+        \\admin:
+        \\  username: "operator"
+        \\  password: "local-password"
+        \\  session_secret: "0123456789abcdef0123456789abcdef"
+        \\  session_ttl_seconds: 3600
     );
 
     try std.testing.expectEqualStrings("test-data", config.data_root);
     try std.testing.expectEqualStrings("127.0.0.1:19000", config.api_address);
     try std.testing.expect(!config.metrics_enabled);
     try std.testing.expectEqualStrings("127.0.0.1:19090", config.metrics_address);
+    try std.testing.expectEqualStrings("operator", config.admin_username);
+    try std.testing.expectEqualStrings("local-password", config.admin_password);
+    try std.testing.expectEqualStrings("0123456789abcdef0123456789abcdef", config.admin_session_secret);
+    try std.testing.expectEqual(@as(u64, 3600), config.admin_session_ttl_seconds);
 }
 
 test "command line overrides yaml" {
@@ -218,4 +288,22 @@ test "reject unknown yaml key" {
         \\storage:
         \\  database: "external"
     ));
+}
+
+test "reject invalid admin session configuration" {
+    var config: Config = .{};
+    try config.applyYaml(
+        \\admin:
+        \\  session_secret: "too-short"
+    );
+    try std.testing.expectError(error.InvalidAdminConfig, config.validate());
+}
+
+test "reject unsafe admin username" {
+    var config: Config = .{};
+    try config.applyYaml(
+        \\admin:
+        \\  username: "admin name"
+    );
+    try std.testing.expectError(error.InvalidAdminConfig, config.validate());
 }

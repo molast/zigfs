@@ -2,12 +2,23 @@ package port
 
 import (
 	"context"
+	"fmt"
 
 	"zigfs-admin/server/internal/contract"
 )
 
+type StatusError struct {
+	StatusCode int
+}
+
+func (err *StatusError) Error() string {
+	return fmt.Sprintf("ZigFS returned status %d", err.StatusCode)
+}
+
 type ZigClient interface {
 	Ready(ctx context.Context) error
+	Login(ctx context.Context, request contract.LoginRequest) (contract.LoginResponse, error)
+	Session(ctx context.Context) (contract.SessionResponse, error)
 	System(ctx context.Context) (contract.SystemResponse, error)
 	ListBuckets(ctx context.Context) (contract.ListBucketsResponse, error)
 	CreateBucket(ctx context.Context, request contract.CreateBucketRequest) (contract.Bucket, error)

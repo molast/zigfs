@@ -11,7 +11,7 @@ import (
 	"zigfs-admin/server/internal/middleware"
 )
 
-func New(system *handler.System, management *handler.Management, webAdminToken, webRoot string) *gin.Engine {
+func New(auth *handler.Auth, system *handler.System, management *handler.Management, webRoot string) *gin.Engine {
 	engine := gin.New()
 	engine.Use(
 		gin.Logger(),
@@ -24,17 +24,22 @@ func New(system *handler.System, management *handler.Management, webAdminToken, 
 	engine.GET("/health/ready", system.Ready)
 
 	api := engine.Group("/api/v1")
-	api.Use(middleware.RequireAdminToken(webAdminToken))
-	api.GET("/system", system.Get)
-	api.GET("/buckets", management.ListBuckets)
-	api.POST("/buckets", management.CreateBucket)
-	api.DELETE("/buckets/:name", management.DeleteBucket)
-	api.GET("/buckets/:name/objects", management.ListObjects)
-	api.POST("/objects/presign", management.PresignObject)
-	api.GET("/access-keys", management.ListAccessKeys)
-	api.POST("/access-keys", management.CreateAccessKey)
-	api.PATCH("/access-keys/:id", management.UpdateAccessKey)
-	api.DELETE("/access-keys/:id", management.DeleteAccessKey)
+	api.POST("/auth/login", auth.Login)
+
+	private := api.Group("")
+	private.Use(middleware.RequireAdminSession())
+	private.POST("/auth/logout", auth.Logout)
+	private.GET("/auth/session", auth.Session)
+	private.GET("/system", system.Get)
+	private.GET("/buckets", management.ListBuckets)
+	private.POST("/buckets", management.CreateBucket)
+	private.DELETE("/buckets/:name", management.DeleteBucket)
+	private.GET("/buckets/:name/objects", management.ListObjects)
+	private.POST("/objects/presign", management.PresignObject)
+	private.GET("/access-keys", management.ListAccessKeys)
+	private.POST("/access-keys", management.CreateAccessKey)
+	private.PATCH("/access-keys/:id", management.UpdateAccessKey)
+	private.DELETE("/access-keys/:id", management.DeleteAccessKey)
 
 	engine.StaticFS("/assets", http.Dir(filepath.Join(webRoot, "assets")))
 	engine.NoRoute(func(ctx *gin.Context) {

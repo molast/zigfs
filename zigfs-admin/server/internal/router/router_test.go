@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"zigfs-admin/server/internal/contract"
 	"zigfs-admin/server/internal/handler"
+	"zigfs-admin/server/internal/middleware"
 	"zigfs-admin/server/internal/router"
 )
 
@@ -19,6 +22,25 @@ type systemService struct {
 }
 
 type managementService struct{}
+
+type authService struct{}
+
+func (authService) Login(context.Context, contract.LoginRequest) (contract.LoginResponse, error) {
+	return contract.LoginResponse{
+		Token:     "zigfs-issued-token",
+		TokenType: "Bearer",
+		Username:  "zigfs-admin-user",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}, nil
+}
+
+func (authService) Session(context.Context) (contract.SessionResponse, error) {
+	return contract.SessionResponse{
+		Authenticated: true,
+		Username:      "admin",
+		ExpiresAt:     time.Now().Add(time.Hour).Unix(),
+	}, nil
+}
 
 func (managementService) ListBuckets(context.Context) (contract.ListBucketsResponse, error) {
 	return contract.ListBucketsResponse{}, nil
@@ -54,9 +76,9 @@ func (managementService) DeleteAccessKey(context.Context, string) error { return
 
 func testEngine(ready bool) http.Handler {
 	return router.New(
+		handler.NewAuth(authService{}),
 		handler.NewSystem(systemService{ready: ready}),
 		handler.NewManagement(managementService{}),
-		"test-token",
 		"testdata/web",
 	)
 }
@@ -85,7 +107,7 @@ func TestLive(t *testing.T) {
 	}
 }
 
-func TestSystemRequiresAdminToken(t *testing.T) {
+func TestSystemRequiresAdminSession(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := testEngine(true)
 	recorder := httptest.NewRecorder()
@@ -98,12 +120,43 @@ func TestSystemRequiresAdminToken(t *testing.T) {
 	}
 }
 
+func TestLoginSetsZigFSSessionCookie(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := testEngine(true)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/login",
+		strings.NewReader(`{"username":"admin","password":"zigfs-admin"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+
+	engine.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, recorder.Code)
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != middleware.AdminSessionCookie {
+		t.Fatalf("expected ZigFS session cookie, got %+v", cookies)
+	}
+	if !cookies[0].HttpOnly || cookies[0].Value != "zigfs-issued-token" {
+		t.Fatalf("unexpected session cookie: %+v", cookies[0])
+	}
+	if strings.Contains(recorder.Body.String(), "zigfs-issued-token") {
+		t.Fatal("ZigFS token must not be exposed to browser JavaScript")
+	}
+	if !strings.Contains(recorder.Body.String(), `"username":"zigfs-admin-user"`) {
+		t.Fatalf("expected ZigFS-confirmed identity, got %s", recorder.Body.String())
+	}
+}
+
 func TestSystem(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := testEngine(true)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/system", nil)
-	request.Header.Set("Authorization", "Bearer test-token")
+	request.AddCookie(&http.Cookie{Name: middleware.AdminSessionCookie, Value: "zigfs-issued-token"})
 
 	engine.ServeHTTP(recorder, request)
 

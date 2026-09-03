@@ -2,11 +2,13 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"zigfs-admin/server/internal/contract"
+	"zigfs-admin/server/internal/port"
 	"zigfs-admin/server/internal/requestid"
 )
 
@@ -38,10 +40,19 @@ func (handler *System) Ready(ctx *gin.Context) {
 func (handler *System) Get(ctx *gin.Context) {
 	response, err := handler.service.Get(ctx.Request.Context())
 	if err != nil {
-		writeError(ctx, http.StatusBadGateway, "StorageUnavailable", "storage service is unavailable")
+		writeStorageError(ctx, err)
 		return
 	}
 	ctx.JSON(http.StatusOK, response)
+}
+
+func writeStorageError(ctx *gin.Context, err error) {
+	var statusError *port.StatusError
+	if errors.As(err, &statusError) && statusError.StatusCode == http.StatusUnauthorized {
+		writeError(ctx, http.StatusUnauthorized, "Unauthorized", "administrator session has expired")
+		return
+	}
+	writeError(ctx, http.StatusBadGateway, "StorageUnavailable", "storage service request failed")
 }
 
 func writeError(ctx *gin.Context, status int, code, message string) {

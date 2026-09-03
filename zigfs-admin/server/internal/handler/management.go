@@ -32,7 +32,7 @@ func NewManagement(service ManagementService) *Management {
 func (handler *Management) ListBuckets(ctx *gin.Context) {
 	response, err := handler.service.ListBuckets(ctx.Request.Context())
 	if err != nil {
-		writeStorageError(ctx)
+		writeStorageError(ctx, err)
 		return
 	}
 	ctx.JSON(http.StatusOK, response)
@@ -46,7 +46,7 @@ func (handler *Management) CreateBucket(ctx *gin.Context) {
 	}
 	response, err := handler.service.CreateBucket(ctx.Request.Context(), request)
 	if err != nil {
-		writeStorageError(ctx)
+		writeStorageError(ctx, err)
 		return
 	}
 	ctx.JSON(http.StatusCreated, response)
@@ -54,7 +54,7 @@ func (handler *Management) CreateBucket(ctx *gin.Context) {
 
 func (handler *Management) DeleteBucket(ctx *gin.Context) {
 	if err := handler.service.DeleteBucket(ctx.Request.Context(), ctx.Param("name")); err != nil {
-		writeStorageError(ctx)
+		writeStorageError(ctx, err)
 		return
 	}
 	ctx.Status(http.StatusNoContent)
@@ -68,7 +68,7 @@ func (handler *Management) ListObjects(ctx *gin.Context) {
 		ctx.Query("continuation_token"),
 	)
 	if err != nil {
-		writeStorageError(ctx)
+		writeStorageError(ctx, err)
 		return
 	}
 	ctx.JSON(http.StatusOK, response)
@@ -82,7 +82,7 @@ func (handler *Management) PresignObject(ctx *gin.Context) {
 	}
 	response, err := handler.service.PresignObject(ctx.Request.Context(), request)
 	if err != nil {
-		writeStorageError(ctx)
+		writeStorageError(ctx, err)
 		return
 	}
 	ctx.JSON(http.StatusOK, response)
@@ -91,7 +91,7 @@ func (handler *Management) PresignObject(ctx *gin.Context) {
 func (handler *Management) ListAccessKeys(ctx *gin.Context) {
 	response, err := handler.service.ListAccessKeys(ctx.Request.Context())
 	if err != nil {
-		writeStorageError(ctx)
+		writeStorageError(ctx, err)
 		return
 	}
 	ctx.JSON(http.StatusOK, response)
@@ -105,7 +105,7 @@ func (handler *Management) CreateAccessKey(ctx *gin.Context) {
 	}
 	response, err := handler.service.CreateAccessKey(ctx.Request.Context(), request)
 	if err != nil {
-		writeStorageError(ctx)
+		writeStorageError(ctx, err)
 		return
 	}
 	ctx.JSON(http.StatusCreated, response)
@@ -119,7 +119,7 @@ func (handler *Management) UpdateAccessKey(ctx *gin.Context) {
 	}
 	response, err := handler.service.UpdateAccessKey(ctx.Request.Context(), ctx.Param("id"), request)
 	if err != nil {
-		writeStorageError(ctx)
+		writeStorageError(ctx, err)
 		return
 	}
 	ctx.JSON(http.StatusOK, response)
@@ -127,12 +127,8 @@ func (handler *Management) UpdateAccessKey(ctx *gin.Context) {
 
 func (handler *Management) DeleteAccessKey(ctx *gin.Context) {
 	if err := handler.service.DeleteAccessKey(ctx.Request.Context(), ctx.Param("id")); err != nil {
-		writeStorageError(ctx)
+		writeStorageError(ctx, err)
 		return
 	}
 	ctx.Status(http.StatusNoContent)
-}
-
-func writeStorageError(ctx *gin.Context) {
-	writeError(ctx, http.StatusBadGateway, "StorageUnavailable", "storage service request failed")
 }

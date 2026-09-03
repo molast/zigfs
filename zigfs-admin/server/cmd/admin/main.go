@@ -24,15 +24,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	client := zigclient.New(cfg.ZigEndpoint, cfg.ZigAdminToken, cfg.UpstreamTimeout)
+	client := zigclient.New(cfg.ZigEndpoint, cfg.UpstreamTimeout)
+	authService := service.NewAuth(client)
 	systemService := service.NewSystem(client)
 	managementService := service.NewManagement(client)
+	authHandler := handler.NewAuth(authService)
 	systemHandler := handler.NewSystem(systemService)
 	managementHandler := handler.NewManagement(managementService)
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddress,
-		Handler:           router.New(systemHandler, managementHandler, cfg.WebAdminToken, cfg.WebRoot),
+		Handler:           router.New(authHandler, systemHandler, managementHandler, cfg.WebRoot),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

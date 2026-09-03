@@ -5,9 +5,11 @@ ZigFS 是一个使用 Zig 构建的轻量级、单机 S3 兼容对象存储项�
 仓库包含两个独立项目：
 
 - `zigfs/`：Zig 数据面，负责 S3/Data API、Management API、鉴权、对象数据和元数据。
-- `zigfs-admin/`：可选管理网页，包含 Go + Gin BFF 和 Vite + React 前端。
+- `zigfs-admin/`：可选管理网页；Vite + React Web 负责展示与交互，Go + Gin Server 只负责静态资源托管和接口转发。
 
 Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，ZigFS 仍然独立提供文件服务和管理 API，其他授权用户或系统可以直接对接。
+
+职责定义：Admin Web 是展示层，Admin Server 是接口转发层，ZigFS 才是唯一服务端和所有数据、认证、权限及业务规则的权威来源。
 
 ## 当前状态
 
@@ -23,6 +25,7 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 - ZigFS 常驻 HTTP Server、Health API 和 Prometheus Metrics Listener
 - HTTP Request ID 透传/生成与基础访问日志
 - ZigFS Management API 路由清单
+- ZigFS YAML 管理员身份、Management 登录和短期会话校验
 - Go 1.27 + Gin 1.12 管理 BFF
 - Bucket、Object、AK/SK 和 System 类型化 Zig Client
 - React 管理界面骨架
@@ -37,23 +40,27 @@ Signature V4、S3 业务 Handler、对象持久化、元数据事务和 ZigFS Ma
 ./start.sh
 ```
 
-运行后可选择启动 ZigFS 或 ZigFS Admin。两个服务均以前台方式运行，可使用
-`Ctrl+C` 停止；需要同时运行时，请分别在两个终端中执行脚本。
+运行后可选择启动 ZigFS 或 ZigFS Admin。选择 ZigFS 时只启动文件服务；选择
+ZigFS Admin 时会启动完整依赖链，不需要再打开另一个终端。
 
 Admin 启动前会检查 ZigFS Management API 的
 `http://127.0.0.1:9000/health/ready`。可以通过 `ZIGFS_ENDPOINT` 修改检查和连接地址。
-如果 ZigFS 未就绪，Admin 不会启动。
+如果 ZigFS 尚未运行，脚本会先构建并启动 ZigFS，等待 Ready 后再启动 Admin。
+如果 ZigFS 已经运行，脚本直接复用现有实例。按 `Ctrl+C` 或 Admin 退出时，脚本只会
+停止本次自动启动的 ZigFS，不会停止启动脚本前已经存在的 ZigFS 进程。
 
 首次启动 Admin 前，需要安装并锁定前端依赖：
 
 ```bash
 cd zigfs-admin/web
-npm install
+pnpm install
 ```
 
-脚本会使用现有依赖构建前端，不会自动安装依赖。`ZIGFS_WEB_ADMIN_TOKEN` 未设置时，
-脚本会交互式读取网页管理凭证；调用 ZigFS Management API 所需的凭证仍通过
-`ZIGFS_ADMIN_TOKEN` 设置。
+脚本会使用现有依赖构建前端，不会自动安装依赖。管理员身份配置、密码校验和
+Management Token 签发全部由 ZigFS 负责，Go Admin 不保存管理员账号或密码。
+
+默认本地登录账号为 `admin`，密码为 `zigfs-admin`。请在 `zigfs/config.yaml` 的
+`admin` 段修改；对外部署前必须同时更换密码和 `session_secret`。
 
 ## 架构边界
 
@@ -114,6 +121,12 @@ observability:
 
 storage:
   data_root: "data"
+
+admin:
+  username: "admin"
+  password: "zigfs-admin"
+  session_secret: "zigfs-local-session-secret-change-before-production"
+  session_ttl_seconds: 28800
 ```
 
 加载优先级：
@@ -131,8 +144,6 @@ cd zigfs-admin/server
 go mod tidy
 go test ./...
 
-ZIGFS_WEB_ADMIN_TOKEN=local-admin-token \
-ZIGFS_ADMIN_TOKEN=zigfs-management-token \
 ZIGFS_ENDPOINT=http://127.0.0.1:9000 \
 go run ./cmd/admin
 ```
@@ -143,9 +154,10 @@ go run ./cmd/admin
 |---|---|---|
 | `ZIGFS_ADMIN_LISTEN` | `:9001` | Admin HTTP 监听地址 |
 | `ZIGFS_ENDPOINT` | `http://127.0.0.1:9000` | ZigFS API 地址 |
-| `ZIGFS_ADMIN_TOKEN` | 空 | 调用 ZigFS 的管理凭证 |
-| `ZIGFS_WEB_ADMIN_TOKEN` | 无，必须提供 | 网页访问凭证 |
 | `ZIGFS_WEB_ROOT` | `../web/dist` | React 构建产物目录 |
+
+Admin Server 不配置管理员账号、密码或固定 Management Token。登录信息由它转发给
+ZigFS；ZigFS 签发的短期 Token 只通过 HttpOnly Cookie 随请求转交。
 
 ## ZigFS Admin Web
 
@@ -153,9 +165,9 @@ go run ./cmd/admin
 
 ```bash
 cd zigfs-admin/web
-npm install
-npm run typecheck
-npm run dev
+pnpm install
+pnpm run typecheck
+pnpm run dev
 ```
 
 开发服务器默认监听 `http://127.0.0.1:5173`，并把 `/api` 和 `/health` 代理到 `http://127.0.0.1:9001`。

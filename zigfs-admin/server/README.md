@@ -1,14 +1,12 @@
 # zigfs-admin server
 
-Go + Gin control-plane service for ZigFS.
+Go + Gin web forwarding server for ZigFS Admin.
 
 ## Environment
 
 ```text
 ZIGFS_ADMIN_LISTEN=:9001
 ZIGFS_ENDPOINT=http://127.0.0.1:9000
-ZIGFS_ADMIN_TOKEN=<zig-management-token>
-ZIGFS_WEB_ADMIN_TOKEN=<browser-admin-token>
 ZIGFS_WEB_ROOT=../web/dist
 ```
 
@@ -19,5 +17,8 @@ go test ./...
 go run ./cmd/admin
 ```
 
-The Admin server does not own storage state. Its `/api/v1/*` routes are a web
-adapter over the ZigFS Management API; object bytes never pass through it.
+The Admin Web is only a presentation layer, and this server is only its static
+host and API forwarder. ZigFS is the sole backend and owns all user identities,
+authentication, authorization, storage state, and business rules. Object bytes
+never pass through Admin. This server only relays ZigFS-issued short-lived tokens
+in HttpOnly cookies.

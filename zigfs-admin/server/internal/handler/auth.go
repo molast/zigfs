@@ -1,0 +1,79 @@
+package handler
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"zigfs-admin/server/internal/contract"
+	"zigfs-admin/server/internal/middleware"
+	"zigfs-admin/server/internal/port"
+)
+
+type AuthService interface {
+	Login(context.Context, contract.LoginRequest) (contract.LoginResponse, error)
+	Session(context.Context) (contract.SessionResponse, error)
+}
+
+type Auth struct {
+	service AuthService
+}
+
+func NewAuth(service AuthService) *Auth {
+	return &Auth{service: service}
+}
+
+func (handler *Auth) Login(ctx *gin.Context) {
+	var request contract.LoginRequest
+	if err := ctx.ShouldBindJSON(&request); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "username and password are required")
+		return
+	}
+
+	response, err := handler.service.Login(ctx.Request.Context(), request)
+	if err != nil {
+		var statusError *port.StatusError
+		if errors.As(err, &statusError) && statusError.StatusCode == http.StatusUnauthorized {
+			writeError(ctx, http.StatusUnauthorized, "Unauthorized", "invalid administrator username or password")
+			return
+		}
+		writeError(ctx, http.StatusBadGateway, "StorageUnavailable", "ZigFS authentication is unavailable")
+		return
+	}
+
+	maxAge := int(time.Until(time.Unix(response.ExpiresAt, 0)).Seconds())
+	if maxAge < 1 {
+		writeError(ctx, http.StatusBadGateway, "InvalidUpstreamResponse", "ZigFS returned an expired session")
+		return
+	}
+	ctx.SetSameSite(http.SameSiteStrictMode)
+	ctx.SetCookie(middleware.AdminSessionCookie, response.Token, maxAge, "/api", "", false, true)
+	ctx.JSON(http.StatusOK, contract.SessionResponse{
+		Authenticated: true,
+		Username:      response.Username,
+		ExpiresAt:     response.ExpiresAt,
+	})
+}
+
+func (handler *Auth) Logout(ctx *gin.Context) {
+	ctx.SetSameSite(http.SameSiteStrictMode)
+	ctx.SetCookie(middleware.AdminSessionCookie, "", -1, "/api", "", false, true)
+	ctx.Status(http.StatusNoContent)
+}
+
+func (handler *Auth) Session(ctx *gin.Context) {
+	response, err := handler.service.Session(ctx.Request.Context())
+	if err != nil {
+		var statusError *port.StatusError
+		if errors.As(err, &statusError) && statusError.StatusCode == http.StatusUnauthorized {
+			writeError(ctx, http.StatusUnauthorized, "Unauthorized", "administrator session has expired")
+			return
+		}
+		writeError(ctx, http.StatusBadGateway, "StorageUnavailable", "ZigFS authentication is unavailable")
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}

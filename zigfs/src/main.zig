@@ -9,6 +9,12 @@ pub fn main(init: std.process.Init) !void {
     defer app.deinit(init.io);
     try app.initialize(init.io);
 
+    if (std.mem.eql(u8, config.admin_username, "admin") and
+        std.mem.eql(u8, config.admin_password, "zigfs-admin"))
+    {
+        std.log.warn("ZigFS is using the default local administrator credentials; change the admin section in config.yaml before external exposure", .{});
+    }
+
     std.log.info(
         "zigfs {s} initialized (data_root={s}, api={s}, metrics={s}, metrics_enabled={})",
         .{ zigfs.version, config.data_root, config.api_address, config.metrics_address, config.metrics_enabled },

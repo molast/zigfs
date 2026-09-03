@@ -4,13 +4,47 @@ info:
   version: 0.1.0
   description: >-
     ZigFS 独立提供的管理接口。Admin 只是调用方之一；授权用户和自动化系统
-    可以在不部署 Admin 的情况下直接调用。本文件描述已初始化的 V1 契约，
-    Zig Handler 当前尚未实现。
+    可以在不部署 Admin 的情况下直接调用。管理员身份、密码校验、Token
+    签发与验证、权限和所有业务状态均由 ZigFS 负责；Admin 不参与认证决策。
 servers:
   - url: http://127.0.0.1:9000
 security:
   - managementBearer: []
 paths:
+  /_admin/v1/auth/login:
+    post:
+      operationId: loginManagementUser
+      summary: 登录 ZigFS Management API
+      description: 凭证由 ZigFS 校验，成功后由 ZigFS 签发短期 Management Token。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /_admin/v1/auth/session:
+    get:
+      operationId: getManagementSession
+      summary: 校验 ZigFS Management Session
+      responses:
+        "200":
+          description: 当前身份和过期时间
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResponse"
+        default:
+          $ref: "#/components/responses/Error"
   /_admin/v1/buckets:
     get:
       operationId: listBuckets
@@ -225,6 +259,51 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
   schemas:
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 128
+        password:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          writeOnly: true
+    LoginResponse:
+      type: object
+      additionalProperties: false
+      required: [token, token_type, username, expires_at]
+      properties:
+        token:
+          type: string
+          writeOnly: true
+        token_type:
+          type: string
+          const: Bearer
+        username:
+          type: string
+        expires_at:
+          type: integer
+          format: int64
+          description: Unix 时间戳，单位为秒
+    SessionResponse:
+      type: object
+      additionalProperties: false
+      required: [authenticated, username, expires_at]
+      properties:
+        authenticated:
+          type: boolean
+          const: true
+        username:
+          type: string
+        expires_at:
+          type: integer
+          format: int64
+          description: Unix 时间戳，单位为秒
     Bucket:
       type: object
       required: [name, created_at]
