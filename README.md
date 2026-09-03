@@ -46,9 +46,9 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 - HTTP Request ID 透传/生成与基础访问日志
 - `ZFCR` V1.0 AK/SK Metadata、AES-256-GCM Secret 加密和数据根随机 Master Key
 - AK/SK 创建、查询、更新、禁用、删除、重启恢复和最小 Bucket/Object Policy
-- Signature V4 Header 验签、Canonical URI/Query/Header、Region Scope、Payload Hash 和时钟偏差校验
+- Signature V4 Header/Presigned Query 验签、Canonical URI/Query/Header、Region Scope、Payload Hash、有效期和时钟偏差校验
 - Path-style S3 Router、稳定 XML 错误，以及 Bucket/Object/List V2 HTTP Handler
-- S3 Put/Get 流式传输、Content-MD5/SHA-256 校验、ETag、用户元数据和分页响应
+- S3 Put/Get 流式传输、Content-MD5/SHA-256/CRC64NVME 校验、ETag、用户元数据和分页响应
 - 真实环回 TCP S3 集成测试，覆盖鉴权拒绝、CRUD、分页、Policy 与 Credential 禁用
 - ZigFS Management API 路由清单
 - ZigFS YAML 管理员身份、Management 登录和短期会话校验
@@ -56,12 +56,14 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 - Bucket、Object、AK/SK 和 System 类型化 Zig Client
 - React 管理界面骨架
 
-当前 Phase 4 S3 Protocol and Authentication 正在收口。核心 Bucket/Object/List V2
+Phase 4 S3 Protocol and Authentication 已完成约定的三客户端矩阵。核心 Bucket/Object/List V2
 Path-style HTTP API、Signature V4 Header、AK/SK 加密持久化和 Policy 已实现并通过真实
-TCP 回归测试；AWS 官方 SigV4 GET Object 向量已通过。Phase 4 剩余 Gate 是在安装
-AWS SDK、MinIO Client 和 rclone 后执行外部客户端兼容矩阵。Multipart、Range、条件请求、
-Presigned URL、Temporary Credentials、Virtual-hosted-style 和 AWS Streaming Signature
-仍未实现，并明确返回错误或记录为不支持；其余 Management 业务路由仍返回 `501`。
+TCP 回归测试；AWS CLI 2.36.38、rclone 1.75.0 和 mc 2025-08-13 已通过当前声明范围，
+包括 mc 默认的签名流式 Put 和 DeleteObjects 删除。Phase 5 已启动，单 Range GetObject
+及 `206/416` 语义已通过 AWS CLI；对象级 Presigned GET/PUT 已实现，AWS CLI、mc、rclone
+生成的 Presigned GET 均通过匿名下载与字节一致性验证。Multipart、条件请求、Temporary
+Credentials、Virtual-hosted-style 和带 trailer 的 AWS Streaming Signature 仍未实现，并明确
+返回错误或记录为不支持；独立 AWS SDK 仍待扩展，其余 Management 业务路由仍返回 `501`。
 
 ## 启动脚本
 

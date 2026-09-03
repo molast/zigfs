@@ -1,9 +1,12 @@
 const std = @import("std");
 
 pub const algorithm = "AWS4-HMAC-SHA256";
+pub const streaming_payload = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD";
+pub const streaming_algorithm = "AWS4-HMAC-SHA256-PAYLOAD";
 pub const terminal = "aws4_request";
 pub const service = "s3";
 pub const default_max_clock_skew_seconds: i64 = 15 * 60;
+pub const max_presigned_expiry_seconds: u64 = 7 * 24 * 60 * 60;
 
 const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
 const Sha256 = std.crypto.hash.sha2.Sha256;
@@ -36,6 +39,116 @@ pub const Authorization = struct {
     signature: [32]u8,
 };
 
+pub const PresignedAuthorization = struct {
+    allocator: std.mem.Allocator,
+    credential_storage: []u8,
+    signed_headers_storage: []u8,
+    authorization: Authorization,
+    amz_date: [16]u8,
+    expires_seconds: u64,
+
+    pub fn deinit(self: *PresignedAuthorization) void {
+        self.allocator.free(self.credential_storage);
+        self.allocator.free(self.signed_headers_storage);
+        self.* = undefined;
+    }
+};
+
+pub const PresignRequest = struct {
+    method: []const u8,
+    target: []const u8,
+    headers: []const Header,
+    access_key: []const u8,
+    secret_key: []const u8,
+    amz_date: []const u8,
+    region: []const u8,
+    expires_seconds: u64,
+    signed_headers: []const u8 = "host",
+};
+
+const CredentialScope = struct {
+    access_key: []const u8,
+    scope_date: []const u8,
+    region: []const u8,
+};
+
+pub const StreamingVerifier = struct {
+    signing_key: [32]u8,
+    previous_signature: [32]u8,
+    amz_date: [16]u8,
+    scope_buffer: [128]u8,
+    scope_length: usize,
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        headers: []const Header,
+        authorization: Authorization,
+        secret_key: []const u8,
+    ) Error!StreamingVerifier {
+        const amz_date = try findSingleHeader(headers, "x-amz-date");
+        if (amz_date.len != 16) return error.InvalidDate;
+        var result: StreamingVerifier = .{
+            .signing_key = try deriveSigningKey(
+                allocator,
+                authorization.scope_date,
+                authorization.region,
+                secret_key,
+            ),
+            .previous_signature = authorization.signature,
+            .amz_date = undefined,
+            .scope_buffer = undefined,
+            .scope_length = 0,
+        };
+        @memcpy(&result.amz_date, amz_date);
+        const scope = std.fmt.bufPrint(
+            &result.scope_buffer,
+            "{s}/{s}/{s}/{s}",
+            .{ authorization.scope_date, authorization.region, service, terminal },
+        ) catch return error.InvalidCredentialScope;
+        result.scope_length = scope.len;
+        return result;
+    }
+
+    pub fn deinit(self: *StreamingVerifier) void {
+        std.crypto.secureZero(u8, &self.signing_key);
+        std.crypto.secureZero(u8, &self.previous_signature);
+        self.* = undefined;
+    }
+
+    pub fn verifyChunkHash(
+        self: *StreamingVerifier,
+        chunk_hash: [32]u8,
+        signature_hex: []const u8,
+    ) Error!void {
+        var signature: [32]u8 = undefined;
+        try decodeLowerHex(signature_hex, &signature);
+        var empty_hash: [32]u8 = undefined;
+        Sha256.hash("", &empty_hash, .{});
+        const previous_hex = std.fmt.bytesToHex(self.previous_signature, .lower);
+        const empty_hex = std.fmt.bytesToHex(empty_hash, .lower);
+        const chunk_hex = std.fmt.bytesToHex(chunk_hash, .lower);
+        var string_buffer: [512]u8 = undefined;
+        const string_to_sign = std.fmt.bufPrint(
+            &string_buffer,
+            "{s}\n{s}\n{s}\n{s}\n{s}\n{s}",
+            .{
+                streaming_algorithm,
+                &self.amz_date,
+                self.scope_buffer[0..self.scope_length],
+                &previous_hex,
+                &empty_hex,
+                &chunk_hex,
+            },
+        ) catch return error.InvalidPayloadHash;
+        var expected_signature: [32]u8 = undefined;
+        HmacSha256.create(&expected_signature, string_to_sign, &self.signing_key);
+        if (!std.crypto.timing_safe.eql([32]u8, expected_signature, signature)) {
+            return error.SignatureDoesNotMatch;
+        }
+        self.previous_signature = signature;
+    }
+};
+
 pub const Error = error{
     OutOfMemory,
     MissingAuthorization,
@@ -45,8 +158,11 @@ pub const Error = error{
     InvalidSignedHeaders,
     InvalidPayloadHash,
     InvalidDate,
+    InvalidExpires,
     RequestTimeTooSkewed,
+    RequestExpired,
     InvalidTarget,
+    MalformedPresignedQuery,
     SignatureDoesNotMatch,
 };
 
@@ -85,28 +201,103 @@ pub fn parseAuthorization(headers: []const Header) Error!Authorization {
         }
     }
 
-    var scope = std.mem.splitScalar(u8, credential_value orelse return error.MalformedAuthorization, '/');
-    const access_key = scope.next() orelse return error.InvalidCredentialScope;
-    const scope_date = scope.next() orelse return error.InvalidCredentialScope;
-    const region = scope.next() orelse return error.InvalidCredentialScope;
-    const scope_service = scope.next() orelse return error.InvalidCredentialScope;
-    const scope_terminal = scope.next() orelse return error.InvalidCredentialScope;
-    if (scope.next() != null or access_key.len == 0 or scope_date.len != 8 or
-        region.len == 0 or !std.mem.eql(u8, scope_service, service) or
-        !std.mem.eql(u8, scope_terminal, terminal))
-    {
-        return error.InvalidCredentialScope;
-    }
+    const credential = try parseCredentialScope(
+        credential_value orelse return error.MalformedAuthorization,
+    );
     const signed = signed_headers orelse return error.MalformedAuthorization;
-    try validateSignedHeaders(signed);
+    try validateSignedHeaders(signed, true);
     var signature: [32]u8 = undefined;
     try decodeLowerHex(signature_value orelse return error.MalformedAuthorization, &signature);
     return .{
-        .access_key = access_key,
-        .scope_date = scope_date,
-        .region = region,
+        .access_key = credential.access_key,
+        .scope_date = credential.scope_date,
+        .region = credential.region,
         .signed_headers = signed,
         .signature = signature,
+    };
+}
+
+pub fn hasPresignedParameters(target: []const u8) bool {
+    const query_start = std.mem.indexOfScalar(u8, target, '?') orelse return false;
+    var parameters = std.mem.splitScalar(u8, target[query_start + 1 ..], '&');
+    while (parameters.next()) |parameter| {
+        const equals = std.mem.indexOfScalar(u8, parameter, '=') orelse parameter.len;
+        const name = parameter[0..equals];
+        if (std.mem.eql(u8, name, "X-Amz-Algorithm") or
+            std.mem.eql(u8, name, "X-Amz-Credential") or
+            std.mem.eql(u8, name, "X-Amz-Date") or
+            std.mem.eql(u8, name, "X-Amz-Expires") or
+            std.mem.eql(u8, name, "X-Amz-SignedHeaders") or
+            std.mem.eql(u8, name, "X-Amz-Signature"))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+pub fn parsePresignedAuthorization(
+    allocator: std.mem.Allocator,
+    target: []const u8,
+) Error!PresignedAuthorization {
+    const algorithm_value = try decodeRequiredQueryValue(allocator, target, "X-Amz-Algorithm");
+    defer allocator.free(algorithm_value);
+    if (!std.mem.eql(u8, algorithm_value, algorithm)) return error.MalformedPresignedQuery;
+
+    const credential_storage = try decodeRequiredQueryValue(allocator, target, "X-Amz-Credential");
+    errdefer allocator.free(credential_storage);
+    const credential = parseCredentialScope(credential_storage) catch {
+        return error.InvalidCredentialScope;
+    };
+
+    const date_value = try decodeRequiredQueryValue(allocator, target, "X-Amz-Date");
+    defer allocator.free(date_value);
+    _ = parseAmzDate(date_value) catch return error.InvalidDate;
+    if (date_value.len != 16 or !std.mem.eql(u8, credential.scope_date, date_value[0..8])) {
+        return error.InvalidCredentialScope;
+    }
+    var amz_date: [16]u8 = undefined;
+    @memcpy(&amz_date, date_value);
+
+    const expires_value = try decodeRequiredQueryValue(allocator, target, "X-Amz-Expires");
+    defer allocator.free(expires_value);
+    if (expires_value.len == 0) return error.InvalidExpires;
+    for (expires_value) |character| {
+        if (!std.ascii.isDigit(character)) return error.InvalidExpires;
+    }
+    const expires_seconds = std.fmt.parseInt(u64, expires_value, 10) catch {
+        return error.InvalidExpires;
+    };
+    if (expires_seconds == 0 or expires_seconds > max_presigned_expiry_seconds) {
+        return error.InvalidExpires;
+    }
+
+    const signed_headers_storage = try decodeRequiredQueryValue(
+        allocator,
+        target,
+        "X-Amz-SignedHeaders",
+    );
+    errdefer allocator.free(signed_headers_storage);
+    try validateSignedHeaders(signed_headers_storage, false);
+
+    const signature_value = try decodeRequiredQueryValue(allocator, target, "X-Amz-Signature");
+    defer allocator.free(signature_value);
+    var signature: [32]u8 = undefined;
+    decodeLowerHex(signature_value, &signature) catch return error.MalformedPresignedQuery;
+
+    return .{
+        .allocator = allocator,
+        .credential_storage = credential_storage,
+        .signed_headers_storage = signed_headers_storage,
+        .authorization = .{
+            .access_key = credential.access_key,
+            .scope_date = credential.scope_date,
+            .region = credential.region,
+            .signed_headers = signed_headers_storage,
+            .signature = signature,
+        },
+        .amz_date = amz_date,
+        .expires_seconds = expires_seconds,
     };
 }
 
@@ -151,29 +342,203 @@ pub fn verify(
     );
     defer allocator.free(string_to_sign);
 
-    var prefixed_secret: std.Io.Writer.Allocating = .init(allocator);
-    defer prefixed_secret.deinit();
-    prefixed_secret.writer.writeAll("AWS4") catch return error.OutOfMemory;
-    prefixed_secret.writer.writeAll(secret_key) catch return error.OutOfMemory;
-    var date_key: [32]u8 = undefined;
-    HmacSha256.create(&date_key, authorization.scope_date, prefixed_secret.written());
-    var region_key: [32]u8 = undefined;
-    HmacSha256.create(&region_key, authorization.region, &date_key);
-    var service_key: [32]u8 = undefined;
-    HmacSha256.create(&service_key, service, &region_key);
-    var signing_key: [32]u8 = undefined;
-    HmacSha256.create(&signing_key, terminal, &service_key);
-    defer {
-        std.crypto.secureZero(u8, &date_key);
-        std.crypto.secureZero(u8, &region_key);
-        std.crypto.secureZero(u8, &service_key);
-        std.crypto.secureZero(u8, &signing_key);
-    }
+    var signing_key = try deriveSigningKey(
+        allocator,
+        authorization.scope_date,
+        authorization.region,
+        secret_key,
+    );
+    defer std.crypto.secureZero(u8, &signing_key);
     var expected_signature: [32]u8 = undefined;
     HmacSha256.create(&expected_signature, string_to_sign, &signing_key);
     if (!std.crypto.timing_safe.eql([32]u8, expected_signature, authorization.signature)) {
         return error.SignatureDoesNotMatch;
     }
+}
+
+pub fn verifyPresigned(
+    allocator: std.mem.Allocator,
+    request: Request,
+    presigned: PresignedAuthorization,
+    secret_key: []const u8,
+) Error!void {
+    const authorization = presigned.authorization;
+    if (!std.mem.eql(u8, authorization.region, request.expected_region)) {
+        return error.InvalidCredentialScope;
+    }
+    try validateRequiredAmzHeaders(request.headers, authorization.signed_headers);
+    const request_time = try parseAmzDate(&presigned.amz_date);
+    if (request.max_clock_skew_seconds < 0) return error.RequestTimeTooSkewed;
+    const now: i128 = request.now_unix_seconds;
+    const signed_at: i128 = request_time;
+    if (signed_at - now > request.max_clock_skew_seconds) {
+        return error.RequestTimeTooSkewed;
+    }
+    if (now > signed_at + presigned.expires_seconds) return error.RequestExpired;
+
+    const canonical = try canonicalRequestWithPayload(
+        allocator,
+        request,
+        authorization.signed_headers,
+        "UNSIGNED-PAYLOAD",
+        true,
+    );
+    defer allocator.free(canonical);
+    const expected_signature = try calculateSignature(
+        allocator,
+        canonical,
+        &presigned.amz_date,
+        authorization.scope_date,
+        authorization.region,
+        secret_key,
+    );
+    if (!std.crypto.timing_safe.eql([32]u8, expected_signature, authorization.signature)) {
+        return error.SignatureDoesNotMatch;
+    }
+}
+
+pub fn presignTarget(
+    allocator: std.mem.Allocator,
+    request: PresignRequest,
+) Error![]u8 {
+    if ((!std.mem.eql(u8, request.method, "GET") and
+        !std.mem.eql(u8, request.method, "PUT")) or
+        hasPresignedParameters(request.target))
+    {
+        return error.InvalidTarget;
+    }
+    _ = try parseAmzDate(request.amz_date);
+    if (request.expires_seconds == 0 or
+        request.expires_seconds > max_presigned_expiry_seconds)
+    {
+        return error.InvalidExpires;
+    }
+    try validateSignedHeaders(request.signed_headers, false);
+    try validateRequiredAmzHeaders(request.headers, request.signed_headers);
+    _ = try findSingleHeader(request.headers, "host");
+
+    const scope_date = request.amz_date[0..8];
+    const credential = try std.fmt.allocPrint(
+        allocator,
+        "{s}/{s}/{s}/{s}/{s}",
+        .{ request.access_key, scope_date, request.region, service, terminal },
+    );
+    defer allocator.free(credential);
+    const encoded_credential = try normalizeEncoded(allocator, credential, false);
+    defer allocator.free(encoded_credential);
+    const encoded_signed_headers = try normalizeEncoded(
+        allocator,
+        request.signed_headers,
+        false,
+    );
+    defer allocator.free(encoded_signed_headers);
+
+    const separator: []const u8 = if (std.mem.indexOfScalar(u8, request.target, '?') == null)
+        "?"
+    else if (std.mem.endsWith(u8, request.target, "?") or
+        std.mem.endsWith(u8, request.target, "&"))
+        ""
+    else
+        "&";
+    const unsigned_target = try std.fmt.allocPrint(
+        allocator,
+        "{s}{s}X-Amz-Algorithm={s}&X-Amz-Credential={s}&X-Amz-Date={s}&X-Amz-Expires={d}&X-Amz-SignedHeaders={s}",
+        .{
+            request.target,
+            separator,
+            algorithm,
+            encoded_credential,
+            request.amz_date,
+            request.expires_seconds,
+            encoded_signed_headers,
+        },
+    );
+    defer allocator.free(unsigned_target);
+    const canonical = try canonicalRequestWithPayload(
+        allocator,
+        .{
+            .method = request.method,
+            .target = unsigned_target,
+            .headers = request.headers,
+            .now_unix_seconds = 0,
+            .expected_region = request.region,
+        },
+        request.signed_headers,
+        "UNSIGNED-PAYLOAD",
+        false,
+    );
+    defer allocator.free(canonical);
+    const signature = try calculateSignature(
+        allocator,
+        canonical,
+        request.amz_date,
+        scope_date,
+        request.region,
+        request.secret_key,
+    );
+    const signature_hex = std.fmt.bytesToHex(signature, .lower);
+    return std.fmt.allocPrint(
+        allocator,
+        "{s}&X-Amz-Signature={s}",
+        .{ unsigned_target, &signature_hex },
+    ) catch error.OutOfMemory;
+}
+
+fn calculateSignature(
+    allocator: std.mem.Allocator,
+    canonical_request: []const u8,
+    amz_date: []const u8,
+    scope_date: []const u8,
+    region: []const u8,
+    secret_key: []const u8,
+) Error![32]u8 {
+    var canonical_hash: [32]u8 = undefined;
+    Sha256.hash(canonical_request, &canonical_hash, .{});
+    const canonical_hash_hex = std.fmt.bytesToHex(canonical_hash, .lower);
+    const scope = try std.fmt.allocPrint(
+        allocator,
+        "{s}/{s}/{s}/{s}",
+        .{ scope_date, region, service, terminal },
+    );
+    defer allocator.free(scope);
+    const string_to_sign = try std.fmt.allocPrint(
+        allocator,
+        "{s}\n{s}\n{s}\n{s}",
+        .{ algorithm, amz_date, scope, &canonical_hash_hex },
+    );
+    defer allocator.free(string_to_sign);
+    var signing_key = try deriveSigningKey(allocator, scope_date, region, secret_key);
+    defer std.crypto.secureZero(u8, &signing_key);
+    var signature: [32]u8 = undefined;
+    HmacSha256.create(&signature, string_to_sign, &signing_key);
+    return signature;
+}
+
+fn deriveSigningKey(
+    allocator: std.mem.Allocator,
+    scope_date: []const u8,
+    region: []const u8,
+    secret_key: []const u8,
+) Error![32]u8 {
+    const prefixed_secret = std.fmt.allocPrint(allocator, "AWS4{s}", .{secret_key}) catch {
+        return error.OutOfMemory;
+    };
+    defer {
+        std.crypto.secureZero(u8, prefixed_secret);
+        allocator.free(prefixed_secret);
+    }
+    var date_key: [32]u8 = undefined;
+    HmacSha256.create(&date_key, scope_date, prefixed_secret);
+    defer std.crypto.secureZero(u8, &date_key);
+    var region_key: [32]u8 = undefined;
+    HmacSha256.create(&region_key, region, &date_key);
+    defer std.crypto.secureZero(u8, &region_key);
+    var service_key: [32]u8 = undefined;
+    HmacSha256.create(&service_key, service, &region_key);
+    defer std.crypto.secureZero(u8, &service_key);
+    var signing_key: [32]u8 = undefined;
+    HmacSha256.create(&signing_key, terminal, &service_key);
+    return signing_key;
 }
 
 fn validateRequiredAmzHeaders(
@@ -212,6 +577,24 @@ fn canonicalRequest(
     request: Request,
     signed_headers: []const u8,
 ) Error![]u8 {
+    _ = try requestPayloadHash(request.headers);
+    const payload_hash_value = try findSingleHeader(request.headers, "x-amz-content-sha256");
+    return canonicalRequestWithPayload(
+        allocator,
+        request,
+        signed_headers,
+        payload_hash_value,
+        false,
+    );
+}
+
+fn canonicalRequestWithPayload(
+    allocator: std.mem.Allocator,
+    request: Request,
+    signed_headers: []const u8,
+    payload_hash_value: []const u8,
+    exclude_presigned_signature: bool,
+) Error![]u8 {
     if (request.method.len == 0 or std.mem.indexOfAny(u8, request.method, "\r\n") != null) {
         return error.InvalidTarget;
     }
@@ -225,10 +608,12 @@ fn canonicalRequest(
     const canonical_uri = try normalizeEncoded(allocator, raw_path, true);
     defer allocator.free(canonical_uri);
     const raw_query = if (path_end < request.target.len) request.target[path_end + 1 ..] else "";
-    const canonical_query = try canonicalQuery(allocator, raw_query);
+    const canonical_query = try canonicalQueryFiltered(
+        allocator,
+        raw_query,
+        exclude_presigned_signature,
+    );
     defer allocator.free(canonical_query);
-    _ = try requestPayloadHash(request.headers);
-    const payload_hash_value = try findSingleHeader(request.headers, "x-amz-content-sha256");
 
     var output: std.Io.Writer.Allocating = .init(allocator);
     errdefer output.deinit();
@@ -257,6 +642,14 @@ const QueryParameter = struct {
 };
 
 fn canonicalQuery(allocator: std.mem.Allocator, raw_query: []const u8) Error![]u8 {
+    return canonicalQueryFiltered(allocator, raw_query, false);
+}
+
+fn canonicalQueryFiltered(
+    allocator: std.mem.Allocator,
+    raw_query: []const u8,
+    exclude_presigned_signature: bool,
+) Error![]u8 {
     if (raw_query.len == 0) return allocator.dupe(u8, "") catch error.OutOfMemory;
     var parameters: std.ArrayList(QueryParameter) = .empty;
     defer {
@@ -274,6 +667,11 @@ fn canonicalQuery(allocator: std.mem.Allocator, raw_query: []const u8) Error![]u
         const name = try normalizeEncoded(allocator, raw_name, false);
         errdefer allocator.free(name);
         const value = try normalizeEncoded(allocator, raw_value, false);
+        if (exclude_presigned_signature and std.mem.eql(u8, name, "X-Amz-Signature")) {
+            allocator.free(name);
+            allocator.free(value);
+            continue;
+        }
         parameters.append(allocator, .{ .name = name, .value = value }) catch {
             allocator.free(value);
             return error.OutOfMemory;
@@ -352,7 +750,7 @@ fn writeCanonicalHeaderValue(
     if (!found) return error.MissingSignedHeader;
 }
 
-fn validateSignedHeaders(value: []const u8) Error!void {
+fn validateSignedHeaders(value: []const u8, require_date: bool) Error!void {
     if (value.len == 0) return error.InvalidSignedHeaders;
     var has_host = false;
     var has_date = false;
@@ -375,7 +773,71 @@ fn validateSignedHeaders(value: []const u8) Error!void {
         if (std.mem.eql(u8, name, "x-amz-date")) has_date = true;
         previous = name;
     }
-    if (!has_host or !has_date) return error.InvalidSignedHeaders;
+    if (!has_host or (require_date and !has_date)) return error.InvalidSignedHeaders;
+}
+
+fn parseCredentialScope(value: []const u8) Error!CredentialScope {
+    var scope = std.mem.splitScalar(u8, value, '/');
+    const access_key = scope.next() orelse return error.InvalidCredentialScope;
+    const scope_date = scope.next() orelse return error.InvalidCredentialScope;
+    const region = scope.next() orelse return error.InvalidCredentialScope;
+    const scope_service = scope.next() orelse return error.InvalidCredentialScope;
+    const scope_terminal = scope.next() orelse return error.InvalidCredentialScope;
+    if (scope.next() != null or access_key.len == 0 or scope_date.len != 8 or
+        region.len == 0 or !std.mem.eql(u8, scope_service, service) or
+        !std.mem.eql(u8, scope_terminal, terminal))
+    {
+        return error.InvalidCredentialScope;
+    }
+    return .{
+        .access_key = access_key,
+        .scope_date = scope_date,
+        .region = region,
+    };
+}
+
+fn decodeRequiredQueryValue(
+    allocator: std.mem.Allocator,
+    target: []const u8,
+    expected_name: []const u8,
+) Error![]u8 {
+    const query_start = std.mem.indexOfScalar(u8, target, '?') orelse {
+        return error.MalformedPresignedQuery;
+    };
+    var found: ?[]const u8 = null;
+    var parameters = std.mem.splitScalar(u8, target[query_start + 1 ..], '&');
+    while (parameters.next()) |parameter| {
+        const equals = std.mem.indexOfScalar(u8, parameter, '=');
+        const raw_name = if (equals) |position| parameter[0..position] else parameter;
+        const name = try percentDecode(allocator, raw_name);
+        defer allocator.free(name);
+        if (!std.mem.eql(u8, name, expected_name)) continue;
+        if (found != null) return error.MalformedPresignedQuery;
+        found = if (equals) |position| parameter[position + 1 ..] else "";
+    }
+    return percentDecode(allocator, found orelse return error.MalformedPresignedQuery);
+}
+
+fn percentDecode(allocator: std.mem.Allocator, input: []const u8) Error![]u8 {
+    const output = allocator.alloc(u8, input.len) catch return error.OutOfMemory;
+    errdefer allocator.free(output);
+    var input_index: usize = 0;
+    var output_index: usize = 0;
+    while (input_index < input.len) {
+        if (input[input_index] == '%') {
+            if (input.len - input_index < 3) return error.MalformedPresignedQuery;
+            output[output_index] = decodeHexByte(
+                input[input_index + 1],
+                input[input_index + 2],
+            ) orelse return error.MalformedPresignedQuery;
+            input_index += 3;
+        } else {
+            output[output_index] = input[input_index];
+            input_index += 1;
+        }
+        output_index += 1;
+    }
+    return allocator.realloc(output, output_index) catch error.OutOfMemory;
 }
 
 fn findSingleHeader(headers: []const Header, name: []const u8) Error![]const u8 {
@@ -547,6 +1009,78 @@ test "canonical query normalization accepts empty values and percent encoding" {
     );
     try std.testing.expectEqual(@as(i64, 1_369_353_600), try parseAmzDate("20130524T000000Z"));
     try std.testing.expectError(error.InvalidDate, parseAmzDate("20130229T000000Z"));
+}
+
+test "Signature V4 presigned GET binds method path query headers and expiry" {
+    const secret_key = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+    const headers = [_]Header{
+        .{ .name = "host", .value = "localhost:9000" },
+        .{ .name = "content-type", .value = "application/octet-stream" },
+    };
+    const target = try presignTarget(std.testing.allocator, .{
+        .method = "GET",
+        .target = "/project-assets/photos%2Fcover.jpg?response-content-type=image%2Fjpeg",
+        .headers = &headers,
+        .access_key = "ZF0123456789ABCDEF",
+        .secret_key = secret_key,
+        .amz_date = "20130524T000000Z",
+        .region = "us-east-1",
+        .expires_seconds = 600,
+        .signed_headers = "content-type;host",
+    });
+    defer std.testing.allocator.free(target);
+    var presigned = try parsePresignedAuthorization(std.testing.allocator, target);
+    defer presigned.deinit();
+    const request: Request = .{
+        .method = "GET",
+        .target = target,
+        .headers = &headers,
+        .now_unix_seconds = 1_369_353_900,
+        .expected_region = "us-east-1",
+    };
+    try verifyPresigned(std.testing.allocator, request, presigned, secret_key);
+
+    var changed_method = request;
+    changed_method.method = "PUT";
+    try std.testing.expectError(
+        error.SignatureDoesNotMatch,
+        verifyPresigned(std.testing.allocator, changed_method, presigned, secret_key),
+    );
+    const changed_headers = [_]Header{
+        .{ .name = "host", .value = "localhost:9000" },
+        .{ .name = "content-type", .value = "text/plain" },
+    };
+    var changed_header = request;
+    changed_header.headers = &changed_headers;
+    try std.testing.expectError(
+        error.SignatureDoesNotMatch,
+        verifyPresigned(std.testing.allocator, changed_header, presigned, secret_key),
+    );
+    var expired = request;
+    expired.now_unix_seconds = 1_369_354_201;
+    try std.testing.expectError(
+        error.RequestExpired,
+        verifyPresigned(std.testing.allocator, expired, presigned, secret_key),
+    );
+}
+
+test "Signature V4 presigned parameters reject invalid expiry and duplicate signature" {
+    const prefix = "/bucket/key?X-Amz-Algorithm=AWS4-HMAC-SHA256&" ++
+        "X-Amz-Credential=ZF0123456789ABCDEF%2F20130524%2Fus-east-1%2Fs3%2Faws4_request&" ++
+        "X-Amz-Date=20130524T000000Z&X-Amz-SignedHeaders=host&";
+    const invalid_expiry = prefix ++
+        "X-Amz-Expires=604801&X-Amz-Signature=0000000000000000000000000000000000000000000000000000000000000000";
+    try std.testing.expectError(
+        error.InvalidExpires,
+        parsePresignedAuthorization(std.testing.allocator, invalid_expiry),
+    );
+    const duplicate_signature = prefix ++
+        "X-Amz-Expires=60&X-Amz-Signature=0000000000000000000000000000000000000000000000000000000000000000&" ++
+        "%58-Amz-Signature=1111111111111111111111111111111111111111111111111111111111111111";
+    try std.testing.expectError(
+        error.MalformedPresignedQuery,
+        parsePresignedAuthorization(std.testing.allocator, duplicate_signature),
+    );
 }
 
 test "streaming payload signatures remain distinguishable for protocol rejection" {

@@ -43,7 +43,9 @@ admin:
 | `storage.data_root` | `data` | string | ZigFS 独占数据根目录 |
 | `storage.stream_buffer_size` | `65536` | integer | Object 流式 I/O 缓冲区，允许 4096 至 1048576 bytes |
 | `s3.region` | `us-east-1` | string | Signature V4 Credential Scope 和 CreateBucket LocationConstraint 所属 Region |
-| `s3.request_time_skew_seconds` | `900` | integer | Header 签名允许的时钟偏差，允许 60 至 3600 秒 |
+| `s3.request_time_skew_seconds` | `900` | integer | Header 签名及 Presigned 未来签发时间允许的时钟偏差，允许 60 至 3600 秒 |
+
+Presigned URL 的最大有效期遵循 S3 Signature V4 标准，固定为 604800 秒（7 天），不通过 YAML 放宽。
 | `admin.username` | `admin` | string | ZigFS Bootstrap 管理员账号 |
 | `admin.password` | `zigfs-admin` | string | ZigFS Bootstrap 管理员密码 |
 | `admin.session_secret` | 本地开发密钥 | string | ZigFS 签发 Management Token 的 HMAC-SHA256 密钥，至少 32 字节 |

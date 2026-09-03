@@ -12,6 +12,7 @@ pub const Staged = struct {
     size: u64,
     etag_md5: [16]u8,
     checksum_sha256: [32]u8,
+    checksum_crc64nvme: u64,
 };
 
 pub const Integrity = struct {
@@ -67,6 +68,13 @@ pub const ObjectDataStore = struct {
             integrity: Integrity,
             sink: byte_stream.Sink,
         ) Error!void,
+        read_range: *const fn (
+            context: *anyopaque,
+            location: Location,
+            offset: u64,
+            length: u64,
+            sink: byte_stream.Sink,
+        ) Error!void,
         scan_generations: *const fn (
             context: *anyopaque,
             allocator: @import("std").mem.Allocator,
@@ -112,6 +120,16 @@ pub const ObjectDataStore = struct {
         sink: byte_stream.Sink,
     ) Error!void {
         return self.vtable.read(self.context, location, integrity, sink);
+    }
+
+    pub fn readRange(
+        self: ObjectDataStore,
+        location: Location,
+        offset: u64,
+        length: u64,
+        sink: byte_stream.Sink,
+    ) Error!void {
+        return self.vtable.read_range(self.context, location, offset, length, sink);
     }
 
     pub fn scanGenerations(

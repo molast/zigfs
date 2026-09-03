@@ -22,6 +22,7 @@ pub const Error = error{
     Conflict,
     CorruptMetadata,
     CorruptData,
+    InvalidRange,
     Unavailable,
 };
 
@@ -30,6 +31,7 @@ pub const PutOptions = struct {
     user_metadata: []const object_domain.UserMetadata = &.{},
     expected_md5: ?[16]u8 = null,
     expected_sha256: ?[32]u8 = null,
+    expected_crc64nvme: ?u64 = null,
 };
 
 pub const DeleteResult = struct {
@@ -56,6 +58,22 @@ pub const ReadLease = struct {
                 .size = object.size,
                 .checksum_sha256 = object.checksum_sha256,
             },
+            sink,
+        ) catch |err| return mapExistingDataError(err);
+    }
+
+    pub fn streamRange(
+        self: *ReadLease,
+        offset: u64,
+        length: u64,
+        sink: byte_stream.Sink,
+    ) Error!void {
+        const object = self.object orelse unreachable;
+        if (offset > object.size or length > object.size - offset) return error.InvalidRange;
+        self.data_store.readRange(
+            locationFor(object),
+            offset,
+            length,
             sink,
         ) catch |err| return mapExistingDataError(err);
     }
@@ -140,6 +158,9 @@ pub const ObjectService = struct {
             if (!std.crypto.timing_safe.eql([32]u8, expected, staged.checksum_sha256)) {
                 return error.ChecksumMismatch;
             }
+        }
+        if (options.expected_crc64nvme) |expected| {
+            if (expected != staged.checksum_crc64nvme) return error.ChecksumMismatch;
         }
 
         const object_lock = self.object_locks.get(bucket_name, key);
@@ -627,6 +648,13 @@ test "object service rejects missing buckets bad checksums and failed sources" {
         error.ChecksumMismatch,
         objects.put("project-assets", "file", checksum_source.interface(), .{
             .expected_md5 = .{0} ** 16,
+        }),
+    );
+    var crc_source = test_streams.SliceSource.init("body");
+    try std.testing.expectError(
+        error.ChecksumMismatch,
+        objects.put("project-assets", "file", crc_source.interface(), .{
+            .expected_crc64nvme = 0,
         }),
     );
     var failing_source: test_streams.FailingSource = .{};

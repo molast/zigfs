@@ -29,16 +29,20 @@ GET /metrics              (Metrics listener only)
 GET    /
 PUT    /{bucket}
 HEAD   /{bucket}
+GET    /{bucket}?location=
 DELETE /{bucket}
 GET    /{bucket}?list-type=2
+POST   /{bucket}?delete=
 PUT    /{bucket}/{object}
 GET    /{bucket}/{object}
 HEAD   /{bucket}/{object}
 DELETE /{bucket}/{object}
 ```
 
-S3 endpoints use path-style requests and Signature V4 Header authentication.
-Multipart, Range, conditional requests, presigned URLs, temporary credentials,
-virtual-hosted-style requests, and streaming chunk signatures are not yet
-implemented. Management authentication endpoints are available; remaining
+S3 endpoints use path-style requests and Signature V4 Header authentication. Object-level
+GET and PUT also accept Signature V4 Presigned Query authentication with a maximum lifetime
+of seven days. Signed aws-chunked PutObject, DeleteObjects, and single-range GetObject are
+supported. Multipart, conditional requests, temporary credentials, virtual-hosted-style
+requests, S3 POST Policy uploads, and signed streaming trailers are not yet implemented.
+Management authentication endpoints are available; remaining
 Management business routes return `501 Not Implemented`.

@@ -10,9 +10,17 @@ const time = @import("../common/time.zig");
 const credential_domain = @import("../domain/credential.zig");
 const object_domain = @import("../domain/object.zig");
 const byte_stream = @import("../ports/byte_stream.zig");
+const aws_chunked = @import("aws_chunked.zig");
 const protocol = @import("s3_protocol.zig");
+const delete_objects = @import("s3_delete_objects.zig");
 
 pub const service_name = "s3";
+
+const ByteRange = struct {
+    start: u64,
+    end: u64,
+    length: u64,
+};
 
 pub fn serveRequest(
     request: *std.http.Server.Request,
@@ -40,17 +48,46 @@ pub fn serveRequest(
             return respondError(request, allocator, .internal_error, request_id);
         };
     }
-    const authorization = sigv4.parseAuthorization(headers.items) catch |err| {
-        return respondError(request, allocator, mapSignatureParseError(err), request_id);
+    const authorization_header = singleHeader(headers.items, "authorization") catch {
+        return respondError(request, allocator, .authorization_header_malformed, request_id);
+    };
+    const uses_presigned_auth = sigv4.hasPresignedParameters(raw_target);
+    if (uses_presigned_auth and authorization_header != null) {
+        return respondError(request, allocator, .invalid_request, request_id);
+    }
+    if (uses_presigned_auth and
+        parsed.operation != .get_object and parsed.operation != .put_object)
+    {
+        return respondError(request, allocator, .access_denied, request_id);
+    }
+
+    var presigned: ?sigv4.PresignedAuthorization = null;
+    defer if (presigned) |*value| value.deinit();
+    var authorization: ?sigv4.Authorization = null;
+    var payload_hash: sigv4.PayloadHash = .unsigned;
+    const access_key: []const u8 = if (uses_presigned_auth) presigned_access: {
+        presigned = sigv4.parsePresignedAuthorization(allocator, raw_target) catch |err| {
+            return respondError(request, allocator, mapPresignedParseError(err), request_id);
+        };
+        break :presigned_access presigned.?.authorization.access_key;
+    } else header_access: {
+        const parsed_authorization = sigv4.parseAuthorization(headers.items) catch |err| {
+            return respondError(request, allocator, mapSignatureParseError(err), request_id);
+        };
+        authorization = parsed_authorization;
+        payload_hash = sigv4.requestPayloadHash(headers.items) catch {
+            return respondError(request, allocator, .invalid_request, request_id);
+        };
+        break :header_access parsed_authorization.access_key;
     };
     const credentials = application.credentialService() orelse {
         return respondError(request, allocator, .service_unavailable, request_id);
     };
-    var auth_material = credentials.resolveForAuth(authorization.access_key) catch |err| {
+    var auth_material = credentials.resolveForAuth(access_key) catch |err| {
         return respondError(request, allocator, mapCredentialError(err), request_id);
     };
     defer auth_material.deinit(allocator);
-    sigv4.verify(allocator, .{
+    const auth_request: sigv4.Request = .{
         .method = @tagName(request.head.method),
         .target = raw_target,
         .headers = headers.items,
@@ -59,9 +96,16 @@ pub fn serveRequest(
         }).toSeconds(),
         .expected_region = application.config.s3_region,
         .max_clock_skew_seconds = @intCast(application.config.s3_request_time_skew_seconds),
-    }, authorization, auth_material.secret_key) catch |err| {
-        return respondError(request, allocator, mapSignatureVerifyError(err), request_id);
     };
+    if (presigned) |value| {
+        sigv4.verifyPresigned(allocator, auth_request, value, auth_material.secret_key) catch |err| {
+            return respondError(request, allocator, mapPresignedVerifyError(err), request_id);
+        };
+    } else {
+        sigv4.verify(allocator, auth_request, authorization.?, auth_material.secret_key) catch |err| {
+            return respondError(request, allocator, mapSignatureVerifyError(err), request_id);
+        };
+    }
 
     if (hasUnsupportedHeaders(parsed.operation, headers.items)) {
         return respondError(request, allocator, .not_implemented, request_id);
@@ -76,7 +120,6 @@ pub fn serveRequest(
         .list_buckets => serveListBuckets(
             request,
             application,
-            authorization.access_key,
             auth_material.owner,
             headers.items,
             request_id,
@@ -97,10 +140,26 @@ pub fn serveRequest(
             headers.items,
             request_id,
         ),
+        .get_bucket_location => serveGetBucketLocation(
+            request,
+            application,
+            parsed,
+            auth_material.owner,
+            headers.items,
+            request_id,
+        ),
         .delete_bucket => serveDeleteBucket(
             request,
             application,
             parsed.bucket.?,
+            auth_material.owner,
+            headers.items,
+            request_id,
+        ),
+        .delete_objects => serveDeleteObjects(
+            request,
+            application,
+            parsed,
             auth_material.owner,
             headers.items,
             request_id,
@@ -120,6 +179,9 @@ pub fn serveRequest(
             parsed.key.?,
             auth_material.owner,
             headers.items,
+            authorization,
+            auth_material.secret_key,
+            payload_hash,
             request_id,
         ),
         .get_object => serveGetObject(
@@ -129,6 +191,7 @@ pub fn serveRequest(
             parsed.key.?,
             auth_material.owner,
             headers.items,
+            payload_hash,
             request_id,
         ),
         .head_object => serveHeadObject(
@@ -158,7 +221,9 @@ fn actionFor(operation: protocol.Operation) ?credential_domain.Action {
         .list_buckets => .list_buckets,
         .create_bucket => .create_bucket,
         .head_bucket => .head_bucket,
+        .get_bucket_location => .head_bucket,
         .delete_bucket => .delete_bucket,
+        .delete_objects => .delete_object,
         .list_objects_v2 => .list_objects,
         .put_object => .put_object,
         .get_object => .get_object,
@@ -171,7 +236,6 @@ fn actionFor(operation: protocol.Operation) ?credential_domain.Action {
 fn serveListBuckets(
     request: *std.http.Server.Request,
     application: *Application,
-    access_key: []const u8,
     owner: []const u8,
     headers: []const sigv4.Header,
     request_id: []const u8,
@@ -192,7 +256,7 @@ fn serveListBuckets(
     writer.writeAll("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListAllMyBucketsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Owner><ID>") catch {
         return respondError(request, application.allocator, .internal_error, request_id);
     };
-    protocol.writeXmlEscaped(writer, access_key) catch return error.WriteFailed;
+    protocol.writeXmlEscaped(writer, owner) catch return error.WriteFailed;
     writer.writeAll("</ID><DisplayName>") catch return error.WriteFailed;
     protocol.writeXmlEscaped(writer, owner) catch return error.WriteFailed;
     writer.writeAll("</DisplayName></Owner><Buckets>") catch return error.WriteFailed;
@@ -261,6 +325,46 @@ fn serveHeadBucket(
     return respondEmpty(request, .ok, request_id, &.{});
 }
 
+fn serveGetBucketLocation(
+    request: *std.http.Server.Request,
+    application: *Application,
+    parsed: protocol.ParsedTarget,
+    owner: []const u8,
+    headers: []const sigv4.Header,
+    request_id: []const u8,
+) !std.http.Status {
+    if (ensureEmptyRequest(request, headers) != null) {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    }
+    const location = parsed.query("location") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    if (location.len != 0) {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    }
+    const bucket = ensureBucketOwner(application, parsed.bucket.?, owner) catch |err| {
+        return respondError(request, application.allocator, mapBucketError(err), request_id);
+    };
+    bucket.deinit(application.allocator);
+
+    var xml: std.Io.Writer.Allocating = .init(application.allocator);
+    defer xml.deinit();
+    const writer = &xml.writer;
+    writer.writeAll(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" ++
+            "<LocationConstraint xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">",
+    ) catch return respondError(request, application.allocator, .internal_error, request_id);
+    if (!std.mem.eql(u8, application.config.s3_region, "us-east-1")) {
+        protocol.writeXmlEscaped(writer, application.config.s3_region) catch {
+            return respondError(request, application.allocator, .internal_error, request_id);
+        };
+    }
+    writer.writeAll("</LocationConstraint>\n") catch {
+        return respondError(request, application.allocator, .internal_error, request_id);
+    };
+    return respondXml(request, xml.written(), .ok, request_id, &.{});
+}
+
 fn serveDeleteBucket(
     request: *std.http.Server.Request,
     application: *Application,
@@ -309,11 +413,15 @@ fn serveListObjects(
     const fetch_owner = parsed.query("fetch-owner") catch {
         return respondError(request, application.allocator, .invalid_argument, request_id);
     };
-    if (fetch_owner) |value| {
-        if (!std.mem.eql(u8, value, "false")) {
-            return respondError(request, application.allocator, .not_implemented, request_id);
-        }
-    }
+    const include_owner = if (fetch_owner) |value|
+        if (std.mem.eql(u8, value, "true"))
+            true
+        else if (std.mem.eql(u8, value, "false"))
+            false
+        else
+            return respondError(request, application.allocator, .invalid_argument, request_id)
+    else
+        false;
     const prefix = parsed.query("prefix") catch {
         return respondError(request, application.allocator, .invalid_argument, request_id);
     } orelse "";
@@ -363,6 +471,8 @@ fn serveListObjects(
         start_after,
         continuation_token,
         encoding_type != null,
+        include_owner,
+        owner,
         result,
     ) catch {
         return respondError(request, application.allocator, .internal_error, request_id);
@@ -378,6 +488,9 @@ fn servePutObject(
     key: []const u8,
     owner: []const u8,
     headers: []const sigv4.Header,
+    authorization: ?sigv4.Authorization,
+    secret_key: []const u8,
+    payload_hash: sigv4.PayloadHash,
     request_id: []const u8,
 ) !std.http.Status {
     const bucket = ensureBucketOwner(application, bucket_name, owner) catch |err| {
@@ -387,13 +500,14 @@ fn servePutObject(
     const expected_md5 = parseContentMd5(headers) catch {
         return respondError(request, application.allocator, .invalid_digest, request_id);
     };
-    const payload_hash = sigv4.requestPayloadHash(headers) catch {
-        return respondError(request, application.allocator, .invalid_request, request_id);
+    const expected_crc64nvme = parseCrc64Nvme(headers) catch |err| switch (err) {
+        error.InvalidDigest => return respondError(request, application.allocator, .invalid_digest, request_id),
+        error.UnsupportedChecksum => return respondError(request, application.allocator, .not_implemented, request_id),
     };
     const expected_sha256: ?[32]u8 = switch (payload_hash) {
         .digest => |digest| digest,
         .unsigned => null,
-        .streaming => return respondError(request, application.allocator, .not_implemented, request_id),
+        .streaming => null,
     };
     var put_headers = collectPutHeaders(application.allocator, request) catch |err| switch (err) {
         error.OutOfMemory => return respondError(request, application.allocator, .internal_error, request_id),
@@ -406,18 +520,57 @@ fn servePutObject(
         return respondError(request, application.allocator, .invalid_request, request_id);
     };
     request.head.target = stable_resource;
-    var source: HttpSource = .{ .reader = body_reader };
+    var http_source: HttpSource = .{ .reader = body_reader };
+    var streaming_source: aws_chunked.Source = undefined;
+    var streaming_source_active = false;
+    defer if (streaming_source_active) streaming_source.deinit();
+    const source = switch (payload_hash) {
+        .digest, .unsigned => http_source.interface(),
+        .streaming => streamed: {
+            const decoded_length = parseStreamingDecodedLength(headers) catch {
+                return respondError(request, application.allocator, .invalid_request, request_id);
+            };
+            const verifier = sigv4.StreamingVerifier.init(
+                application.allocator,
+                headers,
+                authorization orelse {
+                    return respondError(request, application.allocator, .invalid_request, request_id);
+                },
+                secret_key,
+            ) catch |err| {
+                return respondError(request, application.allocator, mapSignatureVerifyError(err), request_id);
+            };
+            streaming_source = aws_chunked.Source.init(body_reader, verifier, decoded_length);
+            streaming_source_active = true;
+            break :streamed streaming_source.interface();
+        },
+    };
     const objects = application.objectService() orelse {
         return respondError(request, application.allocator, .service_unavailable, request_id);
     };
-    const object = objects.put(bucket_name, key, source.interface(), .{
+    const object = objects.put(bucket_name, key, source, .{
         .content_type = put_headers.content_type,
         .user_metadata = put_headers.views,
         .expected_md5 = expected_md5,
         .expected_sha256 = expected_sha256,
+        .expected_crc64nvme = expected_crc64nvme,
     }) catch |err| {
-        const kind: protocol.ErrorKind = if (err == error.ChecksumMismatch)
-            if (expected_md5 != null) .bad_digest else .x_amz_content_sha256_mismatch
+        const kind: protocol.ErrorKind = if (err == error.InputReadFailed and streaming_source_active)
+            switch (streaming_source.failure) {
+                .signature_mismatch => .signature_does_not_match,
+                .none,
+                .malformed_chunk_header,
+                .unexpected_end,
+                .invalid_chunk_ending,
+                .invalid_final_ending,
+                .decoded_length_mismatch,
+                => .invalid_request,
+            }
+        else if (err == error.ChecksumMismatch)
+            if (expected_md5 != null or expected_crc64nvme != null)
+                .bad_digest
+            else
+                .x_amz_content_sha256_mismatch
         else
             mapObjectError(err);
         return respondError(request, application.allocator, kind, request_id);
@@ -425,6 +578,17 @@ fn servePutObject(
     defer object.deinit(application.allocator);
     var etag_buffer: [34]u8 = undefined;
     const etag = formatEtag(object.etag_md5, &etag_buffer);
+    if (expected_crc64nvme) |checksum| {
+        var checksum_bytes: [8]u8 = undefined;
+        std.mem.writeInt(u64, &checksum_bytes, checksum, .big);
+        var encoded_buffer: [12]u8 = undefined;
+        const encoded = std.base64.standard.Encoder.encode(&encoded_buffer, &checksum_bytes);
+        const extra = [_]std.http.Header{
+            .{ .name = "etag", .value = etag },
+            .{ .name = "x-amz-checksum-crc64nvme", .value = encoded },
+        };
+        return respondEmpty(request, .ok, request_id, &extra);
+    }
     const extra = [_]std.http.Header{.{ .name = "etag", .value = etag }};
     return respondEmpty(request, .ok, request_id, &extra);
 }
@@ -436,9 +600,10 @@ fn serveGetObject(
     key: []const u8,
     owner: []const u8,
     headers: []const sigv4.Header,
+    payload_hash: sigv4.PayloadHash,
     request_id: []const u8,
 ) !std.http.Status {
-    if (ensureEmptyRequest(request, headers) != null) {
+    if (ensureEmptyRequestWithHash(request, payload_hash) != null) {
         return respondError(request, application.allocator, .invalid_request, request_id);
     }
     const bucket = ensureBucketOwner(application, bucket_name, owner) catch |err| {
@@ -453,21 +618,39 @@ fn serveGetObject(
     };
     defer lease.deinit();
     const object = lease.metadata();
-    var response_headers = try ObjectResponseHeaders.init(application.allocator, object, false);
+    const range_value = singleHeader(headers, "range") catch {
+        return respondInvalidRange(request, application.allocator, object.size, request_id);
+    };
+    const range = if (range_value) |value|
+        parseRange(value, object.size) catch {
+            return respondInvalidRange(request, application.allocator, object.size, request_id);
+        }
+    else
+        null;
+    var response_headers = try ObjectResponseHeaders.init(
+        application.allocator,
+        object,
+        false,
+        range,
+    );
     defer response_headers.deinit(application.allocator);
     const header_values = response_headers.populate(object, request_id);
     var response_buffer: [16 * 1024]u8 = undefined;
     var body_writer = try request.respondStreaming(&response_buffer, .{
-        .content_length = object.size,
+        .content_length = if (range) |value| value.length else object.size,
         .respond_options = .{
-            .status = .ok,
+            .status = if (range != null) .partial_content else .ok,
             .extra_headers = header_values,
         },
     });
     var sink: HttpSink = .{ .writer = &body_writer.writer };
-    try lease.stream(sink.interface());
+    if (range) |value| {
+        try lease.streamRange(value.start, value.length, sink.interface());
+    } else {
+        try lease.stream(sink.interface());
+    }
     try body_writer.end();
-    return .ok;
+    return if (range != null) .partial_content else .ok;
 }
 
 fn serveHeadObject(
@@ -493,7 +676,7 @@ fn serveHeadObject(
         return respondError(request, application.allocator, mapObjectError(err), request_id);
     };
     defer object.deinit(application.allocator);
-    var response_headers = try ObjectResponseHeaders.init(application.allocator, &object, true);
+    var response_headers = try ObjectResponseHeaders.init(application.allocator, &object, true, null);
     defer response_headers.deinit(application.allocator);
     const header_values = response_headers.populate(&object, request_id);
     try request.respond("", .{
@@ -529,6 +712,133 @@ fn serveDeleteObject(
     return respondEmpty(request, .no_content, request_id, &.{});
 }
 
+fn serveDeleteObjects(
+    request: *std.http.Server.Request,
+    application: *Application,
+    parsed: protocol.ParsedTarget,
+    owner: []const u8,
+    headers: []const sigv4.Header,
+    request_id: []const u8,
+) !std.http.Status {
+    const delete_query = parsed.query("delete") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    if (delete_query.len != 0 or parsed.parameters.len != 1) {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    }
+    const bucket = ensureBucketOwner(application, parsed.bucket.?, owner) catch |err| {
+        return respondError(request, application.allocator, mapBucketError(err), request_id);
+    };
+    bucket.deinit(application.allocator);
+
+    const expected_md5 = (parseContentMd5(headers) catch {
+        return respondError(request, application.allocator, .invalid_digest, request_id);
+    }) orelse return respondError(request, application.allocator, .invalid_digest, request_id);
+    const payload_hash = sigv4.requestPayloadHash(headers) catch {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    };
+    if (payload_hash == .streaming) {
+        return respondError(request, application.allocator, .not_implemented, request_id);
+    }
+    if ((request.head.content_length orelse 0) > delete_objects.max_payload_size) {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    }
+    var read_buffer: [16 * 1024]u8 = undefined;
+    const stable_resource = request.head.target;
+    const body_reader = request.readerExpectContinue(&read_buffer) catch {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    };
+    request.head.target = stable_resource;
+    const body = body_reader.allocRemaining(
+        application.allocator,
+        .limited(delete_objects.max_payload_size),
+    ) catch {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    };
+    defer application.allocator.free(body);
+
+    var actual_md5: [16]u8 = undefined;
+    std.crypto.hash.Md5.hash(body, &actual_md5, .{});
+    if (!std.crypto.timing_safe.eql([16]u8, expected_md5, actual_md5)) {
+        return respondError(request, application.allocator, .bad_digest, request_id);
+    }
+    switch (payload_hash) {
+        .unsigned => {},
+        .digest => |expected| {
+            var actual: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(body, &actual, .{});
+            if (!std.crypto.timing_safe.eql([32]u8, expected, actual)) {
+                return respondError(
+                    request,
+                    application.allocator,
+                    .x_amz_content_sha256_mismatch,
+                    request_id,
+                );
+            }
+        },
+        .streaming => unreachable,
+    }
+
+    const delete_request = delete_objects.parse(application.allocator, body) catch |err| switch (err) {
+        error.OutOfMemory => return respondError(
+            request,
+            application.allocator,
+            .internal_error,
+            request_id,
+        ),
+        error.MalformedXml, error.TooManyObjects => return respondError(
+            request,
+            application.allocator,
+            .malformed_xml,
+            request_id,
+        ),
+    };
+    defer delete_request.deinit(application.allocator);
+    const objects = application.objectService() orelse {
+        return respondError(request, application.allocator, .service_unavailable, request_id);
+    };
+
+    var xml: std.Io.Writer.Allocating = .init(application.allocator);
+    defer xml.deinit();
+    const writer = &xml.writer;
+    writer.writeAll(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" ++
+            "<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">",
+    ) catch return respondError(request, application.allocator, .internal_error, request_id);
+    for (delete_request.keys) |key| {
+        _ = objects.delete(parsed.bucket.?, key) catch |err| {
+            const descriptor = protocol.describe(mapObjectError(err));
+            writer.writeAll("<Error><Key>") catch {
+                return respondError(request, application.allocator, .internal_error, request_id);
+            };
+            protocol.writeXmlEscaped(writer, key) catch return error.WriteFailed;
+            writer.print("</Key><Code>{s}</Code><Message>{s}</Message></Error>", .{
+                descriptor.code,
+                descriptor.message,
+            }) catch return respondError(
+                request,
+                application.allocator,
+                .internal_error,
+                request_id,
+            );
+            continue;
+        };
+        if (!delete_request.quiet) {
+            writer.writeAll("<Deleted><Key>") catch {
+                return respondError(request, application.allocator, .internal_error, request_id);
+            };
+            protocol.writeXmlEscaped(writer, key) catch return error.WriteFailed;
+            writer.writeAll("</Key></Deleted>") catch {
+                return respondError(request, application.allocator, .internal_error, request_id);
+            };
+        }
+    }
+    writer.writeAll("</DeleteResult>\n") catch {
+        return respondError(request, application.allocator, .internal_error, request_id);
+    };
+    return respondXml(request, xml.written(), .ok, request_id, &.{});
+}
+
 fn ensureBucketOwner(
     application: *Application,
     bucket_name: []const u8,
@@ -547,12 +857,19 @@ fn ensureEmptyRequest(
     request: *const std.http.Server.Request,
     headers: []const sigv4.Header,
 ) ?protocol.ErrorKind {
+    const payload_hash = sigv4.requestPayloadHash(headers) catch return .invalid_request;
+    return ensureEmptyRequestWithHash(request, payload_hash);
+}
+
+fn ensureEmptyRequestWithHash(
+    request: *const std.http.Server.Request,
+    payload_hash: sigv4.PayloadHash,
+) ?protocol.ErrorKind {
     if ((request.head.content_length orelse 0) != 0 or
         request.head.transfer_encoding != .none)
     {
         return .invalid_request;
     }
-    const payload_hash = sigv4.requestPayloadHash(headers) catch return .invalid_request;
     return switch (payload_hash) {
         .unsigned => null,
         .streaming => .not_implemented,
@@ -648,27 +965,51 @@ fn hasUnsupportedHeaders(
     operation: protocol.Operation,
     headers: []const sigv4.Header,
 ) bool {
+    const supported_streaming = operation == .put_object and hasHeaderValue(
+        headers,
+        "x-amz-content-sha256",
+        sigv4.streaming_payload,
+    );
     for (headers) |header| {
         if (std.ascii.eqlIgnoreCase(header.name, "x-amz-content-sha256") and
             std.mem.startsWith(u8, header.value, "STREAMING-"))
         {
-            return true;
+            if (!supported_streaming) return true;
+            continue;
         }
         if (std.ascii.eqlIgnoreCase(header.name, "x-amz-security-token") or
-            std.ascii.eqlIgnoreCase(header.name, "x-amz-sdk-checksum-algorithm") or
-            std.ascii.eqlIgnoreCase(header.name, "x-amz-trailer") or
-            std.ascii.eqlIgnoreCase(header.name, "x-amz-decoded-content-length") or
-            std.ascii.startsWithIgnoreCase(header.name, "x-amz-checksum-"))
+            std.ascii.eqlIgnoreCase(header.name, "x-amz-trailer"))
         {
             return true;
         }
+        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-decoded-content-length")) {
+            if (!supported_streaming) return true;
+            continue;
+        }
+        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-sdk-checksum-algorithm")) {
+            if (operation != .put_object or
+                !std.ascii.eqlIgnoreCase(header.value, "CRC64NVME")) return true;
+            continue;
+        }
+        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-checksum-crc64nvme")) {
+            if (operation != .put_object) return true;
+            continue;
+        }
+        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-checksum-mode")) {
+            if ((operation != .get_object and operation != .head_object) or
+                !std.ascii.eqlIgnoreCase(header.value, "ENABLED")) return true;
+            continue;
+        }
+        if (std.ascii.startsWithIgnoreCase(header.name, "x-amz-checksum-")) return true;
         if ((operation == .get_object or operation == .head_object) and
-            (std.ascii.eqlIgnoreCase(header.name, "range") or
-                std.ascii.eqlIgnoreCase(header.name, "if-match") or
+            (std.ascii.eqlIgnoreCase(header.name, "if-match") or
                 std.ascii.eqlIgnoreCase(header.name, "if-none-match") or
                 std.ascii.eqlIgnoreCase(header.name, "if-modified-since") or
                 std.ascii.eqlIgnoreCase(header.name, "if-unmodified-since")))
         {
+            return true;
+        }
+        if (std.ascii.eqlIgnoreCase(header.name, "range") and operation != .get_object) {
             return true;
         }
         if (operation == .put_object and
@@ -678,6 +1019,90 @@ fn hasUnsupportedHeaders(
         }
     }
     return false;
+}
+
+fn hasHeaderValue(
+    headers: []const sigv4.Header,
+    name: []const u8,
+    value: []const u8,
+) bool {
+    var matches: usize = 0;
+    for (headers) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, name)) continue;
+        if (!std.mem.eql(u8, header.value, value)) return false;
+        matches += 1;
+    }
+    return matches == 1;
+}
+
+fn parseStreamingDecodedLength(headers: []const sigv4.Header) error{InvalidLength}!u64 {
+    var value: ?[]const u8 = null;
+    for (headers) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, "x-amz-decoded-content-length")) continue;
+        if (value != null) return error.InvalidLength;
+        value = header.value;
+    }
+    const encoded = value orelse return error.InvalidLength;
+    if (encoded.len == 0 or (encoded.len > 1 and encoded[0] == '0')) return error.InvalidLength;
+    return std.fmt.parseInt(u64, encoded, 10) catch error.InvalidLength;
+}
+
+fn singleHeader(
+    headers: []const sigv4.Header,
+    name: []const u8,
+) error{DuplicateHeader}!?[]const u8 {
+    var value: ?[]const u8 = null;
+    for (headers) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, name)) continue;
+        if (value != null) return error.DuplicateHeader;
+        value = header.value;
+    }
+    return value;
+}
+
+fn parseRange(value: []const u8, object_size: u64) error{InvalidRange}!ByteRange {
+    const prefix = "bytes=";
+    if (!std.mem.startsWith(u8, value, prefix) or
+        std.mem.indexOfScalar(u8, value, ',') != null or
+        std.mem.indexOfAny(u8, value, " \t\r\n") != null or
+        object_size == 0)
+    {
+        return error.InvalidRange;
+    }
+    const specification = value[prefix.len..];
+    const separator = std.mem.indexOfScalar(u8, specification, '-') orelse {
+        return error.InvalidRange;
+    };
+    if (std.mem.indexOfScalarPos(u8, specification, separator + 1, '-') != null) {
+        return error.InvalidRange;
+    }
+    const start_text = specification[0..separator];
+    const end_text = specification[separator + 1 ..];
+    if (start_text.len == 0) {
+        const suffix_length = std.fmt.parseInt(u64, end_text, 10) catch {
+            return error.InvalidRange;
+        };
+        if (suffix_length == 0) return error.InvalidRange;
+        const length = @min(suffix_length, object_size);
+        return .{
+            .start = object_size - length,
+            .end = object_size - 1,
+            .length = length,
+        };
+    }
+    const start = std.fmt.parseInt(u64, start_text, 10) catch return error.InvalidRange;
+    if (start >= object_size) return error.InvalidRange;
+    const requested_end = if (end_text.len == 0)
+        object_size - 1
+    else
+        std.fmt.parseInt(u64, end_text, 10) catch return error.InvalidRange;
+    if (requested_end < start) return error.InvalidRange;
+    const end = @min(requested_end, object_size - 1);
+    return .{
+        .start = start,
+        .end = end,
+        .length = end - start + 1,
+    };
 }
 
 fn parseContentMd5(headers: []const sigv4.Header) error{InvalidDigest}!?[16]u8 {
@@ -695,6 +1120,34 @@ fn parseContentMd5(headers: []const sigv4.Header) error{InvalidDigest}!?[16]u8 {
     var digest: [16]u8 = undefined;
     std.base64.standard.Decoder.decode(&digest, value) catch return error.InvalidDigest;
     return digest;
+}
+
+fn parseCrc64Nvme(
+    headers: []const sigv4.Header,
+) error{ InvalidDigest, UnsupportedChecksum }!?u64 {
+    var algorithm: ?[]const u8 = null;
+    var encoded: ?[]const u8 = null;
+    for (headers) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-sdk-checksum-algorithm")) {
+            if (algorithm != null) return error.InvalidDigest;
+            algorithm = header.value;
+        } else if (std.ascii.eqlIgnoreCase(header.name, "x-amz-checksum-crc64nvme")) {
+            if (encoded != null) return error.InvalidDigest;
+            encoded = header.value;
+        }
+    }
+    if (algorithm) |value| {
+        if (!std.ascii.eqlIgnoreCase(value, "CRC64NVME")) return error.UnsupportedChecksum;
+        if (encoded == null) return error.InvalidDigest;
+    }
+    const value = encoded orelse return null;
+    const decoded_size = std.base64.standard.Decoder.calcSizeForSlice(value) catch {
+        return error.InvalidDigest;
+    };
+    if (decoded_size != 8) return error.InvalidDigest;
+    var digest: [8]u8 = undefined;
+    std.base64.standard.Decoder.decode(&digest, value) catch return error.InvalidDigest;
+    return std.mem.readInt(u64, &digest, .big);
 }
 
 const PutHeaders = struct {
@@ -793,12 +1246,15 @@ const ObjectResponseHeaders = struct {
     last_modified: [29]u8,
     content_length: [20]u8,
     content_length_length: usize,
+    content_range: [64]u8,
+    content_range_length: usize,
     include_content_length: bool,
 
     fn init(
         allocator: std.mem.Allocator,
         object: *const object_domain.Object,
         include_content_length: bool,
+        range: ?ByteRange,
     ) !ObjectResponseHeaders {
         var result: ObjectResponseHeaders = .{
             .headers = undefined,
@@ -807,17 +1263,30 @@ const ObjectResponseHeaders = struct {
             .last_modified = undefined,
             .content_length = undefined,
             .content_length_length = 0,
+            .content_range = undefined,
+            .content_range_length = 0,
             .include_content_length = include_content_length,
         };
         _ = formatEtag(object.etag_md5, &result.etag);
         _ = time.formatHttpDate(object.last_modified_unix_seconds, &result.last_modified) catch {
             return error.InvalidTimestamp;
         };
-        const content_length = std.fmt.bufPrint(&result.content_length, "{d}", .{object.size}) catch {
+        const response_size = if (range) |value| value.length else object.size;
+        const content_length = std.fmt.bufPrint(&result.content_length, "{d}", .{response_size}) catch {
             return error.NoSpaceLeft;
         };
         result.content_length_length = content_length.len;
-        const fixed_count: usize = if (include_content_length) 6 else 5;
+        if (range) |value| {
+            const content_range = std.fmt.bufPrint(
+                &result.content_range,
+                "bytes {d}-{d}/{d}",
+                .{ value.start, value.end, object.size },
+            ) catch return error.NoSpaceLeft;
+            result.content_range_length = content_range.len;
+        }
+        const fixed_count: usize = 6 +
+            @as(usize, @intFromBool(include_content_length)) +
+            @as(usize, @intFromBool(range != null));
         result.headers = try allocator.alloc(std.http.Header, fixed_count + object.user_metadata.len);
         errdefer allocator.free(result.headers);
         result.owned_names = try allocator.alloc([]u8, object.user_metadata.len);
@@ -846,6 +1315,15 @@ const ObjectResponseHeaders = struct {
             self.headers[index] = .{
                 .name = "content-length",
                 .value = self.content_length[0..self.content_length_length],
+            };
+            index += 1;
+        }
+        self.headers[index] = .{ .name = "accept-ranges", .value = "bytes" };
+        index += 1;
+        if (self.content_range_length != 0) {
+            self.headers[index] = .{
+                .name = "content-range",
+                .value = self.content_range[0..self.content_range_length],
             };
             index += 1;
         }
@@ -892,6 +1370,8 @@ fn buildListObjectsXml(
     start_after: ?[]const u8,
     continuation_token: ?[]const u8,
     url_encoding: bool,
+    include_owner: bool,
+    owner: []const u8,
     result: object_listing.Result,
 ) error{OutOfMemory}![]u8 {
     var output: std.Io.Writer.Allocating = .init(allocator);
@@ -930,10 +1410,18 @@ fn buildListObjectsXml(
         writer.writeAll("</Key><LastModified>") catch return error.OutOfMemory;
         protocol.writeIsoTime(writer, object.last_modified_unix_seconds) catch return error.OutOfMemory;
         var etag: [34]u8 = undefined;
-        writer.print("</LastModified><ETag>{s}</ETag><Size>{d}</Size><StorageClass>STANDARD</StorageClass></Contents>", .{
+        writer.print("</LastModified><ETag>{s}</ETag><Size>{d}</Size><StorageClass>STANDARD</StorageClass>", .{
             formatEtag(object.etag_md5, &etag),
             object.size,
         }) catch return error.OutOfMemory;
+        if (include_owner) {
+            writer.writeAll("<Owner><ID>") catch return error.OutOfMemory;
+            protocol.writeXmlEscaped(writer, owner) catch return error.OutOfMemory;
+            writer.writeAll("</ID><DisplayName>") catch return error.OutOfMemory;
+            protocol.writeXmlEscaped(writer, owner) catch return error.OutOfMemory;
+            writer.writeAll("</DisplayName></Owner>") catch return error.OutOfMemory;
+        }
+        writer.writeAll("</Contents>") catch return error.OutOfMemory;
     }
     for (result.common_prefixes) |common_prefix| {
         writer.writeAll("<CommonPrefixes><Prefix>") catch return error.OutOfMemory;
@@ -968,14 +1456,36 @@ fn respondError(
     kind: protocol.ErrorKind,
     request_id: []const u8,
 ) !std.http.Status {
+    return respondErrorWithHeaders(request, allocator, kind, request_id, &.{});
+}
+
+fn respondErrorWithHeaders(
+    request: *std.http.Server.Request,
+    allocator: std.mem.Allocator,
+    kind: protocol.ErrorKind,
+    request_id: []const u8,
+    additional_headers: []const std.http.Header,
+) !std.http.Status {
     const xml = protocol.errorXml(allocator, kind, request.head.target, request_id) catch {
         return error.OutOfMemory;
     };
     defer allocator.free(xml);
     if (request.head.method == .HEAD) {
-        return respondEmpty(request, protocol.describe(kind).status, request_id, &.{});
+        return respondEmpty(request, protocol.describe(kind).status, request_id, additional_headers);
     }
-    return respondXml(request, xml, protocol.describe(kind).status, request_id, &.{});
+    return respondXml(request, xml, protocol.describe(kind).status, request_id, additional_headers);
+}
+
+fn respondInvalidRange(
+    request: *std.http.Server.Request,
+    allocator: std.mem.Allocator,
+    object_size: u64,
+    request_id: []const u8,
+) !std.http.Status {
+    var value_buffer: [40]u8 = undefined;
+    const value = try std.fmt.bufPrint(&value_buffer, "bytes */{d}", .{object_size});
+    const headers = [_]std.http.Header{.{ .name = "content-range", .value = value }};
+    return respondErrorWithHeaders(request, allocator, .invalid_range, request_id, &headers);
 }
 
 fn respondXml(
@@ -1036,6 +1546,24 @@ fn mapSignatureVerifyError(err: sigv4.Error) protocol.ErrorKind {
     };
 }
 
+fn mapPresignedParseError(err: sigv4.Error) protocol.ErrorKind {
+    return switch (err) {
+        error.OutOfMemory => .internal_error,
+        else => .authorization_query_parameters_error,
+    };
+}
+
+fn mapPresignedVerifyError(err: sigv4.Error) protocol.ErrorKind {
+    return switch (err) {
+        error.SignatureDoesNotMatch => .signature_does_not_match,
+        error.RequestTimeTooSkewed => .request_time_too_skewed,
+        error.RequestExpired => .request_expired,
+        error.InvalidCredentialScope => .authorization_query_parameters_error,
+        error.OutOfMemory => .internal_error,
+        else => .invalid_request,
+    };
+}
+
 fn mapCredentialError(err: credential_service.Error) protocol.ErrorKind {
     return switch (err) {
         error.InvalidAccessKey, error.CredentialNotFound => .invalid_access_key_id,
@@ -1072,6 +1600,7 @@ fn mapObjectError(err: object_service.Error) protocol.ErrorKind {
         error.InvalidContentType,
         error.InvalidUserMetadata,
         error.InputReadFailed,
+        error.InvalidRange,
         => .invalid_request,
         error.BucketNotFound => .no_such_bucket,
         error.ObjectNotFound => .no_such_key,
@@ -1100,7 +1629,9 @@ fn mapListingError(err: object_listing.Error) protocol.ErrorKind {
 
 test "S3 operation policy mapping keeps Bucket and Object permissions separate" {
     try std.testing.expectEqual(credential_domain.Action.list_buckets, actionFor(.list_buckets).?);
+    try std.testing.expectEqual(credential_domain.Action.head_bucket, actionFor(.get_bucket_location).?);
     try std.testing.expectEqual(credential_domain.Action.put_object, actionFor(.put_object).?);
+    try std.testing.expectEqual(credential_domain.Action.delete_object, actionFor(.delete_objects).?);
     try std.testing.expect(actionFor(.unsupported) == null);
 }
 
@@ -1113,6 +1644,67 @@ test "S3 Content-MD5 parsing accepts a single RFC 4648 digest" {
     try std.testing.expectEqualStrings("900150983cd24fb0d6963f7d28e17f72", &std.fmt.bytesToHex(digest, .lower));
     const duplicate = [_]sigv4.Header{ headers[0], headers[0] };
     try std.testing.expectError(error.InvalidDigest, parseContentMd5(&duplicate));
+}
+
+test "S3 CRC64NVME parsing accepts AWS flexible checksum headers" {
+    const headers = [_]sigv4.Header{
+        .{ .name = "x-amz-sdk-checksum-algorithm", .value = "CRC64NVME" },
+        .{ .name = "x-amz-checksum-crc64nvme", .value = "rosUhgp5mIg=" },
+    };
+    try std.testing.expectEqual(@as(u64, 0xae8b14860a799888), (try parseCrc64Nvme(&headers)).?);
+    const unsupported = [_]sigv4.Header{.{
+        .name = "x-amz-sdk-checksum-algorithm",
+        .value = "SHA256",
+    }};
+    try std.testing.expectError(error.UnsupportedChecksum, parseCrc64Nvme(&unsupported));
+}
+
+test "S3 supported checksum headers remain distinct from streaming checksums" {
+    const crc64_headers = [_]sigv4.Header{
+        .{ .name = "x-amz-sdk-checksum-algorithm", .value = "CRC64NVME" },
+        .{ .name = "x-amz-checksum-crc64nvme", .value = "rosUhgp5mIg=" },
+    };
+    try std.testing.expect(!hasUnsupportedHeaders(.put_object, &crc64_headers));
+
+    const checksum_mode = [_]sigv4.Header{.{
+        .name = "x-amz-checksum-mode",
+        .value = "ENABLED",
+    }};
+    try std.testing.expect(!hasUnsupportedHeaders(.head_object, &checksum_mode));
+
+    const streaming = [_]sigv4.Header{.{
+        .name = "x-amz-content-sha256",
+        .value = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD",
+    }};
+    try std.testing.expect(!hasUnsupportedHeaders(.put_object, &streaming));
+    try std.testing.expect(hasUnsupportedHeaders(.get_object, &streaming));
+}
+
+test "S3 streaming decoded length is singular and canonical" {
+    const headers = [_]sigv4.Header{.{
+        .name = "x-amz-decoded-content-length",
+        .value = "21",
+    }};
+    try std.testing.expectEqual(@as(u64, 21), try parseStreamingDecodedLength(&headers));
+    const duplicate = [_]sigv4.Header{ headers[0], headers[0] };
+    try std.testing.expectError(error.InvalidLength, parseStreamingDecodedLength(&duplicate));
+}
+
+test "S3 single byte ranges normalize open ended and suffix forms" {
+    try std.testing.expectEqual(
+        ByteRange{ .start = 0, .end = 3, .length = 4 },
+        try parseRange("bytes=0-3", 10),
+    );
+    try std.testing.expectEqual(
+        ByteRange{ .start = 7, .end = 9, .length = 3 },
+        try parseRange("bytes=-3", 10),
+    );
+    try std.testing.expectEqual(
+        ByteRange{ .start = 8, .end = 9, .length = 2 },
+        try parseRange("bytes=8-", 10),
+    );
+    try std.testing.expectError(error.InvalidRange, parseRange("bytes=10-11", 10));
+    try std.testing.expectError(error.InvalidRange, parseRange("bytes=0-1,4-5", 10));
 }
 
 test "CreateBucket location constraint matches the configured endpoint region" {

@@ -1,5 +1,6 @@
 const std = @import("std");
 const byte_stream = @import("../ports/byte_stream.zig");
+const Crc64Nvme = @import("checksum.zig").Crc64Nvme;
 
 pub const min_buffer_size: usize = 4 * 1024;
 pub const default_buffer_size: usize = 64 * 1024;
@@ -9,6 +10,7 @@ pub const Result = struct {
     size: u64,
     etag_md5: [16]u8,
     checksum_sha256: [32]u8,
+    checksum_crc64nvme: u64,
 };
 
 pub const Error = error{
@@ -33,6 +35,7 @@ pub fn copyAndHash(
 
     var md5 = std.crypto.hash.Md5.init(.{});
     var sha256 = std.crypto.hash.sha2.Sha256.init(.{});
+    var crc64nvme = Crc64Nvme.init();
     var size: u64 = 0;
     while (true) {
         const length = source.read(buffer) catch return error.SourceReadFailed;
@@ -45,6 +48,7 @@ pub fn copyAndHash(
         };
         md5.update(bytes);
         sha256.update(bytes);
+        crc64nvme.update(bytes);
         size = std.math.add(u64, size, length) catch return error.SizeOverflow;
     }
 
@@ -56,6 +60,7 @@ pub fn copyAndHash(
         .size = size,
         .etag_md5 = etag_md5,
         .checksum_sha256 = checksum_sha256,
+        .checksum_crc64nvme = crc64nvme.final(),
     };
 }
 
@@ -126,6 +131,7 @@ test "bounded streaming calculates S3 MD5 and SHA-256" {
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
         &expected_sha256,
     );
+    try std.testing.expectEqual(@as(u64, 0x05e5cabb3fc1faeb), result.checksum_crc64nvme);
 }
 
 test "bounded streaming handles 100 MiB and 1 GiB with fixed memory" {

@@ -35,6 +35,7 @@ pub const LocalObjectDataStore = struct {
             .discard = discardImpl,
             .stat = statImpl,
             .read = readImpl,
+            .read_range = readRangeImpl,
             .scan_generations = scanGenerationsImpl,
             .delete_generation = deleteGenerationImpl,
         } };
@@ -102,6 +103,7 @@ pub const LocalObjectDataStore = struct {
             .size = copied.size,
             .etag_md5 = copied.etag_md5,
             .checksum_sha256 = copied.checksum_sha256,
+            .checksum_crc64nvme = copied.checksum_crc64nvme,
         };
     }
 
@@ -190,6 +192,43 @@ pub const LocalObjectDataStore = struct {
             !std.mem.eql(u8, &copied.checksum_sha256, &integrity.checksum_sha256))
         {
             return error.CorruptData;
+        }
+    }
+
+    fn readRangeImpl(
+        context: *anyopaque,
+        location: data_store_port.Location,
+        offset: u64,
+        length: u64,
+        sink: byte_stream.Sink,
+    ) data_store_port.Error!void {
+        const self: *LocalObjectDataStore = @ptrCast(@alignCast(context));
+        if (!validLocation(location)) return error.InvalidValue;
+        var paths: PathSet = undefined;
+        paths.format(location) catch return error.InvalidValue;
+        var file = self.root.openFile(self.io, paths.dataPath(), .{}) catch |err| switch (err) {
+            error.FileNotFound => return error.NotFound,
+            else => return error.Unavailable,
+        };
+        defer file.close(self.io);
+        const buffer = self.allocator.alloc(u8, self.buffer_size) catch return error.OutOfMemory;
+        defer self.allocator.free(buffer);
+        var position = offset;
+        var remaining = length;
+        while (remaining != 0) {
+            const requested: usize = @intCast(@min(
+                remaining,
+                @as(u64, @intCast(buffer.len)),
+            ));
+            const count = file.readPositionalAll(
+                self.io,
+                buffer[0..requested],
+                position,
+            ) catch return error.Unavailable;
+            if (count == 0) return error.CorruptData;
+            sink.writeAll(buffer[0..count]) catch return error.SinkWriteFailed;
+            position = std.math.add(u64, position, count) catch return error.InvalidValue;
+            remaining -= count;
         }
     }
 
@@ -624,6 +663,11 @@ test "local object data store stages publishes and verifies a generation" {
         .checksum_sha256 = staged.checksum_sha256,
     }, sink.interface());
     try std.testing.expectEqualStrings("object-body", sink.bytes.items);
+
+    var range_sink: TestCollectingSink = .{ .allocator = std.testing.allocator };
+    defer range_sink.deinit();
+    try store.readRange(location, 3, 6, range_sink.interface());
+    try std.testing.expectEqualStrings("ect-bo", range_sink.bytes.items);
 }
 
 test "local object data paths never contain an object key and staged cleanup is scoped" {

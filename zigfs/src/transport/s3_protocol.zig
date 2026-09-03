@@ -5,7 +5,9 @@ pub const Operation = enum {
     list_buckets,
     create_bucket,
     head_bucket,
+    get_bucket_location,
     delete_bucket,
+    delete_objects,
     list_objects_v2,
     put_object,
     get_object,
@@ -115,8 +117,14 @@ fn classify(
             .PUT => .create_bucket,
             .HEAD => .head_bucket,
             .DELETE => .delete_bucket,
+            .POST => if (hasQueryValue(parameters, "delete", ""))
+                .delete_objects
+            else
+                .unsupported,
             .GET => if (hasQueryValue(parameters, "list-type", "2"))
                 .list_objects_v2
+            else if (hasQueryValue(parameters, "location", ""))
+                .get_bucket_location
             else
                 .unsupported,
             else => .unsupported,
@@ -229,7 +237,9 @@ pub const ErrorKind = enum {
     invalid_access_key_id,
     signature_does_not_match,
     authorization_header_malformed,
+    authorization_query_parameters_error,
     request_time_too_skewed,
+    request_expired,
     no_such_bucket,
     no_such_key,
     bucket_already_exists,
@@ -243,6 +253,7 @@ pub const ErrorKind = enum {
     invalid_digest,
     bad_digest,
     x_amz_content_sha256_mismatch,
+    invalid_range,
     not_implemented,
     service_unavailable,
     internal_error,
@@ -260,7 +271,9 @@ pub fn describe(kind: ErrorKind) ErrorDescriptor {
         .invalid_access_key_id => .{ .code = "InvalidAccessKeyId", .message = "The AWS access key ID you provided does not exist in our records.", .status = .forbidden },
         .signature_does_not_match => .{ .code = "SignatureDoesNotMatch", .message = "The request signature we calculated does not match the signature you provided.", .status = .forbidden },
         .authorization_header_malformed => .{ .code = "AuthorizationHeaderMalformed", .message = "The authorization header is malformed.", .status = .bad_request },
+        .authorization_query_parameters_error => .{ .code = "AuthorizationQueryParametersError", .message = "The query string authentication parameters are malformed or invalid.", .status = .bad_request },
         .request_time_too_skewed => .{ .code = "RequestTimeTooSkewed", .message = "The difference between the request time and the server's time is too large.", .status = .forbidden },
+        .request_expired => .{ .code = "AccessDenied", .message = "Request has expired.", .status = .forbidden },
         .no_such_bucket => .{ .code = "NoSuchBucket", .message = "The specified bucket does not exist.", .status = .not_found },
         .no_such_key => .{ .code = "NoSuchKey", .message = "The specified key does not exist.", .status = .not_found },
         .bucket_already_exists => .{ .code = "BucketAlreadyExists", .message = "The requested bucket name is not available.", .status = .conflict },
@@ -272,8 +285,9 @@ pub fn describe(kind: ErrorKind) ErrorDescriptor {
         .invalid_location_constraint => .{ .code = "InvalidLocationConstraint", .message = "The specified location constraint is not valid.", .status = .bad_request },
         .malformed_xml => .{ .code = "MalformedXML", .message = "The XML you provided was not well-formed or did not validate against our published schema.", .status = .bad_request },
         .invalid_digest => .{ .code = "InvalidDigest", .message = "The Content-MD5 you specified is not valid.", .status = .bad_request },
-        .bad_digest => .{ .code = "BadDigest", .message = "The Content-MD5 you specified did not match what we received.", .status = .bad_request },
+        .bad_digest => .{ .code = "BadDigest", .message = "The checksum you specified did not match what we received.", .status = .bad_request },
         .x_amz_content_sha256_mismatch => .{ .code = "XAmzContentSHA256Mismatch", .message = "The provided x-amz-content-sha256 does not match what was computed.", .status = .bad_request },
+        .invalid_range => .{ .code = "InvalidRange", .message = "The requested range is not satisfiable.", .status = .range_not_satisfiable },
         .not_implemented => .{ .code = "NotImplemented", .message = "A header or operation you provided implies functionality that is not implemented.", .status = .not_implemented },
         .service_unavailable => .{ .code = "ServiceUnavailable", .message = "Please reduce your request rate.", .status = .service_unavailable },
         .internal_error => .{ .code = "InternalError", .message = "We encountered an internal error. Please try again.", .status = .internal_server_error },
@@ -336,6 +350,14 @@ test "S3 target parsing separates path-style buckets objects and List V2" {
     defer list.deinit();
     try std.testing.expectEqual(.list_objects_v2, list.operation);
     try std.testing.expectEqualStrings("photos/", (try list.query("prefix")).?);
+
+    const location = try parseTarget(std.testing.allocator, .GET, "/project-assets?location=");
+    defer location.deinit();
+    try std.testing.expectEqual(.get_bucket_location, location.operation);
+
+    const delete_objects = try parseTarget(std.testing.allocator, .POST, "/project-assets?delete=");
+    defer delete_objects.deinit();
+    try std.testing.expectEqual(.delete_objects, delete_objects.operation);
 }
 
 test "S3 XML errors escape resources and expose stable request IDs" {

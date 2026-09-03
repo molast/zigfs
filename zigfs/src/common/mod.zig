@@ -1,5 +1,6 @@
 const std = @import("std");
 
+pub const checksum = @import("checksum.zig");
 pub const id = @import("id.zig");
 pub const request_id = @import("request_id.zig");
 pub const streaming = @import("streaming.zig");

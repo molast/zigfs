@@ -12,15 +12,18 @@
 
 ## S3/Data API
 
-以下接口由 ZigFS `server.api_address` 直接提供，使用 Signature V4 Header 认证：
+以下接口由 ZigFS `server.api_address` 直接提供，默认使用 Signature V4 Header 认证；
+对象级 GetObject 和 PutObject 也支持 Signature V4 Presigned Query：
 
 | Method | Path | 含义 |
 |---|---|---|
 | GET | `/` | ListBuckets |
 | PUT | `/{bucket}` | CreateBucket |
 | HEAD | `/{bucket}` | HeadBucket |
+| GET | `/{bucket}?location=` | GetBucketLocation |
 | DELETE | `/{bucket}` | DeleteBucket |
 | GET | `/{bucket}?list-type=2` | ListObjectsV2 |
+| POST | `/{bucket}?delete=` | DeleteObjects |
 | PUT | `/{bucket}/{object}` | PutObject |
 | GET | `/{bucket}/{object}` | GetObject |
 | HEAD | `/{bucket}/{object}` | HeadObject |
