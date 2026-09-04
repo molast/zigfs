@@ -12,10 +12,10 @@ export function StorageView({ api }: { api: ApiClient }) {
 
   return (
     <section>
-      <header className="page-header"><div><p className="eyebrow">Capacity</p><h2>Storage</h2></div></header>
+      <header className="page-header"><div><p className="eyebrow">Capacity</p><h2>Storage</h2><p className="page-description">查看逻辑对象占用和当前可用容量。</p></div></header>
       {error && <p className="error-banner">{error}</p>}
       {storage && (
-        <div className="metric-grid metric-grid-three">
+        <div className="panel metric-grid metric-grid-three">
           <Metric label="Object bytes" value={formatBytes(storage.used)} />
           <Metric label="Total capacity" value={storage.total === null ? 'Not reported' : formatBytes(storage.total)} />
           <Metric label="Available" value={storage.available === null ? 'Not reported' : formatBytes(storage.available)} />

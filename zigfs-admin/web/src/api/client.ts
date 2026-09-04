@@ -82,7 +82,7 @@ export function createApiClient() {
       accessKey: string,
       bucket: string,
       key: string,
-      method: 'GET' | 'PUT',
+      method: 'GET' | 'PUT' | 'DELETE',
       expiresSeconds: number,
     ) => request<PresignObjectResponse>('/api/v1/objects/presign', {
       method: 'POST',

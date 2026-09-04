@@ -69,8 +69,9 @@ ListObjectsV2 已支持：
 | Range GetObject | `Range: bytes=...` | Implemented | `206` + `Content-Range` | Object Read |
 | Presigned PutObject | `PUT /{bucket}/{key}?X-Amz-*` | Implemented | 与 PutObject 相同 | Object Write |
 | Presigned GetObject | `GET /{bucket}/{key}?X-Amz-*` | Implemented | 与 GetObject 相同 | Object Read |
-| Conditional Get/Head | `If-Match` 等 | Not Implemented | `501 NotImplemented` | - |
-| CopyObject | `X-Amz-Copy-Source` | Not Supported | `501 NotImplemented` | - |
+| Presigned DeleteObject | `DELETE /{bucket}/{key}?X-Amz-*` | Implemented | 与 DeleteObject 相同 | Object Write |
+| Conditional Get/Head | `If-Match` 等 | Phase 9 target | `501 NotImplemented` | - |
+| CopyObject | `X-Amz-Copy-Source` | Phase 9 target | `501 NotImplemented` | - |
 
 ## Multipart Upload
 
@@ -123,12 +124,13 @@ Range GetObject 支持 `bytes=start-end`、`bytes=start-` 和 `bytes=-suffix` �
 - 中途断流不会发布 Object 或 Part，也不会遗留 `.zigfs/tmp/object-*.data` 或 `multipart-*.data`。
 - GetObject 客户端在响应流中断开时，ZigFS 终止发送并释放当前 Generation 的 Read Lease；后续覆盖、删除和读取不会被该连接阻塞。
 
-Presigned GET/PUT：
+Presigned GET/PUT/DELETE：
 
 - Canonical Request 的 Payload 使用 S3 标准 `UNSIGNED-PAYLOAD`；PUT 仍会验证显式提供的 Content-MD5 或受支持 checksum。
 - AK/SK 当前状态和 Policy 在每次请求时由 ZigFS Credential Service 查询；禁用凭证或权限不足的 URL 即使未过期也会被拒绝。
+- Management Presign API 支持 `GET`、`PUT` 和 `DELETE`；Admin 对象详情、上传、下载和删除均通过短时效 URL 直连 S3/Data API，Admin 不转发对象字节。
 - 缺失、重复、非法或超过 7 天的鉴权参数返回 `AuthorizationQueryParametersError`；签名篡改返回 `SignatureDoesNotMatch`，过期返回 `AccessDenied` 和 `Request has expired.`。
-- `auth/sigv4.zig` 提供内部 Presigned GET/PUT 生成器；Phase 6 的 Management Presign API 将复用该实现，不建立第二套签名协议。
+- `auth/sigv4.zig` 提供内部 Presigned GET/PUT/DELETE 生成器；Management Presign API 复用该实现，不建立第二套签名协议。
 
 ## 错误
 
@@ -158,13 +160,14 @@ Request ID Header，不返回 XML Body。
 
 | 能力 | 阶段/行为 |
 |---|---|
-| 条件请求 | 不属于 Phase 5；后续兼容范围，当前 Header 返回 `NotImplemented` |
+| 条件请求 | Phase 9 目标；当前 Header 返回 `NotImplemented` |
 | Multi-Range | V1 当前不支持，返回 `416 InvalidRange` |
-| Temporary Credentials / Session Token | 后续阶段，当前返回 `NotImplemented` 或鉴权失败 |
-| S3 POST Policy Upload | 非 Presigned PUT；`mc share upload` 使用此协议，当前未实现 |
-| CRC32、CRC32C、SHA1、SHA256 streaming trailer checksum | V1 当前只实现 CRC64NVME，其他算法返回 `NotImplemented` |
-| Virtual-hosted-style | 未声明支持，只使用 Path-style |
-| S3 Object Versioning、ACL、Tagging、Copy、Select | V1 非当前范围 |
+| Temporary Credentials / Session Token | Phase 9 目标；当前返回 `NotImplemented` 或鉴权失败 |
+| S3 POST Policy Upload | Phase 9 目标；非 Presigned PUT，`mc share upload` 当前未实现 |
+| CRC32、CRC32C、SHA1、SHA256 streaming trailer checksum | Phase 9 目标；V1 当前只实现 CRC64NVME，其他算法返回 `NotImplemented` |
+| Virtual-hosted-style | Phase 9 目标；当前只使用 Path-style |
+| CopyObject | Phase 9 目标；当前返回 `NotImplemented` |
+| S3 Object Versioning、ACL、Tagging、Select | V1 非当前范围 |
 
 ## 验证矩阵
 
@@ -177,7 +180,7 @@ Request ID Header，不返回 XML Body。
 | rclone 1.75.0 | Pass with config | `list_version=2` 下 Bucket/Object CRUD、Metadata、MD5、Presigned GET；5 MiB Part、3 路并发的 70 MiB Multipart 上传和下载 SHA-256 一致；`provider=Other` 默认 ListObjects V1 不在当前范围 |
 | TypeScript/Web Conformance | Pass | Web Crypto SigV4、Web Streams Put/Get、64 位 `bigint`、Range、List V2 Token、Multipart、Abort、错误映射和取消后继续访问 |
 | Swift/iOS Conformance | Pass | CryptoKit SigV4、Foundation 文件/响应流、64 位 `UInt64`、Range、List V2 Token、Multipart、Abort、错误映射和取消后继续访问 |
-| 独立 AWS SDK / signed trailer 外部扩展 | Additional coverage: Pending | AWS CLI、mc、rclone 不作为独立 SDK 运行时；只在客户端能够稳定生成 CRC64NVME signed trailer 时记录该变体通过，不阻塞 Phase 5 已通过的协议 Gate |
+| 独立 AWS SDK / signed trailer 外部扩展 | Phase 9 Additional coverage: Pending | AWS CLI、mc、rclone 不作为独立 SDK 运行时；Phase 9 将补充独立 AWS SDK 运行时和更多 trailer 变体验证 |
 
 AK/SK 的创建、禁用、删除和 Policy 配置不属于 S3/Data API；它们是 ZigFS
 Management API。文件 SDK 只建立在本文声明的 S3 操作之上，不包含管理操作。

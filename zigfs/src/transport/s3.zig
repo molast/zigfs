@@ -35,6 +35,9 @@ pub fn serveRequest(
     application: *Application,
     request_id: []const u8,
 ) !std.http.Status {
+    // Browsers use this unauthenticated preflight before direct presigned writes and deletes.
+    if (request.head.method == .OPTIONS) return respondCorsPreflight(request, request_id);
+
     const allocator = application.allocator;
     const raw_target = request.head.target;
     const parsed = protocol.parseTarget(
@@ -64,7 +67,9 @@ pub fn serveRequest(
         return respondError(request, allocator, .invalid_request, request_id);
     }
     if (uses_presigned_auth and
-        parsed.operation != .get_object and parsed.operation != .put_object)
+        parsed.operation != .get_object and
+        parsed.operation != .put_object and
+        parsed.operation != .delete_object)
     {
         return respondError(request, allocator, .access_denied, request_id);
     }
@@ -1752,7 +1757,7 @@ const ObjectResponseHeaders = struct {
             ) catch return error.NoSpaceLeft;
             result.content_range_length = content_range.len;
         }
-        const fixed_count: usize = 6 +
+        const fixed_count: usize = 8 +
             @as(usize, @intFromBool(include_content_length)) +
             @as(usize, @intFromBool(range != null));
         result.headers = try allocator.alloc(std.http.Header, fixed_count + object.user_metadata.len);
@@ -1802,6 +1807,10 @@ const ObjectResponseHeaders = struct {
         self.headers[index] = .{ .name = "x-amz-request-id", .value = request_id };
         index += 1;
         self.headers[index] = .{ .name = "x-request-id", .value = request_id };
+        index += 1;
+        self.headers[index] = .{ .name = "access-control-allow-origin", .value = "*" };
+        index += 1;
+        self.headers[index] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id" };
         index += 1;
         for (object.user_metadata, 0..) |entry, metadata_index| {
             self.headers[index] = .{
@@ -1983,15 +1992,17 @@ fn respondXml(
     additional_headers: []const std.http.Header,
 ) !std.http.Status {
     var headers: [16]std.http.Header = undefined;
-    if (additional_headers.len > headers.len - 4) return error.OutOfMemory;
+    if (additional_headers.len > headers.len - 6) return error.OutOfMemory;
     headers[0] = .{ .name = "content-type", .value = "application/xml" };
     headers[1] = .{ .name = "cache-control", .value = "no-store" };
     headers[2] = .{ .name = "x-amz-request-id", .value = request_id };
     headers[3] = .{ .name = "x-request-id", .value = request_id };
-    @memcpy(headers[4..][0..additional_headers.len], additional_headers);
+    headers[4] = .{ .name = "access-control-allow-origin", .value = "*" };
+    headers[5] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id" };
+    @memcpy(headers[6..][0..additional_headers.len], additional_headers);
     try request.respond(body, .{
         .status = status,
-        .extra_headers = headers[0 .. 4 + additional_headers.len],
+        .extra_headers = headers[0 .. 6 + additional_headers.len],
     });
     return status;
 }
@@ -2003,16 +2014,36 @@ fn respondEmpty(
     additional_headers: []const std.http.Header,
 ) !std.http.Status {
     var headers: [16]std.http.Header = undefined;
-    if (additional_headers.len > headers.len - 3) return error.OutOfMemory;
+    if (additional_headers.len > headers.len - 5) return error.OutOfMemory;
     headers[0] = .{ .name = "cache-control", .value = "no-store" };
     headers[1] = .{ .name = "x-amz-request-id", .value = request_id };
     headers[2] = .{ .name = "x-request-id", .value = request_id };
-    @memcpy(headers[3..][0..additional_headers.len], additional_headers);
+    headers[3] = .{ .name = "access-control-allow-origin", .value = "*" };
+    headers[4] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id" };
+    @memcpy(headers[5..][0..additional_headers.len], additional_headers);
     try request.respond("", .{
         .status = status,
-        .extra_headers = headers[0 .. 3 + additional_headers.len],
+        .extra_headers = headers[0 .. 5 + additional_headers.len],
     });
     return status;
+}
+
+fn respondCorsPreflight(
+    request: *std.http.Server.Request,
+    request_id: []const u8,
+) !std.http.Status {
+    const headers = [_]std.http.Header{
+        .{ .name = "cache-control", .value = "no-store" },
+        .{ .name = "x-amz-request-id", .value = request_id },
+        .{ .name = "x-request-id", .value = request_id },
+        .{ .name = "access-control-allow-origin", .value = "*" },
+        .{ .name = "access-control-allow-methods", .value = "GET, PUT, DELETE, HEAD, OPTIONS" },
+        .{ .name = "access-control-allow-headers", .value = "content-type, x-amz-content-sha256, x-amz-date, authorization, x-amz-checksum-crc64nvme" },
+        .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id" },
+        .{ .name = "access-control-max-age", .value = "600" },
+    };
+    try request.respond("", .{ .status = .no_content, .extra_headers = &headers });
+    return .no_content;
 }
 
 fn mapSignatureParseError(err: sigv4.Error) protocol.ErrorKind {

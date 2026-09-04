@@ -16,6 +16,7 @@ type Availability = 'checking' | 'ready' | 'offline' | 'not-ready'
 export default function App() {
   const [session, setSession] = useState<AdminSession | null>()
   const [view, setView] = useState<View>('dashboard')
+  const [selectedBucket, setSelectedBucket] = useState('')
   const [availability, setAvailability] = useState<Availability>('checking')
   const api = useMemo(() => createApiClient(), [])
 
@@ -79,8 +80,11 @@ export default function App() {
       </aside>
       <main className="content">
         {view === 'dashboard' && <DashboardView api={api} />}
-        {view === 'buckets' && <BucketsView api={api} />}
-        {view === 'objects' && <ObjectsView api={api} />}
+        {view === 'buckets' && <BucketsView api={api} onOpenBucket={(name) => {
+          setSelectedBucket(name)
+          setView('objects')
+        }} />}
+        {view === 'objects' && <ObjectsView api={api} initialBucket={selectedBucket} onBack={() => setView('buckets')} />}
         {view === 'access-keys' && <AccessKeysView api={api} />}
         {view === 'storage' && <StorageView api={api} />}
         {view === 'system' && <SystemView api={api} />}

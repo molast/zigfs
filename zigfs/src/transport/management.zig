@@ -247,7 +247,9 @@ fn servePresignObject(
     };
     defer parsed.deinit();
     const value = parsed.value;
-    if ((!std.mem.eql(u8, value.method, "GET") and !std.mem.eql(u8, value.method, "PUT")) or
+    if ((!std.mem.eql(u8, value.method, "GET") and
+        !std.mem.eql(u8, value.method, "PUT") and
+        !std.mem.eql(u8, value.method, "DELETE")) or
         value.expires_seconds == 0 or value.expires_seconds > sigv4.max_presigned_expiry_seconds)
     {
         return respondError(request, request_id, .bad_request, "InvalidPresignRequest", "method or expiry is invalid");
@@ -263,8 +265,10 @@ fn servePresignObject(
     defer material.deinit(application.allocator);
     const required_action: credential_domain.Action = if (std.mem.eql(u8, value.method, "GET"))
         .get_object
+    else if (std.mem.eql(u8, value.method, "PUT"))
+        .put_object
     else
-        .put_object;
+        .delete_object;
     if (!material.policy.allows(required_action)) {
         return respondError(request, request_id, .forbidden, "AccessDenied", "access key policy does not allow this operation");
     }

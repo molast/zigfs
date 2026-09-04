@@ -393,7 +393,7 @@ components:
           type: string
         method:
           type: string
-          enum: [GET, PUT]
+          enum: [GET, PUT, DELETE]
         expires_seconds:
           type: integer
           format: int64

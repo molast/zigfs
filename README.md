@@ -86,6 +86,9 @@ Phase 7 SDK Conformance 已完成语言无关契约和共享向量，并由 Type
 Phase 8 Reliability and Performance 已加入确定性故障注入、写能力探针、索引重建和数据校验损坏
 测试，以及可输出原始 JSON 的 `smoke`/`full` 基准工具。基准结果与硬件、构建模式和并发度绑定，
 不构成脱离环境的性能承诺。
+下一阶段为 Phase 9 S3 Compatibility Hardening and V1 Release Candidate，优先补齐当前
+S3 兼容矩阵中声明的 Conditional Requests、CopyObject、Virtual-hosted-style、Temporary
+Credentials、POST Policy 和其他 trailer checksum 差异，再冻结 V1 Release Candidate。
 
 运维、备份恢复和 V1 限制见 [docs/operations.md](docs/operations.md)、
 [docs/backup-and-recovery.md](docs/backup-and-recovery.md) 和

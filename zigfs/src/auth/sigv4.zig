@@ -433,7 +433,8 @@ pub fn presignTarget(
     request: PresignRequest,
 ) Error![]u8 {
     if ((!std.mem.eql(u8, request.method, "GET") and
-        !std.mem.eql(u8, request.method, "PUT")) or
+        !std.mem.eql(u8, request.method, "PUT") and
+        !std.mem.eql(u8, request.method, "DELETE")) or
         hasPresignedParameters(request.target))
     {
         return error.InvalidTarget;

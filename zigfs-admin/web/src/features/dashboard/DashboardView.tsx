@@ -29,6 +29,7 @@ export function DashboardView({ api }: DashboardViewProps) {
         <div>
           <p className="eyebrow">Overview</p>
           <h2>系统概览</h2>
+          <p className="page-description">ZigFS 当前服务状态、对象规模和运行时间。</p>
         </div>
         <span className={`status-indicator status-${health?.status ?? 'recovery'}`}>{health?.status ?? 'checking'}</span>
       </header>
