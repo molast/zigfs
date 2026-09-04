@@ -51,6 +51,11 @@ Prometheus 默认通过独立的 `127.0.0.1:9090` Listener 拉取指标：
 
 `live` 不代表可以处理存储请求；编排系统应使用 `ready` 决定是否接收流量。
 
+启动会执行受控的 Storage write probe；初始化探针失败时服务不会进入 HTTP Ready，
+返回 `StorageNotWritable`。恢复或运行期不可用时 `ready` 返回 `503`，并在详细
+Management Health 中保留恢复错误分类。运维、备份和恢复流程见
+[operations.md](../operations.md) 与 [backup-and-recovery.md](../backup-and-recovery.md)。
+
 ## Request ID
 
 ZigFS 的 API、Health 和 Metrics 响应均返回 `X-Request-ID`。请求携带合法的

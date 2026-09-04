@@ -1,10 +1,13 @@
 const std = @import("std");
 const id = @import("../common/id.zig");
+const durable = @import("../metadata/durable.zig");
 const format = @import("../metadata/format.zig");
 const storage_port = @import("../ports/storage_backend.zig");
 const StorageBackend = storage_port.StorageBackend;
 
 pub const LocalStorageBackend = struct {
+    const write_probe_path = ".zigfs/tmp/storage-ready.probe";
+
     root_path: []const u8,
     lock_file: ?std.Io.File = null,
     persistent_instance_id: ?id.Uuid = null,
@@ -69,9 +72,24 @@ pub const LocalStorageBackend = struct {
         try root.createDirPath(io, "metadata/multipart");
         try root.createDirPath(io, "multipart");
         try root.createDirPath(io, "objects");
+        try probeWritable(root, io);
 
         self.lock_file = lock_file;
         self.persistent_instance_id = format_metadata.instance_id;
+    }
+
+    fn probeWritable(root: std.Io.Dir, io: std.Io) error{StorageNotWritable}!void {
+        {
+            var probe = root.createFile(io, write_probe_path, .{
+                .read = true,
+                .truncate = true,
+            }) catch return error.StorageNotWritable;
+            defer probe.close(io);
+            probe.writeStreamingAll(io, "zigfs-ready") catch return error.StorageNotWritable;
+            probe.sync(io) catch return error.StorageNotWritable;
+        }
+        root.deleteFile(io, write_probe_path) catch return error.StorageNotWritable;
+        durable.syncParent(root, io, write_probe_path) catch return error.StorageNotWritable;
     }
 };
 
@@ -128,4 +146,27 @@ test "local backend creates phase 2b metadata layout" {
         var directory = try tmp.dir.openDir(std.testing.io, path, .{});
         directory.close(std.testing.io);
     }
+}
+
+test "local backend rejects an unwritable probe path and releases its lock" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "data/.zigfs/tmp/storage-ready.probe");
+
+    var unavailable = LocalStorageBackend.init("data");
+    try std.testing.expectError(
+        error.StorageNotWritable,
+        unavailable.ensureReadyIn(std.testing.io, tmp.dir),
+    );
+    try std.testing.expect(unavailable.instanceId() == null);
+
+    try tmp.dir.deleteDir(std.testing.io, "data/.zigfs/tmp/storage-ready.probe");
+    var recovered = LocalStorageBackend.init("data");
+    try recovered.ensureReadyIn(std.testing.io, tmp.dir);
+    defer recovered.deinit(std.testing.io);
+    try std.testing.expect(recovered.instanceId() != null);
+    try std.testing.expectError(
+        error.FileNotFound,
+        tmp.dir.statFile(std.testing.io, "data/.zigfs/tmp/storage-ready.probe", .{}),
+    );
 }

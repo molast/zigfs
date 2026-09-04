@@ -23,6 +23,7 @@ data/
 tmp/
 *.log
 *.pid
+benchmarks/reports/
 
 # Local configuration and secrets
 .env

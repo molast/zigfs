@@ -61,6 +61,13 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 - 语言无关文件 SDK 设计、版本、错误与一致性测试契约
 - TypeScript/Web 与 Swift/iOS 两套 S3 一致性 Adapter，共享 SigV4、64 位、错误和重试向量
 - 隔离 ZigFS 端到端 SDK Gate，覆盖流式 Put/Get、Range、分页、Multipart、取消和错误映射
+- Phase 8 故障注入：覆盖 Object Data、Journal、Metadata Commit 前后崩溃点，重启只恢复完整代
+  数据代，暂存数据清理且不可达代由 GC 回收
+- 启动 Storage write probe；只读、路径冲突和探针写入失败会阻止服务进入 Ready
+- Metadata Repository 全量重建在索引快照损坏或删除后仍可工作；对象 Data 同长度篡改由 SHA-256
+  检测并以 `CorruptData` 报告
+- `benchmarks/run.mjs` 可复现运行 Small/Large Object、并发、Multipart、Range 和 CRUD 基准，
+  输出 Requests/s、吞吐、p50/p95/p99、RSS、CPU 与平台可用的 Disk I/O
 
 Phase 4 S3 Protocol and Authentication 已完成约定的三客户端矩阵。核心 Bucket/Object/List V2
 Path-style HTTP API、Signature V4 Header、AK/SK 加密持久化和 Policy 已实现并通过真实
@@ -76,6 +83,14 @@ AWS CLI、mc 和 rclone 的并发大文件上传与下载校验。CRC64NVME sign
 已实现 ZigFS Management Handler、真实 TCP Contract、Gin BFF 和完整 React 管理页面。
 Phase 7 SDK Conformance 已完成语言无关契约和共享向量，并由 TypeScript/Web、Swift/iOS
 两个生态直接连接隔离 ZigFS 通过完整文件操作 Gate；该阶段验证 S3 契约，不发布第二套协议。
+Phase 8 Reliability and Performance 已加入确定性故障注入、写能力探针、索引重建和数据校验损坏
+测试，以及可输出原始 JSON 的 `smoke`/`full` 基准工具。基准结果与硬件、构建模式和并发度绑定，
+不构成脱离环境的性能承诺。
+
+运维、备份恢复和 V1 限制见 [docs/operations.md](docs/operations.md)、
+[docs/backup-and-recovery.md](docs/backup-and-recovery.md) 和
+[docs/known-limitations.md](docs/known-limitations.md)。基准工作负载和采样方法见
+[docs/benchmarks.md](docs/benchmarks.md)。
 
 ## SDK 一致性验证
 

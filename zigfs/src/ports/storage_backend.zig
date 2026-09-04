@@ -9,6 +9,7 @@ pub const EnsureReadyError = std.Io.Dir.CreateDirPathOpenError ||
     error{
         AlreadyInitialized,
         DataRootLocked,
+        StorageNotWritable,
     };
 
 pub const StorageBackend = struct {

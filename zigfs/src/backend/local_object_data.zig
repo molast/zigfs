@@ -1,6 +1,7 @@
 const std = @import("std");
 const streaming = @import("../common/streaming.zig");
 const durable = @import("../metadata/durable.zig");
+const fault_injection = @import("../common/fault_injection.zig");
 const id = @import("../common/id.zig");
 const byte_stream = @import("../ports/byte_stream.zig");
 const data_store_port = @import("../ports/object_data_store.zig");
@@ -12,6 +13,7 @@ pub const LocalObjectDataStore = struct {
     root: std.Io.Dir,
     io: std.Io,
     buffer_size: usize,
+    fault_injector: fault_injection.Injector = .disabled,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -25,6 +27,13 @@ pub const LocalObjectDataStore = struct {
             .io = io,
             .buffer_size = buffer_size,
         };
+    }
+
+    pub fn setFaultInjectorForTesting(
+        self: *LocalObjectDataStore,
+        injector: fault_injection.Injector,
+    ) void {
+        self.fault_injector = injector;
     }
 
     pub fn interface(self: *LocalObjectDataStore) data_store_port.ObjectDataStore {
@@ -88,7 +97,11 @@ pub const LocalObjectDataStore = struct {
         errdefer if (!keep_file) self.root.deleteFile(self.io, path) catch {};
         defer file.close(self.io);
 
-        var file_sink: FileSink = .{ .file = file, .io = self.io };
+        var file_sink: FileSink = .{
+            .file = file,
+            .io = self.io,
+            .fault_injector = self.fault_injector,
+        };
         const copied = streaming.copyAndHash(
             self.allocator,
             self.buffer_size,
@@ -97,6 +110,10 @@ pub const LocalObjectDataStore = struct {
         ) catch |err| return mapStageError(err);
         file.sync(self.io) catch return error.Unavailable;
         durable.syncParent(self.root, self.io, path) catch return error.Unavailable;
+        if (self.fault_injector.trigger(.object_stage_synced)) {
+            keep_file = true;
+            return error.Unavailable;
+        }
         keep_file = true;
         return .{
             .token = token,
@@ -140,6 +157,9 @@ pub const LocalObjectDataStore = struct {
         };
         durable.syncParent(self.root, self.io, paths.dataPath()) catch return error.Unavailable;
         durable.syncParent(self.root, self.io, temporary_path) catch return error.Unavailable;
+        if (self.fault_injector.trigger(.object_generation_published)) {
+            return error.Unavailable;
+        }
     }
 
     fn discardImpl(context: *anyopaque, token: id.Uuid) void {
@@ -475,6 +495,7 @@ fn pruneEmptyDirectory(self: *LocalObjectDataStore, path: []const u8) void {
 const FileSink = struct {
     file: std.Io.File,
     io: std.Io,
+    fault_injector: fault_injection.Injector,
 
     fn interface(self: *FileSink) byte_stream.Sink {
         return .{ .context = self, .vtable = &.{ .write_all = writeAll } };
@@ -482,6 +503,7 @@ const FileSink = struct {
 
     fn writeAll(context: *anyopaque, bytes: []const u8) byte_stream.Sink.Error!void {
         const self: *FileSink = @ptrCast(@alignCast(context));
+        if (self.fault_injector.trigger(.object_data_write)) return error.WriteFailed;
         self.file.writeStreamingAll(self.io, bytes) catch return error.WriteFailed;
     }
 };

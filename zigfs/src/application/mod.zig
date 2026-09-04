@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Config = @import("../config.zig").Config;
+const fault_injection = @import("../common/fault_injection.zig");
 const LocalStorageBackend = @import("../backend/local.zig").LocalStorageBackend;
 const CredentialMasterKey = @import("../backend/credential_master_key.zig").MasterKey;
 const credential_master_key = @import("../backend/credential_master_key.zig");
@@ -52,6 +53,7 @@ pub const Application = struct {
     recovery_state: recovery.State = .{},
     recovery_report: ?recovery.Report = null,
     started_at_unix_seconds: i64 = 0,
+    fault_injector: fault_injection.Injector = .disabled,
 
     pub fn init(config: Config) Application {
         return initWithAllocator(config, std.heap.smp_allocator);
@@ -92,6 +94,8 @@ pub const Application = struct {
             io,
             self.config.stream_buffer_size,
         );
+        self.local_object_data.?.setFaultInjectorForTesting(self.fault_injector);
+        self.local_repository.?.setFaultInjectorForTesting(self.fault_injector);
         self.local_multipart_data = LocalMultipartDataStore.init(
             self.allocator,
             self.data_root.?,
@@ -203,6 +207,15 @@ pub const Application = struct {
     pub fn metadataRepository(self: *Application) ?MetadataRepository {
         if (self.local_repository) |*repository| return repository.interface();
         return null;
+    }
+
+    pub fn setFaultInjectorForTesting(
+        self: *Application,
+        injector: fault_injection.Injector,
+    ) void {
+        self.fault_injector = injector;
+        if (self.local_object_data) |*store| store.setFaultInjectorForTesting(injector);
+        if (self.local_repository) |*repository| repository.setFaultInjectorForTesting(injector);
     }
 
     pub fn metadataIndex(self: *Application) ?*index_module.MetadataIndex {
@@ -406,6 +419,20 @@ fn testDataRootPath(
         allocator,
         ".zig-cache/tmp/{s}/data",
         .{tmp.sub_path},
+    );
+}
+
+fn testObjectDataPath(
+    buffer: []u8,
+    object: @import("../domain/object.zig").Object,
+) ![]u8 {
+    const bucket_hex = std.fmt.bytesToHex(object.bucket_id, .lower);
+    const object_hex = std.fmt.bytesToHex(object.id, .lower);
+    const generation_hex = std.fmt.bytesToHex(object.data_generation, .lower);
+    return std.fmt.bufPrint(
+        buffer,
+        "data/objects/{s}/{s}/{s}/{s}/data",
+        .{ &bucket_hex, object_hex[0..2], &object_hex, &generation_hex },
     );
 }
 
@@ -1261,6 +1288,222 @@ test "object gc reports referenced data loss" {
     };
     try std.testing.expect(try app.local_object_data.?.interface().deleteGeneration(location));
     try std.testing.expectError(error.CorruptData, app.objectGc().?.collect());
+}
+
+test "phase 8 crash checkpoints recover only complete object generations" {
+    const test_streams = @import("../testing/streams.zig");
+    const cases = [_]struct {
+        point: fault_injection.Point,
+        skip_hits: usize = 0,
+        replacement_committed: bool,
+        orphan_generations: usize,
+    }{
+        .{
+            .point = .object_data_write,
+            .skip_hits = 1,
+            .replacement_committed = false,
+            .orphan_generations = 0,
+        },
+        .{
+            .point = .object_stage_synced,
+            .replacement_committed = false,
+            .orphan_generations = 0,
+        },
+        .{
+            .point = .object_generation_published,
+            .replacement_committed = false,
+            .orphan_generations = 1,
+        },
+        .{
+            .point = .journal_intent_persisted,
+            .replacement_committed = false,
+            .orphan_generations = 1,
+        },
+        .{
+            .point = .metadata_temporary_synced,
+            .replacement_committed = false,
+            .orphan_generations = 1,
+        },
+        .{
+            .point = .metadata_commit_persisted,
+            .replacement_committed = true,
+            .orphan_generations = 1,
+        },
+        .{
+            .point = .metadata_record_published,
+            .replacement_committed = true,
+            .orphan_generations = 1,
+        },
+    };
+
+    for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+        defer std.testing.allocator.free(data_root);
+        const config: Config = .{
+            .data_root = data_root,
+            .stream_buffer_size = @import("../common/streaming.zig").min_buffer_size,
+            .metrics_enabled = false,
+        };
+        const replacement_size = config.stream_buffer_size * 2 + 17;
+
+        var writer = Application.initWithAllocator(config, std.testing.allocator);
+        var writer_live = true;
+        defer if (writer_live) writer.deinit(std.testing.io);
+        try writer.initialize(std.testing.io);
+        const bucket = try writer.bucketService().?.create("phase8-faults", "owner-a");
+        bucket.deinit(std.testing.allocator);
+        var original_source = test_streams.SliceSource.init("stable-old-generation");
+        const original = try writer.objectService().?.put(
+            "phase8-faults",
+            "checkpoint.bin",
+            original_source.interface(),
+            .{},
+        );
+        original.deinit(std.testing.allocator);
+
+        var fail_once = fault_injection.FailOnce.init(case.point, case.skip_hits);
+        writer.setFaultInjectorForTesting(fail_once.interface());
+        var replacement_source = test_streams.RepeatingSource.init(replacement_size, 'N');
+        try std.testing.expectError(error.Unavailable, writer.objectService().?.put(
+            "phase8-faults",
+            "checkpoint.bin",
+            replacement_source.interface(),
+            .{},
+        ));
+        try std.testing.expect(fail_once.triggered);
+        writer.deinit(std.testing.io);
+        writer_live = false;
+
+        var recovered = Application.initWithAllocator(config, std.testing.allocator);
+        defer recovered.deinit(std.testing.io);
+        try recovered.initialize(std.testing.io);
+        try std.testing.expect(recovered.recoveryState().isReady());
+        try std.testing.expect(recovered.recovery_report != null);
+        if (case.replacement_committed) {
+            var sink: test_streams.CountingSink = .{};
+            const object = try recovered.objectService().?.get(
+                "phase8-faults",
+                "checkpoint.bin",
+                sink.interface(),
+            );
+            defer object.deinit(std.testing.allocator);
+            try std.testing.expectEqual(@as(u64, replacement_size), object.size);
+            try std.testing.expectEqual(@as(u64, replacement_size), sink.size);
+        } else {
+            var sink = test_streams.CollectingSink.init(std.testing.allocator);
+            defer sink.deinit();
+            const object = try recovered.objectService().?.get(
+                "phase8-faults",
+                "checkpoint.bin",
+                sink.interface(),
+            );
+            defer object.deinit(std.testing.allocator);
+            try std.testing.expectEqualStrings("stable-old-generation", sink.bytes.items);
+        }
+        try std.testing.expectEqual(
+            @as(usize, 0),
+            try recovered.local_object_data.?.interface().cleanupStaged(),
+        );
+        const gc_report = try recovered.objectGc().?.collect();
+        try std.testing.expectEqual(@as(usize, 1), gc_report.retained_generations);
+        try std.testing.expectEqual(case.orphan_generations, gc_report.removed_generations);
+    }
+}
+
+test "phase 8 rebuild ignores corrupt disposable index snapshots" {
+    const test_streams = @import("../testing/streams.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(data_root);
+    const config: Config = .{ .data_root = data_root, .metrics_enabled = false };
+
+    var writer = Application.initWithAllocator(config, std.testing.allocator);
+    var writer_live = true;
+    defer if (writer_live) writer.deinit(std.testing.io);
+    try writer.initialize(std.testing.io);
+    const bucket = try writer.bucketService().?.create("phase8-index", "owner-a");
+    bucket.deinit(std.testing.allocator);
+    var source = test_streams.SliceSource.init("repository-remains-authoritative");
+    const object = try writer.objectService().?.put(
+        "phase8-index",
+        "recoverable.txt",
+        source.interface(),
+        .{},
+    );
+    object.deinit(std.testing.allocator);
+    writer.deinit(std.testing.io);
+    writer_live = false;
+
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "data/.zigfs/indexes/corrupt.snapshot",
+        .data = "not-a-valid-index-snapshot",
+    });
+
+    var recovered = Application.initWithAllocator(config, std.testing.allocator);
+    defer recovered.deinit(std.testing.io);
+    try recovered.initialize(std.testing.io);
+    try std.testing.expect(recovered.recoveryState().isReady());
+    var sink = test_streams.CollectingSink.init(std.testing.allocator);
+    defer sink.deinit();
+    const restored = try recovered.objectService().?.get(
+        "phase8-index",
+        "recoverable.txt",
+        sink.interface(),
+    );
+    defer restored.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("repository-remains-authoritative", sink.bytes.items);
+}
+
+test "phase 8 reports same-length object data checksum corruption after restart" {
+    const test_streams = @import("../testing/streams.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(data_root);
+    const config: Config = .{ .data_root = data_root, .metrics_enabled = false };
+    var data_path_buffer: [512]u8 = undefined;
+    var data_path_length: usize = 0;
+
+    var writer = Application.initWithAllocator(config, std.testing.allocator);
+    var writer_live = true;
+    defer if (writer_live) writer.deinit(std.testing.io);
+    try writer.initialize(std.testing.io);
+    const bucket = try writer.bucketService().?.create("phase8-data", "owner-a");
+    bucket.deinit(std.testing.allocator);
+    var source = test_streams.SliceSource.init("expected-object-bytes");
+    const object = try writer.objectService().?.put(
+        "phase8-data",
+        "corrupt.bin",
+        source.interface(),
+        .{},
+    );
+    const data_path = try testObjectDataPath(&data_path_buffer, object);
+    data_path_length = data_path.len;
+    object.deinit(std.testing.allocator);
+    writer.deinit(std.testing.io);
+    writer_live = false;
+
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = data_path_buffer[0..data_path_length],
+        .data = "tampered-object-bytes",
+    });
+
+    var recovered = Application.initWithAllocator(config, std.testing.allocator);
+    defer recovered.deinit(std.testing.io);
+    try recovered.initialize(std.testing.io);
+    try std.testing.expect(recovered.recoveryState().isReady());
+    const metadata = try recovered.objectService().?.head("phase8-data", "corrupt.bin");
+    defer metadata.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u64, "expected-object-bytes".len), metadata.size);
+    var sink = test_streams.CollectingSink.init(std.testing.allocator);
+    defer sink.deinit();
+    try std.testing.expectError(
+        error.CorruptData,
+        recovered.objectService().?.get("phase8-data", "corrupt.bin", sink.interface()),
+    );
 }
 
 test "invalid object payload keeps a restarted application not ready" {

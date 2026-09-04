@@ -1,6 +1,7 @@
 const std = @import("std");
 const durable = @import("durable.zig");
 const generation = @import("generation.zig");
+const fault_injection = @import("../common/fault_injection.zig");
 const layout = @import("local_layout.zig");
 const metadata_record = @import("record.zig");
 const repository_payload = @import("repository_payload.zig");
@@ -13,6 +14,7 @@ pub const LocalMetadataRepository = struct {
     io: std.Io,
     journal: journal_port.TransactionJournal,
     mutex: std.Io.Mutex = .init,
+    fault_injector: fault_injection.Injector = .disabled,
 
     pub fn init(
         root: std.Io.Dir,
@@ -20,6 +22,13 @@ pub const LocalMetadataRepository = struct {
         journal: journal_port.TransactionJournal,
     ) LocalMetadataRepository {
         return .{ .root = root, .io = io, .journal = journal };
+    }
+
+    pub fn setFaultInjectorForTesting(
+        self: *LocalMetadataRepository,
+        injector: fault_injection.Injector,
+    ) void {
+        self.fault_injector = injector;
     }
 
     pub fn interface(self: *LocalMetadataRepository) repository_port.MetadataRepository {
@@ -125,6 +134,9 @@ pub const LocalMetadataRepository = struct {
             .key_hash = key_hash,
         };
         self.journal.append(journal_entry) catch |err| return mapJournalError(err);
+        if (self.fault_injector.trigger(.journal_intent_persisted)) {
+            return error.Unavailable;
+        }
 
         const inner_payload = (if (tombstone)
             repository_payload.encodeTombstone(allocator, key)
@@ -176,6 +188,10 @@ pub const LocalMetadataRepository = struct {
             self.appendAbort(journal_entry);
             return err;
         };
+        if (self.fault_injector.trigger(.metadata_temporary_synced)) {
+            committed = true;
+            return error.Unavailable;
+        }
 
         var commit_entry = journal_entry;
         commit_entry.state = .commit;
@@ -184,6 +200,9 @@ pub const LocalMetadataRepository = struct {
             return mapJournalError(err);
         };
         committed = true;
+        if (self.fault_injector.trigger(.metadata_commit_persisted)) {
+            return error.Unavailable;
+        }
 
         var record_path_buffer: [layout.max_path_length]u8 = undefined;
         const record_path = layout.recordPath(record_type, key_hash, &record_path_buffer) catch {
@@ -192,6 +211,9 @@ pub const LocalMetadataRepository = struct {
         self.root.rename(temporary_path, self.root, record_path, self.io) catch {
             return error.Unavailable;
         };
+        if (self.fault_injector.trigger(.metadata_record_published)) {
+            return error.Unavailable;
+        }
         durable.syncParent(self.root, self.io, record_path) catch return error.Unavailable;
         durable.syncParent(self.root, self.io, temporary_path) catch return error.Unavailable;
         return next_generation;
