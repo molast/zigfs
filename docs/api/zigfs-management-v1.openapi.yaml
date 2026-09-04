@@ -230,6 +230,22 @@ paths:
                 $ref: "#/components/schemas/Health"
         default:
           $ref: "#/components/responses/Error"
+  /_admin/v1/settings:
+    get:
+      operationId: getManagementSettings
+      summary: 获取脱敏后的 ZigFS 生效配置
+      description: >-
+        仅返回可安全展示的启动级配置，不返回管理员密码、Session Secret、
+        Master Key 或 AK/SK Secret。V1 配置修改后需要重启，因此本接口只读。
+      responses:
+        "200":
+          description: 脱敏后的生效配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        default:
+          $ref: "#/components/responses/Error"
 components:
   securitySchemes:
     managementBearer:
@@ -249,6 +265,7 @@ components:
       name: id
       in: path
       required: true
+      description: V1 中等于 access_key，作为 Credential 的稳定管理标识。
       schema:
         type: string
   responses:
@@ -306,9 +323,12 @@ components:
           description: Unix 时间戳，单位为秒
     Bucket:
       type: object
-      required: [name, created_at]
+      additionalProperties: false
+      required: [name, owner, created_at]
       properties:
         name:
+          type: string
+        owner:
           type: string
         created_at:
           type: string
@@ -324,10 +344,14 @@ components:
     CreateBucketRequest:
       type: object
       additionalProperties: false
-      required: [name]
+      required: [name, owner]
       properties:
         name:
           type: string
+        owner:
+          type: string
+          minLength: 1
+          maxLength: 256
     Object:
       type: object
       required: [key, size, etag, last_modified]
@@ -356,8 +380,13 @@ components:
     PresignObjectRequest:
       type: object
       additionalProperties: false
-      required: [bucket, key, method, expires_seconds]
+      required: [access_key, bucket, key, method, expires_seconds]
       properties:
+        access_key:
+          type: string
+          description: >-
+            ZigFS 使用该 Credential 的加密 Secret 生成签名，并校验其启用状态、
+            Policy 和 Bucket Owner；Secret 不由调用方传入。
         bucket:
           type: string
         key:
@@ -382,14 +411,19 @@ components:
           format: date-time
     AccessKey:
       type: object
-      required: [id, access_key, enabled, created_at]
+      required: [id, access_key, owner, enabled, policy, created_at]
       properties:
         id:
           type: string
+          description: V1 中等于 access_key。
         access_key:
+          type: string
+        owner:
           type: string
         enabled:
           type: boolean
+        policy:
+          $ref: "#/components/schemas/CredentialPolicy"
         created_at:
           type: string
           format: date-time
@@ -404,10 +438,15 @@ components:
     CreateAccessKeyRequest:
       type: object
       additionalProperties: false
-      required: [name]
+      required: [owner]
+      description: 省略 policy 时由 ZigFS 创建 Full Access Credential。
       properties:
-        name:
+        owner:
           type: string
+          minLength: 1
+          maxLength: 256
+        policy:
+          $ref: "#/components/schemas/CredentialPolicy"
     CreateAccessKeyResponse:
       allOf:
         - $ref: "#/components/schemas/AccessKey"
@@ -417,6 +456,7 @@ components:
             secret_key:
               type: string
               writeOnly: true
+      unevaluatedProperties: false
     UpdateAccessKeyRequest:
       type: object
       additionalProperties: false
@@ -424,19 +464,47 @@ components:
       properties:
         enabled:
           type: boolean
+    CredentialPolicy:
+      type: object
+      additionalProperties: false
+      required: [bucket_read, bucket_write, object_read, object_write]
+      properties:
+        bucket_read:
+          type: boolean
+          default: true
+        bucket_write:
+          type: boolean
+          default: true
+        object_read:
+          type: boolean
+          default: true
+        object_write:
+          type: boolean
+          default: true
     StorageInfo:
       type: object
-      required: [total, used, available]
+      additionalProperties: false
+      description: >-
+        V1 使用 ZigFS 当前可见 Object Metadata 汇总逻辑对象字节数。
+        底层文件系统物理容量不通过不可移植的 Transport 系统调用推测，
+        因此未配置正式容量 Backend 时 total 和 available 为 null。
+      required: [measurement, total, used, available]
       properties:
+        measurement:
+          type: string
+          const: logical_object_bytes
         total:
-          type: integer
+          type: [integer, "null"]
           format: int64
+          minimum: 0
         used:
           type: integer
           format: int64
+          minimum: 0
         available:
-          type: integer
+          type: [integer, "null"]
           format: int64
+          minimum: 0
     SystemInfo:
       type: object
       required: [version, uptime, storage_used, objects, buckets]
@@ -457,11 +525,71 @@ components:
           format: int64
     Health:
       type: object
-      required: [status]
+      additionalProperties: false
+      required: [status, recovery, reason, actions]
       properties:
         status:
           type: string
           enum: [ready, degraded, recovery]
+        recovery:
+          type: string
+          enum: [initializing, recovering, ready, recovery_required]
+        reason:
+          type: string
+          enum:
+            - none
+            - corrupt_journal
+            - corrupt_record
+            - inconsistent_journal
+            - unrecoverable_transaction
+            - unavailable
+            - out_of_memory
+        actions:
+          type: array
+          items:
+            type: string
+            enum: [inspect_logs, restore_from_backup]
+    Settings:
+      type: object
+      additionalProperties: false
+      required:
+        - api_address
+        - s3_public_endpoint
+        - s3_region
+        - request_time_skew_seconds
+        - multipart_expiry_seconds
+        - stream_buffer_size
+        - metrics_enabled
+        - metrics_address
+        - admin_session_ttl_seconds
+        - reload_required
+      properties:
+        api_address:
+          type: string
+        s3_public_endpoint:
+          type: string
+          format: uri
+        s3_region:
+          type: string
+        request_time_skew_seconds:
+          type: integer
+          format: int64
+        multipart_expiry_seconds:
+          type: integer
+          format: int64
+        stream_buffer_size:
+          type: integer
+          format: int64
+        metrics_enabled:
+          type: boolean
+        metrics_address:
+          type: string
+        admin_session_ttl_seconds:
+          type: integer
+          format: int64
+        reload_required:
+          type: boolean
+          const: true
     Error:
       type: object
       required: [code, message, request_id, details]

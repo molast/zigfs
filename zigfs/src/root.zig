@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const version = "0.1.0";
+pub const version = @import("version.zig").value;
 
 pub const application = @import("application/mod.zig");
 pub const auth = @import("auth/mod.zig");

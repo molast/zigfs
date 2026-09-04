@@ -15,6 +15,7 @@ pub const Config = struct {
     api_address: []const u8 = "0.0.0.0:9000",
     metrics_enabled: bool = true,
     metrics_address: []const u8 = "127.0.0.1:9090",
+    s3_public_endpoint: []const u8 = "http://127.0.0.1:9000",
     s3_region: []const u8 = "us-east-1",
     s3_request_time_skew_seconds: u64 = 15 * 60,
     s3_multipart_expiry_seconds: u64 = 7 * 24 * 60 * 60,
@@ -132,7 +133,9 @@ pub const Config = struct {
                     }
                 },
                 .s3 => {
-                    if (std.mem.eql(u8, key, "region")) {
+                    if (std.mem.eql(u8, key, "public_endpoint")) {
+                        self.s3_public_endpoint = value;
+                    } else if (std.mem.eql(u8, key, "region")) {
                         self.s3_region = value;
                     } else if (std.mem.eql(u8, key, "request_time_skew_seconds")) {
                         self.s3_request_time_skew_seconds = std.fmt.parseInt(u64, value, 10) catch {
@@ -238,7 +241,8 @@ pub const Config = struct {
         {
             return error.InvalidStorageConfig;
         }
-        if (self.s3_region.len == 0 or self.s3_region.len > max_s3_region_length or
+        if (!isValidPublicEndpoint(self.s3_public_endpoint) or
+            self.s3_region.len == 0 or self.s3_region.len > max_s3_region_length or
             !isValidS3Region(self.s3_region) or
             self.s3_request_time_skew_seconds < 60 or
             self.s3_request_time_skew_seconds > 60 * 60 or
@@ -286,6 +290,24 @@ pub const Config = struct {
         }
         return region[0] != '-' and region[region.len - 1] != '-';
     }
+
+    fn isValidPublicEndpoint(endpoint: []const u8) bool {
+        const authority = if (std.mem.startsWith(u8, endpoint, "http://"))
+            endpoint["http://".len..]
+        else if (std.mem.startsWith(u8, endpoint, "https://"))
+            endpoint["https://".len..]
+        else
+            return false;
+        if (authority.len == 0 or
+            std.mem.indexOfAny(u8, authority, "/?#@") != null)
+        {
+            return false;
+        }
+        for (authority) |character| {
+            if (character <= 0x20 or character >= 0x7f) return false;
+        }
+        return true;
+    }
 };
 
 test "built-in defaults are stable" {
@@ -295,6 +317,7 @@ test "built-in defaults are stable" {
     try std.testing.expectEqualStrings("0.0.0.0:9000", config.api_address);
     try std.testing.expect(config.metrics_enabled);
     try std.testing.expectEqualStrings("127.0.0.1:9090", config.metrics_address);
+    try std.testing.expectEqualStrings("http://127.0.0.1:9000", config.s3_public_endpoint);
     try std.testing.expectEqualStrings("us-east-1", config.s3_region);
     try std.testing.expectEqual(@as(u64, 900), config.s3_request_time_skew_seconds);
     try std.testing.expectEqual(@as(u64, 7 * 24 * 60 * 60), config.s3_multipart_expiry_seconds);
@@ -315,6 +338,7 @@ test "yaml values override defaults" {
         \\  data_root: "test-data"
         \\  stream_buffer_size: 131072
         \\s3:
+        \\  public_endpoint: "https://objects.example.test"
         \\  region: "eu-central-1"
         \\  request_time_skew_seconds: 600
         \\  multipart_expiry_seconds: 86400
@@ -328,6 +352,7 @@ test "yaml values override defaults" {
     try std.testing.expectEqualStrings("test-data", config.data_root);
     try std.testing.expectEqual(@as(usize, 131072), config.stream_buffer_size);
     try std.testing.expectEqualStrings("127.0.0.1:19000", config.api_address);
+    try std.testing.expectEqualStrings("https://objects.example.test", config.s3_public_endpoint);
     try std.testing.expectEqualStrings("eu-central-1", config.s3_region);
     try std.testing.expectEqual(@as(u64, 600), config.s3_request_time_skew_seconds);
     try std.testing.expectEqual(@as(u64, 86400), config.s3_multipart_expiry_seconds);
@@ -337,6 +362,18 @@ test "yaml values override defaults" {
     try std.testing.expectEqualStrings("local-password", config.admin_password);
     try std.testing.expectEqualStrings("0123456789abcdef0123456789abcdef", config.admin_session_secret);
     try std.testing.expectEqual(@as(u64, 3600), config.admin_session_ttl_seconds);
+}
+
+test "S3 public endpoint is an absolute HTTP authority without path or credentials" {
+    var config: Config = .{};
+    try config.applyYaml(
+        \\s3:
+        \\  public_endpoint: "ftp://objects.example.test"
+    );
+    try std.testing.expectError(error.InvalidS3Config, config.validate());
+
+    config.s3_public_endpoint = "https://user@objects.example.test/path";
+    try std.testing.expectError(error.InvalidS3Config, config.validate());
 }
 
 test "command line overrides yaml" {

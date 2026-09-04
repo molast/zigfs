@@ -4,7 +4,12 @@ import type {
   ApiErrorBody,
   Bucket,
   CreatedAccessKey,
-  ObjectSummary,
+  CredentialPolicy,
+  ListObjectsResponse,
+  ManagementHealth,
+  PresignObjectResponse,
+  Settings,
+  StorageInfo,
   SystemInfo,
 } from '../types/api'
 
@@ -44,6 +49,7 @@ export function createApiClient() {
   }
 
   return {
+    ready: () => request<{ status: 'ready' }>('/health/ready'),
     login: (username: string, password: string) =>
       request<AdminSession>('/api/v1/auth/login', {
         method: 'POST',
@@ -52,26 +58,48 @@ export function createApiClient() {
     session: () => request<AdminSession>('/api/v1/auth/session'),
     logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
     system: () => request<SystemInfo>('/api/v1/system'),
+    storage: () => request<StorageInfo>('/api/v1/storage'),
+    managementHealth: () => request<ManagementHealth>('/api/v1/management-health'),
+    settings: () => request<Settings>('/api/v1/settings'),
     listBuckets: async () => (await request<{ items: Bucket[] }>('/api/v1/buckets')).items,
-    createBucket: (name: string) =>
+    createBucket: (name: string, owner: string) =>
       request<Bucket>('/api/v1/buckets', {
         method: 'POST',
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, owner }),
       }),
     deleteBucket: (name: string) =>
       request<void>(`/api/v1/buckets/${encodeURIComponent(name)}`, { method: 'DELETE' }),
-    listObjects: async (bucket: string) =>
-      (
-        await request<{ items: ObjectSummary[] }>(
-          `/api/v1/buckets/${encodeURIComponent(bucket)}/objects`,
-        )
-      ).items,
+    listObjects: (bucket: string, prefix = '', continuationToken = '') => {
+      const query = new URLSearchParams()
+      if (prefix) query.set('prefix', prefix)
+      if (continuationToken) query.set('continuation_token', continuationToken)
+      const suffix = query.size ? `?${query.toString()}` : ''
+      return request<ListObjectsResponse>(
+        `/api/v1/buckets/${encodeURIComponent(bucket)}/objects${suffix}`,
+      )
+    },
+    presignObject: (
+      accessKey: string,
+      bucket: string,
+      key: string,
+      method: 'GET' | 'PUT',
+      expiresSeconds: number,
+    ) => request<PresignObjectResponse>('/api/v1/objects/presign', {
+      method: 'POST',
+      body: JSON.stringify({
+        access_key: accessKey,
+        bucket,
+        key,
+        method,
+        expires_seconds: expiresSeconds,
+      }),
+    }),
     listAccessKeys: async () =>
       (await request<{ items: AccessKey[] }>('/api/v1/access-keys')).items,
-    createAccessKey: (name: string) =>
+    createAccessKey: (owner: string, policy: CredentialPolicy) =>
       request<CreatedAccessKey>('/api/v1/access-keys', {
         method: 'POST',
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ owner, policy }),
       }),
     setAccessKeyEnabled: (id: string, enabled: boolean) =>
       request<AccessKey>(`/api/v1/access-keys/${encodeURIComponent(id)}`, {

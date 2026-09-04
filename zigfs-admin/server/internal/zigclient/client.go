@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -46,6 +47,24 @@ func (client *Client) Session(ctx context.Context) (contract.SessionResponse, er
 func (client *Client) System(ctx context.Context) (contract.SystemResponse, error) {
 	var response contract.SystemResponse
 	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/system", nil, &response)
+	return response, err
+}
+
+func (client *Client) Storage(ctx context.Context) (contract.StorageResponse, error) {
+	var response contract.StorageResponse
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/storage", nil, &response)
+	return response, err
+}
+
+func (client *Client) ManagementHealth(ctx context.Context) (contract.ManagementHealthResponse, error) {
+	var response contract.ManagementHealthResponse
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/health", nil, &response)
+	return response, err
+}
+
+func (client *Client) Settings(ctx context.Context) (contract.SettingsResponse, error) {
+	var response contract.SettingsResponse
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/settings", nil, &response)
 	return response, err
 }
 
@@ -145,7 +164,14 @@ func (client *Client) requestJSON(ctx context.Context, method, path string, body
 	defer response.Body.Close()
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return &port.StatusError{StatusCode: response.StatusCode}
+		var upstream contract.ErrorResponse
+		_ = json.NewDecoder(io.LimitReader(response.Body, 1024*1024)).Decode(&upstream)
+		return &port.StatusError{
+			StatusCode: response.StatusCode,
+			Code:       upstream.Code,
+			Message:    upstream.Message,
+			RequestID:  upstream.RequestID,
+		}
 	}
 	if target == nil || response.StatusCode == http.StatusNoContent {
 		return nil

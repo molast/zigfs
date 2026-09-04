@@ -22,3 +22,8 @@ host and API forwarder. ZigFS is the sole backend and owns all user identities,
 authentication, authorization, storage state, and business rules. Object bytes
 never pass through Admin. This server only relays ZigFS-issued short-lived tokens
 in HttpOnly cookies.
+
+The BFF forwards Bucket, Object view, Presign, Access Key, Storage, System,
+Management Health, and read-only Settings operations through the typed
+`zigclient`. ZigFS error codes are preserved; an unreachable ZigFS is reported
+as `503 StorageOffline`, while a recovering instance is `503 StorageNotReady`.

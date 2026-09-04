@@ -74,6 +74,18 @@ func (managementService) UpdateAccessKey(context.Context, string, contract.Updat
 
 func (managementService) DeleteAccessKey(context.Context, string) error { return nil }
 
+func (managementService) Storage(context.Context) (contract.StorageResponse, error) {
+	return contract.StorageResponse{Measurement: "logical_object_bytes", Used: 20}, nil
+}
+
+func (managementService) Health(context.Context) (contract.ManagementHealthResponse, error) {
+	return contract.ManagementHealthResponse{Status: "ready", Recovery: "ready", Reason: "none", Actions: []string{}}, nil
+}
+
+func (managementService) Settings(context.Context) (contract.SettingsResponse, error) {
+	return contract.SettingsResponse{S3Region: "us-east-1", ReloadRequired: true}, nil
+}
+
 func testEngine(ready bool) http.Handler {
 	return router.New(
 		handler.NewAuth(authService{}),
@@ -169,5 +181,20 @@ func TestSystem(t *testing.T) {
 	}
 	if response.Buckets != 2 || response.Objects != 4 {
 		t.Fatalf("unexpected response: %+v", response)
+	}
+}
+
+func TestManagementSummaryRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := testEngine(true)
+	for _, path := range []string{"/api/v1/storage", "/api/v1/management-health", "/api/v1/settings"} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.AddCookie(&http.Cookie{Name: middleware.AdminSessionCookie, Value: "zigfs-issued-token"})
+
+		engine.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected %s status %d, got %d", path, http.StatusOK, recorder.Code)
+		}
 	}
 }

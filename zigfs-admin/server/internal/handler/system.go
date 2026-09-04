@@ -31,7 +31,12 @@ func (handler *System) Live(ctx *gin.Context) {
 
 func (handler *System) Ready(ctx *gin.Context) {
 	if err := handler.service.Ready(ctx.Request.Context()); err != nil {
-		writeError(ctx, http.StatusServiceUnavailable, "StorageNotReady", "storage service is not ready")
+		var statusError *port.StatusError
+		if errors.As(err, &statusError) {
+			writeError(ctx, http.StatusServiceUnavailable, "StorageNotReady", "storage service is not ready")
+		} else {
+			writeError(ctx, http.StatusServiceUnavailable, "StorageOffline", "storage service is offline")
+		}
 		return
 	}
 	ctx.JSON(http.StatusOK, contract.HealthResponse{Status: "ready"})
@@ -48,11 +53,19 @@ func (handler *System) Get(ctx *gin.Context) {
 
 func writeStorageError(ctx *gin.Context, err error) {
 	var statusError *port.StatusError
-	if errors.As(err, &statusError) && statusError.StatusCode == http.StatusUnauthorized {
+	if !errors.As(err, &statusError) {
+		writeError(ctx, http.StatusServiceUnavailable, "StorageOffline", "storage service is offline")
+		return
+	}
+	if statusError.StatusCode == http.StatusUnauthorized {
 		writeError(ctx, http.StatusUnauthorized, "Unauthorized", "administrator session has expired")
 		return
 	}
-	writeError(ctx, http.StatusBadGateway, "StorageUnavailable", "storage service request failed")
+	if statusError.Code != "" && statusError.StatusCode >= 400 && statusError.StatusCode < 600 {
+		writeError(ctx, statusError.StatusCode, statusError.Code, statusError.Message)
+		return
+	}
+	writeError(ctx, http.StatusBadGateway, "InvalidUpstreamResponse", "storage service returned an invalid response")
 }
 
 func writeError(ctx *gin.Context, status int, code, message string) {

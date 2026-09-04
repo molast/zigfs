@@ -2,12 +2,14 @@ package zigclient_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"zigfs-admin/server/internal/managementauth"
+	"zigfs-admin/server/internal/port"
 	"zigfs-admin/server/internal/zigclient"
 )
 
@@ -32,5 +34,24 @@ func TestSystem(t *testing.T) {
 	}
 	if response.Version != "0.1.0" || response.Objects != 3 {
 		t.Fatalf("unexpected response: %+v", response)
+	}
+}
+
+func TestPreservesZigFSErrorContract(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusConflict)
+		_, _ = writer.Write([]byte(`{"code":"BucketNotEmpty","message":"bucket is not empty","request_id":"zig-request","details":{}}`))
+	}))
+	defer server.Close()
+
+	client := zigclient.New(server.URL, time.Second)
+	err := client.DeleteBucket(context.Background(), "project-assets")
+	var statusError *port.StatusError
+	if !errors.As(err, &statusError) {
+		t.Fatalf("expected StatusError, got %v", err)
+	}
+	if statusError.StatusCode != http.StatusConflict || statusError.Code != "BucketNotEmpty" || statusError.RequestID != "zig-request" {
+		t.Fatalf("unexpected status error: %+v", statusError)
 	}
 }

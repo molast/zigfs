@@ -1,0 +1,5 @@
+{
+  "name": "zigfs-conformance-typescript",
+  "private": true,
+  "type": "module"
+}

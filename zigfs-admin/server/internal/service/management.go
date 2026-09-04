@@ -50,3 +50,15 @@ func (service *Management) UpdateAccessKey(ctx context.Context, id string, reque
 func (service *Management) DeleteAccessKey(ctx context.Context, id string) error {
 	return service.zig.DeleteAccessKey(ctx, id)
 }
+
+func (service *Management) Storage(ctx context.Context) (contract.StorageResponse, error) {
+	return service.zig.Storage(ctx)
+}
+
+func (service *Management) Health(ctx context.Context) (contract.ManagementHealthResponse, error) {
+	return service.zig.ManagementHealth(ctx)
+}
+
+func (service *Management) Settings(ctx context.Context) (contract.SettingsResponse, error) {
+	return service.zig.Settings(ctx)
+}

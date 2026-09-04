@@ -52,11 +52,15 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 - AWS SigV4 aws-chunked 签名链，以及 CRC64NVME signed trailer 的签名与 checksum 校验
 - S3 Multipart Create、并发 UploadPart、ListParts、Complete、Abort、复合 ETag 和启动超时清理
 - 真实环回 TCP S3 集成测试，覆盖鉴权拒绝、CRUD、分页、Policy 与 Credential 禁用
-- ZigFS Management API 路由清单
-- ZigFS YAML 管理员身份、Management 登录和短期会话校验
+- ZigFS Management API：Bucket、Object 管理视图、Presign、AK/SK、Storage、System、Health 和 Settings
+- ZigFS YAML 管理员身份、Management 登录和短期会话校验，以及统一 JSON 错误和危险操作审计日志
 - Go 1.27 + Gin 1.12 管理 BFF
-- Bucket、Object、AK/SK 和 System 类型化 Zig Client
-- React 管理界面骨架
+- Bucket、Object、Presign、AK/SK、Storage、System、Health 和 Settings 类型化 Zig Client
+- React Dashboard、Buckets、Objects、Access Keys、Storage、System 和 Settings 管理页面
+- Admin 对 ZigFS Offline、Not Ready 和未登录状态的独立展示
+- 语言无关文件 SDK 设计、版本、错误与一致性测试契约
+- TypeScript/Web 与 Swift/iOS 两套 S3 一致性 Adapter，共享 SigV4、64 位、错误和重试向量
+- 隔离 ZigFS 端到端 SDK Gate，覆盖流式 Put/Get、Range、分页、Multipart、取消和错误映射
 
 Phase 4 S3 Protocol and Authentication 已完成约定的三客户端矩阵。核心 Bucket/Object/List V2
 Path-style HTTP API、Signature V4 Header、AK/SK 加密持久化和 Policy 已实现并通过真实
@@ -68,7 +72,22 @@ AWS CLI、mc 和 rclone 的并发大文件上传与下载校验。CRC64NVME sign
 已完成原生 TCP 正向、错误 checksum、错误 trailer 签名及失败不发布回归；Object/Part 中途
 断流不会发布数据或遗留暂存文件，下载取消会释放读取租约。其他 trailer checksum 算法、
 条件请求、Temporary Credentials 和 Virtual-hosted-style 仍明确返回 `NotImplemented` 或不在
-当前兼容范围；独立 AWS SDK trailer 矩阵作为补充验证继续维护。Phase 6 Management and Admin 为下一阶段。
+当前兼容范围；独立 AWS SDK trailer 矩阵作为补充验证继续维护。Phase 6 Management and Admin
+已实现 ZigFS Management Handler、真实 TCP Contract、Gin BFF 和完整 React 管理页面。
+Phase 7 SDK Conformance 已完成语言无关契约和共享向量，并由 TypeScript/Web、Swift/iOS
+两个生态直接连接隔离 ZigFS 通过完整文件操作 Gate；该阶段验证 S3 契约，不发布第二套协议。
+
+## SDK 一致性验证
+
+要求：Node.js 24、TypeScript 5.9、Swift 6.3、Zig 0.16 和 `curl`。前端依赖已安装后运行：
+
+```bash
+./conformance/run.sh
+```
+
+测试只启动临时 ZigFS，不启动 Admin。临时 AK/SK 由 ZigFS Management API 创建，TypeScript
+和 Swift Adapter 仅调用 S3/Data API，结束后销毁完整临时数据目录。契约见
+[docs/sdk/conformance.md](docs/sdk/conformance.md)。
 
 ## 启动脚本
 
@@ -162,6 +181,7 @@ storage:
   stream_buffer_size: 65536
 
 s3:
+  public_endpoint: "http://127.0.0.1:9000"
   region: "us-east-1"
   request_time_skew_seconds: 900
   multipart_expiry_seconds: 604800
@@ -172,6 +192,10 @@ admin:
   session_secret: "zigfs-local-session-secret-change-before-production"
   session_ttl_seconds: 28800
 ```
+
+`server.api_address` 是 ZigFS 的实际监听地址；`s3.public_endpoint` 是返回给浏览器、移动端
+或其他客户端的公开 S3 地址，仅用于生成绝对 Presigned URL。反向代理或跨主机部署时应把
+它设置为客户端实际可访问的 `http://` 或 `https://` Authority，且不能包含路径、凭证或查询参数。
 
 加载优先级：
 

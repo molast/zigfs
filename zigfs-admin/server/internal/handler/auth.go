@@ -40,7 +40,7 @@ func (handler *Auth) Login(ctx *gin.Context) {
 			writeError(ctx, http.StatusUnauthorized, "Unauthorized", "invalid administrator username or password")
 			return
 		}
-		writeError(ctx, http.StatusBadGateway, "StorageUnavailable", "ZigFS authentication is unavailable")
+		writeError(ctx, http.StatusServiceUnavailable, "StorageOffline", "ZigFS authentication is unavailable")
 		return
 	}
 
@@ -72,7 +72,7 @@ func (handler *Auth) Session(ctx *gin.Context) {
 			writeError(ctx, http.StatusUnauthorized, "Unauthorized", "administrator session has expired")
 			return
 		}
-		writeError(ctx, http.StatusBadGateway, "StorageUnavailable", "ZigFS authentication is unavailable")
+		writeError(ctx, http.StatusServiceUnavailable, "StorageOffline", "ZigFS authentication is unavailable")
 		return
 	}
 	ctx.JSON(http.StatusOK, response)

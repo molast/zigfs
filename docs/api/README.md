@@ -12,4 +12,6 @@ Health 与监控契约见 [operations.md](operations.md)。
 
 Phase 5 的 S3 Bucket/Object/List V2、Multipart、单 Range、Presigned GET/PUT、Signature V4
 Header/Streaming 以及 CRC64NVME signed trailer 已实现，并覆盖上传断流和下载取消语义。
-ZigFS Management 业务接口进入 Phase 6。具体状态以 S3 兼容矩阵和 OpenAPI Operation 描述为准。
+Phase 6 ZigFS Management、Gin BFF 与 Admin 页面已完成；Phase 7 已由 TypeScript/Web 和
+Swift/iOS Adapter 通过共享向量及隔离 ZigFS 端到端文件操作 Gate。具体状态以 S3 兼容矩阵、
+SDK 一致性契约和 OpenAPI Operation 描述为准。

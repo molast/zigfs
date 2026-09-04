@@ -64,6 +64,36 @@ paths:
             application/json:
               schema:
                 $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/SystemInfo"
+  /api/v1/storage:
+    get:
+      operationId: getStorage
+      responses:
+        "200":
+          description: ZigFS 逻辑存储统计
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/StorageInfo"
+  /api/v1/management-health:
+    get:
+      operationId: getManagementHealth
+      responses:
+        "200":
+          description: ZigFS Metadata 与 Storage 健康状态
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/Health"
+  /api/v1/settings:
+    get:
+      operationId: getSettings
+      responses:
+        "200":
+          description: ZigFS 脱敏后的只读生效配置
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/Settings"
   /api/v1/buckets:
     get:
       operationId: listBuckets

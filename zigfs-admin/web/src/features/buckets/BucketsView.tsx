@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
 import type { ApiClient } from '../../api/client'
-import type { Bucket, ObjectSummary } from '../../types/api'
+import type { Bucket } from '../../types/api'
 
 interface BucketsViewProps {
   api: ApiClient
@@ -8,9 +8,8 @@ interface BucketsViewProps {
 
 export function BucketsView({ api }: BucketsViewProps) {
   const [buckets, setBuckets] = useState<Bucket[]>([])
-  const [objects, setObjects] = useState<ObjectSummary[]>([])
-  const [selected, setSelected] = useState('')
   const [name, setName] = useState('')
+  const [owner, setOwner] = useState('')
   const [error, setError] = useState('')
 
   const refresh = useCallback(() => {
@@ -22,18 +21,10 @@ export function BucketsView({ api }: BucketsViewProps) {
   async function create(event: FormEvent) {
     event.preventDefault()
     try {
-      await api.createBucket(name.trim())
+      await api.createBucket(name.trim(), owner.trim())
       setName('')
+      setOwner('')
       refresh()
-    } catch (reason) {
-      setError((reason as Error).message)
-    }
-  }
-
-  async function selectBucket(bucket: string) {
-    setSelected(bucket)
-    try {
-      setObjects(await api.listObjects(bucket))
     } catch (reason) {
       setError((reason as Error).message)
     }
@@ -43,10 +34,6 @@ export function BucketsView({ api }: BucketsViewProps) {
     if (!window.confirm(`删除 Bucket “${bucket}”？`)) return
     try {
       await api.deleteBucket(bucket)
-      if (selected === bucket) {
-        setSelected('')
-        setObjects([])
-      }
       refresh()
     } catch (reason) {
       setError((reason as Error).message)
@@ -68,35 +55,31 @@ export function BucketsView({ api }: BucketsViewProps) {
             onChange={(event) => setName(event.target.value)}
             required
           />
+          <input
+            aria-label="Bucket owner"
+            placeholder="owner / tenant"
+            value={owner}
+            onChange={(event) => setOwner(event.target.value)}
+            required
+          />
           <button className="primary-button" type="submit">创建</button>
         </form>
       </header>
       {error && <p className="error-banner">{error}</p>}
-      <div className="split-view">
-        <div className="table-wrap">
+      <div className="table-wrap">
           <table>
-            <thead><tr><th>Name</th><th>Created</th><th /></tr></thead>
+            <thead><tr><th>Name</th><th>Owner</th><th>Created</th><th /></tr></thead>
             <tbody>
               {buckets.map((bucket) => (
-                <tr key={bucket.name} className={selected === bucket.name ? 'selected-row' : ''}>
-                  <td><button className="link-button" onClick={() => selectBucket(bucket.name)}>{bucket.name}</button></td>
+                <tr key={bucket.name}>
+                  <td><strong>{bucket.name}</strong></td>
+                  <td>{bucket.owner}</td>
                   <td>{new Date(bucket.created_at).toLocaleString()}</td>
                   <td><button className="danger-button" onClick={() => remove(bucket.name)}>删除</button></td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
-        <div className="object-pane">
-          <h3>{selected || 'Objects'}</h3>
-          {selected && objects.length === 0 && <p className="empty-state">暂无对象</p>}
-          {objects.map((object) => (
-            <div className="object-row" key={object.key}>
-              <span>{object.key}</span>
-              <small>{object.size.toLocaleString()} B</small>
-            </div>
-          ))}
-        </div>
       </div>
     </section>
   )

@@ -19,6 +19,9 @@ type ManagementService interface {
 	CreateAccessKey(ctx context.Context, request contract.CreateAccessKeyRequest) (contract.CreateAccessKeyResponse, error)
 	UpdateAccessKey(ctx context.Context, id string, request contract.UpdateAccessKeyRequest) (contract.AccessKey, error)
 	DeleteAccessKey(ctx context.Context, id string) error
+	Storage(ctx context.Context) (contract.StorageResponse, error)
+	Health(ctx context.Context) (contract.ManagementHealthResponse, error)
+	Settings(ctx context.Context) (contract.SettingsResponse, error)
 }
 
 type Management struct {
@@ -131,4 +134,31 @@ func (handler *Management) DeleteAccessKey(ctx *gin.Context) {
 		return
 	}
 	ctx.Status(http.StatusNoContent)
+}
+
+func (handler *Management) Storage(ctx *gin.Context) {
+	response, err := handler.service.Storage(ctx.Request.Context())
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) Health(ctx *gin.Context) {
+	response, err := handler.service.Health(ctx.Request.Context())
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) Settings(ctx *gin.Context) {
+	response, err := handler.service.Settings(ctx.Request.Context())
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
 }

@@ -6,6 +6,7 @@ const sigv4 = @import("../auth/sigv4.zig");
 const Crc64Nvme = @import("../common/checksum.zig").Crc64Nvme;
 const request_id = @import("../common/request_id.zig");
 const recovery = @import("../metadata/recovery.zig");
+const management = @import("management.zig");
 const s3 = @import("s3.zig");
 
 pub const health_live_path = "/health/live";
@@ -213,14 +214,7 @@ fn serveRequest(
         .management_login => serveManagementLogin(request, context, current_request_id),
         .management_session => serveManagementSession(request, context, current_request_id),
         .management => if (managementTokenExpiration(request, context)) |_|
-            respond(
-                request,
-                "{\"code\":\"NotImplemented\",\"message\":\"management API is not implemented yet\"}\n",
-                .not_implemented,
-                "application/json; charset=utf-8",
-                current_request_id,
-                null,
-            )
+            management.serveRequest(request, context.application, current_request_id)
         else
             respondUnauthorized(request, current_request_id),
         .s3 => s3.serveRequest(request, context.application, current_request_id),
@@ -291,26 +285,18 @@ fn serveManagementLogin(
     current_request_id: []const u8,
 ) !std.http.Status {
     if (request.head.method != .POST) {
-        return respond(
-            request,
-            "method not allowed\n",
-            .method_not_allowed,
-            "text/plain; charset=utf-8",
-            current_request_id,
-            "POST",
-        );
+        return management.respondMethodNotAllowed(request, current_request_id, "POST");
     }
 
     var read_buffer: [4096]u8 = undefined;
     const body_reader = try request.readerExpectContinue(&read_buffer);
     const body = body_reader.allocRemaining(std.heap.smp_allocator, .limited(4096)) catch |err| switch (err) {
-        error.StreamTooLong => return respond(
+        error.StreamTooLong => return management.respondError(
             request,
-            "{\"code\":\"PayloadTooLarge\",\"message\":\"login request is too large\"}\n",
-            .payload_too_large,
-            "application/json; charset=utf-8",
             current_request_id,
-            null,
+            .payload_too_large,
+            "PayloadTooLarge",
+            "login request is too large",
         ),
         else => return err,
     };
@@ -321,13 +307,12 @@ fn serveManagementLogin(
         password: []const u8,
     };
     const parsed = std.json.parseFromSlice(LoginRequest, std.heap.smp_allocator, body, .{}) catch {
-        return respond(
+        return management.respondError(
             request,
-            "{\"code\":\"InvalidRequest\",\"message\":\"valid username and password are required\"}\n",
-            .bad_request,
-            "application/json; charset=utf-8",
             current_request_id,
-            null,
+            .bad_request,
+            "InvalidRequest",
+            "valid username and password are required",
         );
     };
     defer parsed.deinit();
@@ -371,14 +356,7 @@ fn serveManagementSession(
     current_request_id: []const u8,
 ) !std.http.Status {
     if (request.head.method != .GET) {
-        return respond(
-            request,
-            "method not allowed\n",
-            .method_not_allowed,
-            "text/plain; charset=utf-8",
-            current_request_id,
-            "GET",
-        );
+        return management.respondMethodNotAllowed(request, current_request_id, "GET");
     }
     const expires_at = managementTokenExpiration(request, context) orelse {
         return respondUnauthorized(request, current_request_id);
@@ -422,13 +400,12 @@ fn respondUnauthorized(
     request: *std.http.Server.Request,
     current_request_id: []const u8,
 ) !std.http.Status {
-    return respond(
+    return management.respondError(
         request,
-        "{\"code\":\"Unauthorized\",\"message\":\"valid ZigFS administrator credentials are required\"}\n",
-        .unauthorized,
-        "application/json; charset=utf-8",
         current_request_id,
-        null,
+        .unauthorized,
+        "Unauthorized",
+        "valid ZigFS administrator credentials are required",
     );
 }
 
@@ -1097,6 +1074,31 @@ fn sendTestUnsignedRequest(
     return sendTestRawRequest(allocator, io, address, request_bytes);
 }
 
+fn sendTestManagementRequest(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    address: std.Io.net.IpAddress,
+    method: std.http.Method,
+    target: []const u8,
+    token: ?[]const u8,
+    body: []const u8,
+) !TestHttpResponse {
+    var request_bytes: std.Io.Writer.Allocating = .init(allocator);
+    defer request_bytes.deinit();
+    try request_bytes.writer.print(
+        "{s} {s} HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\n" ++
+            "Connection: close\r\nContent-Type: application/json\r\n" ++
+            "X-Request-ID: phase6-contract\r\nContent-Length: {d}\r\n",
+        .{ @tagName(method), target, address.getPort(), body.len },
+    );
+    if (token) |value| {
+        try request_bytes.writer.print("Authorization: Bearer {s}\r\n", .{value});
+    }
+    try request_bytes.writer.writeAll("\r\n");
+    try request_bytes.writer.writeAll(body);
+    return sendTestRawRequest(allocator, io, address, request_bytes.written());
+}
+
 fn sendTestRawRequest(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -1141,6 +1143,352 @@ fn sendTestRawRequestImpl(
         .header_bytes = bytes[0..head_end],
         .body = bytes[head_end + 4 ..],
     };
+}
+
+test "ZigFS Management API directly serves the Phase 6 contract" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try std.fmt.allocPrint(
+        std.testing.allocator,
+        ".zig-cache/tmp/{s}/data",
+        .{tmp.sub_path},
+    );
+    defer std.testing.allocator.free(data_root);
+
+    const loopback: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
+    var listener = try loopback.listen(std.testing.io, .{ .reuse_address = true });
+    defer listener.deinit(std.testing.io);
+    const address = listener.socket.address;
+    const endpoint = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "http://127.0.0.1:{d}",
+        .{address.getPort()},
+    );
+    defer std.testing.allocator.free(endpoint);
+    const config: Config = .{
+        .data_root = data_root,
+        .metrics_enabled = false,
+        .s3_public_endpoint = endpoint,
+    };
+    var application = Application.init(config);
+    defer application.deinit(std.testing.io);
+    try application.initialize(std.testing.io);
+    var context: ListenerContext = .{
+        .io = std.testing.io,
+        .kind = .api,
+        .config = config,
+        .application = &application,
+    };
+    var server_tasks: std.Io.Group = .init;
+    defer server_tasks.cancel(std.testing.io);
+    server_tasks.async(std.testing.io, serveLoopBackground, .{ &listener, &context });
+
+    const unauthorized = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .GET,
+        "/_admin/v1/system",
+        null,
+        "",
+    );
+    defer unauthorized.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.unauthorized, unauthorized.status);
+    try std.testing.expect(std.mem.indexOf(u8, unauthorized.body, "\"request_id\":\"phase6-contract\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, unauthorized.body, "\"details\":{}") != null);
+
+    const login = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .POST,
+        "/_admin/v1/auth/login",
+        null,
+        "{\"username\":\"admin\",\"password\":\"zigfs-admin\"}",
+    );
+    defer login.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, login.status);
+    const LoginResponse = struct { token: []const u8 };
+    const login_json = try std.json.parseFromSlice(
+        LoginResponse,
+        std.testing.allocator,
+        login.body,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer login_json.deinit();
+    const token = login_json.value.token;
+
+    const create_bucket = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .POST,
+        "/_admin/v1/buckets",
+        token,
+        "{\"name\":\"project-assets\",\"owner\":\"tenant-a\"}",
+    );
+    defer create_bucket.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.created, create_bucket.status);
+    try std.testing.expect(std.mem.indexOf(u8, create_bucket.body, "\"owner\":\"tenant-a\"") != null);
+
+    const create_key = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .POST,
+        "/_admin/v1/access-keys",
+        token,
+        "{\"owner\":\"tenant-a\",\"policy\":{\"bucket_read\":true,\"bucket_write\":true,\"object_read\":true,\"object_write\":true}}",
+    );
+    defer create_key.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.created, create_key.status);
+    const CreatedKey = struct {
+        access_key: []const u8,
+        secret_key: []const u8,
+    };
+    const key_json = try std.json.parseFromSlice(
+        CreatedKey,
+        std.testing.allocator,
+        create_key.body,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer key_json.deinit();
+
+    const put_object = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/project-assets/reports/phase-6.txt",
+            .access_key = key_json.value.access_key,
+            .secret_key = key_json.value.secret_key,
+            .body = "management-object",
+        },
+    );
+    defer put_object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, put_object.status);
+
+    const objects = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .GET,
+        "/_admin/v1/buckets/project-assets/objects?prefix=reports%2F",
+        token,
+        "",
+    );
+    defer objects.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, objects.status);
+    try std.testing.expect(std.mem.indexOf(u8, objects.body, "\"key\":\"reports/phase-6.txt\"") != null);
+
+    const presign_body = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"access_key\":\"{s}\",\"bucket\":\"project-assets\",\"key\":\"reports/phase-6.txt\",\"method\":\"GET\",\"expires_seconds\":60}}",
+        .{key_json.value.access_key},
+    );
+    defer std.testing.allocator.free(presign_body);
+    const presign = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .POST,
+        "/_admin/v1/objects/presign",
+        token,
+        presign_body,
+    );
+    defer presign.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, presign.status);
+    const PresignResponse = struct { url: []const u8 };
+    const presign_json = try std.json.parseFromSlice(
+        PresignResponse,
+        std.testing.allocator,
+        presign.body,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer presign_json.deinit();
+    try std.testing.expect(std.mem.startsWith(u8, presign_json.value.url, endpoint));
+    const presigned_get = try sendTestUnsignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .GET,
+        presign_json.value.url[endpoint.len..],
+    );
+    defer presigned_get.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, presigned_get.status);
+    try std.testing.expectEqualStrings("management-object", presigned_get.body);
+
+    const storage = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .GET,
+        "/_admin/v1/storage",
+        token,
+        "",
+    );
+    defer storage.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, storage.status);
+    try std.testing.expect(std.mem.indexOf(u8, storage.body, "\"used\":17") != null);
+    try std.testing.expect(std.mem.indexOf(u8, storage.body, "\"total\":null") != null);
+
+    const system = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .GET,
+        "/_admin/v1/system",
+        token,
+        "",
+    );
+    defer system.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, system.status);
+    try std.testing.expect(std.mem.indexOf(u8, system.body, "\"objects\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, system.body, "\"buckets\":1") != null);
+
+    const health = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .GET,
+        "/_admin/v1/health",
+        token,
+        "",
+    );
+    defer health.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, health.status);
+    try std.testing.expect(std.mem.indexOf(u8, health.body, "\"status\":\"ready\"") != null);
+
+    const settings = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .GET,
+        "/_admin/v1/settings",
+        token,
+        "",
+    );
+    defer settings.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, settings.status);
+    try std.testing.expect(std.mem.indexOf(u8, settings.body, "\"s3_public_endpoint\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, settings.body, "session_secret") == null);
+    try std.testing.expect(std.mem.indexOf(u8, settings.body, "admin_password") == null);
+
+    const disable_target = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "/_admin/v1/access-keys/{s}",
+        .{key_json.value.access_key},
+    );
+    defer std.testing.allocator.free(disable_target);
+    const disable = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .PATCH,
+        disable_target,
+        token,
+        "{\"enabled\":false}",
+    );
+    defer disable.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, disable.status);
+    try std.testing.expect(std.mem.indexOf(u8, disable.body, "\"enabled\":false") != null);
+
+    const disabled_presign = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .POST,
+        "/_admin/v1/objects/presign",
+        token,
+        presign_body,
+    );
+    defer disabled_presign.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.conflict, disabled_presign.status);
+
+    const enable = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .PATCH,
+        disable_target,
+        token,
+        "{\"enabled\":true}",
+    );
+    defer enable.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, enable.status);
+
+    const non_empty = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .DELETE,
+        "/_admin/v1/buckets/project-assets",
+        token,
+        "",
+    );
+    defer non_empty.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.conflict, non_empty.status);
+
+    const delete_object = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .DELETE,
+            .target = "/project-assets/reports/phase-6.txt",
+            .access_key = key_json.value.access_key,
+            .secret_key = key_json.value.secret_key,
+        },
+    );
+    defer delete_object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.no_content, delete_object.status);
+
+    const delete_key = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .DELETE,
+        disable_target,
+        token,
+        "",
+    );
+    defer delete_key.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.no_content, delete_key.status);
+    const delete_key_again = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .DELETE,
+        disable_target,
+        token,
+        "",
+    );
+    defer delete_key_again.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.no_content, delete_key_again.status);
+
+    const delete_bucket = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .DELETE,
+        "/_admin/v1/buckets/project-assets",
+        token,
+        "",
+    );
+    defer delete_bucket.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.no_content, delete_bucket.status);
+    const delete_bucket_again = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .DELETE,
+        "/_admin/v1/buckets/project-assets",
+        token,
+        "",
+    );
+    defer delete_bucket_again.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.no_content, delete_bucket_again.status);
 }
 
 test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {

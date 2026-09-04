@@ -175,6 +175,8 @@ Request ID Header，不返回 XML Body。
 | AWS CLI 2.36.38 | Pass | 错误 AK、Bucket/Object CRUD、特殊 Key、List V2/Delimiter/分页、Content-Type、ETag、CRC64NVME、错误 checksum、单 Range `206` 与越界 `416`、Presigned GET；两 Part Multipart Create/Upload/List/Complete/GET 字节一致性和 Abort |
 | MinIO Client (`mc`) 2025-08-13 | Pass | Alias、Bucket CRUD、Location、List V2、Head/Get、签名流式 Put、DeleteObjects、Presigned GET；70 MiB/5 Part Multipart 上传、复合 ETag、下载 SHA-256 一致；`mc share upload` 使用未实现的 POST Policy |
 | rclone 1.75.0 | Pass with config | `list_version=2` 下 Bucket/Object CRUD、Metadata、MD5、Presigned GET；5 MiB Part、3 路并发的 70 MiB Multipart 上传和下载 SHA-256 一致；`provider=Other` 默认 ListObjects V1 不在当前范围 |
+| TypeScript/Web Conformance | Pass | Web Crypto SigV4、Web Streams Put/Get、64 位 `bigint`、Range、List V2 Token、Multipart、Abort、错误映射和取消后继续访问 |
+| Swift/iOS Conformance | Pass | CryptoKit SigV4、Foundation 文件/响应流、64 位 `UInt64`、Range、List V2 Token、Multipart、Abort、错误映射和取消后继续访问 |
 | 独立 AWS SDK / signed trailer 外部扩展 | Additional coverage: Pending | AWS CLI、mc、rclone 不作为独立 SDK 运行时；只在客户端能够稳定生成 CRC64NVME signed trailer 时记录该变体通过，不阻塞 Phase 5 已通过的协议 Gate |
 
 AK/SK 的创建、禁用、删除和 Policy 配置不属于 S3/Data API；它们是 ZigFS

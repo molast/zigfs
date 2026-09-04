@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "vector_revision": 1,
+  "sigv4": {
+    "method": "GET",
+    "path": "/test.txt",
+    "query": [],
+    "headers": [
+      ["host", "examplebucket.s3.amazonaws.com"],
+      ["range", "bytes=0-9"],
+      ["x-amz-content-sha256", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],
+      ["x-amz-date", "20130524T000000Z"]
+    ],
+    "signed_headers": "host;range;x-amz-content-sha256;x-amz-date",
+    "payload_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "access_key": "AKIAIOSFODNN7EXAMPLE",
+    "secret_key": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+    "scope_date": "20130524",
+    "amz_date": "20130524T000000Z",
+    "region": "us-east-1",
+    "service": "s3",
+    "expected_signature": "67fe34c8530db585abddc51067328adfedb6e42487d2566dc7d927d6e2722900"
+  },
+  "uint64_values": [
+    "0",
+    "9007199254740993",
+    "18446744073709551615"
+  ],
+  "opaque_values": [
+    "ZFCT-AQIDBAUGBwgJCgsMDQ4PEA",
+    "0123456789abcdef0123456789abcdef",
+    "\"d41d8cd98f00b204e9800998ecf8427e\""
+  ],
+  "errors": [
+    {
+      "status": 404,
+      "xml": "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Resource>/bucket/missing</Resource><RequestId>req-not-found</RequestId></Error>",
+      "code": "NoSuchKey",
+      "request_id": "req-not-found",
+      "retryable": false
+    },
+    {
+      "status": 416,
+      "xml": "<Error><Code>InvalidRange</Code><Message>The requested range is not satisfiable.</Message><Resource>/bucket/object</Resource><RequestId>req-range</RequestId></Error>",
+      "code": "InvalidRange",
+      "request_id": "req-range",
+      "retryable": false
+    },
+    {
+      "status": 503,
+      "xml": "<Error><Code>ServiceUnavailable</Code><Message>Please reduce your request rate.</Message><Resource>/</Resource><RequestId>req-service</RequestId></Error>",
+      "code": "ServiceUnavailable",
+      "request_id": "req-service",
+      "retryable": true
+    }
+  ],
+  "retry_cases": [
+    {
+      "operation": "get_object",
+      "method": "GET",
+      "status": 503,
+      "body_replayable": true,
+      "response_started": false,
+      "cancelled": false,
+      "expected": true
+    },
+    {
+      "operation": "get_object",
+      "method": "GET",
+      "status": 503,
+      "body_replayable": true,
+      "response_started": true,
+      "cancelled": false,
+      "expected": false
+    },
+    {
+      "operation": "put_object",
+      "method": "PUT",
+      "status": 500,
+      "body_replayable": true,
+      "response_started": false,
+      "cancelled": false,
+      "expected": true
+    },
+    {
+      "operation": "put_object",
+      "method": "PUT",
+      "status": 500,
+      "body_replayable": false,
+      "response_started": false,
+      "cancelled": false,
+      "expected": false
+    },
+    {
+      "operation": "create_multipart",
+      "method": "POST",
+      "status": 503,
+      "body_replayable": true,
+      "response_started": false,
+      "cancelled": false,
+      "expected": false
+    },
+    {
+      "operation": "upload_part",
+      "method": "PUT",
+      "status": 503,
+      "body_replayable": true,
+      "response_started": false,
+      "cancelled": false,
+      "expected": true
+    },
+    {
+      "operation": "complete_multipart",
+      "method": "POST",
+      "status": 500,
+      "body_replayable": true,
+      "response_started": false,
+      "cancelled": false,
+      "expected": false
+    },
+    {
+      "operation": "list_objects",
+      "method": "GET",
+      "status": 403,
+      "body_replayable": true,
+      "response_started": false,
+      "cancelled": false,
+      "expected": false
+    },
+    {
+      "operation": "delete_object",
+      "method": "DELETE",
+      "status": 503,
+      "body_replayable": true,
+      "response_started": false,
+      "cancelled": true,
+      "expected": false
+    }
+  ],
+  "stream": {
+    "object_size": "1048593",
+    "multipart_part_sizes": ["5242880", "1048609"],
+    "chunk_size": 65536,
+    "range_start": "65531",
+    "range_end": "131089",
+    "pattern_multiplier": 31,
+    "pattern_increment": 17,
+    "pattern_modulus": 251
+  }
+}

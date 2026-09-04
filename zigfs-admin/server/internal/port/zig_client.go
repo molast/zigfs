@@ -9,6 +9,9 @@ import (
 
 type StatusError struct {
 	StatusCode int
+	Code       string
+	Message    string
+	RequestID  string
 }
 
 func (err *StatusError) Error() string {
@@ -20,6 +23,9 @@ type ZigClient interface {
 	Login(ctx context.Context, request contract.LoginRequest) (contract.LoginResponse, error)
 	Session(ctx context.Context) (contract.SessionResponse, error)
 	System(ctx context.Context) (contract.SystemResponse, error)
+	Storage(ctx context.Context) (contract.StorageResponse, error)
+	ManagementHealth(ctx context.Context) (contract.ManagementHealthResponse, error)
+	Settings(ctx context.Context) (contract.SettingsResponse, error)
 	ListBuckets(ctx context.Context) (contract.ListBucketsResponse, error)
 	CreateBucket(ctx context.Context, request contract.CreateBucketRequest) (contract.Bucket, error)
 	DeleteBucket(ctx context.Context, name string) error

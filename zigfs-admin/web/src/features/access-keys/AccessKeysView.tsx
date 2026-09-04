@@ -1,10 +1,25 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
 import type { ApiClient } from '../../api/client'
-import type { AccessKey, CreatedAccessKey } from '../../types/api'
+import type { AccessKey, CreatedAccessKey, CredentialPolicy } from '../../types/api'
+
+const fullAccess: CredentialPolicy = {
+  bucket_read: true,
+  bucket_write: true,
+  object_read: true,
+  object_write: true,
+}
+
+const readOnly: CredentialPolicy = {
+  bucket_read: true,
+  bucket_write: false,
+  object_read: true,
+  object_write: false,
+}
 
 export function AccessKeysView({ api }: { api: ApiClient }) {
   const [keys, setKeys] = useState<AccessKey[]>([])
-  const [name, setName] = useState('')
+  const [owner, setOwner] = useState('')
+  const [policy, setPolicy] = useState<'full' | 'read-only'>('full')
   const [created, setCreated] = useState<CreatedAccessKey | null>(null)
   const [error, setError] = useState('')
 
@@ -17,9 +32,9 @@ export function AccessKeysView({ api }: { api: ApiClient }) {
   async function create(event: FormEvent) {
     event.preventDefault()
     try {
-      const result = await api.createAccessKey(name.trim())
+      const result = await api.createAccessKey(owner.trim(), policy === 'full' ? fullAccess : readOnly)
       setCreated(result)
-      setName('')
+      setOwner('')
       refresh()
     } catch (reason) {
       setError((reason as Error).message)
@@ -27,14 +42,22 @@ export function AccessKeysView({ api }: { api: ApiClient }) {
   }
 
   async function toggle(key: AccessKey) {
-    await api.setAccessKeyEnabled(key.id, !key.enabled)
-    refresh()
+    try {
+      await api.setAccessKeyEnabled(key.id, !key.enabled)
+      refresh()
+    } catch (reason) {
+      setError((reason as Error).message)
+    }
   }
 
   async function remove(key: AccessKey) {
     if (!window.confirm(`删除 Access Key “${key.access_key}”？`)) return
-    await api.deleteAccessKey(key.id)
-    refresh()
+    try {
+      await api.deleteAccessKey(key.id)
+      refresh()
+    } catch (reason) {
+      setError((reason as Error).message)
+    }
   }
 
   return (
@@ -42,7 +65,11 @@ export function AccessKeysView({ api }: { api: ApiClient }) {
       <header className="page-header">
         <div><p className="eyebrow">Credentials</p><h2>Access Keys</h2></div>
         <form className="inline-form" onSubmit={create}>
-          <input aria-label="Credential name" placeholder="application-name" value={name} onChange={(event) => setName(event.target.value)} required />
+          <input aria-label="Credential owner" placeholder="owner / tenant" value={owner} onChange={(event) => setOwner(event.target.value)} required />
+          <select aria-label="Credential policy" value={policy} onChange={(event) => setPolicy(event.target.value as 'full' | 'read-only')}>
+            <option value="full">Full access</option>
+            <option value="read-only">Read only</option>
+          </select>
           <button className="primary-button" type="submit">创建</button>
         </form>
       </header>
@@ -56,11 +83,13 @@ export function AccessKeysView({ api }: { api: ApiClient }) {
       )}
       <div className="table-wrap">
         <table>
-          <thead><tr><th>Access Key</th><th>Status</th><th>Created</th><th /></tr></thead>
+          <thead><tr><th>Access Key</th><th>Owner</th><th>Policy</th><th>Status</th><th>Created</th><th /></tr></thead>
           <tbody>
             {keys.map((key) => (
               <tr key={key.id}>
                 <td><code>{key.access_key}</code></td>
+                <td>{key.owner}</td>
+                <td>{key.policy.object_write ? 'Full access' : 'Read only'}</td>
                 <td><button className="status-button" onClick={() => toggle(key)}>{key.enabled ? 'Enabled' : 'Disabled'}</button></td>
                 <td>{new Date(key.created_at).toLocaleString()}</td>
                 <td><button className="danger-button" onClick={() => remove(key)}>删除</button></td>

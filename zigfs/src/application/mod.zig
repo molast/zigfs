@@ -26,6 +26,7 @@ pub const object_gc = @import("object_gc.zig");
 pub const object_lock_pool = @import("object_lock_pool.zig");
 pub const object_listing = @import("object_listing.zig");
 pub const multipart_service = @import("multipart_service.zig");
+pub const management_service = @import("management_service.zig");
 pub const object_service = @import("object_service.zig");
 
 pub const Application = struct {
@@ -50,6 +51,7 @@ pub const Application = struct {
     multipart_locks: object_lock_pool.ObjectLockPool = .{},
     recovery_state: recovery.State = .{},
     recovery_report: ?recovery.Report = null,
+    started_at_unix_seconds: i64 = 0,
 
     pub fn init(config: Config) Application {
         return initWithAllocator(config, std.heap.smp_allocator);
@@ -68,6 +70,7 @@ pub const Application = struct {
 
     pub fn initialize(self: *Application, io: std.Io) !void {
         self.io = io;
+        self.started_at_unix_seconds = std.Io.Clock.real.now(io).toSeconds();
         const storage = self.local_storage.interface();
         try storage.ensureReady(io);
 
@@ -352,6 +355,21 @@ pub const Application = struct {
             index,
             &self.state_mutex,
             &self.object_locks,
+        );
+    }
+
+    pub fn managementService(self: *Application) ?management_service.ManagementService {
+        if (!self.recovery_state.isReady()) return null;
+        const io = self.io orelse return null;
+        const object_store = if (self.object_store) |*store| store.interface() else return null;
+        const index = if (self.metadata_index) |*metadata_index| metadata_index else return null;
+        return management_service.ManagementService.init(
+            self.allocator,
+            io,
+            object_store,
+            index,
+            &self.state_mutex,
+            self.started_at_unix_seconds,
         );
     }
 

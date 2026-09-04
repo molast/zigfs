@@ -14,7 +14,7 @@ const requestIDHeader = "X-Request-ID"
 func RequestID() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		requestID := ctx.GetHeader(requestIDHeader)
-		if requestID == "" || len(requestID) > 128 {
+		if !isValidRequestID(requestID) {
 			requestID = newRequestID()
 		}
 
@@ -22,6 +22,22 @@ func RequestID() gin.HandlerFunc {
 		ctx.Request = ctx.Request.WithContext(requestid.WithContext(ctx.Request.Context(), requestID))
 		ctx.Next()
 	}
+}
+
+func isValidRequestID(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, char := range []byte(value) {
+		if (char >= 'a' && char <= 'z') ||
+			(char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') ||
+			char == '-' || char == '_' || char == '.' || char == ':' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func newRequestID() string {
