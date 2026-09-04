@@ -44,10 +44,10 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 - 全 Object 锁 GC 屏障，保护活跃 GET 和 PUT 的 Data/Metadata 提交窗口
 - ZigFS 常驻 HTTP Server、Health API 和 Prometheus Metrics Listener
 - HTTP Request ID 透传/生成与基础访问日志
-- `ZFCR` V1.0 AK/SK Metadata、AES-256-GCM Secret 加密和数据根随机 Master Key
-- AK/SK 创建、查询、更新、禁用、删除、重启恢复和最小 Bucket/Object Policy
+- 向后兼容的 `ZFCR` V1.1 永久/临时 Credential Metadata、AES-256-GCM Secret/Session Token 加密和数据根随机 Master Key
+- 永久 AK/SK 与临时 AK/SK/Session Token 创建、查询、更新、禁用、过期、删除、重启恢复和最小 Bucket/Object Policy
 - Signature V4 Header/Presigned Query 验签、Canonical URI/Query/Header、Region Scope、Payload Hash、有效期和时钟偏差校验
-- Path-style S3 Router、稳定 XML 错误，以及 Bucket/Object/List V2 HTTP Handler
+- Path-style 与可配置 Virtual-hosted-style S3 Router、Host-aware SigV4、稳定 XML 错误，以及 Bucket/Object/List V2 HTTP Handler
 - S3 Put/Get 流式传输、Content-MD5/SHA-256/CRC64NVME 校验、ETag、用户元数据和分页响应
 - AWS SigV4 aws-chunked 签名链，以及 CRC64NVME signed trailer 的签名与 checksum 校验
 - S3 Multipart Create、并发 UploadPart、ListParts、Complete、Abort、复合 ETag 和启动超时清理
@@ -77,18 +77,19 @@ TCP 回归测试；AWS CLI 2.36.38、rclone 1.75.0 和 mc 2025-08-13 已通过�
 生成的 Presigned GET 均通过匿名下载与字节一致性验证。Multipart 完整生命周期也已通过
 AWS CLI、mc 和 rclone 的并发大文件上传与下载校验。CRC64NVME signed streaming trailer
 已完成原生 TCP 正向、错误 checksum、错误 trailer 签名及失败不发布回归；Object/Part 中途
-断流不会发布数据或遗留暂存文件，下载取消会释放读取租约。其他 trailer checksum 算法、
-条件请求、Temporary Credentials 和 Virtual-hosted-style 仍明确返回 `NotImplemented` 或不在
-当前兼容范围；独立 AWS SDK trailer 矩阵作为补充验证继续维护。Phase 6 Management and Admin
+断流不会发布数据或遗留暂存文件，下载取消会释放读取租约。条件请求已支持 GET/HEAD/PUT
+的 ETag/日期前置条件和 `304`/`412` 语义。Virtual-hosted-style 已支持（默认关闭，可通过
+`s3.virtual_hosted_style` 开启）。Temporary Credentials 已支持 Header 与 Presigned SigV4
+Session Token 绑定；POST Policy Upload 已支持 SigV4 Policy、条件和 multipart 文件流；其他 trailer checksum 算法仍明确返回 `NotImplemented` 或不在当前兼容范围；独立 AWS SDK trailer 矩阵作为补充验证继续维护。Phase 6 Management and Admin
 已实现 ZigFS Management Handler、真实 TCP Contract、Gin BFF 和完整 React 管理页面。
 Phase 7 SDK Conformance 已完成语言无关契约和共享向量，并由 TypeScript/Web、Swift/iOS
 两个生态直接连接隔离 ZigFS 通过完整文件操作 Gate；该阶段验证 S3 契约，不发布第二套协议。
 Phase 8 Reliability and Performance 已加入确定性故障注入、写能力探针、索引重建和数据校验损坏
 测试，以及可输出原始 JSON 的 `smoke`/`full` 基准工具。基准结果与硬件、构建模式和并发度绑定，
 不构成脱离环境的性能承诺。
-下一阶段为 Phase 9 S3 Compatibility Hardening and V1 Release Candidate，优先补齐当前
-S3 兼容矩阵中声明的 Conditional Requests、CopyObject、Virtual-hosted-style、Temporary
-Credentials、POST Policy 和其他 trailer checksum 差异，再冻结 V1 Release Candidate。
+当前阶段为 Phase 9 S3 Compatibility Hardening and V1 Release Candidate，Conditional
+Requests、CopyObject、Virtual-hosted-style、Temporary Credentials 和 POST Policy Upload 已完成；接下来优先补齐当前 S3 兼容矩阵中声明的
+其他 trailer checksum 差异，再冻结 V1 Release Candidate。
 
 运维、备份恢复和 V1 限制见 [docs/operations.md](docs/operations.md)、
 [docs/backup-and-recovery.md](docs/backup-and-recovery.md) 和
@@ -200,6 +201,7 @@ storage:
 
 s3:
   public_endpoint: "http://127.0.0.1:9000"
+  virtual_hosted_style: false
   region: "us-east-1"
   request_time_skew_seconds: 900
   multipart_expiry_seconds: 604800
@@ -212,8 +214,11 @@ admin:
 ```
 
 `server.api_address` 是 ZigFS 的实际监听地址；`s3.public_endpoint` 是返回给浏览器、移动端
-或其他客户端的公开 S3 地址，仅用于生成绝对 Presigned URL。反向代理或跨主机部署时应把
+或其他客户端的公开 S3 地址，用于生成绝对 Presigned URL，也作为开启 Virtual-hosted-style
+时的 Host authority 基准。反向代理或跨主机部署时应把
 它设置为客户端实际可访问的 `http://` 或 `https://` Authority，且不能包含路径、凭证或查询参数。
+开启 `s3.virtual_hosted_style` 后，ZigFS 还接受 `<scheme>://<bucket>.<authority>/<object>` 形式的
+S3 请求；精确 authority 仍保留 Path-style。客户端 DNS 或反向代理必须能够解析对应的 Bucket 子域名。
 
 加载优先级：
 

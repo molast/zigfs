@@ -16,6 +16,7 @@ pub const Config = struct {
     metrics_enabled: bool = true,
     metrics_address: []const u8 = "127.0.0.1:9090",
     s3_public_endpoint: []const u8 = "http://127.0.0.1:9000",
+    s3_virtual_hosted_style: bool = false,
     s3_region: []const u8 = "us-east-1",
     s3_request_time_skew_seconds: u64 = 15 * 60,
     s3_multipart_expiry_seconds: u64 = 7 * 24 * 60 * 60,
@@ -135,6 +136,8 @@ pub const Config = struct {
                 .s3 => {
                     if (std.mem.eql(u8, key, "public_endpoint")) {
                         self.s3_public_endpoint = value;
+                    } else if (std.mem.eql(u8, key, "virtual_hosted_style")) {
+                        self.s3_virtual_hosted_style = try booleanValue(value);
                     } else if (std.mem.eql(u8, key, "region")) {
                         self.s3_region = value;
                     } else if (std.mem.eql(u8, key, "request_time_skew_seconds")) {
@@ -318,6 +321,7 @@ test "built-in defaults are stable" {
     try std.testing.expect(config.metrics_enabled);
     try std.testing.expectEqualStrings("127.0.0.1:9090", config.metrics_address);
     try std.testing.expectEqualStrings("http://127.0.0.1:9000", config.s3_public_endpoint);
+    try std.testing.expect(!config.s3_virtual_hosted_style);
     try std.testing.expectEqualStrings("us-east-1", config.s3_region);
     try std.testing.expectEqual(@as(u64, 900), config.s3_request_time_skew_seconds);
     try std.testing.expectEqual(@as(u64, 7 * 24 * 60 * 60), config.s3_multipart_expiry_seconds);
@@ -339,6 +343,7 @@ test "yaml values override defaults" {
         \\  stream_buffer_size: 131072
         \\s3:
         \\  public_endpoint: "https://objects.example.test"
+        \\  virtual_hosted_style: true
         \\  region: "eu-central-1"
         \\  request_time_skew_seconds: 600
         \\  multipart_expiry_seconds: 86400
@@ -353,6 +358,7 @@ test "yaml values override defaults" {
     try std.testing.expectEqual(@as(usize, 131072), config.stream_buffer_size);
     try std.testing.expectEqualStrings("127.0.0.1:19000", config.api_address);
     try std.testing.expectEqualStrings("https://objects.example.test", config.s3_public_endpoint);
+    try std.testing.expect(config.s3_virtual_hosted_style);
     try std.testing.expectEqualStrings("eu-central-1", config.s3_region);
     try std.testing.expectEqual(@as(u64, 600), config.s3_request_time_skew_seconds);
     try std.testing.expectEqual(@as(u64, 86400), config.s3_multipart_expiry_seconds);

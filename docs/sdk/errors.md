@@ -24,8 +24,8 @@ Secret Key、Authorization、Cookie、完整 Presigned Query 和请求 Body 不�
 
 | 分类 | 典型 S3 Code/场景 | 默认可重试 |
 |---|---|---|
-| Authentication | `AccessDenied`、`InvalidAccessKeyId`、`SignatureDoesNotMatch` | 否 |
-| Validation | `InvalidArgument`、`InvalidRequest`、`BadDigest`、`InvalidRange` | 否 |
+| Authentication | `AccessDenied`、`InvalidAccessKeyId`、`InvalidToken`、`ExpiredToken`、`SignatureDoesNotMatch` | 否 |
+| Validation | `InvalidArgument`、`InvalidRequest`、`BadDigest`、`InvalidRange`、`EntityTooSmall`、`EntityTooLarge` | 否 |
 | Not Found | `NoSuchBucket`、`NoSuchKey`、`NoSuchUpload` | 否 |
 | Conflict | `BucketAlreadyExists`、`BucketNotEmpty`、`InvalidPartOrder` | 否 |
 | Unsupported | `NotImplemented` | 否 |

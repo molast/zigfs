@@ -43,12 +43,16 @@ type PresignObjectResponse struct {
 }
 
 type AccessKey struct {
-	ID        string           `json:"id"`
-	AccessKey string           `json:"access_key"`
-	Owner     string           `json:"owner"`
-	Enabled   bool             `json:"enabled"`
-	Policy    CredentialPolicy `json:"policy"`
-	CreatedAt time.Time        `json:"created_at"`
+	ID           string           `json:"id"`
+	AccessKey    string           `json:"access_key"`
+	SecretKey    string           `json:"secret_key"`
+	SessionToken string           `json:"session_token,omitempty"`
+	Kind         string           `json:"kind"`
+	Owner        string           `json:"owner"`
+	Enabled      bool             `json:"enabled"`
+	Policy       CredentialPolicy `json:"policy"`
+	CreatedAt    time.Time        `json:"created_at"`
+	ExpiresAt    *time.Time       `json:"expires_at,omitempty"`
 }
 
 type CredentialPolicy struct {
@@ -63,13 +67,13 @@ type ListAccessKeysResponse struct {
 }
 
 type CreateAccessKeyRequest struct {
-	Owner  string            `json:"owner" binding:"required"`
-	Policy *CredentialPolicy `json:"policy,omitempty"`
+	Owner      string            `json:"owner" binding:"required"`
+	Policy     *CredentialPolicy `json:"policy,omitempty"`
+	TTLSeconds *int64            `json:"ttl_seconds,omitempty" binding:"omitempty,min=60,max=43200"`
 }
 
 type CreateAccessKeyResponse struct {
 	AccessKey
-	SecretKey string `json:"secret_key"`
 }
 
 type UpdateAccessKeyRequest struct {
@@ -93,6 +97,7 @@ type ManagementHealthResponse struct {
 type SettingsResponse struct {
 	APIAddress             string `json:"api_address"`
 	S3PublicEndpoint       string `json:"s3_public_endpoint"`
+	S3VirtualHostedStyle   bool   `json:"s3_virtual_hosted_style"`
 	S3Region               string `json:"s3_region"`
 	RequestTimeSkewSeconds int64  `json:"request_time_skew_seconds"`
 	MultipartExpirySeconds int64  `json:"multipart_expiry_seconds"`

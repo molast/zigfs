@@ -23,6 +23,7 @@ pub const Error = error{
     CorruptMetadata,
     CorruptData,
     InvalidRange,
+    ConditionNotMet,
     Unavailable,
 };
 
@@ -33,6 +34,15 @@ pub const PutOptions = struct {
     expected_sha256: ?[32]u8 = null,
     expected_crc64nvme: ?u64 = null,
     multipart_etag: ?MultipartEtag = null,
+    /// Captures the object state observed before a conditional PUT.
+    expected_current: ?ExpectedCurrent = null,
+    /// Used by CopyObject to bind source conditions to the observed generation.
+    expected_source_generation: ?u64 = null,
+};
+
+pub const ExpectedCurrent = union(enum) {
+    missing,
+    generation: u64,
 };
 
 pub const MultipartEtag = struct {
@@ -147,23 +157,91 @@ pub const ObjectService = struct {
         self.state_mutex.unlock(self.io);
         defer initial_bucket.deinit(self.allocator);
 
-        const data_generation = @import("../common/id.zig").randomV4(self.io) catch {
-            return error.Unavailable;
+        const data_generation = @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable;
+        const staged = self.data_store.stage(data_generation, source) catch |err| return mapStageError(err);
+        var staged_pending = true;
+        defer if (staged_pending) self.data_store.discard(staged.token);
+        const object = self.commitStaged(bucket_name, key, initial_bucket, staged, options) catch |err| return err;
+        staged_pending = false;
+        return object;
+    }
+
+    /// Copies an existing object through the same staged publish path as PUT.
+    /// The source generation is read while a shared lease is held, then the
+    /// lease is released before committing the destination so self-copies do
+    /// not deadlock on the destination write lock.
+    pub fn copy(
+        self: ObjectService,
+        source_bucket_name: []const u8,
+        source_key: []const u8,
+        target_bucket_name: []const u8,
+        target_key: []const u8,
+        options: PutOptions,
+        copy_source_metadata: bool,
+    ) Error!object_domain.Object {
+        try validateAddress(source_bucket_name, source_key);
+        try validateRequest(target_bucket_name, target_key, options);
+
+        var source_lease = try self.open(source_bucket_name, source_key);
+        defer source_lease.deinit();
+        var source_object = source_lease.takeMetadata();
+        defer source_object.deinit(self.allocator);
+        const source_view = source_object.view();
+        if (options.expected_source_generation) |generation| {
+            if (source_object.metadata_generation != generation) return error.ConditionNotMet;
+        }
+        var copy_options = options;
+        if (copy_source_metadata) {
+            copy_options.content_type = source_object.content_type;
+            copy_options.user_metadata = source_view.user_metadata;
+        }
+        if (copy_options.multipart_etag == null and source_object.etag_part_count != 0) {
+            copy_options.multipart_etag = .{
+                .digest = source_object.etag_md5,
+                .part_count = source_object.etag_part_count,
+            };
+        }
+
+        self.state_mutex.lockUncancelable(self.io);
+        const initial_bucket = self.loadBucketLocked(target_bucket_name) catch |err| {
+            self.state_mutex.unlock(self.io);
+            return err;
         };
-        const staged = self.data_store.stage(data_generation, source) catch |err| {
+        self.state_mutex.unlock(self.io);
+        defer initial_bucket.deinit(self.allocator);
+
+        const data_generation = @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable;
+        var source_stream = LeaseSource{
+            .data_store = self.data_store,
+            .location = locationFor(source_view),
+            .size = source_view.size,
+            .offset = 0,
+        };
+        const staged = self.data_store.stage(data_generation, source_stream.interface()) catch |err| {
             return mapStageError(err);
         };
         var staged_pending = true;
         defer if (staged_pending) self.data_store.discard(staged.token);
+        source_lease.deinit();
+
+        const object = self.commitStaged(target_bucket_name, target_key, initial_bucket, staged, copy_options) catch |err| return err;
+        staged_pending = false;
+        return object;
+    }
+
+    fn commitStaged(
+        self: ObjectService,
+        bucket_name: []const u8,
+        key: []const u8,
+        initial_bucket: bucket_domain.Bucket,
+        staged: data_store_port.Staged,
+        options: PutOptions,
+    ) Error!object_domain.Object {
         if (options.expected_md5) |expected| {
-            if (!std.crypto.timing_safe.eql([16]u8, expected, staged.etag_md5)) {
-                return error.ChecksumMismatch;
-            }
+            if (!std.crypto.timing_safe.eql([16]u8, expected, staged.etag_md5)) return error.ChecksumMismatch;
         }
         if (options.expected_sha256) |expected| {
-            if (!std.crypto.timing_safe.eql([32]u8, expected, staged.checksum_sha256)) {
-                return error.ChecksumMismatch;
-            }
+            if (!std.crypto.timing_safe.eql([32]u8, expected, staged.checksum_sha256)) return error.ChecksumMismatch;
         }
         if (options.expected_crc64nvme) |expected| {
             if (expected != staged.checksum_crc64nvme) return error.ChecksumMismatch;
@@ -177,14 +255,22 @@ pub const ObjectService = struct {
 
         const bucket = try self.loadBucketLocked(bucket_name);
         defer bucket.deinit(self.allocator);
-        if (!std.mem.eql(u8, &initial_bucket.id, &bucket.id) or
-            initial_bucket.generation != bucket.generation)
-        {
+        if (!std.mem.eql(u8, &initial_bucket.id, &bucket.id) or initial_bucket.generation != bucket.generation) {
             return error.BucketNotFound;
         }
 
         const current = try self.loadObjectLocked(bucket_name, key);
         defer if (current) |record| record.deinit(self.allocator);
+        if (options.expected_current) |expected| {
+            const current_generation: ?u64 = if (current) |record| switch (record) {
+                .active => |object| object.metadata_generation,
+                .tombstone => null,
+            } else null;
+            switch (expected) {
+                .missing => if (current_generation != null) return error.ConditionNotMet,
+                .generation => |generation| if (current_generation == null or current_generation.? != generation) return error.ConditionNotMet,
+            }
+        }
         var expected_generation: object_store_port.ExpectedGeneration = .missing;
         const object_id = if (current) |record| switch (record) {
             .active => |object| active: {
@@ -193,13 +279,10 @@ pub const ObjectService = struct {
             },
             .tombstone => |generation| deleted: {
                 expected_generation = .{ .exact = generation };
-                break :deleted @import("../common/id.zig").randomV4(self.io) catch {
-                    return error.Unavailable;
-                };
+                break :deleted @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable;
             },
-        } else @import("../common/id.zig").randomV4(self.io) catch {
-            return error.Unavailable;
-        };
+        } else @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable;
+        const data_generation = staged.token;
         const modified_at = std.Io.Clock.real.now(self.io).toSeconds();
         const value: object_store_port.Value = .{
             .id = object_id,
@@ -216,28 +299,12 @@ pub const ObjectService = struct {
             .data_generation = data_generation,
             .status = .active,
         };
-        var owned = object_domain.cloneFromView(
-            self.allocator,
-            value,
-            0,
-        ) catch return error.OutOfMemory;
+        var owned = object_domain.cloneFromView(self.allocator, value, 0) catch return error.OutOfMemory;
         errdefer owned.deinit(self.allocator);
-        var prepared = self.index.prepareObject(bucket_name, key) catch |err| {
-            return mapIndexError(err);
-        };
+        var prepared = self.index.prepareObject(bucket_name, key) catch |err| return mapIndexError(err);
         defer prepared.deinit(self.index.allocator);
-
-        self.data_store.publish(staged, .{
-            .bucket_id = bucket.id,
-            .object_id = object_id,
-            .data_generation = data_generation,
-        }) catch |err| return mapPublishError(err);
-        staged_pending = false;
-        const metadata_generation = self.object_store.put(
-            self.allocator,
-            value,
-            expected_generation,
-        ) catch |err| return mapObjectStoreError(err);
+        self.data_store.publish(staged, .{ .bucket_id = bucket.id, .object_id = object_id, .data_generation = data_generation }) catch |err| return mapPublishError(err);
+        const metadata_generation = self.object_store.put(self.allocator, value, expected_generation) catch |err| return mapObjectStoreError(err);
         self.index.publishObject(&prepared, metadata_generation);
         owned.metadata_generation = metadata_generation;
         return owned;
@@ -426,7 +493,51 @@ fn validateRequest(
     }
 }
 
-fn locationFor(object: object_domain.Object) data_store_port.Location {
+const LeaseSource = struct {
+    data_store: data_store_port.ObjectDataStore,
+    location: data_store_port.Location,
+    size: u64,
+    offset: u64,
+
+    fn interface(self: *LeaseSource) byte_stream.Source {
+        return .{ .context = self, .vtable = &.{ .read = read } };
+    }
+
+    fn read(context: *anyopaque, buffer: []u8) byte_stream.Source.Error!usize {
+        const self: *LeaseSource = @ptrCast(@alignCast(context));
+        if (self.offset == self.size) return 0;
+        if (buffer.len == 0) return error.ReadFailed;
+        const requested = @min(self.size - self.offset, @as(u64, @intCast(buffer.len)));
+        var sink = RangeBufferSink{ .buffer = buffer[0..@intCast(requested)] };
+        self.data_store.readRange(
+            self.location,
+            self.offset,
+            requested,
+            sink.interface(),
+        ) catch return error.ReadFailed;
+        if (sink.written != requested) return error.ReadFailed;
+        self.offset += requested;
+        return @intCast(requested);
+    }
+};
+
+const RangeBufferSink = struct {
+    buffer: []u8,
+    written: u64 = 0,
+
+    fn interface(self: *RangeBufferSink) byte_stream.Sink {
+        return .{ .context = self, .vtable = &.{ .write_all = writeAll } };
+    }
+
+    fn writeAll(context: *anyopaque, bytes: []const u8) byte_stream.Sink.Error!void {
+        const self: *RangeBufferSink = @ptrCast(@alignCast(context));
+        if (bytes.len > self.buffer.len - @as(usize, @intCast(self.written))) return error.WriteFailed;
+        @memcpy(self.buffer[@intCast(self.written)..][0..bytes.len], bytes);
+        self.written += bytes.len;
+    }
+};
+
+fn locationFor(object: anytype) data_store_port.Location {
     return .{
         .bucket_id = object.bucket_id,
         .object_id = object.id,
@@ -582,6 +693,43 @@ test "object service puts gets overwrites and tombstones objects" {
     defer downloaded.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings(body, sink.bytes.items);
 
+    const copied = try objects.copy(
+        "project-assets",
+        "../../images/cover.txt",
+        "project-assets",
+        "copies/cover.txt",
+        .{},
+        true,
+    );
+    defer copied.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("text/plain", copied.content_type);
+    try std.testing.expectEqualStrings("mobile", copied.user_metadata[0].value);
+    var copy_sink = test_streams.CollectingSink.init(std.testing.allocator);
+    defer copy_sink.deinit();
+    const copied_body = try objects.get("project-assets", "copies/cover.txt", copy_sink.interface());
+    defer copied_body.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(body, copy_sink.bytes.items);
+
+    const self_copy = try objects.copy(
+        "project-assets",
+        "../../images/cover.txt",
+        "project-assets",
+        "../../images/cover.txt",
+        .{},
+        true,
+    );
+    defer self_copy.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("text/plain", self_copy.content_type);
+    var self_copy_sink = test_streams.CollectingSink.init(std.testing.allocator);
+    defer self_copy_sink.deinit();
+    const self_copy_body = try objects.get(
+        "project-assets",
+        "../../images/cover.txt",
+        self_copy_sink.interface(),
+    );
+    defer self_copy_body.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(body, self_copy_sink.bytes.items);
+
     var replacement_source = test_streams.SliceSource.init("replacement");
     const replaced = try objects.put(
         "project-assets",
@@ -594,8 +742,20 @@ test "object service puts gets overwrites and tombstones objects" {
     try std.testing.expect(!std.mem.eql(u8, &created.data_generation, &replaced.data_generation));
     try std.testing.expect(replaced.metadata_generation > created.metadata_generation);
 
+    var stale_source = test_streams.SliceSource.init("stale replacement");
+    try std.testing.expectError(
+        error.ConditionNotMet,
+        objects.put(
+            "project-assets",
+            "../../images/cover.txt",
+            stale_source.interface(),
+            .{ .expected_current = .{ .generation = created.metadata_generation } },
+        ),
+    );
+
     try std.testing.expect((try objects.delete("project-assets", "../../images/cover.txt")).deleted);
     try std.testing.expect(!(try objects.delete("project-assets", "../../images/cover.txt")).deleted);
+    try std.testing.expect((try objects.delete("project-assets", "copies/cover.txt")).deleted);
     try std.testing.expectError(
         error.ObjectNotFound,
         objects.head("project-assets", "../../images/cover.txt"),

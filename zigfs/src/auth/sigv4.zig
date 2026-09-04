@@ -45,6 +45,7 @@ pub const PresignedAuthorization = struct {
     allocator: std.mem.Allocator,
     credential_storage: []u8,
     signed_headers_storage: []u8,
+    security_token_storage: ?[]u8,
     authorization: Authorization,
     amz_date: [16]u8,
     expires_seconds: u64,
@@ -52,6 +53,7 @@ pub const PresignedAuthorization = struct {
     pub fn deinit(self: *PresignedAuthorization) void {
         self.allocator.free(self.credential_storage);
         self.allocator.free(self.signed_headers_storage);
+        if (self.security_token_storage) |token| self.allocator.free(token);
         self.* = undefined;
     }
 };
@@ -66,6 +68,7 @@ pub const PresignRequest = struct {
     region: []const u8,
     expires_seconds: u64,
     signed_headers: []const u8 = "host",
+    session_token: ?[]const u8 = null,
 };
 
 const CredentialScope = struct {
@@ -195,6 +198,7 @@ pub const Error = error{
     InvalidTarget,
     MalformedPresignedQuery,
     SignatureDoesNotMatch,
+    InvalidToken,
 };
 
 pub fn parseAuthorization(headers: []const Header) Error!Authorization {
@@ -259,7 +263,8 @@ pub fn hasPresignedParameters(target: []const u8) bool {
             std.mem.eql(u8, name, "X-Amz-Date") or
             std.mem.eql(u8, name, "X-Amz-Expires") or
             std.mem.eql(u8, name, "X-Amz-SignedHeaders") or
-            std.mem.eql(u8, name, "X-Amz-Signature"))
+            std.mem.eql(u8, name, "X-Amz-Signature") or
+            std.mem.eql(u8, name, "X-Amz-Security-Token"))
         {
             return true;
         }
@@ -315,11 +320,18 @@ pub fn parsePresignedAuthorization(
     defer allocator.free(signature_value);
     var signature: [32]u8 = undefined;
     decodeLowerHex(signature_value, &signature) catch return error.MalformedPresignedQuery;
+    const security_token_storage = try decodeOptionalQueryValue(
+        allocator,
+        target,
+        "X-Amz-Security-Token",
+    );
+    errdefer if (security_token_storage) |token| allocator.free(token);
 
     return .{
         .allocator = allocator,
         .credential_storage = credential_storage,
         .signed_headers_storage = signed_headers_storage,
+        .security_token_storage = security_token_storage,
         .authorization = .{
             .access_key = credential.access_key,
             .scope_date = credential.scope_date,
@@ -428,6 +440,48 @@ pub fn verifyPresigned(
     }
 }
 
+/// Verifies the SigV4 signature used by browser-based S3 POST policies.
+/// Unlike a canonical HTTP request signature, POST signs the base64 policy
+/// document directly with the credential's date/region/service signing key.
+pub fn verifyPostPolicySignature(
+    allocator: std.mem.Allocator,
+    policy_base64: []const u8,
+    credential_value: []const u8,
+    amz_date: []const u8,
+    signature_hex: []const u8,
+    secret_key: []const u8,
+    expected_region: []const u8,
+) Error!void {
+    const credential = parseCredentialScope(credential_value) catch {
+        return error.InvalidCredentialScope;
+    };
+    if (amz_date.len != 16 or
+        !std.mem.eql(u8, credential.scope_date, amz_date[0..8]) or
+        !std.mem.eql(u8, credential.region, expected_region))
+    {
+        return error.InvalidCredentialScope;
+    }
+    _ = parseAmzDate(amz_date) catch return error.InvalidDate;
+    var expected_signature: [32]u8 = undefined;
+    var signing_key = try deriveSigningKey(
+        allocator,
+        credential.scope_date,
+        credential.region,
+        secret_key,
+    );
+    defer std.crypto.secureZero(u8, &signing_key);
+    HmacSha256.create(&expected_signature, policy_base64, &signing_key);
+    var provided_signature: [32]u8 = undefined;
+    decodeLowerHex(signature_hex, &provided_signature) catch return error.MalformedAuthorization;
+    if (!std.crypto.timing_safe.eql([32]u8, expected_signature, provided_signature)) {
+        return error.SignatureDoesNotMatch;
+    }
+}
+
+pub fn postPolicyAccessKey(credential_value: []const u8) Error![]const u8 {
+    return (try parseCredentialScope(credential_value)).access_key;
+}
+
 pub fn presignTarget(
     allocator: std.mem.Allocator,
     request: PresignRequest,
@@ -464,6 +518,11 @@ pub fn presignTarget(
         false,
     );
     defer allocator.free(encoded_signed_headers);
+    const encoded_session_token = if (request.session_token) |token|
+        try normalizeEncoded(allocator, token, false)
+    else
+        null;
+    defer if (encoded_session_token) |token| allocator.free(token);
 
     const separator: []const u8 = if (std.mem.indexOfScalar(u8, request.target, '?') == null)
         "?"
@@ -472,19 +531,35 @@ pub fn presignTarget(
         ""
     else
         "&";
-    const unsigned_target = try std.fmt.allocPrint(
-        allocator,
-        "{s}{s}X-Amz-Algorithm={s}&X-Amz-Credential={s}&X-Amz-Date={s}&X-Amz-Expires={d}&X-Amz-SignedHeaders={s}",
-        .{
-            request.target,
-            separator,
-            algorithm,
-            encoded_credential,
-            request.amz_date,
-            request.expires_seconds,
-            encoded_signed_headers,
-        },
-    );
+    const unsigned_target = if (encoded_session_token) |token|
+        try std.fmt.allocPrint(
+            allocator,
+            "{s}{s}X-Amz-Algorithm={s}&X-Amz-Credential={s}&X-Amz-Date={s}&X-Amz-Expires={d}&X-Amz-Security-Token={s}&X-Amz-SignedHeaders={s}",
+            .{
+                request.target,
+                separator,
+                algorithm,
+                encoded_credential,
+                request.amz_date,
+                request.expires_seconds,
+                token,
+                encoded_signed_headers,
+            },
+        )
+    else
+        try std.fmt.allocPrint(
+            allocator,
+            "{s}{s}X-Amz-Algorithm={s}&X-Amz-Credential={s}&X-Amz-Date={s}&X-Amz-Expires={d}&X-Amz-SignedHeaders={s}",
+            .{
+                request.target,
+                separator,
+                algorithm,
+                encoded_credential,
+                request.amz_date,
+                request.expires_seconds,
+                encoded_signed_headers,
+            },
+        );
     defer allocator.free(unsigned_target);
     const canonical = try canonicalRequestWithPayload(
         allocator,
@@ -850,6 +925,49 @@ fn decodeRequiredQueryValue(
     return percentDecode(allocator, found orelse return error.MalformedPresignedQuery);
 }
 
+fn decodeOptionalQueryValue(
+    allocator: std.mem.Allocator,
+    target: []const u8,
+    expected_name: []const u8,
+) Error!?[]u8 {
+    const query_start = std.mem.indexOfScalar(u8, target, '?') orelse return null;
+    var found: ?[]const u8 = null;
+    var parameters = std.mem.splitScalar(u8, target[query_start + 1 ..], '&');
+    while (parameters.next()) |parameter| {
+        const equals = std.mem.indexOfScalar(u8, parameter, '=');
+        const raw_name = if (equals) |position| parameter[0..position] else parameter;
+        const name = try percentDecode(allocator, raw_name);
+        defer allocator.free(name);
+        if (!std.mem.eql(u8, name, expected_name)) continue;
+        if (found != null) return error.MalformedPresignedQuery;
+        found = if (equals) |position| parameter[position + 1 ..] else "";
+    }
+    return if (found) |value| try percentDecode(allocator, value) else null;
+}
+
+pub fn headerSessionToken(headers: []const Header) Error!?[]const u8 {
+    var token: ?[]const u8 = null;
+    for (headers) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, "x-amz-security-token")) continue;
+        if (token != null or header.value.len == 0) return error.InvalidToken;
+        token = header.value;
+    }
+    return token;
+}
+
+pub fn validateSessionToken(expected: ?[]const u8, provided: ?[]const u8) Error!void {
+    if (expected == null and provided == null) return;
+    const expected_value = expected orelse return error.InvalidToken;
+    const provided_value = provided orelse return error.InvalidToken;
+    var expected_hash: [32]u8 = undefined;
+    var provided_hash: [32]u8 = undefined;
+    Sha256.hash(expected_value, &expected_hash, .{});
+    Sha256.hash(provided_value, &provided_hash, .{});
+    if (!std.crypto.timing_safe.eql([32]u8, expected_hash, provided_hash)) {
+        return error.InvalidToken;
+    }
+}
+
 fn percentDecode(allocator: std.mem.Allocator, input: []const u8) Error![]u8 {
     const output = allocator.alloc(u8, input.len) catch return error.OutOfMemory;
     errdefer allocator.free(output);
@@ -1113,6 +1231,37 @@ test "Signature V4 presigned parameters reject invalid expiry and duplicate sign
         error.MalformedPresignedQuery,
         parsePresignedAuthorization(std.testing.allocator, duplicate_signature),
     );
+}
+
+test "Signature V4 binds temporary session token in presigned query" {
+    const token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const headers = [_]Header{.{ .name = "host", .value = "localhost:9000" }};
+    const target = try presignTarget(std.testing.allocator, .{
+        .method = "GET",
+        .target = "/bucket/key",
+        .headers = &headers,
+        .access_key = "ZF0123456789ABCDEF",
+        .secret_key = "0123456789abcdef0123456789abcdef01234567",
+        .amz_date = "20130524T000000Z",
+        .region = "us-east-1",
+        .expires_seconds = 600,
+        .session_token = token,
+    });
+    defer std.testing.allocator.free(target);
+    var presigned = try parsePresignedAuthorization(std.testing.allocator, target);
+    defer presigned.deinit();
+    try std.testing.expectEqualStrings(token, presigned.security_token_storage.?);
+    try validateSessionToken(token, presigned.security_token_storage);
+    try verifyPresigned(std.testing.allocator, .{
+        .method = "GET",
+        .target = target,
+        .headers = &headers,
+        .now_unix_seconds = 1_369_353_900,
+        .expected_region = "us-east-1",
+    }, presigned, "0123456789abcdef0123456789abcdef01234567");
+    try std.testing.expectError(error.InvalidToken, validateSessionToken(token, null));
+    try std.testing.expectError(error.InvalidToken, validateSessionToken(null, token));
+    try std.testing.expectError(error.InvalidToken, validateSessionToken(token, "wrong"));
 }
 
 test "streaming payload signatures remain distinguishable for protocol rejection" {

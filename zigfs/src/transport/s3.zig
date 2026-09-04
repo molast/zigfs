@@ -16,6 +16,7 @@ const aws_chunked = @import("aws_chunked.zig");
 const protocol = @import("s3_protocol.zig");
 const delete_objects = @import("s3_delete_objects.zig");
 const s3_multipart = @import("s3_multipart.zig");
+const s3_post_policy = @import("s3_post_policy.zig");
 
 pub const service_name = "s3";
 
@@ -30,6 +31,37 @@ const ChecksumRequest = struct {
     trailer: aws_chunked.Trailer = .none,
 };
 
+const ConditionalHeaders = struct {
+    if_match: ?[]const u8 = null,
+    if_none_match: ?[]const u8 = null,
+    if_modified_since: ?[]const u8 = null,
+    if_unmodified_since: ?[]const u8 = null,
+
+    fn isEmpty(self: ConditionalHeaders) bool {
+        return self.if_match == null and self.if_none_match == null and
+            self.if_modified_since == null and self.if_unmodified_since == null;
+    }
+};
+
+const ConditionalOutcome = enum {
+    proceed,
+    not_modified,
+    precondition_failed,
+};
+
+const MetadataDirective = enum { copy, replace };
+
+const CopySource = struct {
+    path: []u8,
+    bucket: []const u8,
+    key: []const u8,
+
+    fn deinit(self: *CopySource, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        self.* = undefined;
+    }
+};
+
 pub fn serveRequest(
     request: *std.http.Server.Request,
     application: *Application,
@@ -40,17 +72,6 @@ pub fn serveRequest(
 
     const allocator = application.allocator;
     const raw_target = request.head.target;
-    const parsed = protocol.parseTarget(
-        allocator,
-        request.head.method,
-        raw_target,
-    ) catch {
-        return respondError(request, allocator, .invalid_request, request_id);
-    };
-    defer parsed.deinit();
-    // Request body reads may reuse the HTTP head buffer. Keep Resource stable for errors.
-    request.head.target = parsed.decoded_path;
-
     var headers: std.ArrayList(sigv4.Header) = .empty;
     defer headers.deinit(allocator);
     var header_iterator = request.iterateHeaders();
@@ -59,6 +80,36 @@ pub fn serveRequest(
             return respondError(request, allocator, .internal_error, request_id);
         };
     }
+    const host = if (application.config.s3_virtual_hosted_style)
+        singleHeader(headers.items, "host") catch {
+            return respondError(request, allocator, .invalid_request, request_id);
+        }
+    else
+        null;
+    const parsed = protocol.parseTargetWithHost(
+        allocator,
+        request.head.method,
+        raw_target,
+        host,
+        application.config.s3_public_endpoint,
+        application.config.s3_virtual_hosted_style,
+    ) catch {
+        return respondError(request, allocator, .invalid_request, request_id);
+    };
+    defer parsed.deinit();
+    // Request body reads may reuse the HTTP head buffer. Keep Resource stable for errors.
+    request.head.target = parsed.decoded_path;
+
+    if (parsed.operation == .post_policy_upload) {
+        const policy_authorization = singleHeader(headers.items, "authorization") catch {
+            return respondError(request, allocator, .invalid_request, request_id);
+        };
+        if (sigv4.hasPresignedParameters(raw_target) or policy_authorization != null) {
+            return respondError(request, allocator, .invalid_request, request_id);
+        }
+        return servePostPolicyUpload(request, application, parsed, headers.items, request_id);
+    }
+
     const authorization_header = singleHeader(headers.items, "authorization") catch {
         return respondError(request, allocator, .authorization_header_malformed, request_id);
     };
@@ -100,6 +151,15 @@ pub fn serveRequest(
         return respondError(request, allocator, mapCredentialError(err), request_id);
     };
     defer auth_material.deinit(allocator);
+    const provided_session_token = if (presigned) |value|
+        value.security_token_storage
+    else
+        sigv4.headerSessionToken(headers.items) catch {
+            return respondError(request, allocator, .invalid_token, request_id);
+        };
+    sigv4.validateSessionToken(auth_material.session_token, provided_session_token) catch {
+        return respondError(request, allocator, .invalid_token, request_id);
+    };
     const auth_request: sigv4.Request = .{
         .method = @tagName(request.head.method),
         .target = raw_target,
@@ -124,8 +184,17 @@ pub fn serveRequest(
         return respondError(request, allocator, .not_implemented, request_id);
     }
 
+    const copy_source_header = singleHeader(headers.items, "x-amz-copy-source") catch {
+        return respondError(request, allocator, .invalid_argument, request_id);
+    };
+
     if (actionFor(parsed.operation)) |action| {
         policy.authorize(auth_material.policy, action) catch {
+            return respondError(request, allocator, .access_denied, request_id);
+        };
+    }
+    if (copy_source_header != null) {
+        policy.authorize(auth_material.policy, .get_object) catch {
             return respondError(request, allocator, .access_denied, request_id);
         };
     }
@@ -269,6 +338,7 @@ pub fn serveRequest(
             headers.items,
             request_id,
         ),
+        .post_policy_upload => respondError(request, allocator, .invalid_request, request_id),
         .unsupported => respondError(request, allocator, .not_implemented, request_id),
     };
 }
@@ -289,6 +359,7 @@ fn actionFor(operation: protocol.Operation) ?credential_domain.Action {
         .create_multipart_upload, .upload_part, .complete_multipart_upload => .put_object,
         .list_parts => .get_object,
         .abort_multipart_upload => .delete_object,
+        .post_policy_upload => .put_object,
         .unsupported => null,
     };
 }
@@ -553,10 +624,52 @@ fn servePutObject(
     payload_hash: sigv4.PayloadHash,
     request_id: []const u8,
 ) !std.http.Status {
+    const copy_source = singleHeader(headers, "x-amz-copy-source") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    if (copy_source != null) {
+        return serveCopyObject(
+            request,
+            application,
+            bucket_name,
+            key,
+            owner,
+            headers,
+            payload_hash,
+            request_id,
+        );
+    }
     const bucket = ensureBucketOwner(application, bucket_name, owner) catch |err| {
         return respondError(request, application.allocator, mapBucketError(err), request_id);
     };
     bucket.deinit(application.allocator);
+    const conditions = parseConditionalHeaders(headers) catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    const objects = application.objectService() orelse {
+        return respondError(request, application.allocator, .service_unavailable, request_id);
+    };
+    var observed_object: ?object_domain.Object = null;
+    defer if (observed_object) |value| value.deinit(application.allocator);
+    if (!conditions.isEmpty()) {
+        observed_object = objects.head(bucket_name, key) catch |err| switch (err) {
+            error.ObjectNotFound => null,
+            else => return respondError(request, application.allocator, mapObjectError(err), request_id),
+        };
+        const observed_view: ?*const object_domain.Object = if (observed_object) |*value| value else null;
+        const outcome = evaluateConditional(conditions, observed_view, .PUT) catch {
+            return respondError(request, application.allocator, .invalid_argument, request_id);
+        };
+        if (outcome == .precondition_failed) {
+            return respondError(request, application.allocator, .precondition_failed, request_id);
+        }
+    }
+    const expected_current: ?object_service.ExpectedCurrent = if (conditions.isEmpty())
+        null
+    else if (observed_object != null)
+        .{ .generation = observed_object.?.metadata_generation }
+    else
+        .missing;
     const expected_md5 = parseContentMd5(headers) catch {
         return respondError(request, application.allocator, .invalid_digest, request_id);
     };
@@ -615,15 +728,13 @@ fn servePutObject(
             break :streamed streaming_source.interface();
         },
     };
-    const objects = application.objectService() orelse {
-        return respondError(request, application.allocator, .service_unavailable, request_id);
-    };
     const object = objects.put(bucket_name, key, source, .{
         .content_type = put_headers.content_type,
         .user_metadata = put_headers.views,
         .expected_md5 = expected_md5,
         .expected_sha256 = expected_sha256,
         .expected_crc64nvme = expected_crc64nvme,
+        .expected_current = expected_current,
     }) catch |err| {
         const kind: protocol.ErrorKind = if (err == error.InputReadFailed and streaming_source_active)
             mapStreamingFailure(streaming_source.failure)
@@ -658,6 +769,568 @@ fn servePutObject(
     return respondEmpty(request, .ok, request_id, &extra);
 }
 
+fn servePostPolicyUpload(
+    request: *std.http.Server.Request,
+    application: *Application,
+    parsed: protocol.ParsedTarget,
+    headers: []const sigv4.Header,
+    request_id: []const u8,
+) !std.http.Status {
+    _ = headers;
+    if (request.head.transfer_encoding != .none) {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    }
+    const content_type = request.head.content_type orelse {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    };
+    var read_buffer: [16 * 1024]u8 = undefined;
+    const stable_resource = request.head.target;
+    const body_reader = request.readerExpectContinue(&read_buffer) catch {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    };
+    request.head.target = stable_resource;
+    var form = s3_post_policy.Parser.init(
+        application.allocator,
+        body_reader,
+        request.head.content_length,
+        content_type,
+    ) catch |err| {
+        return respondError(request, application.allocator, mapPostPolicyParserError(err), request_id);
+    };
+    defer form.deinit();
+    const file = form.parseUntilFile() catch |err| {
+        return respondError(request, application.allocator, mapPostPolicyParserError(err), request_id);
+    };
+
+    const policy_value = postField(&form, "policy") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    const credential_value = postField(&form, "x-amz-credential") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    const amz_date = postField(&form, "x-amz-date") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    const algorithm_value = postField(&form, "x-amz-algorithm") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    if (!std.mem.eql(u8, algorithm_value, sigv4.algorithm)) {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    }
+    const signature_value = postField(&form, "x-amz-signature") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    const access_key = sigv4.postPolicyAccessKey(credential_value) catch {
+        return respondError(request, application.allocator, .authorization_header_malformed, request_id);
+    };
+    const credentials = application.credentialService() orelse {
+        return respondError(request, application.allocator, .service_unavailable, request_id);
+    };
+    var auth_material = credentials.resolveForAuth(access_key) catch |err| {
+        return respondError(request, application.allocator, mapCredentialError(err), request_id);
+    };
+    defer auth_material.deinit(application.allocator);
+    const supplied_token = postField(&form, "x-amz-security-token") catch {
+        return respondError(request, application.allocator, .invalid_token, request_id);
+    };
+    sigv4.validateSessionToken(auth_material.session_token, supplied_token) catch {
+        return respondError(request, application.allocator, .invalid_token, request_id);
+    };
+    sigv4.verifyPostPolicySignature(
+        application.allocator,
+        policy_value,
+        credential_value,
+        amz_date,
+        signature_value,
+        auth_material.secret_key,
+        application.config.s3_region,
+    ) catch |err| {
+        return respondError(request, application.allocator, mapPostPolicySignatureError(err), request_id);
+    };
+    const signed_at = sigv4.parseAmzDate(amz_date) catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    const now = std.Io.Clock.real.now(application.io orelse {
+        return respondError(request, application.allocator, .service_unavailable, request_id);
+    }).toSeconds();
+    const difference: i128 = @as(i128, signed_at) - now;
+    const absolute_difference = if (difference < 0) -difference else difference;
+    if (absolute_difference > application.config.s3_request_time_skew_seconds) {
+        return respondError(request, application.allocator, .request_time_too_skewed, request_id);
+    }
+
+    const key_value = postField(&form, "key") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    const expanded_key = expandPostPolicyKey(application.allocator, key_value, file.filename) catch {
+        return respondError(request, application.allocator, .internal_error, request_id);
+    };
+    defer application.allocator.free(expanded_key);
+    var policy_constraints = validatePostPolicy(
+        application.allocator,
+        policy_value,
+        &form,
+        parsed.bucket.?,
+        expanded_key,
+        file.content_type,
+        now,
+    ) catch |err| {
+        return respondError(request, application.allocator, mapPostPolicyError(err), request_id);
+    };
+    if (policy_constraints.content_type == null) {
+        policy_constraints.content_type = file.content_type;
+    }
+    var metadata = collectPostMetadata(application.allocator, &form) catch |err| {
+        return respondError(request, application.allocator, if (err == error.OutOfMemory) .internal_error else .invalid_request, request_id);
+    };
+    defer metadata.deinit(application.allocator);
+    var bounded = SizeBoundSource{
+        .inner = form.fileSource(),
+        .minimum = policy_constraints.minimum_size,
+        .maximum = policy_constraints.maximum_size,
+    };
+    const objects = application.objectService() orelse {
+        return respondError(request, application.allocator, .service_unavailable, request_id);
+    };
+    const object = objects.put(parsed.bucket.?, expanded_key, bounded.interface(), .{
+        .content_type = policy_constraints.content_type.?,
+        .user_metadata = metadata.views,
+        .expected_md5 = policy_constraints.expected_md5,
+        .expected_crc64nvme = policy_constraints.expected_crc64nvme,
+    }) catch |err| {
+        const kind: protocol.ErrorKind = if (err == error.InputReadFailed) switch (bounded.failure) {
+            .too_small => .entity_too_small,
+            .too_large => .entity_too_large,
+            .none => if (form.failure == .field_too_large) .invalid_request else .invalid_request,
+        } else if (err == error.ChecksumMismatch) .bad_digest else mapObjectError(err);
+        return respondError(request, application.allocator, kind, request_id);
+    };
+    defer object.deinit(application.allocator);
+    form.finish() catch {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    };
+    return respondPostPolicySuccess(request, application.allocator, parsed.bucket.?, expanded_key, object, policy_constraints.success_status, request_id);
+}
+
+const PostPolicyError = error{
+    InvalidPolicy,
+    UnsupportedCondition,
+    UnsupportedField,
+    UnsupportedChecksum,
+    OutOfMemory,
+};
+
+const PostPolicyConstraints = struct {
+    minimum_size: u64 = 0,
+    maximum_size: u64 = std.math.maxInt(u64),
+    content_type: ?[]const u8 = null,
+    expected_md5: ?[16]u8 = null,
+    expected_crc64nvme: ?u64 = null,
+    success_status: std.http.Status = .no_content,
+};
+
+const PostMetadata = struct {
+    allocator: std.mem.Allocator,
+    views: []object_domain.UserMetadata,
+
+    fn deinit(self: *PostMetadata, allocator: std.mem.Allocator) void {
+        _ = self.allocator;
+        allocator.free(self.views);
+        self.* = undefined;
+    }
+};
+
+fn postField(form: *const s3_post_policy.Parser, name: []const u8) s3_post_policy.Error!?[]const u8 {
+    return form.lookup(name);
+}
+
+fn expandPostPolicyKey(
+    allocator: std.mem.Allocator,
+    key: []const u8,
+    filename: []const u8,
+) ![]u8 {
+    const token = "${filename}";
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
+    var offset: usize = 0;
+    while (std.mem.indexOfPos(u8, key, offset, token)) |position| {
+        output.appendSlice(allocator, key[offset..position]) catch return error.OutOfMemory;
+        output.appendSlice(allocator, filename) catch return error.OutOfMemory;
+        offset = position + token.len;
+    }
+    output.appendSlice(allocator, key[offset..]) catch return error.OutOfMemory;
+    return output.toOwnedSlice(allocator) catch return error.OutOfMemory;
+}
+
+fn validatePostPolicy(
+    allocator: std.mem.Allocator,
+    encoded_policy: []const u8,
+    form: *const s3_post_policy.Parser,
+    bucket: []const u8,
+    key: []const u8,
+    file_content_type: []const u8,
+    now: i64,
+) PostPolicyError!PostPolicyConstraints {
+    const decoded_size = std.base64.standard.Decoder.calcSizeForSlice(encoded_policy) catch {
+        return error.InvalidPolicy;
+    };
+    if (decoded_size == 0 or decoded_size > 64 * 1024) return error.InvalidPolicy;
+    const decoded = allocator.alloc(u8, decoded_size) catch return error.OutOfMemory;
+    defer allocator.free(decoded);
+    std.base64.standard.Decoder.decode(decoded, encoded_policy) catch return error.InvalidPolicy;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const parsed = std.json.parseFromSlice(
+        std.json.Value,
+        arena.allocator(),
+        decoded,
+        .{ .parse_numbers = true },
+    ) catch return error.InvalidPolicy;
+    defer parsed.deinit();
+    const document = switch (parsed.value) {
+        .object => |value| value,
+        else => return error.InvalidPolicy,
+    };
+    const expiration_value = document.get("expiration") orelse return error.InvalidPolicy;
+    const expiration = switch (expiration_value) {
+        .string => |value| time.parseIso8601(value) catch return error.InvalidPolicy,
+        else => return error.InvalidPolicy,
+    };
+    if (now >= expiration) return error.InvalidPolicy;
+    const conditions_value = document.get("conditions") orelse return error.InvalidPolicy;
+    const conditions = switch (conditions_value) {
+        .array => |value| value.items,
+        else => return error.InvalidPolicy,
+    };
+
+    var result: PostPolicyConstraints = .{};
+    var has_length_range = false;
+    for (conditions) |condition| {
+        switch (condition) {
+            .object => |object| {
+                var iterator = object.iterator();
+                while (iterator.next()) |entry| {
+                    const condition_name = entry.key_ptr.*;
+                    const expected = switch (entry.value_ptr.*) {
+                        .string => |value| value,
+                        else => return error.InvalidPolicy,
+                    };
+                    const actual = postPolicyValue(form, condition_name, bucket, key, file_content_type) catch {
+                        return error.InvalidPolicy;
+                    };
+                    if (!std.mem.eql(u8, actual, expected)) return error.InvalidPolicy;
+                }
+            },
+            .array => |array| {
+                if (array.items.len == 0) return error.InvalidPolicy;
+                const operator = switch (array.items[0]) {
+                    .string => |value| value,
+                    else => return error.InvalidPolicy,
+                };
+                if (std.mem.eql(u8, operator, "content-length-range")) {
+                    if (array.items.len != 3 or has_length_range) return error.InvalidPolicy;
+                    result.minimum_size = postPolicyNumber(array.items[1]) orelse return error.InvalidPolicy;
+                    result.maximum_size = postPolicyNumber(array.items[2]) orelse return error.InvalidPolicy;
+                    if (result.minimum_size > result.maximum_size) return error.InvalidPolicy;
+                    has_length_range = true;
+                    continue;
+                }
+                if (!std.mem.eql(u8, operator, "eq") and
+                    !std.mem.eql(u8, operator, "starts-with")) return error.UnsupportedCondition;
+                if (array.items.len != 3) return error.InvalidPolicy;
+                const variable = switch (array.items[1]) {
+                    .string => |value| value,
+                    else => return error.InvalidPolicy,
+                };
+                if (variable.len < 2 or variable[0] != '$') return error.InvalidPolicy;
+                const expected = switch (array.items[2]) {
+                    .string => |value| value,
+                    else => return error.InvalidPolicy,
+                };
+                const actual = postPolicyValue(form, variable[1..], bucket, key, file_content_type) catch {
+                    return error.InvalidPolicy;
+                };
+                if (std.mem.eql(u8, operator, "eq")) {
+                    if (!std.mem.eql(u8, actual, expected)) return error.InvalidPolicy;
+                } else if (std.mem.eql(u8, variable[1..], "Content-Type")) {
+                    var values = std.mem.splitScalar(u8, actual, ',');
+                    while (values.next()) |value| {
+                        if (!std.mem.startsWith(u8, std.mem.trim(u8, value, " \t"), expected)) return error.InvalidPolicy;
+                    }
+                } else if (!std.mem.startsWith(u8, actual, expected)) {
+                    return error.InvalidPolicy;
+                }
+            },
+            else => return error.InvalidPolicy,
+        }
+    }
+    for (form.fieldsView()) |field| {
+        if (std.ascii.eqlIgnoreCase(field.name, "file") or
+            std.ascii.eqlIgnoreCase(field.name, "policy") or
+            std.ascii.eqlIgnoreCase(field.name, "x-amz-signature") or
+            std.ascii.startsWithIgnoreCase(field.name, "x-ignore")) continue;
+        if (!postPolicySupportsField(field.name)) return error.UnsupportedField;
+        if (!postPolicyConditionMentions(conditions, field.name)) return error.InvalidPolicy;
+    }
+    result.expected_md5 = try parsePostMd5(form);
+    result.expected_crc64nvme = try parsePostCrc64(form);
+    if (postField(form, "x-amz-sdk-checksum-algorithm") catch return error.InvalidPolicy) |algorithm| {
+        if (!std.ascii.eqlIgnoreCase(algorithm, "CRC64NVME")) return error.UnsupportedChecksum;
+        if (result.expected_crc64nvme == null) return error.InvalidPolicy;
+    }
+    const redirect = postField(form, "success_action_redirect") catch return error.InvalidPolicy;
+    if (redirect != null) {
+        return error.UnsupportedField;
+    }
+    if (postField(form, "success_action_status") catch return error.InvalidPolicy) |status| {
+        if (std.mem.eql(u8, status, "200")) result.success_status = .ok else if (std.mem.eql(u8, status, "201")) result.success_status = .created else if (std.mem.eql(u8, status, "204")) result.success_status = .no_content else return error.InvalidPolicy;
+    }
+    result.content_type = postField(form, "Content-Type") catch return error.InvalidPolicy;
+    return result;
+}
+
+fn postPolicyValue(
+    form: *const s3_post_policy.Parser,
+    name: []const u8,
+    bucket: []const u8,
+    key: []const u8,
+    file_content_type: []const u8,
+) s3_post_policy.Error![]const u8 {
+    if (std.ascii.eqlIgnoreCase(name, "bucket")) return bucket;
+    if (std.ascii.eqlIgnoreCase(name, "key")) return key;
+    if (std.ascii.eqlIgnoreCase(name, "content-type")) return (try form.lookup("Content-Type")) orelse file_content_type;
+    return (try form.lookup(name)) orelse "";
+}
+
+fn postPolicyNumber(value: std.json.Value) ?u64 {
+    return switch (value) {
+        .integer => |number| if (number >= 0) @intCast(number) else null,
+        else => null,
+    };
+}
+
+fn postPolicyConditionMentions(conditions: []const std.json.Value, field_name: []const u8) bool {
+    for (conditions) |condition| switch (condition) {
+        .object => |object| {
+            var iterator = object.iterator();
+            while (iterator.next()) |entry| if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, field_name)) return true;
+        },
+        .array => |array| if (array.items.len >= 2) switch (array.items[0]) {
+            .string => |operator| if (std.mem.eql(u8, operator, "eq") or std.mem.eql(u8, operator, "starts-with")) switch (array.items[1]) {
+                .string => |variable| if (variable.len > 1 and variable[0] == '$' and std.ascii.eqlIgnoreCase(variable[1..], field_name)) return true,
+                else => {},
+            },
+            else => {},
+        },
+        else => {},
+    };
+    return false;
+}
+
+fn postPolicySupportsField(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "key") or
+        std.ascii.eqlIgnoreCase(name, "policy") or
+        std.ascii.eqlIgnoreCase(name, "x-amz-algorithm") or
+        std.ascii.eqlIgnoreCase(name, "x-amz-credential") or
+        std.ascii.eqlIgnoreCase(name, "x-amz-date") or
+        std.ascii.eqlIgnoreCase(name, "x-amz-signature") or
+        std.ascii.eqlIgnoreCase(name, "x-amz-security-token") or
+        std.ascii.eqlIgnoreCase(name, "content-type") or
+        std.ascii.eqlIgnoreCase(name, "content-md5") or
+        std.ascii.eqlIgnoreCase(name, "x-amz-checksum-crc64nvme") or
+        std.ascii.eqlIgnoreCase(name, "x-amz-sdk-checksum-algorithm") or
+        std.ascii.eqlIgnoreCase(name, "success_action_status") or
+        std.ascii.startsWithIgnoreCase(name, "x-amz-meta-");
+}
+
+fn parsePostMd5(form: *const s3_post_policy.Parser) PostPolicyError!?[16]u8 {
+    const maybe_value = form.lookup("Content-MD5") catch return error.InvalidPolicy;
+    const value = maybe_value orelse return null;
+    const size = std.base64.standard.Decoder.calcSizeForSlice(value) catch return error.InvalidPolicy;
+    if (size != 16) return error.InvalidPolicy;
+    var digest: [16]u8 = undefined;
+    std.base64.standard.Decoder.decode(&digest, value) catch return error.InvalidPolicy;
+    return digest;
+}
+
+fn parsePostCrc64(form: *const s3_post_policy.Parser) PostPolicyError!?u64 {
+    const maybe_value = form.lookup("x-amz-checksum-crc64nvme") catch return error.InvalidPolicy;
+    const value = maybe_value orelse return null;
+    const size = std.base64.standard.Decoder.calcSizeForSlice(value) catch return error.InvalidPolicy;
+    if (size != 8) return error.InvalidPolicy;
+    var digest: [8]u8 = undefined;
+    std.base64.standard.Decoder.decode(&digest, value) catch return error.InvalidPolicy;
+    return std.mem.readInt(u64, &digest, .big);
+}
+
+fn collectPostMetadata(allocator: std.mem.Allocator, form: *const s3_post_policy.Parser) !PostMetadata {
+    var views = std.ArrayList(object_domain.UserMetadata).empty;
+    errdefer views.deinit(allocator);
+    for (form.fieldsView()) |field| {
+        const prefix = "x-amz-meta-";
+        if (field.name.len <= prefix.len or !std.ascii.startsWithIgnoreCase(field.name, prefix)) continue;
+        views.append(allocator, .{ .name = field.name[prefix.len..], .value = field.value }) catch return error.OutOfMemory;
+    }
+    const slice = views.toOwnedSlice(allocator) catch return error.OutOfMemory;
+    object_domain.validateUserMetadata(slice) catch {
+        allocator.free(slice);
+        return error.InvalidMetadata;
+    };
+    return .{ .allocator = allocator, .views = slice };
+}
+
+fn respondPostPolicySuccess(
+    request: *std.http.Server.Request,
+    allocator: std.mem.Allocator,
+    bucket: []const u8,
+    key: []const u8,
+    object: object_domain.Object,
+    status: std.http.Status,
+    request_id: []const u8,
+) !std.http.Status {
+    var etag: [34]u8 = undefined;
+    const etag_value = formatEtag(object.etag_md5, &etag);
+    if (status == .created) {
+        var xml: std.Io.Writer.Allocating = .init(allocator);
+        defer xml.deinit();
+        const writer = &xml.writer;
+        writer.writeAll("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<PostResponse><Location>") catch return error.WriteFailed;
+        protocol.writeXmlEscaped(writer, request.head.target) catch return error.WriteFailed;
+        writer.writeAll("</Location><Bucket>") catch return error.WriteFailed;
+        protocol.writeXmlEscaped(writer, bucket) catch return error.WriteFailed;
+        writer.writeAll("</Bucket><Key>") catch return error.WriteFailed;
+        protocol.writeXmlEscaped(writer, key) catch return error.WriteFailed;
+        writer.print("</Key><ETag>{s}</ETag></PostResponse>\n", .{etag_value}) catch return error.WriteFailed;
+        return respondXml(request, xml.written(), .created, request_id, &.{});
+    }
+    const extra = [_]std.http.Header{.{ .name = "etag", .value = etag_value }};
+    return respondEmpty(request, status, request_id, &extra);
+}
+
+fn serveCopyObject(
+    request: *std.http.Server.Request,
+    application: *Application,
+    target_bucket_name: []const u8,
+    target_key: []const u8,
+    owner: []const u8,
+    headers: []const sigv4.Header,
+    payload_hash: sigv4.PayloadHash,
+    request_id: []const u8,
+) !std.http.Status {
+    if (ensureEmptyRequestWithHash(request, payload_hash) != null) {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    }
+    const target_bucket = ensureBucketOwner(application, target_bucket_name, owner) catch |err| {
+        return respondError(request, application.allocator, mapBucketError(err), request_id);
+    };
+    target_bucket.deinit(application.allocator);
+
+    var source = (parseCopySource(application.allocator, headers) catch |err| switch (err) {
+        error.OutOfMemory => return respondError(request, application.allocator, .internal_error, request_id),
+        error.InvalidCopySource => return respondError(request, application.allocator, .invalid_argument, request_id),
+    }) orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    defer source.deinit(application.allocator);
+    const source_bucket = ensureBucketOwner(application, source.bucket, owner) catch |err| {
+        return respondError(request, application.allocator, mapBucketError(err), request_id);
+    };
+    source_bucket.deinit(application.allocator);
+
+    const objects = application.objectService() orelse {
+        return respondError(request, application.allocator, .service_unavailable, request_id);
+    };
+    var source_object = objects.head(source.bucket, source.key) catch |err| {
+        return respondError(request, application.allocator, mapObjectError(err), request_id);
+    };
+    defer source_object.deinit(application.allocator);
+
+    const source_conditions = parseCopySourceConditions(headers) catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    const source_outcome = evaluateConditional(source_conditions, &source_object, .GET) catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    if (source_outcome != .proceed) {
+        return respondError(request, application.allocator, .precondition_failed, request_id);
+    }
+
+    const destination_conditions = parseConditionalHeaders(headers) catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    var observed_target: ?object_domain.Object = null;
+    defer if (observed_target) |value| value.deinit(application.allocator);
+    if (!destination_conditions.isEmpty()) {
+        observed_target = objects.head(target_bucket_name, target_key) catch |err| switch (err) {
+            error.ObjectNotFound => null,
+            else => return respondError(request, application.allocator, mapObjectError(err), request_id),
+        };
+        const observed_view: ?*const object_domain.Object = if (observed_target) |*value| value else null;
+        const outcome = evaluateConditional(destination_conditions, observed_view, .PUT) catch {
+            return respondError(request, application.allocator, .invalid_argument, request_id);
+        };
+        if (outcome == .precondition_failed) {
+            return respondError(request, application.allocator, .precondition_failed, request_id);
+        }
+    }
+    const expected_current: ?object_service.ExpectedCurrent = if (destination_conditions.isEmpty())
+        null
+    else if (observed_target != null)
+        .{ .generation = observed_target.?.metadata_generation }
+    else
+        .missing;
+
+    const directive = parseMetadataDirective(headers) catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    var replacement_headers: ?PutHeaders = null;
+    defer if (replacement_headers) |*value| value.deinit(application.allocator);
+    if (directive == .replace) {
+        replacement_headers = collectPutHeaders(application.allocator, request) catch |err| switch (err) {
+            error.OutOfMemory => return respondError(request, application.allocator, .internal_error, request_id),
+            error.InvalidMetadata => return respondError(request, application.allocator, .invalid_request, request_id),
+        };
+    }
+    const content_type = if (replacement_headers) |value| value.content_type else source_object.content_type;
+    const metadata = if (replacement_headers) |value| value.views else source_object.view().user_metadata;
+    const object = objects.copy(
+        source.bucket,
+        source.key,
+        target_bucket_name,
+        target_key,
+        .{
+            .content_type = content_type,
+            .user_metadata = metadata,
+            .expected_current = expected_current,
+            .expected_source_generation = source_object.metadata_generation,
+        },
+        directive == .copy,
+    ) catch |err| {
+        return respondError(request, application.allocator, mapObjectError(err), request_id);
+    };
+    defer object.deinit(application.allocator);
+
+    var xml: std.Io.Writer.Allocating = .init(application.allocator);
+    defer xml.deinit();
+    const writer = &xml.writer;
+    writer.writeAll("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CopyObjectResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><LastModified>") catch {
+        return respondError(request, application.allocator, .internal_error, request_id);
+    };
+    protocol.writeIsoTime(writer, object.last_modified_unix_seconds) catch {
+        return respondError(request, application.allocator, .internal_error, request_id);
+    };
+    writer.writeAll("</LastModified><ETag>") catch {
+        return respondError(request, application.allocator, .internal_error, request_id);
+    };
+    var etag_buffer: [40]u8 = undefined;
+    protocol.writeXmlEscaped(writer, formatObjectEtag(&object, &etag_buffer)) catch {
+        return respondError(request, application.allocator, .internal_error, request_id);
+    };
+    writer.writeAll("</ETag></CopyObjectResult>\n") catch {
+        return respondError(request, application.allocator, .internal_error, request_id);
+    };
+    return respondXml(request, xml.written(), .ok, request_id, &.{});
+}
+
 fn serveGetObject(
     request: *std.http.Server.Request,
     application: *Application,
@@ -683,6 +1356,16 @@ fn serveGetObject(
     };
     defer lease.deinit();
     const object = lease.metadata();
+    const conditions = parseConditionalHeaders(headers) catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    const outcome = evaluateConditional(conditions, object, .GET) catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    if (outcome == .not_modified) return respondNotModified(request, application.allocator, object, request_id);
+    if (outcome == .precondition_failed) {
+        return respondError(request, application.allocator, .precondition_failed, request_id);
+    }
     const range_value = singleHeader(headers, "range") catch {
         return respondInvalidRange(request, application.allocator, object.size, request_id);
     };
@@ -741,6 +1424,16 @@ fn serveHeadObject(
         return respondError(request, application.allocator, mapObjectError(err), request_id);
     };
     defer object.deinit(application.allocator);
+    const conditions = parseConditionalHeaders(headers) catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    const outcome = evaluateConditional(conditions, &object, .HEAD) catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    if (outcome == .not_modified) return respondNotModified(request, application.allocator, &object, request_id);
+    if (outcome == .precondition_failed) {
+        return respondError(request, application.allocator, .precondition_failed, request_id);
+    }
     var response_headers = try ObjectResponseHeaders.init(application.allocator, &object, true, null);
     defer response_headers.deinit(application.allocator);
     const header_values = response_headers.populate(&object, request_id);
@@ -1387,6 +2080,148 @@ fn validateLocationConstraint(
     return null;
 }
 
+fn parseConditionalHeaders(headers: []const sigv4.Header) error{InvalidCondition}!ConditionalHeaders {
+    return .{
+        .if_match = singleHeader(headers, "if-match") catch return error.InvalidCondition,
+        .if_none_match = singleHeader(headers, "if-none-match") catch return error.InvalidCondition,
+        .if_modified_since = singleHeader(headers, "if-modified-since") catch return error.InvalidCondition,
+        .if_unmodified_since = singleHeader(headers, "if-unmodified-since") catch return error.InvalidCondition,
+    };
+}
+
+fn parseCopySourceConditions(headers: []const sigv4.Header) error{InvalidCondition}!ConditionalHeaders {
+    return .{
+        .if_match = singleHeader(headers, "x-amz-copy-source-if-match") catch return error.InvalidCondition,
+        .if_none_match = singleHeader(headers, "x-amz-copy-source-if-none-match") catch return error.InvalidCondition,
+        .if_modified_since = singleHeader(headers, "x-amz-copy-source-if-modified-since") catch return error.InvalidCondition,
+        .if_unmodified_since = singleHeader(headers, "x-amz-copy-source-if-unmodified-since") catch return error.InvalidCondition,
+    };
+}
+
+fn parseMetadataDirective(headers: []const sigv4.Header) error{InvalidDirective}!MetadataDirective {
+    const value = singleHeader(headers, "x-amz-metadata-directive") catch return error.InvalidDirective;
+    const directive = value orelse return .copy;
+    if (std.ascii.eqlIgnoreCase(directive, "COPY")) return .copy;
+    if (std.ascii.eqlIgnoreCase(directive, "REPLACE")) return .replace;
+    return error.InvalidDirective;
+}
+
+fn parseCopySource(
+    allocator: std.mem.Allocator,
+    headers: []const sigv4.Header,
+) error{ OutOfMemory, InvalidCopySource }!?CopySource {
+    const raw = singleHeader(headers, "x-amz-copy-source") catch return error.InvalidCopySource;
+    const value = raw orelse return null;
+    if (value.len < 3 or
+        std.mem.indexOfScalar(u8, value, '?') != null or
+        std.mem.indexOfScalar(u8, value, '#') != null)
+    {
+        return error.InvalidCopySource;
+    }
+    const path = protocol.strictPercentDecode(allocator, value) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidTarget => return error.InvalidCopySource,
+    };
+    errdefer allocator.free(path);
+    if (path.len < 3 or std.mem.indexOfScalar(u8, path, 0) != null) {
+        return error.InvalidCopySource;
+    }
+    const start: usize = if (path[0] == '/') 1 else 0;
+    const slash = std.mem.indexOfScalarPos(u8, path, start, '/') orelse return error.InvalidCopySource;
+    if (slash == start or slash + 1 >= path.len) return error.InvalidCopySource;
+    return .{
+        .path = path,
+        .bucket = path[start..slash],
+        .key = path[slash + 1 ..],
+    };
+}
+
+fn evaluateConditional(
+    conditions: ConditionalHeaders,
+    object: ?*const object_domain.Object,
+    method: std.http.Method,
+) error{InvalidCondition}!ConditionalOutcome {
+    var etag_buffer: [40]u8 = undefined;
+    const current_etag = if (object) |value| formatObjectEtag(value, &etag_buffer) else null;
+    const has_if_match = conditions.if_match != null;
+    if (conditions.if_match) |value| {
+        if (!try etagListMatches(value, current_etag, false)) return .precondition_failed;
+    }
+    const has_if_none_match = conditions.if_none_match != null;
+    if (conditions.if_none_match) |value| {
+        if (try etagListMatches(value, current_etag, true)) {
+            return if (method == .GET or method == .HEAD) .not_modified else .precondition_failed;
+        }
+    }
+    if (!has_if_match) {
+        if (conditions.if_unmodified_since) |value| {
+            const timestamp = time.parseHttpDate(value) catch return error.InvalidCondition;
+            if (object) |current| {
+                if (current.last_modified_unix_seconds > timestamp) return .precondition_failed;
+            }
+        }
+    }
+    if (!has_if_none_match and (method == .GET or method == .HEAD) and conditions.if_modified_since != null) {
+        const timestamp = time.parseHttpDate(conditions.if_modified_since.?) catch return error.InvalidCondition;
+        if (object) |current| {
+            if (current.last_modified_unix_seconds <= timestamp) return .not_modified;
+        }
+    }
+    return .proceed;
+}
+
+fn etagListMatches(
+    value: []const u8,
+    current: ?[]const u8,
+    allow_weak: bool,
+) error{InvalidCondition}!bool {
+    var iterator = std.mem.splitScalar(u8, value, ',');
+    var saw_value = false;
+    var wildcard = false;
+    var matched = false;
+    while (iterator.next()) |raw| {
+        const token = std.mem.trim(u8, raw, " \t");
+        if (token.len == 0) return error.InvalidCondition;
+        if (std.mem.eql(u8, token, "*")) {
+            if (saw_value) return error.InvalidCondition;
+            wildcard = true;
+            saw_value = true;
+            continue;
+        }
+        if (wildcard) return error.InvalidCondition;
+        const weak = std.mem.startsWith(u8, token, "W/");
+        const etag_value = if (weak) token[2..] else token;
+        if (etag_value.len < 2 or etag_value[0] != '"' or etag_value[etag_value.len - 1] != '"') {
+            return error.InvalidCondition;
+        }
+        if ((!weak or allow_weak) and current != null and std.mem.eql(u8, etag_value, current.?)) {
+            matched = true;
+        }
+        saw_value = true;
+    }
+    if (!saw_value) return error.InvalidCondition;
+    return matched or (wildcard and current != null);
+}
+
+fn respondNotModified(
+    request: *std.http.Server.Request,
+    allocator: std.mem.Allocator,
+    object: *const object_domain.Object,
+    request_id: []const u8,
+) !std.http.Status {
+    var etag_buffer: [40]u8 = undefined;
+    var last_modified_buffer: [29]u8 = undefined;
+    const etag = formatObjectEtag(object, &etag_buffer);
+    const last_modified = time.formatHttpDate(object.last_modified_unix_seconds, &last_modified_buffer) catch {
+        return respondError(request, allocator, .internal_error, request_id);
+    };
+    const extra = [_]std.http.Header{
+        .{ .name = "etag", .value = etag },
+        .{ .name = "last-modified", .value = last_modified },
+    };
+    return respondEmpty(request, .not_modified, request_id, &extra);
+}
+
 fn hasUnsupportedHeaders(
     operation: protocol.Operation,
     headers: []const sigv4.Header,
@@ -1407,7 +2242,7 @@ fn hasUnsupportedHeaders(
             continue;
         }
         if (std.ascii.eqlIgnoreCase(header.name, "x-amz-security-token")) {
-            return true;
+            continue;
         }
         if (std.ascii.eqlIgnoreCase(header.name, "x-amz-trailer")) {
             if (!upload_operation or !signed_streaming_trailer or
@@ -1433,18 +2268,43 @@ fn hasUnsupportedHeaders(
             continue;
         }
         if (std.ascii.startsWithIgnoreCase(header.name, "x-amz-checksum-")) return true;
-        if ((operation == .get_object or operation == .head_object) and
-            (std.ascii.eqlIgnoreCase(header.name, "if-match") or
-                std.ascii.eqlIgnoreCase(header.name, "if-none-match") or
-                std.ascii.eqlIgnoreCase(header.name, "if-modified-since") or
-                std.ascii.eqlIgnoreCase(header.name, "if-unmodified-since")))
+        if (std.ascii.eqlIgnoreCase(header.name, "if-match") or
+            std.ascii.eqlIgnoreCase(header.name, "if-none-match") or
+            std.ascii.eqlIgnoreCase(header.name, "if-modified-since") or
+            std.ascii.eqlIgnoreCase(header.name, "if-unmodified-since"))
         {
+            if (operation == .get_object or operation == .head_object or operation == .put_object) {
+                continue;
+            }
             return true;
         }
         if (std.ascii.eqlIgnoreCase(header.name, "range") and operation != .get_object) {
             return true;
         }
-        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-copy-source")) return true;
+        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-copy-source")) {
+            if (operation != .put_object) return true;
+            continue;
+        }
+        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-metadata-directive")) {
+            if (operation != .put_object or !hasHeaderName(headers, "x-amz-copy-source")) return true;
+            continue;
+        }
+        if (std.ascii.startsWithIgnoreCase(header.name, "x-amz-copy-source-if-")) {
+            if (operation != .put_object or !hasHeaderName(headers, "x-amz-copy-source")) return true;
+            const suffix = header.name["x-amz-copy-source-if-".len..];
+            if (!std.ascii.eqlIgnoreCase(suffix, "match") and
+                !std.ascii.eqlIgnoreCase(suffix, "none-match") and
+                !std.ascii.eqlIgnoreCase(suffix, "modified-since") and
+                !std.ascii.eqlIgnoreCase(suffix, "unmodified-since")) return true;
+            continue;
+        }
+    }
+    return false;
+}
+
+fn hasHeaderName(headers: []const sigv4.Header, name: []const u8) bool {
+    for (headers) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, name)) return true;
     }
     return false;
 }
@@ -1693,6 +2553,36 @@ const HttpSource = struct {
             if (count > remaining) return error.ReadFailed;
             self.remaining = remaining - count;
         }
+        return count;
+    }
+};
+
+const SizeBoundSource = struct {
+    inner: byte_stream.Source,
+    minimum: u64,
+    maximum: u64,
+    size: u64 = 0,
+    failure: enum { none, too_small, too_large } = .none,
+
+    fn interface(self: *SizeBoundSource) byte_stream.Source {
+        return .{ .context = self, .vtable = &.{ .read = read } };
+    }
+
+    fn read(context: *anyopaque, buffer: []u8) byte_stream.Source.Error!usize {
+        const self: *SizeBoundSource = @ptrCast(@alignCast(context));
+        const count = self.inner.read(buffer) catch return error.ReadFailed;
+        if (count == 0) {
+            if (self.size < self.minimum) {
+                self.failure = .too_small;
+                return error.ReadFailed;
+            }
+            return 0;
+        }
+        if (self.size > self.maximum or count > self.maximum - self.size) {
+            self.failure = .too_large;
+            return error.ReadFailed;
+        }
+        self.size += count;
         return count;
     }
 };
@@ -2038,7 +2928,7 @@ fn respondCorsPreflight(
         .{ .name = "x-request-id", .value = request_id },
         .{ .name = "access-control-allow-origin", .value = "*" },
         .{ .name = "access-control-allow-methods", .value = "GET, PUT, DELETE, HEAD, OPTIONS" },
-        .{ .name = "access-control-allow-headers", .value = "content-type, x-amz-content-sha256, x-amz-date, authorization, x-amz-checksum-crc64nvme" },
+        .{ .name = "access-control-allow-headers", .value = "content-type, x-amz-content-sha256, x-amz-date, x-amz-security-token, authorization, x-amz-checksum-crc64nvme" },
         .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id" },
         .{ .name = "access-control-max-age", .value = "600" },
     };
@@ -2060,6 +2950,7 @@ fn mapSignatureVerifyError(err: sigv4.Error) protocol.ErrorKind {
         error.RequestTimeTooSkewed => .request_time_too_skewed,
         error.InvalidCredentialScope => .authorization_header_malformed,
         error.OutOfMemory => .internal_error,
+        error.InvalidToken => .invalid_token,
         else => .invalid_request,
     };
 }
@@ -2082,6 +2973,7 @@ fn mapStreamingFailure(failure: aws_chunked.Failure) protocol.ErrorKind {
 fn mapPresignedParseError(err: sigv4.Error) protocol.ErrorKind {
     return switch (err) {
         error.OutOfMemory => .internal_error,
+        error.InvalidToken => .invalid_token,
         else => .authorization_query_parameters_error,
     };
 }
@@ -2093,6 +2985,7 @@ fn mapPresignedVerifyError(err: sigv4.Error) protocol.ErrorKind {
         error.RequestExpired => .request_expired,
         error.InvalidCredentialScope => .authorization_query_parameters_error,
         error.OutOfMemory => .internal_error,
+        error.InvalidToken => .invalid_token,
         else => .invalid_request,
     };
 }
@@ -2101,13 +2994,51 @@ fn mapCredentialError(err: credential_service.Error) protocol.ErrorKind {
     return switch (err) {
         error.InvalidAccessKey, error.CredentialNotFound => .invalid_access_key_id,
         error.CredentialDisabled => .access_denied,
+        error.CredentialExpired => .expired_token,
         error.OutOfMemory,
         error.Conflict,
         error.CorruptMetadata,
         error.SecretDecryptionFailed,
         error.Unavailable,
         error.InvalidOwner,
+        error.InvalidTTL,
         => .internal_error,
+    };
+}
+
+fn mapPostPolicyParserError(err: s3_post_policy.Error) protocol.ErrorKind {
+    return switch (err) {
+        error.OutOfMemory => .internal_error,
+        error.InvalidContentType,
+        error.InvalidBoundary,
+        error.InvalidBody,
+        error.FieldTooLarge,
+        error.TooManyFields,
+        error.DuplicateField,
+        => .invalid_request,
+    };
+}
+
+fn mapPostPolicySignatureError(err: sigv4.Error) protocol.ErrorKind {
+    return switch (err) {
+        error.SignatureDoesNotMatch => .signature_does_not_match,
+        error.InvalidCredentialScope,
+        error.MalformedAuthorization,
+        => .authorization_header_malformed,
+        error.InvalidDate => .invalid_argument,
+        error.OutOfMemory => .internal_error,
+        else => .invalid_request,
+    };
+}
+
+fn mapPostPolicyError(err: PostPolicyError) protocol.ErrorKind {
+    return switch (err) {
+        error.InvalidPolicy => .invalid_argument,
+        error.UnsupportedCondition,
+        error.UnsupportedField,
+        => .invalid_argument,
+        error.UnsupportedChecksum => .not_implemented,
+        error.OutOfMemory => .internal_error,
     };
 }
 
@@ -2138,6 +3069,7 @@ fn mapObjectError(err: object_service.Error) protocol.ErrorKind {
         error.BucketNotFound => .no_such_bucket,
         error.ObjectNotFound => .no_such_key,
         error.ChecksumMismatch => .bad_digest,
+        error.ConditionNotMet => .precondition_failed,
         error.Unavailable => .service_unavailable,
         error.OutOfMemory,
         error.OutputWriteFailed,
@@ -2231,6 +3163,14 @@ test "S3 supported checksum headers remain distinct from streaming checksums" {
     }};
     try std.testing.expect(!hasUnsupportedHeaders(.head_object, &checksum_mode));
 
+    const conditional = [_]sigv4.Header{.{
+        .name = "If-None-Match",
+        .value = "*",
+    }};
+    try std.testing.expect(!hasUnsupportedHeaders(.get_object, &conditional));
+    try std.testing.expect(!hasUnsupportedHeaders(.put_object, &conditional));
+    try std.testing.expect(hasUnsupportedHeaders(.delete_object, &conditional));
+
     const streaming = [_]sigv4.Header{.{
         .name = "x-amz-content-sha256",
         .value = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD",
@@ -2275,6 +3215,112 @@ test "S3 supported checksum headers remain distinct from streaming checksums" {
         error.InvalidRequest,
         parseChecksumRequest(&missing_content_encoding),
     );
+}
+
+test "S3 conditional headers use strong and weak ETag matching" {
+    const object = object_domain.Object{
+        .id = .{0} ** 16,
+        .bucket_id = .{0} ** 16,
+        .bucket_name = "",
+        .key = "",
+        .size = 0,
+        .etag_md5 = .{0} ** 16,
+        .checksum_sha256 = .{0} ** 32,
+        .content_type = "",
+        .last_modified_unix_seconds = 1_369_353_600,
+        .user_metadata = &.{},
+        .data_generation = .{0} ** 16,
+        .status = .active,
+        .metadata_generation = 7,
+    };
+    const current = "\"00000000000000000000000000000000\"";
+    try std.testing.expect(try etagListMatches(current, current, false));
+    try std.testing.expect(try etagListMatches("W/\"00000000000000000000000000000000\"", current, true));
+    try std.testing.expect(!try etagListMatches("W/\"00000000000000000000000000000000\"", current, false));
+    try std.testing.expect(try etagListMatches("*", current, false));
+    try std.testing.expectError(error.InvalidCondition, etagListMatches("* , \"other\"", current, false));
+
+    const exact = [_]sigv4.Header{.{ .name = "If-Match", .value = current }};
+    const exact_conditions = try parseConditionalHeaders(&exact);
+    try std.testing.expectEqual(
+        ConditionalOutcome.proceed,
+        try evaluateConditional(exact_conditions, &object, .GET),
+    );
+    const none = [_]sigv4.Header{.{ .name = "If-None-Match", .value = current }};
+    try std.testing.expectEqual(
+        ConditionalOutcome.not_modified,
+        try evaluateConditional(try parseConditionalHeaders(&none), &object, .GET),
+    );
+    try std.testing.expectEqual(
+        ConditionalOutcome.precondition_failed,
+        try evaluateConditional(try parseConditionalHeaders(&none), &object, .PUT),
+    );
+    const old_date = [_]sigv4.Header{.{ .name = "If-Unmodified-Since", .value = "Thu, 01 Jan 1970 00:00:00 GMT" }};
+    try std.testing.expectEqual(
+        ConditionalOutcome.precondition_failed,
+        try evaluateConditional(try parseConditionalHeaders(&old_date), &object, .GET),
+    );
+    const match_precedence = [_]sigv4.Header{
+        .{ .name = "If-Match", .value = current },
+        .{ .name = "If-Unmodified-Since", .value = "Thu, 01 Jan 1970 00:00:00 GMT" },
+    };
+    try std.testing.expectEqual(
+        ConditionalOutcome.proceed,
+        try evaluateConditional(try parseConditionalHeaders(&match_precedence), &object, .GET),
+    );
+    const current_date = [_]sigv4.Header{.{ .name = "If-Modified-Since", .value = "Fri, 24 May 2013 00:00:00 GMT" }};
+    try std.testing.expectEqual(
+        ConditionalOutcome.not_modified,
+        try evaluateConditional(try parseConditionalHeaders(&current_date), &object, .HEAD),
+    );
+    const none_precedence = [_]sigv4.Header{
+        .{ .name = "If-None-Match", .value = "\"different\"" },
+        .{ .name = "If-Modified-Since", .value = "Fri, 01 Jan 2100 00:00:00 GMT" },
+    };
+    try std.testing.expectEqual(
+        ConditionalOutcome.proceed,
+        try evaluateConditional(try parseConditionalHeaders(&none_precedence), &object, .GET),
+    );
+}
+
+test "S3 CopyObject parses encoded sources and metadata directives" {
+    const headers = [_]sigv4.Header{.{
+        .name = "x-amz-copy-source",
+        .value = "/project-assets/folder%2Fhello.txt",
+    }};
+    var source = (try parseCopySource(std.testing.allocator, &headers)).?;
+    defer source.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("project-assets", source.bucket);
+    try std.testing.expectEqualStrings("folder/hello.txt", source.key);
+    try std.testing.expectEqual(MetadataDirective.copy, try parseMetadataDirective(&headers));
+
+    const unprefixed_headers = [_]sigv4.Header{.{
+        .name = "x-amz-copy-source",
+        .value = "project-assets/folder%2Fhello.txt",
+    }};
+    var unprefixed = (try parseCopySource(std.testing.allocator, &unprefixed_headers)).?;
+    defer unprefixed.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("project-assets", unprefixed.bucket);
+    try std.testing.expectEqualStrings("folder/hello.txt", unprefixed.key);
+
+    const replace_headers = [_]sigv4.Header{
+        headers[0],
+        .{ .name = "x-amz-metadata-directive", .value = "replace" },
+    };
+    try std.testing.expectEqual(MetadataDirective.replace, try parseMetadataDirective(&replace_headers));
+    try std.testing.expect(!hasUnsupportedHeaders(.put_object, &replace_headers));
+    try std.testing.expect(hasUnsupportedHeaders(.get_object, &replace_headers));
+
+    const malformed = [_]sigv4.Header{.{
+        .name = "x-amz-copy-source",
+        .value = "/project-assets/no%ZZ",
+    }};
+    try std.testing.expectError(error.InvalidCopySource, parseCopySource(std.testing.allocator, &malformed));
+    const missing_key = [_]sigv4.Header{.{
+        .name = "x-amz-copy-source",
+        .value = "/project-assets",
+    }};
+    try std.testing.expectError(error.InvalidCopySource, parseCopySource(std.testing.allocator, &missing_key));
 }
 
 test "S3 streaming failure mapping separates signatures checksums and framing" {

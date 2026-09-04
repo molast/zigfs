@@ -282,13 +282,17 @@ fn servePresignObject(
 
     const encoded_key = try encodePath(application.allocator, value.key);
     defer application.allocator.free(encoded_key);
-    const unsigned_target = try std.fmt.allocPrint(
-        application.allocator,
-        "/{s}/{s}",
-        .{ bucket.name, encoded_key },
-    );
+    const endpoint_host = publicEndpointHost(application.config.s3_public_endpoint);
+    const host = if (application.config.s3_virtual_hosted_style)
+        try std.fmt.allocPrint(application.allocator, "{s}.{s}", .{ bucket.name, endpoint_host })
+    else
+        endpoint_host;
+    defer if (application.config.s3_virtual_hosted_style) application.allocator.free(host);
+    const unsigned_target = if (application.config.s3_virtual_hosted_style)
+        try std.fmt.allocPrint(application.allocator, "/{s}", .{encoded_key})
+    else
+        try std.fmt.allocPrint(application.allocator, "/{s}/{s}", .{ bucket.name, encoded_key });
     defer application.allocator.free(unsigned_target);
-    const host = publicEndpointHost(application.config.s3_public_endpoint);
     const headers = [_]sigv4.Header{.{ .name = "host", .value = host }};
     const now = std.Io.Clock.real.now(application.io.?).toSeconds();
     var date_buffer: [16]u8 = undefined;
@@ -304,15 +308,27 @@ fn servePresignObject(
         .amz_date = amz_date,
         .region = application.config.s3_region,
         .expires_seconds = value.expires_seconds,
+        .session_token = material.session_token,
     }) catch {
         return respondError(request, request_id, .internal_server_error, "InternalError", "could not create presigned URL");
     };
     defer application.allocator.free(signed_target);
-    const url = try std.fmt.allocPrint(
-        application.allocator,
-        "{s}{s}",
-        .{ application.config.s3_public_endpoint, signed_target },
-    );
+    const url = if (application.config.s3_virtual_hosted_style)
+        try std.fmt.allocPrint(
+            application.allocator,
+            "{s}{s}{s}",
+            .{
+                if (std.mem.startsWith(u8, application.config.s3_public_endpoint, "http://")) "http://" else "https://",
+                host,
+                signed_target,
+            },
+        )
+    else
+        try std.fmt.allocPrint(
+            application.allocator,
+            "{s}{s}",
+            .{ application.config.s3_public_endpoint, signed_target },
+        );
     defer application.allocator.free(url);
     var expiry_buffer: [20]u8 = undefined;
     const expires_at = time.formatIso8601(now + @as(i64, @intCast(value.expires_seconds)), &expiry_buffer) catch {
@@ -336,7 +352,14 @@ fn serveListAccessKeys(
     try json.beginObject();
     try json.objectField("items");
     try json.beginArray();
-    for (result.credentials) |credential| try writeCredential(&json, credential, null);
+    for (result.credentials) |details| {
+        try writeCredential(
+            &json,
+            details.credential,
+            details.secret_key,
+            details.session_token,
+        );
+    }
     try json.endArray();
     try json.endObject();
     return respondJsonBytes(request, request_id, .ok, output.written());
@@ -361,6 +384,7 @@ const PolicyRequest = struct {
 const CreateAccessKeyRequest = struct {
     owner: []const u8,
     policy: PolicyRequest = .{},
+    ttl_seconds: ?u64 = null,
 };
 
 fn serveCreateAccessKey(
@@ -373,7 +397,11 @@ fn serveCreateAccessKey(
     };
     defer parsed.deinit();
     const service = application.credentialService() orelse return respondNotReady(request, request_id);
-    var result = service.create(parsed.value.owner, parsed.value.policy.domain()) catch |err| {
+    var result = service.createWithTTL(
+        parsed.value.owner,
+        parsed.value.policy.domain(),
+        parsed.value.ttl_seconds,
+    ) catch |err| {
         audit(application, request_id, "create_access_key", parsed.value.owner, @errorName(err));
         return respondCredentialError(request, request_id, err);
     };
@@ -383,7 +411,7 @@ fn serveCreateAccessKey(
     var output: std.Io.Writer.Allocating = .init(application.allocator);
     defer output.deinit();
     var json: std.json.Stringify = .{ .writer = &output.writer };
-    try writeCredential(&json, result.credential, &result.secret_key);
+    try writeCredential(&json, result.credential, &result.secret_key, if (result.session_token) |*token| token else null);
     return respondJsonBytes(request, request_id, .created, output.written());
 }
 
@@ -416,7 +444,7 @@ fn serveUpdateAccessKey(
     var output: std.Io.Writer.Allocating = .init(application.allocator);
     defer output.deinit();
     var json: std.json.Stringify = .{ .writer = &output.writer };
-    try writeCredential(&json, credential, null);
+    try writeCredential(&json, credential, null, null);
     return respondJsonBytes(request, request_id, .ok, output.written());
 }
 
@@ -503,6 +531,7 @@ fn serveSettings(
     return respondJson(request, request_id, .ok, .{
         .api_address = config.api_address,
         .s3_public_endpoint = config.s3_public_endpoint,
+        .s3_virtual_hosted_style = config.s3_virtual_hosted_style,
         .s3_region = config.s3_region,
         .request_time_skew_seconds = config.s3_request_time_skew_seconds,
         .multipart_expiry_seconds = config.s3_multipart_expiry_seconds,
@@ -545,6 +574,7 @@ fn writeCredential(
     json: *std.json.Stringify,
     credential: anytype,
     secret_key: ?[]const u8,
+    session_token: ?[]const u8,
 ) !void {
     var created_buffer: [20]u8 = undefined;
     const created_at = try time.formatIso8601(credential.created_at_unix_seconds, &created_buffer);
@@ -561,9 +591,21 @@ fn writeCredential(
     try json.write(credential.policy);
     try json.objectField("created_at");
     try json.write(created_at);
+    try json.objectField("kind");
+    try json.write(@tagName(credential.kind));
+    if (credential.expires_at_unix_seconds) |expires_at_value| {
+        var expires_buffer: [20]u8 = undefined;
+        const expires_at = try time.formatIso8601(expires_at_value, &expires_buffer);
+        try json.objectField("expires_at");
+        try json.write(expires_at);
+    }
     if (secret_key) |secret| {
         try json.objectField("secret_key");
         try json.write(secret);
+    }
+    if (session_token) |token| {
+        try json.objectField("session_token");
+        try json.write(token);
     }
     try json.endObject();
 }
@@ -727,6 +769,8 @@ fn respondCredentialError(
         error.InvalidAccessKey => respondError(request, request_id, .bad_request, "InvalidAccessKey", "access key is invalid"),
         error.CredentialNotFound => respondError(request, request_id, .not_found, "AccessKeyNotFound", "access key does not exist"),
         error.CredentialDisabled => respondError(request, request_id, .conflict, "AccessKeyDisabled", "access key is disabled"),
+        error.CredentialExpired => respondError(request, request_id, .conflict, "ExpiredToken", "temporary credential has expired"),
+        error.InvalidTTL => respondError(request, request_id, .bad_request, "InvalidCredentialTTL", "temporary credential TTL must be between 60 and 43200 seconds"),
         error.Conflict => respondError(request, request_id, .conflict, "Conflict", "access key changed concurrently"),
         error.CorruptMetadata, error.SecretDecryptionFailed => respondError(request, request_id, .service_unavailable, "CorruptMetadata", "credential metadata requires recovery"),
         error.OutOfMemory, error.Unavailable => respondError(request, request_id, .service_unavailable, "StorageUnavailable", "storage service is unavailable"),

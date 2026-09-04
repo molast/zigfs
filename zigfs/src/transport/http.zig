@@ -132,6 +132,7 @@ fn serveConnection(context: *ListenerContext, stream: std.Io.net.Stream) void {
         };
 
         const status = serveRequest(&request, context, current_request_id) catch |err| {
+            if (err == error.OutputWriteFailed) return;
             const duration_ms = started.untilNow(io).raw.toMilliseconds();
             std.log.warn(
                 "http request failed method={s} path={s} request_id={s} duration_ms={d} error={t}",
@@ -578,6 +579,8 @@ const TestSignedRequest = struct {
     target: []const u8,
     access_key: []const u8,
     secret_key: []const u8,
+    session_token: ?[]const u8 = null,
+    host: ?[]const u8 = null,
     body: []const u8 = "",
     extra_headers: []const std.http.Header = &.{},
     payload_hash_override: ?[]const u8 = null,
@@ -593,8 +596,9 @@ fn sendTestSignedRequest(
     address: std.Io.net.IpAddress,
     options: TestSignedRequest,
 ) !TestHttpResponse {
-    const host = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{address.getPort()});
-    defer allocator.free(host);
+    const default_host = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{address.getPort()});
+    defer allocator.free(default_host);
+    const host = options.host orelse default_host;
     var date_buffer: [16]u8 = undefined;
     const timestamp = options.timestamp orelse std.Io.Clock.real.now(io).toSeconds();
     const amz_date = try @import("../common/time.zig").formatAmzDate(timestamp, &date_buffer);
@@ -608,21 +612,91 @@ fn sendTestSignedRequest(
         options.target[query_start + 1 ..]
     else
         "";
-    const signed_headers = "host;x-amz-content-sha256;x-amz-date";
-    const canonical = try std.fmt.allocPrint(
-        allocator,
-        "{s}\n{s}\n{s}\nhost:{s}\nx-amz-content-sha256:{s}\nx-amz-date:{s}\n\n{s}\n{s}",
-        .{
-            @tagName(options.method),
-            canonical_uri,
-            canonical_query,
-            host,
-            payload_hash,
-            amz_date,
-            signed_headers,
-            payload_hash,
-        },
-    );
+    var copy_source: ?[]const u8 = null;
+    var metadata_directive: ?[]const u8 = null;
+    var meta_origin: ?[]const u8 = null;
+    for (options.extra_headers) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-copy-source")) {
+            copy_source = header.value;
+        } else if (std.ascii.eqlIgnoreCase(header.name, "x-amz-metadata-directive")) {
+            metadata_directive = header.value;
+        } else if (std.ascii.eqlIgnoreCase(header.name, "x-amz-meta-origin")) {
+            meta_origin = header.value;
+        }
+    }
+    const signed_headers = if (meta_origin != null)
+        "host;x-amz-content-sha256;x-amz-copy-source;x-amz-date;x-amz-meta-origin;x-amz-metadata-directive"
+    else if (copy_source != null)
+        "host;x-amz-content-sha256;x-amz-copy-source;x-amz-date"
+    else if (options.session_token != null)
+        "host;x-amz-content-sha256;x-amz-date;x-amz-security-token"
+    else
+        "host;x-amz-content-sha256;x-amz-date";
+    const canonical = if (meta_origin != null and copy_source != null and metadata_directive != null)
+        try std.fmt.allocPrint(
+            allocator,
+            "{s}\n{s}\n{s}\nhost:{s}\nx-amz-content-sha256:{s}\nx-amz-copy-source:{s}\nx-amz-date:{s}\nx-amz-meta-origin:{s}\nx-amz-metadata-directive:{s}\n\n{s}\n{s}",
+            .{
+                @tagName(options.method),
+                canonical_uri,
+                canonical_query,
+                host,
+                payload_hash,
+                copy_source.?,
+                amz_date,
+                meta_origin.?,
+                metadata_directive.?,
+                signed_headers,
+                payload_hash,
+            },
+        )
+    else if (copy_source) |value|
+        try std.fmt.allocPrint(
+            allocator,
+            "{s}\n{s}\n{s}\nhost:{s}\nx-amz-content-sha256:{s}\nx-amz-copy-source:{s}\nx-amz-date:{s}\n\n{s}\n{s}",
+            .{
+                @tagName(options.method),
+                canonical_uri,
+                canonical_query,
+                host,
+                payload_hash,
+                value,
+                amz_date,
+                signed_headers,
+                payload_hash,
+            },
+        )
+    else if (options.session_token) |session_token|
+        try std.fmt.allocPrint(
+            allocator,
+            "{s}\n{s}\n{s}\nhost:{s}\nx-amz-content-sha256:{s}\nx-amz-date:{s}\nx-amz-security-token:{s}\n\n{s}\n{s}",
+            .{
+                @tagName(options.method),
+                canonical_uri,
+                canonical_query,
+                host,
+                payload_hash,
+                amz_date,
+                session_token,
+                signed_headers,
+                payload_hash,
+            },
+        )
+    else
+        try std.fmt.allocPrint(
+            allocator,
+            "{s}\n{s}\n{s}\nhost:{s}\nx-amz-content-sha256:{s}\nx-amz-date:{s}\n\n{s}\n{s}",
+            .{
+                @tagName(options.method),
+                canonical_uri,
+                canonical_query,
+                host,
+                payload_hash,
+                amz_date,
+                signed_headers,
+                payload_hash,
+            },
+        );
     defer allocator.free(canonical);
     var canonical_digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(canonical, &canonical_digest, .{});
@@ -691,6 +765,9 @@ fn sendTestSignedRequest(
             options.declared_content_length orelse options.body.len,
         },
     );
+    if (options.session_token) |session_token| {
+        try writer.print("X-Amz-Security-Token: {s}\r\n", .{session_token});
+    }
     for (options.extra_headers) |header| {
         try writer.print("{s}: {s}\r\n", .{ header.name, header.value });
     }
@@ -937,6 +1014,8 @@ const TestPresignedRequest = struct {
     target: []const u8,
     access_key: []const u8,
     secret_key: []const u8,
+    session_token: ?[]const u8 = null,
+    host: ?[]const u8 = null,
     body: []const u8 = "",
     extra_headers: []const std.http.Header = &.{},
     timestamp: ?i64 = null,
@@ -950,8 +1029,9 @@ fn sendTestPresignedRequest(
     address: std.Io.net.IpAddress,
     options: TestPresignedRequest,
 ) !TestHttpResponse {
-    const host = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{address.getPort()});
-    defer allocator.free(host);
+    const default_host = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{address.getPort()});
+    defer allocator.free(default_host);
+    const host = options.host orelse default_host;
     var date_buffer: [16]u8 = undefined;
     const timestamp = options.timestamp orelse std.Io.Clock.real.now(io).toSeconds();
     const amz_date = try @import("../common/time.zig").formatAmzDate(timestamp, &date_buffer);
@@ -965,6 +1045,7 @@ fn sendTestPresignedRequest(
         .amz_date = amz_date,
         .region = "us-east-1",
         .expires_seconds = options.expires_seconds,
+        .session_token = options.session_token,
     });
     defer allocator.free(signed_target);
 
@@ -1145,6 +1226,62 @@ fn sendTestRawRequestImpl(
     };
 }
 
+fn signTestPostPolicy(
+    allocator: std.mem.Allocator,
+    policy_base64: []const u8,
+    secret_key: []const u8,
+    amz_date: []const u8,
+) ![]u8 {
+    const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
+    const prefixed = try std.fmt.allocPrint(allocator, "AWS4{s}", .{secret_key});
+    defer {
+        std.crypto.secureZero(u8, prefixed);
+        allocator.free(prefixed);
+    }
+    var date_key: [32]u8 = undefined;
+    var region_key: [32]u8 = undefined;
+    var service_key: [32]u8 = undefined;
+    var signing_key: [32]u8 = undefined;
+    var signature: [32]u8 = undefined;
+    defer {
+        std.crypto.secureZero(u8, &date_key);
+        std.crypto.secureZero(u8, &region_key);
+        std.crypto.secureZero(u8, &service_key);
+        std.crypto.secureZero(u8, &signing_key);
+    }
+    HmacSha256.create(&date_key, amz_date[0..8], prefixed);
+    HmacSha256.create(&region_key, "us-east-1", &date_key);
+    HmacSha256.create(&service_key, "s3", &region_key);
+    HmacSha256.create(&signing_key, "aws4_request", &service_key);
+    HmacSha256.create(&signature, policy_base64, &signing_key);
+    const hex = std.fmt.bytesToHex(signature, .lower);
+    return allocator.dupe(u8, &hex);
+}
+
+fn buildTestPostBody(
+    allocator: std.mem.Allocator,
+    boundary: []const u8,
+    key: []const u8,
+    policy: []const u8,
+    credential: []const u8,
+    amz_date: []const u8,
+    signature: []const u8,
+    file_body: []const u8,
+) ![]u8 {
+    var body: std.Io.Writer.Allocating = .init(allocator);
+    defer body.deinit();
+    try body.writer.print("--{s}\r\nContent-Disposition: form-data; name=\"key\"\r\n\r\n{s}\r\n", .{ boundary, key });
+    try body.writer.print("--{s}\r\nContent-Disposition: form-data; name=\"policy\"\r\n\r\n{s}\r\n", .{ boundary, policy });
+    try body.writer.print("--{s}\r\nContent-Disposition: form-data; name=\"x-amz-algorithm\"\r\n\r\n{s}\r\n", .{ boundary, sigv4.algorithm });
+    try body.writer.print("--{s}\r\nContent-Disposition: form-data; name=\"x-amz-credential\"\r\n\r\n{s}\r\n", .{ boundary, credential });
+    try body.writer.print("--{s}\r\nContent-Disposition: form-data; name=\"x-amz-date\"\r\n\r\n{s}\r\n", .{ boundary, amz_date });
+    try body.writer.print("--{s}\r\nContent-Disposition: form-data; name=\"x-amz-signature\"\r\n\r\n{s}\r\n", .{ boundary, signature });
+    try body.writer.print("--{s}\r\nContent-Disposition: form-data; name=\"success_action_status\"\r\n\r\n201\r\n", .{boundary});
+    try body.writer.print("--{s}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"upload.txt\"\r\nContent-Type: text/plain\r\n\r\n{s}\r\n", .{ boundary, file_body });
+    try body.writer.print("--{s}--\r\n", .{boundary});
+    return body.toOwnedSlice() catch return error.OutOfMemory;
+}
+
 test "ZigFS Management API directly serves the Phase 6 contract" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1253,6 +1390,48 @@ test "ZigFS Management API directly serves the Phase 6 contract" {
         .{ .ignore_unknown_fields = true },
     );
     defer key_json.deinit();
+
+    const listed_keys = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .GET,
+        "/_admin/v1/access-keys",
+        token,
+        "",
+    );
+    defer listed_keys.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, listed_keys.status);
+    try std.testing.expect(std.mem.indexOf(u8, listed_keys.body, "\"secret_key\"") != null);
+
+    const temporary_key_request = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .POST,
+        "/_admin/v1/access-keys",
+        token,
+        "{\"owner\":\"tenant-a\",\"ttl_seconds\":3600}",
+    );
+    defer temporary_key_request.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.created, temporary_key_request.status);
+    const TemporaryKey = struct {
+        kind: []const u8,
+        secret_key: []const u8,
+        session_token: []const u8,
+        expires_at: []const u8,
+    };
+    const temporary_key_json = try std.json.parseFromSlice(
+        TemporaryKey,
+        std.testing.allocator,
+        temporary_key_request.body,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer temporary_key_json.deinit();
+    try std.testing.expectEqualStrings("temporary", temporary_key_json.value.kind);
+    try std.testing.expect(temporary_key_json.value.secret_key.len > 0);
+    try std.testing.expect(temporary_key_json.value.session_token.len > 0);
+    try std.testing.expect(temporary_key_json.value.expires_at.len > 0);
 
     const put_object = try sendTestSignedRequest(
         std.testing.allocator,
@@ -1690,6 +1869,99 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
     try std.testing.expectEqual(std.http.Status.ok, put_object.status);
     try std.testing.expect(put_object.header("etag") != null);
 
+    const copy_headers = [_]std.http.Header{.{
+        .name = "x-amz-copy-source",
+        .value = "/project-assets/folder/hello.txt",
+    }};
+    const copy_object = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/project-assets/folder/copied.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .extra_headers = &copy_headers,
+        },
+    );
+    defer copy_object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, copy_object.status);
+    try std.testing.expect(std.mem.indexOf(u8, copy_object.body, "<CopyObjectResult") != null);
+    try std.testing.expect(std.mem.indexOf(u8, copy_object.body, "<ETag>") != null);
+
+    const copied_get = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/project-assets/folder/copied.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer copied_get.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, copied_get.status);
+    try std.testing.expectEqualStrings(object_body, copied_get.body);
+    try std.testing.expectEqualStrings("text/plain", copied_get.header("content-type").?);
+
+    const replace_copy_headers = [_]std.http.Header{
+        .{ .name = "x-amz-copy-source", .value = "/project-assets/folder/hello.txt" },
+        .{ .name = "x-amz-metadata-directive", .value = "REPLACE" },
+        .{ .name = "Content-Type", .value = "application/octet-stream" },
+        .{ .name = "x-amz-meta-origin", .value = "copy-test" },
+    };
+    const replace_copy = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/project-assets/folder/replaced-copy.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .extra_headers = &replace_copy_headers,
+        },
+    );
+    defer replace_copy.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, replace_copy.status);
+    const replaced_copy_get = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/project-assets/folder/replaced-copy.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer replaced_copy_get.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, replaced_copy_get.status);
+    try std.testing.expectEqualStrings("application/octet-stream", replaced_copy_get.header("content-type").?);
+    try std.testing.expectEqualStrings("copy-test", replaced_copy_get.header("x-amz-meta-origin").?);
+
+    const delete_copy_targets = [_][]const u8{
+        "/project-assets/folder/copied.txt",
+        "/project-assets/folder/replaced-copy.txt",
+    };
+    for (delete_copy_targets) |target| {
+        const deleted = try sendTestSignedRequest(
+            std.testing.allocator,
+            std.testing.io,
+            address,
+            .{
+                .method = .DELETE,
+                .target = target,
+                .access_key = credential.credential.access_key,
+                .secret_key = &credential.secret_key,
+            },
+        );
+        defer deleted.deinit(std.testing.allocator);
+        try std.testing.expectEqual(std.http.Status.no_content, deleted.status);
+    }
+
     const bad_digest_headers = [_]std.http.Header{.{
         .name = "Content-MD5",
         .value = "AAAAAAAAAAAAAAAAAAAAAA==",
@@ -1777,6 +2049,178 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
         @as(u64, object_body.len),
         try std.fmt.parseInt(u64, get_object.header("content-length").?, 10),
     );
+
+    const object_etag = get_object.header("etag").?;
+    const object_last_modified = get_object.header("last-modified").?;
+    const not_modified_headers = [_]std.http.Header{.{
+        .name = "If-None-Match",
+        .value = object_etag,
+    }};
+    const not_modified = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/project-assets/folder/hello.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .extra_headers = &not_modified_headers,
+        },
+    );
+    defer not_modified.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.not_modified, not_modified.status);
+    try std.testing.expectEqual(@as(usize, 0), not_modified.body.len);
+    try std.testing.expectEqualStrings(object_etag, not_modified.header("etag").?);
+
+    const modified_since_headers = [_]std.http.Header{.{
+        .name = "If-Modified-Since",
+        .value = object_last_modified,
+    }};
+    const not_modified_by_date = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .HEAD,
+            .target = "/project-assets/folder/hello.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .extra_headers = &modified_since_headers,
+        },
+    );
+    defer not_modified_by_date.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.not_modified, not_modified_by_date.status);
+    try std.testing.expectEqual(@as(usize, 0), not_modified_by_date.body.len);
+
+    const failed_match_headers = [_]std.http.Header{.{
+        .name = "If-Match",
+        .value = "\"does-not-match\"",
+    }};
+    const failed_match = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/project-assets/folder/hello.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .extra_headers = &failed_match_headers,
+        },
+    );
+    defer failed_match.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.precondition_failed, failed_match.status);
+    try std.testing.expect(std.mem.indexOf(u8, failed_match.body, "<Code>PreconditionFailed</Code>") != null);
+
+    const failed_since_headers = [_]std.http.Header{.{
+        .name = "If-Unmodified-Since",
+        .value = "Thu, 01 Jan 1970 00:00:00 GMT",
+    }};
+    const failed_since = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .HEAD,
+            .target = "/project-assets/folder/hello.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .extra_headers = &failed_since_headers,
+        },
+    );
+    defer failed_since.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.precondition_failed, failed_since.status);
+
+    const conditional_create_headers = [_]std.http.Header{.{
+        .name = "If-None-Match",
+        .value = "*",
+    }};
+    const conditional_create = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/project-assets/conditional.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = "initial",
+            .extra_headers = &conditional_create_headers,
+        },
+    );
+    defer conditional_create.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, conditional_create.status);
+    const conditional_etag = conditional_create.header("etag").?;
+
+    const conditional_replace_headers = [_]std.http.Header{.{
+        .name = "If-Match",
+        .value = conditional_etag,
+    }};
+    const conditional_replace = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/project-assets/conditional.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = "replacement",
+            .extra_headers = &conditional_replace_headers,
+        },
+    );
+    defer conditional_replace.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, conditional_replace.status);
+
+    const conditional_stale_headers = [_]std.http.Header{.{
+        .name = "If-Match",
+        .value = conditional_etag,
+    }};
+    const conditional_stale = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/project-assets/conditional.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = "stale-write",
+            .extra_headers = &conditional_stale_headers,
+        },
+    );
+    defer conditional_stale.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.precondition_failed, conditional_stale.status);
+
+    const conditional_after_stale = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/project-assets/conditional.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer conditional_after_stale.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, conditional_after_stale.status);
+    try std.testing.expectEqualStrings("replacement", conditional_after_stale.body);
+
+    const delete_conditional = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .DELETE,
+            .target = "/project-assets/conditional.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer delete_conditional.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.no_content, delete_conditional.status);
 
     const presigned_get = try sendTestPresignedRequest(
         std.testing.allocator,
@@ -2083,7 +2527,8 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
     ) != null);
 
     const delete_objects_body =
-        "<Delete><Quiet>false</Quiet><Object><Key>folder/a&amp;&lt;.txt</Key></Object></Delete>";
+        "<Delete><Quiet>false</Quiet><Object><Key>folder/a&amp;&lt;.txt</Key></Object>" ++
+        "<Object><Key>folder/copied.txt</Key></Object><Object><Key>folder/replaced-copy.txt</Key></Object></Delete>";
     var delete_objects_md5: [16]u8 = undefined;
     std.crypto.hash.Md5.hash(delete_objects_body, &delete_objects_md5, .{});
     var delete_objects_md5_buffer: [24]u8 = undefined;
@@ -2878,4 +3323,476 @@ test "S3 HTTP interrupted uploads do not publish and canceled downloads release 
     );
     defer ready.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.ok, ready.status);
+}
+
+test "S3 HTTP serves configured virtual-hosted style with SigV4 Host binding" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try std.fmt.allocPrint(
+        std.testing.allocator,
+        ".zig-cache/tmp/{s}/data",
+        .{tmp.sub_path},
+    );
+    defer std.testing.allocator.free(data_root);
+
+    const loopback: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
+    var listener = try loopback.listen(std.testing.io, .{ .reuse_address = true });
+    defer listener.deinit(std.testing.io);
+    const address = listener.socket.address;
+    const endpoint = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "http://127.0.0.1:{d}",
+        .{address.getPort()},
+    );
+    defer std.testing.allocator.free(endpoint);
+    const virtual_host = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "vh-assets.127.0.0.1:{d}",
+        .{address.getPort()},
+    );
+    defer std.testing.allocator.free(virtual_host);
+
+    const config: Config = .{
+        .data_root = data_root,
+        .metrics_enabled = false,
+        .s3_public_endpoint = endpoint,
+        .s3_virtual_hosted_style = true,
+    };
+    var application = Application.init(config);
+    defer application.deinit(std.testing.io);
+    try application.initialize(std.testing.io);
+    var credential = try application.credentialService().?.create("tenant-a", .all);
+    defer credential.deinit(application.allocator);
+
+    var context: ListenerContext = .{
+        .io = std.testing.io,
+        .kind = .api,
+        .config = config,
+        .application = &application,
+    };
+    var server_tasks: std.Io.Group = .init;
+    defer server_tasks.cancel(std.testing.io);
+    server_tasks.async(std.testing.io, serveLoopBackground, .{ &listener, &context });
+
+    const create_bucket = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/vh-assets",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer create_bucket.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, create_bucket.status);
+
+    var object_body: [32 * 1024]u8 = undefined;
+    @memset(&object_body, 'v');
+    const put_object = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/folder/hello.txt",
+            .host = virtual_host,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = &object_body,
+        },
+    );
+    defer put_object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, put_object.status);
+
+    const get_object = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/folder/hello.txt",
+            .host = virtual_host,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer get_object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, get_object.status);
+    try std.testing.expectEqualStrings(&object_body, get_object.body);
+
+    const presigned_get = try sendTestPresignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/folder/hello.txt",
+            .host = virtual_host,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer presigned_get.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, presigned_get.status);
+    try std.testing.expectEqualStrings(&object_body, presigned_get.body);
+
+    const listed = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/?list-type=2",
+            .host = virtual_host,
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer listed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, listed.status);
+    try std.testing.expect(std.mem.indexOf(u8, listed.body, "<Key>folder/hello.txt</Key>") != null);
+
+    const wrong_host = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/folder/hello.txt",
+            .host = "vh-assets.invalid.example",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer wrong_host.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.bad_request, wrong_host.status);
+    try std.testing.expect(std.mem.indexOf(u8, wrong_host.body, "<Code>InvalidRequest</Code>") != null);
+}
+
+test "S3 HTTP enforces temporary credential session tokens for header and presigned auth" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try std.fmt.allocPrint(
+        std.testing.allocator,
+        ".zig-cache/tmp/{s}/data",
+        .{tmp.sub_path},
+    );
+    defer std.testing.allocator.free(data_root);
+    const config: Config = .{ .data_root = data_root, .metrics_enabled = false };
+    var application = Application.init(config);
+    defer application.deinit(std.testing.io);
+    try application.initialize(std.testing.io);
+    var credential = try application.credentialService().?.createWithTTL("tenant-a", .all, 3600);
+    defer credential.deinit(application.allocator);
+    const session_token = &credential.session_token.?;
+
+    const loopback: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
+    var listener = try loopback.listen(std.testing.io, .{ .reuse_address = true });
+    defer listener.deinit(std.testing.io);
+    var context: ListenerContext = .{
+        .io = std.testing.io,
+        .kind = .api,
+        .config = config,
+        .application = &application,
+    };
+    var server_tasks: std.Io.Group = .init;
+    defer server_tasks.cancel(std.testing.io);
+    server_tasks.async(std.testing.io, serveLoopBackground, .{ &listener, &context });
+    const address = listener.socket.address;
+
+    const missing_token = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer missing_token.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.forbidden, missing_token.status);
+    try std.testing.expect(std.mem.indexOf(u8, missing_token.body, "<Code>InvalidToken</Code>") != null);
+
+    const wrong_token = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .session_token = "wrong-session-token",
+        },
+    );
+    defer wrong_token.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.forbidden, wrong_token.status);
+    try std.testing.expect(std.mem.indexOf(u8, wrong_token.body, "<Code>InvalidToken</Code>") != null);
+
+    const create_bucket = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/temporary-auth",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .session_token = session_token,
+        },
+    );
+    defer create_bucket.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, create_bucket.status);
+
+    const put_object = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/temporary-auth/object.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .session_token = session_token,
+            .body = "temporary credential payload",
+        },
+    );
+    defer put_object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, put_object.status);
+
+    const presigned_get = try sendTestPresignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/temporary-auth/object.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .session_token = session_token,
+        },
+    );
+    defer presigned_get.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, presigned_get.status);
+    try std.testing.expectEqualStrings("temporary credential payload", presigned_get.body);
+
+    const presigned_missing_token = try sendTestPresignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/temporary-auth/object.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer presigned_missing_token.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.forbidden, presigned_missing_token.status);
+    try std.testing.expect(std.mem.indexOf(u8, presigned_missing_token.body, "<Code>InvalidToken</Code>") != null);
+
+    const credentials = application.credentialService().?;
+    const current = try credentials.get(credential.credential.access_key);
+    defer current.deinit(application.allocator);
+    var expired_view = current.view();
+    expired_view.created_at_unix_seconds -= 2;
+    expired_view.expires_at_unix_seconds = current.created_at_unix_seconds - 1;
+    var prepared = try credentials.index.prepareAccessKey(current.access_key);
+    defer prepared.deinit(credentials.index.allocator);
+    const expired_generation = try credentials.store.put(
+        application.allocator,
+        expired_view,
+        .{ .exact = current.metadata_generation },
+    );
+    credentials.index.publishAccessKey(&prepared, expired_generation);
+
+    const expired = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .session_token = session_token,
+        },
+    );
+    defer expired.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.forbidden, expired.status);
+    try std.testing.expect(std.mem.indexOf(u8, expired.body, "<Code>ExpiredToken</Code>") != null);
+}
+
+test "S3 HTTP accepts signed POST policies and does not publish failed uploads" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try std.fmt.allocPrint(
+        std.testing.allocator,
+        ".zig-cache/tmp/{s}/data",
+        .{tmp.sub_path},
+    );
+    defer std.testing.allocator.free(data_root);
+    const config: Config = .{ .data_root = data_root, .metrics_enabled = false };
+    var application = Application.init(config);
+    defer application.deinit(std.testing.io);
+    try application.initialize(std.testing.io);
+    var credential = try application.credentialService().?.create("tenant-a", .all);
+    defer credential.deinit(application.allocator);
+
+    const loopback: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
+    var listener = try loopback.listen(std.testing.io, .{ .reuse_address = true });
+    defer listener.deinit(std.testing.io);
+    const address = listener.socket.address;
+    var context: ListenerContext = .{
+        .io = std.testing.io,
+        .kind = .api,
+        .config = config,
+        .application = &application,
+    };
+    var server_tasks: std.Io.Group = .init;
+    defer server_tasks.cancel(std.testing.io);
+    server_tasks.async(std.testing.io, serveLoopBackground, .{ &listener, &context });
+
+    const create_bucket = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/post-assets",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer create_bucket.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, create_bucket.status);
+
+    var date_buffer: [16]u8 = undefined;
+    const now = std.Io.Clock.real.now(std.testing.io).toSeconds();
+    const amz_date = try @import("../common/time.zig").formatAmzDate(now, &date_buffer);
+    const credential_value = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{s}/{s}/us-east-1/s3/aws4_request",
+        .{ credential.credential.access_key, amz_date[0..8] },
+    );
+    defer std.testing.allocator.free(credential_value);
+    const policy_json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"expiration\":\"2099-01-01T00:00:00.000Z\",\"conditions\":[{{\"bucket\":\"post-assets\"}},[\"starts-with\",\"$key\",\"uploads/\"],{{\"x-amz-algorithm\":\"{s}\"}},{{\"x-amz-credential\":\"{s}\"}},{{\"x-amz-date\":\"{s}\"}},[\"content-length-range\",1,64],{{\"success_action_status\":\"201\"}}]}}",
+        .{ sigv4.algorithm, credential_value, amz_date },
+    );
+    defer std.testing.allocator.free(policy_json);
+    const policy_encoded = try std.testing.allocator.alloc(u8, std.base64.standard.Encoder.calcSize(policy_json.len));
+    defer std.testing.allocator.free(policy_encoded);
+    _ = std.base64.standard.Encoder.encode(policy_encoded, policy_json);
+    const signature = try signTestPostPolicy(
+        std.testing.allocator,
+        policy_encoded,
+        &credential.secret_key,
+        amz_date,
+    );
+    defer std.testing.allocator.free(signature);
+    const body = try buildTestPostBody(
+        std.testing.allocator,
+        "post-boundary",
+        "uploads/${filename}",
+        policy_encoded,
+        credential_value,
+        amz_date,
+        signature,
+        "hello through post policy",
+    );
+    defer std.testing.allocator.free(body);
+    var request_bytes: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer request_bytes.deinit();
+    try request_bytes.writer.print(
+        "POST /post-assets HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nConnection: close\r\nContent-Type: multipart/form-data; boundary=post-boundary\r\nContent-Length: {d}\r\n\r\n",
+        .{ address.getPort(), body.len },
+    );
+    try request_bytes.writer.writeAll(body);
+    const uploaded = try sendTestRawRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        request_bytes.written(),
+    );
+    defer uploaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.created, uploaded.status);
+    try std.testing.expect(std.mem.indexOf(u8, uploaded.body, "<Key>uploads/upload.txt</Key>") != null);
+
+    const downloaded = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/post-assets/uploads/upload.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer downloaded.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("hello through post policy", downloaded.body);
+
+    const limited_policy_json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"expiration\":\"2099-01-01T00:00:00Z\",\"conditions\":[{{\"bucket\":\"post-assets\"}},[\"starts-with\",\"$key\",\"uploads/\"],{{\"x-amz-algorithm\":\"{s}\"}},{{\"x-amz-credential\":\"{s}\"}},{{\"x-amz-date\":\"{s}\"}},[\"content-length-range\",1,3],{{\"success_action_status\":\"201\"}}]}}",
+        .{ sigv4.algorithm, credential_value, amz_date },
+    );
+    defer std.testing.allocator.free(limited_policy_json);
+    const limited_encoded = try std.testing.allocator.alloc(u8, std.base64.standard.Encoder.calcSize(limited_policy_json.len));
+    defer std.testing.allocator.free(limited_encoded);
+    _ = std.base64.standard.Encoder.encode(limited_encoded, limited_policy_json);
+    const limited_signature = try signTestPostPolicy(
+        std.testing.allocator,
+        limited_encoded,
+        &credential.secret_key,
+        amz_date,
+    );
+    defer std.testing.allocator.free(limited_signature);
+    const limited_body = try buildTestPostBody(
+        std.testing.allocator,
+        "post-boundary",
+        "uploads/too-large.txt",
+        limited_encoded,
+        credential_value,
+        amz_date,
+        limited_signature,
+        "too long",
+    );
+    defer std.testing.allocator.free(limited_body);
+    var limited_request: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer limited_request.deinit();
+    try limited_request.writer.print(
+        "POST /post-assets HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nConnection: close\r\nContent-Type: multipart/form-data; boundary=post-boundary\r\nContent-Length: {d}\r\n\r\n",
+        .{ address.getPort(), limited_body.len },
+    );
+    try limited_request.writer.writeAll(limited_body);
+    const rejected = try sendTestRawRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        limited_request.written(),
+    );
+    defer rejected.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.bad_request, rejected.status);
+    try std.testing.expect(std.mem.indexOf(u8, rejected.body, "<Code>EntityTooLarge</Code>") != null);
+
+    const missing = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/post-assets/uploads/too-large.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer missing.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.not_found, missing.status);
 }

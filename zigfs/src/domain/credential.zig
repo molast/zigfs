@@ -4,7 +4,17 @@ pub const min_access_key_length: usize = 16;
 pub const max_access_key_length: usize = 128;
 pub const min_secret_key_length: usize = 32;
 pub const max_secret_key_length: usize = 64;
+pub const secret_key_length: usize = 40;
+pub const session_token_length: usize = 64;
+pub const temporary_secret_material_length: usize = secret_key_length + session_token_length;
+pub const min_temporary_ttl_seconds: u64 = 60;
+pub const max_temporary_ttl_seconds: u64 = 12 * 60 * 60;
 pub const max_owner_length: usize = 256;
+
+pub const Kind = enum(u8) {
+    permanent = 1,
+    temporary = 2,
+};
 
 pub const Status = enum(u8) {
     active = 1,
@@ -71,6 +81,8 @@ pub const View = struct {
     secret_nonce: [12]u8,
     secret_tag: [16]u8,
     encrypted_secret: []const u8,
+    kind: Kind = .permanent,
+    expires_at_unix_seconds: ?i64 = null,
 };
 
 pub const Credential = struct {
@@ -83,6 +95,8 @@ pub const Credential = struct {
     secret_tag: [16]u8,
     encrypted_secret: []u8,
     metadata_generation: u64,
+    kind: Kind = .permanent,
+    expires_at_unix_seconds: ?i64 = null,
 
     pub fn deinit(self: Credential, allocator: std.mem.Allocator) void {
         allocator.free(self.access_key);
@@ -100,7 +114,13 @@ pub const Credential = struct {
             .secret_nonce = self.secret_nonce,
             .secret_tag = self.secret_tag,
             .encrypted_secret = self.encrypted_secret,
+            .kind = self.kind,
+            .expires_at_unix_seconds = self.expires_at_unix_seconds,
         };
+    }
+
+    pub fn isExpired(self: *const Credential, now_unix_seconds: i64) bool {
+        return if (self.expires_at_unix_seconds) |expires_at| now_unix_seconds >= expires_at else false;
     }
 };
 
@@ -109,6 +129,7 @@ pub const ValidationError = error{
     InvalidOwner,
     InvalidEncryptedSecret,
     InvalidCreatedAt,
+    InvalidExpiration,
 };
 
 pub fn validateAccessKey(value: []const u8) ValidationError!void {
@@ -130,12 +151,24 @@ pub fn validateOwner(value: []const u8) ValidationError!void {
 pub fn validateView(value: View) ValidationError!void {
     try validateAccessKey(value.access_key);
     try validateOwner(value.owner);
-    if (value.encrypted_secret.len < min_secret_key_length or
-        value.encrypted_secret.len > max_secret_key_length)
-    {
-        return error.InvalidEncryptedSecret;
-    }
     if (value.created_at_unix_seconds <= 0) return error.InvalidCreatedAt;
+    switch (value.kind) {
+        .permanent => {
+            if (value.expires_at_unix_seconds != null) return error.InvalidExpiration;
+            if (value.encrypted_secret.len < min_secret_key_length or
+                value.encrypted_secret.len > max_secret_key_length)
+            {
+                return error.InvalidEncryptedSecret;
+            }
+        },
+        .temporary => {
+            const expires_at = value.expires_at_unix_seconds orelse return error.InvalidExpiration;
+            if (expires_at <= value.created_at_unix_seconds) return error.InvalidExpiration;
+            if (value.encrypted_secret.len != temporary_secret_material_length) {
+                return error.InvalidEncryptedSecret;
+            }
+        },
+    }
 }
 
 pub fn cloneFromView(
@@ -158,6 +191,8 @@ pub fn cloneFromView(
         .secret_tag = value.secret_tag,
         .encrypted_secret = encrypted_secret,
         .metadata_generation = metadata_generation,
+        .kind = value.kind,
+        .expires_at_unix_seconds = value.expires_at_unix_seconds,
     };
 }
 

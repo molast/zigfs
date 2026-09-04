@@ -96,10 +96,10 @@ export function createApiClient() {
     }),
     listAccessKeys: async () =>
       (await request<{ items: AccessKey[] }>('/api/v1/access-keys')).items,
-    createAccessKey: (owner: string, policy: CredentialPolicy) =>
+    createAccessKey: (owner: string, policy: CredentialPolicy, ttlSeconds?: number) =>
       request<CreatedAccessKey>('/api/v1/access-keys', {
         method: 'POST',
-        body: JSON.stringify({ owner, policy }),
+        body: JSON.stringify({ owner, policy, ...(ttlSeconds ? { ttl_seconds: ttlSeconds } : {}) }),
       }),
     setAccessKeyEnabled: (id: string, enabled: boolean) =>
       request<AccessKey>(`/api/v1/access-keys/${encodeURIComponent(id)}`, {

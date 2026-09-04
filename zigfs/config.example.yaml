@@ -12,6 +12,7 @@ storage:
 
 s3:
   public_endpoint: "http://127.0.0.1:9000"
+  virtual_hosted_style: false
   region: "us-east-1"
   request_time_skew_seconds: 900
   multipart_expiry_seconds: 604800

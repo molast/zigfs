@@ -135,7 +135,7 @@ paths:
       summary: 列出 Access Key
       responses:
         "200":
-          description: Access Key 列表，不包含 Secret Key
+          description: 开发阶段 Access Key 列表，包含用于联调的 Secret Key；生产发布前将移除明文 Secret 字段
           content:
             application/json:
               schema:
@@ -144,7 +144,7 @@ paths:
           $ref: "#/components/responses/Error"
     post:
       operationId: createAccessKey
-      summary: 创建 AK/SK
+      summary: 创建永久 AK/SK 或临时 AK/SK/Session Token
       requestBody:
         required: true
         content:
@@ -153,7 +153,7 @@ paths:
               $ref: "#/components/schemas/CreateAccessKeyRequest"
       responses:
         "201":
-          description: Secret Key 只在此响应返回一次
+          description: 返回已创建凭证；临时凭证额外返回 Session Token 与到期时间
           content:
             application/json:
               schema:
@@ -411,13 +411,22 @@ components:
           format: date-time
     AccessKey:
       type: object
-      required: [id, access_key, owner, enabled, policy, created_at]
+      required: [id, access_key, kind, owner, enabled, policy, created_at]
       properties:
         id:
           type: string
           description: V1 中等于 access_key。
         access_key:
           type: string
+        secret_key:
+          type: string
+          description: 仅当前开发阶段由 List/Create 返回，供 Admin 联调展示；不写入日志。
+        session_token:
+          type: string
+          description: 临时凭证的 Session Token；永久凭证不返回。
+        kind:
+          type: string
+          enum: [permanent, temporary]
         owner:
           type: string
         enabled:
@@ -427,6 +436,10 @@ components:
         created_at:
           type: string
           format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: 临时凭证的硬过期时间；永久凭证不返回。
     ListAccessKeysResponse:
       type: object
       required: [items]
@@ -439,7 +452,7 @@ components:
       type: object
       additionalProperties: false
       required: [owner]
-      description: 省略 policy 时由 ZigFS 创建 Full Access Credential。
+      description: 省略 policy 时创建 Full Access Credential；省略 ttl_seconds 时创建永久凭证。
       properties:
         owner:
           type: string
@@ -447,6 +460,12 @@ components:
           maxLength: 256
         policy:
           $ref: "#/components/schemas/CredentialPolicy"
+        ttl_seconds:
+          type: integer
+          format: int64
+          minimum: 60
+          maximum: 43200
+          description: 提供时创建临时凭证，有效期为 60 秒至 12 小时。
     CreateAccessKeyResponse:
       allOf:
         - $ref: "#/components/schemas/AccessKey"
@@ -455,7 +474,9 @@ components:
           properties:
             secret_key:
               type: string
-              writeOnly: true
+            session_token:
+              type: string
+              description: 临时凭证必须返回；永久凭证不返回。
       unevaluatedProperties: false
     UpdateAccessKeyRequest:
       type: object
@@ -555,6 +576,7 @@ components:
       required:
         - api_address
         - s3_public_endpoint
+        - s3_virtual_hosted_style
         - s3_region
         - request_time_skew_seconds
         - multipart_expiry_seconds
@@ -569,6 +591,8 @@ components:
         s3_public_endpoint:
           type: string
           format: uri
+        s3_virtual_hosted_style:
+          type: boolean
         s3_region:
           type: string
         request_time_skew_seconds:

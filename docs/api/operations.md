@@ -19,6 +19,14 @@ Backend 时为 `null`，不能把单个平台的文件系统调用结果冒充�
 以下接口由 ZigFS `server.api_address` 直接提供，默认使用 Signature V4 Header 认证；
 对象级 GetObject 和 PutObject 也支持 Signature V4 Presigned Query：
 
+永久凭证使用 AK/SK。临时凭证还必须携带 Session Token：Header SigV4 使用已进入
+`SignedHeaders` 的 `x-amz-security-token`，Presigned Query 使用签名绑定的
+`X-Amz-Security-Token`；缺失、错误和过期分别返回稳定的 `InvalidToken` 或 `ExpiredToken`。
+
+当 `s3.virtual_hosted_style` 开启时，上述 Bucket/Object 路径也可使用
+`Host: <bucket>.<s3.public_endpoint authority>` 和 `/{object}` 的 Virtual-hosted-style；
+精确的公开 authority 始终保留 Path-style。
+
 | Method | Path | 含义 |
 |---|---|---|
 | GET | `/` | ListBuckets |
@@ -28,13 +36,21 @@ Backend 时为 `null`，不能把单个平台的文件系统调用结果冒充�
 | DELETE | `/{bucket}` | DeleteBucket |
 | GET | `/{bucket}?list-type=2` | ListObjectsV2 |
 | POST | `/{bucket}?delete=` | DeleteObjects |
+| POST | `/{bucket}` | S3 POST Policy Upload（`multipart/form-data`） |
 | PUT | `/{bucket}/{object}` | PutObject |
+| PUT | `/{bucket}/{object}` + `x-amz-copy-source` | CopyObject |
 | GET | `/{bucket}/{object}` | GetObject |
 | HEAD | `/{bucket}/{object}` | HeadObject |
 | DELETE | `/{bucket}/{object}` | DeleteObject |
 
 完整 Header、Query、XML、错误和已知差异见
-[s3-compatibility.md](s3-compatibility.md)。S3 API 不经过 Go Admin。
+[s3-compatibility.md](s3-compatibility.md)。对象 GET/HEAD/PUT 支持 ETag 和 HTTP 日期条件请求，S3 API 不经过 Go Admin。
+
+POST Policy Upload 使用表单中的 `key`、`policy`、`x-amz-algorithm`、`x-amz-credential`、
+`x-amz-date` 和 `x-amz-signature` 完成 SigV4 Policy 验证，`file` 必须是最后一个字段。
+支持 `Content-Type`、`Content-MD5`、`x-amz-checksum-crc64nvme`、`x-amz-meta-*`、
+`content-length-range` 和 `success_action_status`；策略过期、条件不满足、校验和失败或
+multipart 解析失败均不会发布对象。
 
 Prometheus 默认通过独立的 `127.0.0.1:9090` Listener 拉取指标：
 

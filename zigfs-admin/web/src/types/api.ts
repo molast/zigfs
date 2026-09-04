@@ -35,10 +35,14 @@ export interface ObjectSummary {
 export interface AccessKey {
   id: string
   access_key: string
+  secret_key?: string
+  session_token?: string
+  kind: 'permanent' | 'temporary'
   owner: string
   enabled: boolean
   policy: CredentialPolicy
   created_at: string
+  expires_at?: string
 }
 
 export interface CredentialPolicy {
@@ -79,6 +83,7 @@ export interface ManagementHealth {
 export interface Settings {
   api_address: string
   s3_public_endpoint: string
+  s3_virtual_hosted_style: boolean
   s3_region: string
   request_time_skew_seconds: number
   multipart_expiry_seconds: number

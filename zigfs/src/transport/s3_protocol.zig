@@ -18,6 +18,7 @@ pub const Operation = enum {
     list_parts,
     complete_multipart_upload,
     abort_multipart_upload,
+    post_policy_upload,
     unsupported,
 };
 
@@ -27,6 +28,7 @@ pub const ParsedTarget = struct {
     parameters: []QueryParameter,
     bucket: ?[]const u8,
     key: ?[]const u8,
+    addressing_style: AddressingStyle,
     operation: Operation,
 
     pub fn deinit(self: ParsedTarget) void {
@@ -49,6 +51,11 @@ pub const ParsedTarget = struct {
     }
 };
 
+pub const AddressingStyle = enum {
+    path,
+    virtual_hosted,
+};
+
 pub const QueryParameter = struct {
     name: []u8,
     value: []u8,
@@ -59,16 +66,36 @@ pub const ParseError = error{
     InvalidTarget,
 };
 
+pub const AddressingError = error{
+    InvalidHost,
+    HostNotAllowed,
+};
+
 pub fn parseTarget(
     allocator: std.mem.Allocator,
     method: std.http.Method,
     target: []const u8,
 ) ParseError!ParsedTarget {
+    return parseTargetWithHost(allocator, method, target, null, "", false) catch |err| switch (err) {
+        error.InvalidHost, error.HostNotAllowed => unreachable,
+        error.OutOfMemory => error.OutOfMemory,
+        error.InvalidTarget => error.InvalidTarget,
+    };
+}
+
+pub fn parseTargetWithHost(
+    allocator: std.mem.Allocator,
+    method: std.http.Method,
+    target: []const u8,
+    host: ?[]const u8,
+    public_endpoint: []const u8,
+    virtual_hosted_style: bool,
+) (ParseError || AddressingError)!ParsedTarget {
     if (target.len == 0 or target[0] != '/' or std.mem.indexOfScalar(u8, target, '#') != null) {
         return error.InvalidTarget;
     }
     const query_start = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
-    const decoded_path = try strictPercentDecode(allocator, target[0..query_start]);
+    var decoded_path = try strictPercentDecode(allocator, target[0..query_start]);
     errdefer allocator.free(decoded_path);
     if (std.mem.indexOfScalar(u8, decoded_path, 0) != null) return error.InvalidTarget;
     const parameters = try parseQuery(
@@ -83,21 +110,67 @@ pub fn parseTarget(
         allocator.free(parameters);
     }
 
-    const without_leading_slash = decoded_path[1..];
-    const first_slash = std.mem.indexOfScalar(u8, without_leading_slash, '/');
-    const bucket: ?[]const u8 = if (without_leading_slash.len == 0)
-        null
-    else if (first_slash) |position|
-        without_leading_slash[0..position]
-    else
-        without_leading_slash;
-    const key: ?[]const u8 = if (first_slash) |position|
-        if (position + 1 < without_leading_slash.len)
-            without_leading_slash[position + 1 ..]
-        else
+    var addressing_style: AddressingStyle = .path;
+    var bucket: ?[]const u8 = null;
+    var key: ?[]const u8 = null;
+    if (virtual_hosted_style) {
+        const request_host = host orelse return error.InvalidHost;
+        const endpoint_authority = publicEndpointAuthority(public_endpoint) orelse {
+            return error.InvalidHost;
+        };
+        const host_style = classifyHost(request_host, endpoint_authority) orelse {
+            return error.HostNotAllowed;
+        };
+        addressing_style = host_style.style;
+        if (host_style.style == .virtual_hosted) {
+            bucket = host_style.bucket;
+            const bucket_len = bucket.?.len;
+            const without_leading_slash = decoded_path[1..];
+            key = if (without_leading_slash.len == 0) null else without_leading_slash;
+            const normalized_path = try normalizedVirtualPath(
+                allocator,
+                bucket.?,
+                key,
+            );
+            allocator.free(decoded_path);
+            decoded_path = normalized_path;
+            bucket = decoded_path[1 .. bucket_len + 1];
+            const key_start = bucket_len + 2;
+            key = if (decoded_path.len > key_start) decoded_path[key_start..] else null;
+        } else {
+            const without_leading_slash = decoded_path[1..];
+            const first_slash = std.mem.indexOfScalar(u8, without_leading_slash, '/');
+            bucket = if (without_leading_slash.len == 0)
+                null
+            else if (first_slash) |position|
+                without_leading_slash[0..position]
+            else
+                without_leading_slash;
+            key = if (first_slash) |position|
+                if (position + 1 < without_leading_slash.len)
+                    without_leading_slash[position + 1 ..]
+                else
+                    null
+            else
+                null;
+        }
+    } else {
+        const without_leading_slash = decoded_path[1..];
+        const first_slash = std.mem.indexOfScalar(u8, without_leading_slash, '/');
+        bucket = if (without_leading_slash.len == 0)
             null
-    else
-        null;
+        else if (first_slash) |position|
+            without_leading_slash[0..position]
+        else
+            without_leading_slash;
+        key = if (first_slash) |position|
+            if (position + 1 < without_leading_slash.len)
+                without_leading_slash[position + 1 ..]
+            else
+                null
+        else
+            null;
+    }
     const operation = classify(method, bucket, key, parameters);
     return .{
         .allocator = allocator,
@@ -105,8 +178,51 @@ pub fn parseTarget(
         .parameters = parameters,
         .bucket = bucket,
         .key = key,
+        .addressing_style = addressing_style,
         .operation = operation,
     };
+}
+
+const HostStyle = struct {
+    style: AddressingStyle,
+    bucket: ?[]const u8 = null,
+};
+
+fn publicEndpointAuthority(endpoint: []const u8) ?[]const u8 {
+    const authority = if (std.mem.startsWith(u8, endpoint, "http://"))
+        endpoint["http://".len..]
+    else if (std.mem.startsWith(u8, endpoint, "https://"))
+        endpoint["https://".len..]
+    else
+        return null;
+    if (authority.len == 0 or std.mem.indexOfAny(u8, authority, "/?#@") != null) return null;
+    return authority;
+}
+
+fn classifyHost(host: []const u8, endpoint_authority: []const u8) ?HostStyle {
+    if (host.len == 0 or host[host.len - 1] == '.') return null;
+    if (std.ascii.eqlIgnoreCase(host, endpoint_authority)) return .{ .style = .path };
+    if (endpoint_authority.len > std.math.maxInt(usize) - 1) return null;
+    const suffix_len = endpoint_authority.len + 1;
+    if (host.len <= suffix_len or !std.ascii.eqlIgnoreCase(host[host.len - endpoint_authority.len ..], endpoint_authority)) {
+        return null;
+    }
+    const separator = host.len - endpoint_authority.len - 1;
+    if (host[separator] != '.') return null;
+    const bucket = host[0..separator];
+    if (bucket.len == 0 or std.mem.indexOfScalar(u8, bucket, ':') != null) return null;
+    return .{ .style = .virtual_hosted, .bucket = bucket };
+}
+
+fn normalizedVirtualPath(
+    allocator: std.mem.Allocator,
+    bucket: []const u8,
+    key: ?[]const u8,
+) ParseError![]u8 {
+    return if (key) |value|
+        std.fmt.allocPrint(allocator, "/{s}/{s}", .{ bucket, value }) catch error.OutOfMemory
+    else
+        std.fmt.allocPrint(allocator, "/{s}", .{bucket}) catch error.OutOfMemory;
 }
 
 fn classify(
@@ -123,6 +239,8 @@ fn classify(
             .DELETE => .delete_bucket,
             .POST => if (hasQueryValue(parameters, "delete", ""))
                 .delete_objects
+            else if (parameters.len == 0)
+                .post_policy_upload
             else
                 .unsupported,
             .GET => if (hasQueryValue(parameters, "list-type", "2"))
@@ -217,7 +335,7 @@ fn parseQuery(
     return parameters.toOwnedSlice(allocator) catch error.OutOfMemory;
 }
 
-fn strictPercentDecode(
+pub fn strictPercentDecode(
     allocator: std.mem.Allocator,
     value: []const u8,
 ) ParseError![]u8 {
@@ -265,6 +383,8 @@ pub const ErrorKind = enum {
     authorization_query_parameters_error,
     request_time_too_skewed,
     request_expired,
+    expired_token,
+    invalid_token,
     no_such_bucket,
     no_such_key,
     bucket_already_exists,
@@ -279,10 +399,13 @@ pub const ErrorKind = enum {
     bad_digest,
     x_amz_content_sha256_mismatch,
     invalid_range,
+    not_modified,
+    precondition_failed,
     no_such_upload,
     invalid_part,
     invalid_part_order,
     entity_too_small,
+    entity_too_large,
     not_implemented,
     service_unavailable,
     internal_error,
@@ -303,6 +426,8 @@ pub fn describe(kind: ErrorKind) ErrorDescriptor {
         .authorization_query_parameters_error => .{ .code = "AuthorizationQueryParametersError", .message = "The query string authentication parameters are malformed or invalid.", .status = .bad_request },
         .request_time_too_skewed => .{ .code = "RequestTimeTooSkewed", .message = "The difference between the request time and the server's time is too large.", .status = .forbidden },
         .request_expired => .{ .code = "AccessDenied", .message = "Request has expired.", .status = .forbidden },
+        .expired_token => .{ .code = "ExpiredToken", .message = "The provided token has expired.", .status = .forbidden },
+        .invalid_token => .{ .code = "InvalidToken", .message = "The provided token is malformed or otherwise invalid.", .status = .forbidden },
         .no_such_bucket => .{ .code = "NoSuchBucket", .message = "The specified bucket does not exist.", .status = .not_found },
         .no_such_key => .{ .code = "NoSuchKey", .message = "The specified key does not exist.", .status = .not_found },
         .bucket_already_exists => .{ .code = "BucketAlreadyExists", .message = "The requested bucket name is not available.", .status = .conflict },
@@ -317,10 +442,13 @@ pub fn describe(kind: ErrorKind) ErrorDescriptor {
         .bad_digest => .{ .code = "BadDigest", .message = "The checksum you specified did not match what we received.", .status = .bad_request },
         .x_amz_content_sha256_mismatch => .{ .code = "XAmzContentSHA256Mismatch", .message = "The provided x-amz-content-sha256 does not match what was computed.", .status = .bad_request },
         .invalid_range => .{ .code = "InvalidRange", .message = "The requested range is not satisfiable.", .status = .range_not_satisfiable },
+        .not_modified => .{ .code = "NotModified", .message = "Not Modified.", .status = .not_modified },
+        .precondition_failed => .{ .code = "PreconditionFailed", .message = "At least one of the preconditions you specified did not hold.", .status = .precondition_failed },
         .no_such_upload => .{ .code = "NoSuchUpload", .message = "The specified multipart upload does not exist.", .status = .not_found },
         .invalid_part => .{ .code = "InvalidPart", .message = "One or more of the specified parts could not be found or did not match the provided ETag.", .status = .bad_request },
         .invalid_part_order => .{ .code = "InvalidPartOrder", .message = "The list of parts was not in ascending order.", .status = .bad_request },
         .entity_too_small => .{ .code = "EntityTooSmall", .message = "Your proposed upload is smaller than the minimum allowed object size.", .status = .bad_request },
+        .entity_too_large => .{ .code = "EntityTooLarge", .message = "Your proposed upload exceeds the maximum allowed size.", .status = .bad_request },
         .not_implemented => .{ .code = "NotImplemented", .message = "A header or operation you provided implies functionality that is not implemented.", .status = .not_implemented },
         .service_unavailable => .{ .code = "ServiceUnavailable", .message = "Please reduce your request rate.", .status = .service_unavailable },
         .internal_error => .{ .code = "InternalError", .message = "We encountered an internal error. Please try again.", .status = .internal_server_error },
@@ -392,6 +520,10 @@ test "S3 target parsing separates path-style buckets objects and List V2" {
     defer delete_objects.deinit();
     try std.testing.expectEqual(.delete_objects, delete_objects.operation);
 
+    const post_policy = try parseTarget(std.testing.allocator, .POST, "/project-assets");
+    defer post_policy.deinit();
+    try std.testing.expectEqual(.post_policy_upload, post_policy.operation);
+
     const create_multipart = try parseTarget(std.testing.allocator, .POST, "/project-assets/large.bin?uploads");
     defer create_multipart.deinit();
     try std.testing.expectEqual(.create_multipart_upload, create_multipart.operation);
@@ -403,6 +535,67 @@ test "S3 target parsing separates path-style buckets objects and List V2" {
     const complete = try parseTarget(std.testing.allocator, .POST, "/project-assets/large.bin?uploadId=opaque");
     defer complete.deinit();
     try std.testing.expectEqual(.complete_multipart_upload, complete.operation);
+}
+
+test "S3 target parsing supports configured virtual-hosted style" {
+    const object = try parseTargetWithHost(
+        std.testing.allocator,
+        .GET,
+        "/photos/cover.jpg",
+        "project-assets.objects.example.test:9000",
+        "http://objects.example.test:9000",
+        true,
+    );
+    defer object.deinit();
+    try std.testing.expectEqual(.virtual_hosted, object.addressing_style);
+    try std.testing.expectEqualStrings("project-assets", object.bucket.?);
+    try std.testing.expectEqualStrings("photos/cover.jpg", object.key.?);
+    try std.testing.expectEqualStrings("/project-assets/photos/cover.jpg", object.decoded_path);
+    try std.testing.expectEqual(.get_object, object.operation);
+
+    const bucket = try parseTargetWithHost(
+        std.testing.allocator,
+        .GET,
+        "/?list-type=2",
+        "project-assets.objects.example.test:9000",
+        "https://objects.example.test:9000",
+        true,
+    );
+    defer bucket.deinit();
+    try std.testing.expectEqual(.virtual_hosted, bucket.addressing_style);
+    try std.testing.expectEqualStrings("project-assets", bucket.bucket.?);
+    try std.testing.expect(bucket.key == null);
+    try std.testing.expectEqual(.list_objects_v2, bucket.operation);
+    try std.testing.expectEqualStrings("/project-assets", bucket.decoded_path);
+}
+
+test "S3 virtual-hosted style rejects an authority outside the configured endpoint" {
+    try std.testing.expectError(
+        error.HostNotAllowed,
+        parseTargetWithHost(
+            std.testing.allocator,
+            .GET,
+            "/object.txt",
+            "project-assets.other.example.test:9000",
+            "http://objects.example.test:9000",
+            true,
+        ),
+    );
+}
+
+test "S3 virtual-hosted style keeps the configured authority path-compatible" {
+    const parsed = try parseTargetWithHost(
+        std.testing.allocator,
+        .GET,
+        "/project-assets/object.txt",
+        "objects.example.test:9000",
+        "http://objects.example.test:9000",
+        true,
+    );
+    defer parsed.deinit();
+    try std.testing.expectEqual(.path, parsed.addressing_style);
+    try std.testing.expectEqualStrings("project-assets", parsed.bucket.?);
+    try std.testing.expectEqualStrings("object.txt", parsed.key.?);
 }
 
 test "S3 XML errors escape resources and expose stable request IDs" {

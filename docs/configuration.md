@@ -25,6 +25,8 @@ storage:
   stream_buffer_size: 65536
 
 s3:
+  public_endpoint: "http://127.0.0.1:9000"
+  virtual_hosted_style: false
   region: "us-east-1"
   request_time_skew_seconds: 900
   multipart_expiry_seconds: 604800
@@ -44,6 +46,8 @@ admin:
 | `storage.data_root` | `data` | string | ZigFS 独占数据根目录 |
 | `storage.stream_buffer_size` | `65536` | integer | Object 流式 I/O 缓冲区，允许 4096 至 1048576 bytes |
 | `s3.region` | `us-east-1` | string | Signature V4 Credential Scope 和 CreateBucket LocationConstraint 所属 Region |
+| `s3.public_endpoint` | `http://127.0.0.1:9000` | string | 客户端访问的 S3 authority；不能包含路径、凭证或 Query |
+| `s3.virtual_hosted_style` | `false` | bool | 是否接受 `<bucket>.<public_endpoint authority>/<key>`；关闭时仅使用 Path-style |
 | `s3.request_time_skew_seconds` | `900` | integer | Header 签名及 Presigned 未来签发时间允许的时钟偏差，允许 60 至 3600 秒 |
 | `s3.multipart_expiry_seconds` | `604800` | integer | 启动恢复时清理未完成 Multipart Upload 的超时，允许 60 至 2592000 秒 |
 

@@ -18,6 +18,7 @@ export function SettingsView({ api }: { api: ApiClient }) {
         <section className="panel table-panel"><dl className="definition-list">
           <Row label="API address" value={settings.api_address} />
           <Row label="S3 public endpoint" value={settings.s3_public_endpoint} />
+          <Row label="Virtual-hosted style" value={settings.s3_virtual_hosted_style ? 'Enabled' : 'Disabled'} />
           <Row label="S3 region" value={settings.s3_region} />
           <Row label="Request clock skew" value={`${settings.request_time_skew_seconds}s`} />
           <Row label="Multipart expiry" value={`${settings.multipart_expiry_seconds}s`} />
