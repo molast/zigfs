@@ -24,6 +24,7 @@ tmp/
 *.log
 *.pid
 benchmarks/reports/
+compatibility/reports/
 
 # Local configuration and secrets
 .env

@@ -1,12 +1,25 @@
 # S3/Data API 兼容矩阵
 
 - **版本：** V1 Draft 1.0
-- **更新日期：** 2026-09-04
+- **更新日期：** 2026-09-07
 - **默认 Endpoint：** `http://127.0.0.1:9000`
 - **默认 Region：** `us-east-1`
 
 本文是 ZigFS 文件操作接口和后续多语言 SDK 的能力事实来源。`Implemented`
 表示 Handler、鉴权、持久化和 Zig 原生 TCP 回归测试已完成；外部客户端实测状态单独列出。
+
+## 外部客户端回归
+
+Phase 9 的可重复 Runner 位于 [`compatibility/README.md`](../../compatibility/README.md)，
+运行 `./compatibility/run.sh` 会隔离启动 ZigFS、通过 Management API 签发临时凭证，并输出
+`phase9-compatibility-v1` JSON/Markdown 报告。当前环境实测版本为 AWS CLI 2.36.38、MinIO
+Client 2025-08-13、rclone 1.75.0 和 Node 24 原生 HTTP。
+
+基础 Bucket/Object/List/Head/Get/Delete、CopyObject、Presigned GET 和 Multipart 流程均由
+Runner 实际执行并校验字节内容。客户端没有稳定入口的 POST Policy、signed streaming Trailer
+checksum，以及 AWS CLI 自动附加但 ZigFS 当前未声明的 DeleteObjects checksum 变体，会明确记为
+`Unsupported`，不计作 `Passed`；真正的协议、状态码或内容错误记为 `Failed`。独立官方 AWS SDK
+运行时尚未安装，报告中记为 `Skipped`。
 
 ## 请求模型
 
@@ -203,9 +216,10 @@ Request ID Header，不返回 XML Body。
 |---|---|---|
 | Zig 原生环回 TCP Contract Test | Pass | 未签名、错误/过期签名、永久/临时 Credential、Session Token Header/Presigned 正反向、POST Policy（签名、条件、`${filename}`、状态码、大小限制、失败不发布）、禁用 Credential、Bucket/Object CRUD、Digest、五种 Flexible Checksum Header/Trailer、XML、List V2 分页、Conditional GET/HEAD/PUT（304/412、ETag/日期优先级、条件 PUT 不发布）、CopyObject（COPY/REPLACE、流式字节一致、标准 XML）、Virtual-hosted Header/Presigned SigV4 与 Host 拒绝、完整 Multipart 生命周期、五种 signed trailer 正向与失败不发布、Object/Part 中途断流清理、下载取消释放租约、稳定错误、Method/Query 篡改和过期拒绝 |
 | AWS 官方 S3 SigV4 GET Object 向量 | Pass | Canonical Request、Scope、HMAC-SHA256，签名 `67fe34c...2722900` |
-| AWS CLI 2.36.38 | Pass | 错误 AK、Bucket/Object CRUD、特殊 Key、List V2/Delimiter/分页、Content-Type、ETag、CRC64NVME、错误 checksum、单 Range `206` 与越界 `416`、Presigned GET、Virtual-hosted-style Create/Put/Get/List/Delete 字节一致性；两 Part Multipart Create/Upload/List/Complete/GET 字节一致性和 Abort；其他 Flexible Checksum 算法的原生客户端命令仍属于扩展矩阵 |
-| MinIO Client (`mc`) 2025-08-13 | Pass with additional POST coverage pending | Alias、Bucket CRUD、Location、List V2、Head/Get、签名流式 Put、DeleteObjects、Presigned GET、CopyObject；70 MiB/5 Part Multipart 上传、复合 ETag、下载 SHA-256 一致；POST Policy 与其他 streaming checksum 变体待追加命令回归 |
-| rclone 1.75.0 | Pass with config | `list_version=2` 下 Bucket/Object CRUD、Metadata、MD5、Presigned GET；5 MiB Part、3 路并发的 70 MiB Multipart 上传和下载 SHA-256 一致；`provider=Other` 默认 ListObjects V1 不在当前范围 |
+| Phase 9 Compatibility Runner / AWS CLI 2.36.38 | Pass with Unsupported variant | `compatibility/run.sh --client aws` 实测 Bucket/Object CRUD、List、Head、Get、Presigned GET、CopyObject；DeleteObjects 因 AWS CLI 自动附加服务端未声明的 checksum 变体明确记为 `Unsupported` |
+| Phase 9 Compatibility Runner / MinIO Client (`mc`) 2025-08-13 | Pass with Unsupported coverage | `compatibility/run.sh --client mc` 实测 Bucket/Object CRUD、递归 List、Head/Get、签名流式 Put、DeleteObjects、Presigned GET、CopyObject；POST Policy 与 streaming checksum 变体无稳定 CLI 入口，记为 `Unsupported` |
+| Phase 9 Compatibility Runner / rclone 1.75.0 | Pass with config | `list_version=2`、`force_path_style=true` 下实测 Bucket/Object CRUD、递归 List、内容校验、CopyObject 和清理；rclone 不生成 S3 SigV4 Presigned URL、无稳定 POST Policy/Trailer checksum CLI，均记为 `Unsupported` |
+| Phase 9 Compatibility Runner / Node 24 HTTP | Pass with Unsupported coverage | 原生 SigV4 Header/Presigned、Bucket/Object/List、CopyObject、Multipart、DeleteObjects 和 SHA256 Flexible Checksum Header；Node fetch 无法构造 signed streaming Trailer，记为 `Unsupported` |
 | TypeScript/Web Conformance | Pass | Web Crypto SigV4、Web Streams Put/Get、64 位 `bigint`、Range、List V2 Token、Multipart、Abort、错误映射和取消后继续访问 |
 | Swift/iOS Conformance | Pass | CryptoKit SigV4、Foundation 文件/响应流、64 位 `UInt64`、Range、List V2 Token、Multipart、Abort、错误映射和取消后继续访问 |
 | 独立 AWS SDK / signed trailer 外部扩展 | Phase 9 Additional coverage: Pending | AWS CLI、mc、rclone 不作为独立 SDK 运行时；Phase 9 将补充独立 AWS SDK 运行时和更多 trailer 变体验证 |

@@ -91,6 +91,13 @@ Phase 8 Reliability and Performance 已加入确定性故障注入、写能力�
 Requests、CopyObject、Virtual-hosted-style、Temporary Credentials、POST Policy Upload 和 Flexible Checksum Trailer 已完成；接下来优先补齐当前 S3 兼容矩阵中的
 外部客户端回归，再冻结 V1 Release Candidate。
 
+外部客户端兼容性 Runner 位于 [compatibility/README.md](compatibility/README.md)，可重复运行
+AWS CLI、MinIO Client、rclone 和原生 HTTP 矩阵，并输出不含凭证的 JSON/Markdown 报告：
+
+```bash
+./compatibility/run.sh
+```
+
 运维、备份恢复和 V1 限制见 [docs/operations.md](docs/operations.md)、
 [docs/backup-and-recovery.md](docs/backup-and-recovery.md) 和
 [docs/known-limitations.md](docs/known-limitations.md)。基准工作负载和采样方法见
