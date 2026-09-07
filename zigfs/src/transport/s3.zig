@@ -293,7 +293,7 @@ pub fn serveRequest(
             parsed.bucket.?,
             parsed.key.?,
             auth_material.owner,
-            headers.items,
+            payload_hash,
             request_id,
         ),
         .create_multipart_upload => serveCreateMultipartUpload(
@@ -1453,10 +1453,10 @@ fn serveDeleteObject(
     bucket_name: []const u8,
     key: []const u8,
     owner: []const u8,
-    headers: []const sigv4.Header,
+    payload_hash: sigv4.PayloadHash,
     request_id: []const u8,
 ) !std.http.Status {
-    if (ensureEmptyRequest(request, headers) != null) {
+    if (ensureEmptyRequestWithHash(request, payload_hash) != null) {
         return respondError(request, application.allocator, .invalid_request, request_id);
     }
     const bucket = ensureBucketOwner(application, bucket_name, owner) catch |err| {

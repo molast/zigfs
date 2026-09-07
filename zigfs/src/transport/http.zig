@@ -2293,7 +2293,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
     try std.testing.expectEqual(std.http.Status.ok, get_presigned_put.status);
     try std.testing.expectEqualStrings(presigned_put_body, get_presigned_put.body);
 
-    const delete_presigned_put = try sendTestSignedRequest(
+    const delete_presigned_put = try sendTestPresignedRequest(
         std.testing.allocator,
         std.testing.io,
         address,
