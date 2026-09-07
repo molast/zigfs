@@ -1,4 +1,5 @@
 const std = @import("std");
+const checksum = @import("../common/checksum.zig");
 const bucket_domain = @import("../domain/bucket.zig");
 const multipart_domain = @import("../domain/multipart.zig");
 const object_domain = @import("../domain/object.zig");
@@ -41,6 +42,7 @@ pub const UploadPartOptions = struct {
     expected_md5: ?[16]u8 = null,
     expected_sha256: ?[32]u8 = null,
     expected_crc64nvme: ?u64 = null,
+    expected_checksum: ?checksum.Value = null,
 };
 
 pub const CompletePart = struct {
@@ -161,6 +163,9 @@ pub const MultipartService = struct {
         }
         if (options.expected_crc64nvme) |expected| {
             if (expected != staged.checksum_crc64nvme) return error.ChecksumMismatch;
+        }
+        if (options.expected_checksum) |expected| {
+            if (!stagedMatchesChecksum(staged, expected)) return error.ChecksumMismatch;
         }
 
         const upload_lock = self.upload_locks.get("multipart", upload_id);
@@ -558,6 +563,16 @@ fn mapStageError(err: data_store_port.Error) Error {
         error.Conflict => error.Conflict,
         error.CorruptData => error.CorruptData,
         else => error.Unavailable,
+    };
+}
+
+fn stagedMatchesChecksum(staged: data_store_port.Staged, expected: checksum.Value) bool {
+    return switch (expected) {
+        .crc32 => |value| value == staged.checksum_crc32,
+        .crc32c => |value| value == staged.checksum_crc32c,
+        .crc64nvme => |value| value == staged.checksum_crc64nvme,
+        .sha1 => |value| std.mem.eql(u8, &value, &staged.checksum_sha1),
+        .sha256 => |value| std.mem.eql(u8, &value, &staged.checksum_sha256),
     };
 }
 

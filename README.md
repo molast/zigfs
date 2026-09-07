@@ -48,8 +48,8 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 - 永久 AK/SK 与临时 AK/SK/Session Token 创建、查询、更新、禁用、过期、删除、重启恢复和最小 Bucket/Object Policy
 - Signature V4 Header/Presigned Query 验签、Canonical URI/Query/Header、Region Scope、Payload Hash、有效期和时钟偏差校验
 - Path-style 与可配置 Virtual-hosted-style S3 Router、Host-aware SigV4、稳定 XML 错误，以及 Bucket/Object/List V2 HTTP Handler
-- S3 Put/Get 流式传输、Content-MD5/SHA-256/CRC64NVME 校验、ETag、用户元数据和分页响应
-- AWS SigV4 aws-chunked 签名链，以及 CRC64NVME signed trailer 的签名与 checksum 校验
+- S3 Put/Get 流式传输、Content-MD5/SHA-256 与 CRC32/CRC32C/CRC64NVME/SHA1/SHA256 Flexible Checksum 校验、ETag、用户元数据和分页响应
+- AWS SigV4 aws-chunked 签名链，以及五种 Flexible Checksum signed trailer 的签名与 checksum 校验
 - S3 Multipart Create、并发 UploadPart、ListParts、Complete、Abort、复合 ETag 和启动超时清理
 - 真实环回 TCP S3 集成测试，覆盖鉴权拒绝、CRUD、分页、Policy 与 Credential 禁用
 - ZigFS Management API：Bucket、Object 管理视图、Presign、AK/SK、Storage、System、Health 和 Settings
@@ -75,12 +75,12 @@ TCP 回归测试；AWS CLI 2.36.38、rclone 1.75.0 和 mc 2025-08-13 已通过�
 包括 mc 默认的签名流式 Put 和 DeleteObjects 删除。Phase 5 已完成，单 Range GetObject
 及 `206/416` 语义已通过 AWS CLI；对象级 Presigned GET/PUT 已实现，AWS CLI、mc、rclone
 生成的 Presigned GET 均通过匿名下载与字节一致性验证。Multipart 完整生命周期也已通过
-AWS CLI、mc 和 rclone 的并发大文件上传与下载校验。CRC64NVME signed streaming trailer
+AWS CLI、mc 和 rclone 的并发大文件上传与下载校验。五种 Flexible Checksum signed streaming trailer
 已完成原生 TCP 正向、错误 checksum、错误 trailer 签名及失败不发布回归；Object/Part 中途
 断流不会发布数据或遗留暂存文件，下载取消会释放读取租约。条件请求已支持 GET/HEAD/PUT
 的 ETag/日期前置条件和 `304`/`412` 语义。Virtual-hosted-style 已支持（默认关闭，可通过
 `s3.virtual_hosted_style` 开启）。Temporary Credentials 已支持 Header 与 Presigned SigV4
-Session Token 绑定；POST Policy Upload 已支持 SigV4 Policy、条件和 multipart 文件流；其他 trailer checksum 算法仍明确返回 `NotImplemented` 或不在当前兼容范围；独立 AWS SDK trailer 矩阵作为补充验证继续维护。Phase 6 Management and Admin
+Session Token 绑定；POST Policy Upload 已支持 SigV4 Policy、条件和 multipart 文件流；五种 Flexible Checksum trailer 均已实现，独立 AWS SDK trailer 矩阵作为补充验证继续维护。Phase 6 Management and Admin
 已实现 ZigFS Management Handler、真实 TCP Contract、Gin BFF 和完整 React 管理页面。
 Phase 7 SDK Conformance 已完成语言无关契约和共享向量，并由 TypeScript/Web、Swift/iOS
 两个生态直接连接隔离 ZigFS 通过完整文件操作 Gate；该阶段验证 S3 契约，不发布第二套协议。
@@ -88,8 +88,8 @@ Phase 8 Reliability and Performance 已加入确定性故障注入、写能力�
 测试，以及可输出原始 JSON 的 `smoke`/`full` 基准工具。基准结果与硬件、构建模式和并发度绑定，
 不构成脱离环境的性能承诺。
 当前阶段为 Phase 9 S3 Compatibility Hardening and V1 Release Candidate，Conditional
-Requests、CopyObject、Virtual-hosted-style、Temporary Credentials 和 POST Policy Upload 已完成；接下来优先补齐当前 S3 兼容矩阵中声明的
-其他 trailer checksum 差异，再冻结 V1 Release Candidate。
+Requests、CopyObject、Virtual-hosted-style、Temporary Credentials、POST Policy Upload 和 Flexible Checksum Trailer 已完成；接下来优先补齐当前 S3 兼容矩阵中的
+外部客户端回归，再冻结 V1 Release Candidate。
 
 运维、备份恢复和 V1 限制见 [docs/operations.md](docs/operations.md)、
 [docs/backup-and-recovery.md](docs/backup-and-recovery.md) 和

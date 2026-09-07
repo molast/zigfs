@@ -7,6 +7,7 @@ const multipart_service = @import("../application/multipart_service.zig");
 const object_service = @import("../application/object_service.zig");
 const policy = @import("../auth/policy.zig");
 const sigv4 = @import("../auth/sigv4.zig");
+const checksum = @import("../common/checksum.zig");
 const time = @import("../common/time.zig");
 const credential_domain = @import("../domain/credential.zig");
 const object_domain = @import("../domain/object.zig");
@@ -27,6 +28,7 @@ const ByteRange = struct {
 };
 
 const ChecksumRequest = struct {
+    header: ?checksum.Value = null,
     header_crc64nvme: ?u64 = null,
     trailer: aws_chunked.Trailer = .none,
 };
@@ -679,6 +681,7 @@ fn servePutObject(
         error.InvalidRequest => return respondError(request, application.allocator, .invalid_request, request_id),
     };
     const expected_crc64nvme = checksum_request.header_crc64nvme;
+    const expected_checksum = checksum_request.header;
     const expected_sha256: ?[32]u8 = switch (payload_hash) {
         .digest => |digest| digest,
         .unsigned => null,
@@ -734,12 +737,13 @@ fn servePutObject(
         .expected_md5 = expected_md5,
         .expected_sha256 = expected_sha256,
         .expected_crc64nvme = expected_crc64nvme,
+        .expected_checksum = expected_checksum,
         .expected_current = expected_current,
     }) catch |err| {
         const kind: protocol.ErrorKind = if (err == error.InputReadFailed and streaming_source_active)
             mapStreamingFailure(streaming_source.failure)
         else if (err == error.ChecksumMismatch)
-            if (expected_md5 != null or expected_crc64nvme != null)
+            if (expected_md5 != null or expected_checksum != null)
                 .bad_digest
             else
                 .x_amz_content_sha256_mismatch
@@ -750,18 +754,16 @@ fn servePutObject(
     defer object.deinit(application.allocator);
     var etag_buffer: [34]u8 = undefined;
     const etag = formatEtag(object.etag_md5, &etag_buffer);
-    const response_crc64nvme = expected_crc64nvme orelse if (streaming_source_active)
-        streaming_source.verified_crc64nvme
+    const response_checksum = expected_checksum orelse if (streaming_source_active)
+        streaming_source.verified_checksum
     else
         null;
-    if (response_crc64nvme) |checksum| {
-        var checksum_bytes: [8]u8 = undefined;
-        std.mem.writeInt(u64, &checksum_bytes, checksum, .big);
-        var encoded_buffer: [12]u8 = undefined;
-        const encoded = std.base64.standard.Encoder.encode(&encoded_buffer, &checksum_bytes);
+    if (response_checksum) |value| {
+        var encoded_buffer: [64]u8 = undefined;
+        const encoded = checksum.encodeValue(value, &encoded_buffer);
         const extra = [_]std.http.Header{
             .{ .name = "etag", .value = etag },
-            .{ .name = "x-amz-checksum-crc64nvme", .value = encoded },
+            .{ .name = value.algorithm().headerName(), .value = encoded },
         };
         return respondEmpty(request, .ok, request_id, &extra);
     }
@@ -1556,6 +1558,7 @@ fn serveUploadPart(
         error.InvalidRequest => return respondError(request, application.allocator, .invalid_request, request_id),
     };
     const expected_crc64nvme = checksum_request.header_crc64nvme;
+    const expected_checksum = checksum_request.header;
     const expected_sha256: ?[32]u8 = switch (payload_hash) {
         .digest => |digest| digest,
         .unsigned, .streaming => null,
@@ -1610,30 +1613,29 @@ fn serveUploadPart(
             .expected_md5 = expected_md5,
             .expected_sha256 = expected_sha256,
             .expected_crc64nvme = expected_crc64nvme,
+            .expected_checksum = expected_checksum,
         },
     ) catch |err| {
         const kind: protocol.ErrorKind = if (err == error.InputReadFailed and streaming_source_active)
             mapStreamingFailure(streaming_source.failure)
         else if (err == error.ChecksumMismatch)
-            if (expected_md5 != null or expected_crc64nvme != null) .bad_digest else .x_amz_content_sha256_mismatch
+            if (expected_md5 != null or expected_checksum != null) .bad_digest else .x_amz_content_sha256_mismatch
         else
             mapMultipartError(err);
         return respondError(request, application.allocator, kind, request_id);
     };
     var etag_buffer: [34]u8 = undefined;
     const etag = formatEtag(part.etag_md5, &etag_buffer);
-    const response_crc64nvme = expected_crc64nvme orelse if (streaming_source_active)
-        streaming_source.verified_crc64nvme
+    const response_checksum = expected_checksum orelse if (streaming_source_active)
+        streaming_source.verified_checksum
     else
         null;
-    if (response_crc64nvme) |checksum| {
-        var checksum_bytes: [8]u8 = undefined;
-        std.mem.writeInt(u64, &checksum_bytes, checksum, .big);
-        var encoded_buffer: [12]u8 = undefined;
-        const encoded = std.base64.standard.Encoder.encode(&encoded_buffer, &checksum_bytes);
+    if (response_checksum) |value| {
+        var encoded_buffer: [64]u8 = undefined;
+        const encoded = checksum.encodeValue(value, &encoded_buffer);
         const extra = [_]std.http.Header{
             .{ .name = "etag", .value = etag },
-            .{ .name = "x-amz-checksum-crc64nvme", .value = encoded },
+            .{ .name = value.algorithm().headerName(), .value = encoded },
         };
         return respondEmpty(request, .ok, request_id, &extra);
     }
@@ -2246,7 +2248,7 @@ fn hasUnsupportedHeaders(
         }
         if (std.ascii.eqlIgnoreCase(header.name, "x-amz-trailer")) {
             if (!upload_operation or !signed_streaming_trailer or
-                !std.ascii.eqlIgnoreCase(header.value, "x-amz-checksum-crc64nvme")) return true;
+                checksumAlgorithmFromHeaderName(header.value) == null) return true;
             continue;
         }
         if (std.ascii.eqlIgnoreCase(header.name, "x-amz-decoded-content-length")) {
@@ -2255,10 +2257,10 @@ fn hasUnsupportedHeaders(
         }
         if (std.ascii.eqlIgnoreCase(header.name, "x-amz-sdk-checksum-algorithm")) {
             if ((operation != .put_object and operation != .upload_part) or
-                !std.ascii.eqlIgnoreCase(header.value, "CRC64NVME")) return true;
+                checksum.Algorithm.parse(header.value) == null) return true;
             continue;
         }
-        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-checksum-crc64nvme")) {
+        if (checksumHeaderAlgorithm(header.name) != null) {
             if (operation != .put_object and operation != .upload_part) return true;
             continue;
         }
@@ -2416,10 +2418,24 @@ fn parseCrc64Nvme(
     return (try parseChecksumRequest(headers)).header_crc64nvme;
 }
 
+fn checksumHeaderAlgorithm(name: []const u8) ?checksum.Algorithm {
+    inline for (std.meta.fields(checksum.Algorithm)) |field| {
+        const algorithm: checksum.Algorithm = @enumFromInt(field.value);
+        if (std.ascii.eqlIgnoreCase(name, algorithm.headerName())) return algorithm;
+    }
+    return null;
+}
+
+fn checksumAlgorithmFromHeaderName(name: []const u8) ?checksum.Algorithm {
+    return checksumHeaderAlgorithm(name);
+}
+
 fn parseChecksumRequest(
     headers: []const sigv4.Header,
 ) error{ InvalidDigest, UnsupportedChecksum, InvalidRequest }!ChecksumRequest {
     var algorithm: ?[]const u8 = null;
+    var algorithm_value: ?checksum.Algorithm = null;
+    var checksum_algorithm: ?checksum.Algorithm = null;
     var encoded: ?[]const u8 = null;
     var trailer_name: ?[]const u8 = null;
     var content_encoding: ?[]const u8 = null;
@@ -2427,8 +2443,10 @@ fn parseChecksumRequest(
         if (std.ascii.eqlIgnoreCase(header.name, "x-amz-sdk-checksum-algorithm")) {
             if (algorithm != null) return error.InvalidDigest;
             algorithm = header.value;
-        } else if (std.ascii.eqlIgnoreCase(header.name, "x-amz-checksum-crc64nvme")) {
+            algorithm_value = checksum.Algorithm.parse(header.value) orelse return error.UnsupportedChecksum;
+        } else if (checksumHeaderAlgorithm(header.name)) |header_algorithm| {
             if (encoded != null) return error.InvalidDigest;
+            checksum_algorithm = header_algorithm;
             encoded = header.value;
         } else if (std.ascii.eqlIgnoreCase(header.name, "x-amz-trailer")) {
             if (trailer_name != null) return error.InvalidDigest;
@@ -2436,10 +2454,9 @@ fn parseChecksumRequest(
         } else if (std.ascii.eqlIgnoreCase(header.name, "content-encoding")) {
             if (content_encoding != null) return error.InvalidRequest;
             content_encoding = header.value;
+        } else if (std.ascii.startsWithIgnoreCase(header.name, "x-amz-checksum-")) {
+            return error.UnsupportedChecksum;
         }
-    }
-    if (algorithm) |value| {
-        if (!std.ascii.eqlIgnoreCase(value, "CRC64NVME")) return error.UnsupportedChecksum;
     }
     const payload_hash_value = singleHeader(headers, "x-amz-content-sha256") catch {
         return error.InvalidDigest;
@@ -2455,22 +2472,23 @@ fn parseChecksumRequest(
         {
             return error.InvalidRequest;
         }
-        if (!std.ascii.eqlIgnoreCase(name, "x-amz-checksum-crc64nvme")) {
-            return error.UnsupportedChecksum;
-        }
+        const trailer_algorithm = checksumAlgorithmFromHeaderName(name) orelse return error.UnsupportedChecksum;
+        if (algorithm_value) |declared| if (declared != trailer_algorithm) return error.InvalidDigest;
         if (encoded != null) return error.InvalidDigest;
-        return .{ .trailer = .crc64nvme };
+        return .{ .trailer = aws_chunked.Trailer.fromAlgorithm(trailer_algorithm) };
     }
     if (signed_trailer) return error.InvalidRequest;
     if (algorithm != null and encoded == null) return error.InvalidDigest;
     const value = encoded orelse return .{};
-    const decoded_size = std.base64.standard.Decoder.calcSizeForSlice(value) catch {
-        return error.InvalidDigest;
-    };
-    if (decoded_size != 8) return error.InvalidDigest;
-    var digest: [8]u8 = undefined;
-    std.base64.standard.Decoder.decode(&digest, value) catch return error.InvalidDigest;
-    return .{ .header_crc64nvme = std.mem.readInt(u64, &digest, .big) };
+    const selected_algorithm = checksum_algorithm orelse return error.InvalidDigest;
+    if (algorithm_value) |declared| if (declared != selected_algorithm) return error.InvalidDigest;
+    const decoded = checksum.decodeValue(selected_algorithm, value) orelse return error.InvalidDigest;
+    var result: ChecksumRequest = .{ .header = decoded };
+    switch (decoded) {
+        .crc64nvme => |crc| result.header_crc64nvme = crc,
+        else => {},
+    }
+    return result;
 }
 
 const PutHeaders = struct {
@@ -2888,7 +2906,7 @@ fn respondXml(
     headers[2] = .{ .name = "x-amz-request-id", .value = request_id };
     headers[3] = .{ .name = "x-request-id", .value = request_id };
     headers[4] = .{ .name = "access-control-allow-origin", .value = "*" };
-    headers[5] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id" };
+    headers[5] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" };
     @memcpy(headers[6..][0..additional_headers.len], additional_headers);
     try request.respond(body, .{
         .status = status,
@@ -2909,7 +2927,7 @@ fn respondEmpty(
     headers[1] = .{ .name = "x-amz-request-id", .value = request_id };
     headers[2] = .{ .name = "x-request-id", .value = request_id };
     headers[3] = .{ .name = "access-control-allow-origin", .value = "*" };
-    headers[4] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id" };
+    headers[4] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" };
     @memcpy(headers[5..][0..additional_headers.len], additional_headers);
     try request.respond("", .{
         .status = status,
@@ -2928,8 +2946,8 @@ fn respondCorsPreflight(
         .{ .name = "x-request-id", .value = request_id },
         .{ .name = "access-control-allow-origin", .value = "*" },
         .{ .name = "access-control-allow-methods", .value = "GET, PUT, DELETE, HEAD, OPTIONS" },
-        .{ .name = "access-control-allow-headers", .value = "content-type, x-amz-content-sha256, x-amz-date, x-amz-security-token, authorization, x-amz-checksum-crc64nvme" },
-        .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id" },
+        .{ .name = "access-control-allow-headers", .value = "content-type, x-amz-content-sha256, x-amz-date, x-amz-security-token, authorization, x-amz-sdk-checksum-algorithm, x-amz-trailer, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" },
+        .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" },
         .{ .name = "access-control-max-age", .value = "600" },
     };
     try request.respond("", .{ .status = .no_content, .extra_headers = &headers });
@@ -3145,9 +3163,41 @@ test "S3 CRC64NVME parsing accepts AWS flexible checksum headers" {
     try std.testing.expectEqual(@as(u64, 0xae8b14860a799888), (try parseCrc64Nvme(&headers)).?);
     const unsupported = [_]sigv4.Header{.{
         .name = "x-amz-sdk-checksum-algorithm",
-        .value = "SHA256",
+        .value = "CRC16",
     }};
     try std.testing.expectError(error.UnsupportedChecksum, parseCrc64Nvme(&unsupported));
+    const unknown_header = [_]sigv4.Header{.{
+        .name = "x-amz-checksum-foo",
+        .value = "AAAA",
+    }};
+    try std.testing.expectError(error.UnsupportedChecksum, parseChecksumRequest(&unknown_header));
+}
+
+test "S3 flexible checksum headers parse and preserve algorithm values" {
+    const values = [_]struct {
+        algorithm: []const u8,
+        header: []const u8,
+        value: checksum.Value,
+    }{
+        .{ .algorithm = "CRC32", .header = "x-amz-checksum-crc32", .value = .{ .crc32 = 0xcbf43926 } },
+        .{ .algorithm = "CRC32C", .header = "x-amz-checksum-crc32c", .value = .{ .crc32c = 0xe3069283 } },
+        .{ .algorithm = "CRC64NVME", .header = "x-amz-checksum-crc64nvme", .value = .{ .crc64nvme = 0xae8b14860a799888 } },
+        .{ .algorithm = "SHA1", .header = "x-amz-checksum-sha1", .value = .{ .sha1 = .{ 0xf7, 0xc3, 0xbc, 0x1d, 0x80, 0x8e, 0x04, 0x73, 0x2a, 0xdf, 0x67, 0x99, 0x65, 0xcc, 0xc3, 0x4c, 0xa7, 0xae, 0x34, 0x41 } } },
+        .{ .algorithm = "SHA256", .header = "x-amz-checksum-sha256", .value = .{ .sha256 = .{ 0x15, 0xe2, 0xb0, 0xd3, 0xc3, 0x38, 0x91, 0xeb, 0xb0, 0xf1, 0xef, 0x60, 0x9e, 0xc4, 0x19, 0x42, 0x0c, 0x20, 0xe3, 0x20, 0xce, 0x94, 0xc6, 0x5f, 0xbc, 0x8c, 0x33, 0x12, 0x44, 0x8e, 0xb2, 0x25 } } },
+    };
+    for (values) |entry| {
+        var encoded_buffer: [64]u8 = undefined;
+        const encoded = checksum.encodeValue(entry.value, &encoded_buffer);
+        const headers = [_]sigv4.Header{
+            .{ .name = "x-amz-sdk-checksum-algorithm", .value = entry.algorithm },
+            .{ .name = entry.header, .value = encoded },
+        };
+        const parsed = try parseChecksumRequest(&headers);
+        try std.testing.expect(parsed.header != null);
+        try std.testing.expectEqual(entry.value.algorithm(), parsed.header.?.algorithm());
+        try std.testing.expectEqualStrings(encoded, checksum.encodeValue(parsed.header.?, &encoded_buffer));
+        try std.testing.expect(!hasUnsupportedHeaders(.put_object, &headers));
+    }
 }
 
 test "S3 supported checksum headers remain distinct from streaming checksums" {
@@ -3192,14 +3242,17 @@ test "S3 supported checksum headers remain distinct from streaming checksums" {
         (try parseChecksumRequest(&signed_trailer)).trailer,
     );
 
-    const unsupported_trailer = [_]sigv4.Header{
+    const supported_crc32c_trailer = [_]sigv4.Header{
         .{ .name = "content-encoding", .value = "aws-chunked" },
         .{ .name = "x-amz-content-sha256", .value = sigv4.streaming_trailer_payload },
         .{ .name = "x-amz-sdk-checksum-algorithm", .value = "CRC32C" },
         .{ .name = "x-amz-trailer", .value = "x-amz-checksum-crc32c" },
     };
-    try std.testing.expect(hasUnsupportedHeaders(.put_object, &unsupported_trailer));
-    try std.testing.expectError(error.UnsupportedChecksum, parseChecksumRequest(&unsupported_trailer));
+    try std.testing.expect(!hasUnsupportedHeaders(.put_object, &supported_crc32c_trailer));
+    try std.testing.expectEqual(
+        aws_chunked.Trailer.crc32c,
+        (try parseChecksumRequest(&supported_crc32c_trailer)).trailer,
+    );
 
     const missing_trailer = [_]sigv4.Header{.{
         .name = "x-amz-content-sha256",

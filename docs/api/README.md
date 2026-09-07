@@ -11,7 +11,7 @@ ZigFS 维护三套相互独立的网络契约：
 Health 与监控契约见 [operations.md](operations.md)。
 
 Phase 5 的 S3 Bucket/Object/List V2、Multipart、单 Range、Presigned GET/PUT、Signature V4
-Header/Streaming 以及 CRC64NVME signed trailer 已实现，并覆盖上传断流和下载取消语义。
+Header/Streaming 以及五种 Flexible Checksum signed trailer 已实现，并覆盖上传断流和下载取消语义。
 Phase 9 已补齐 GET/HEAD/PUT 的 Conditional Requests，包括 ETag/HTTP 日期条件、304/412
 响应和条件 PUT 的 Metadata Generation CAS，并实现 CopyObject 的流式复制、权限、元数据
 指令和条件语义。

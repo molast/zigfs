@@ -1,6 +1,10 @@
 const std = @import("std");
 const byte_stream = @import("../ports/byte_stream.zig");
-const Crc64Nvme = @import("checksum.zig").Crc64Nvme;
+const checksum = @import("checksum.zig");
+const Crc32 = checksum.Crc32;
+const Crc32C = checksum.Crc32C;
+const Crc64Nvme = checksum.Crc64Nvme;
+const Sha1 = checksum.Sha1;
 
 pub const min_buffer_size: usize = 4 * 1024;
 pub const default_buffer_size: usize = 64 * 1024;
@@ -9,7 +13,10 @@ pub const max_buffer_size: usize = 1024 * 1024;
 pub const Result = struct {
     size: u64,
     etag_md5: [16]u8,
+    checksum_crc32: u32,
+    checksum_crc32c: u32,
     checksum_sha256: [32]u8,
+    checksum_sha1: [20]u8,
     checksum_crc64nvme: u64,
 };
 
@@ -34,7 +41,10 @@ pub fn copyAndHash(
     defer allocator.free(buffer);
 
     var md5 = std.crypto.hash.Md5.init(.{});
+    var crc32 = Crc32.init();
+    var crc32c = Crc32C.init();
     var sha256 = std.crypto.hash.sha2.Sha256.init(.{});
+    var sha1 = Sha1.init(.{});
     var crc64nvme = Crc64Nvme.init();
     var size: u64 = 0;
     while (true) {
@@ -47,7 +57,10 @@ pub fn copyAndHash(
             error.WriteFailed => return error.SinkWriteFailed,
         };
         md5.update(bytes);
+        crc32.update(bytes);
+        crc32c.update(bytes);
         sha256.update(bytes);
+        sha1.update(bytes);
         crc64nvme.update(bytes);
         size = std.math.add(u64, size, length) catch return error.SizeOverflow;
     }
@@ -56,10 +69,15 @@ pub fn copyAndHash(
     md5.final(&etag_md5);
     var checksum_sha256: [32]u8 = undefined;
     sha256.final(&checksum_sha256);
+    var checksum_sha1: [20]u8 = undefined;
+    sha1.final(&checksum_sha1);
     return .{
         .size = size,
         .etag_md5 = etag_md5,
+        .checksum_crc32 = crc32.final(),
+        .checksum_crc32c = crc32c.final(),
         .checksum_sha256 = checksum_sha256,
+        .checksum_sha1 = checksum_sha1,
         .checksum_crc64nvme = crc64nvme.final(),
     };
 }
@@ -131,6 +149,9 @@ test "bounded streaming calculates S3 MD5 and SHA-256" {
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
         &expected_sha256,
     );
+    try std.testing.expectEqual(@as(u32, 0x352441c2), result.checksum_crc32);
+    try std.testing.expectEqual(@as(u32, 0x364b3fb7), result.checksum_crc32c);
+    try std.testing.expectEqual(@as(u8, 0xa9), result.checksum_sha1[0]);
     try std.testing.expectEqual(@as(u64, 0x05e5cabb3fc1faeb), result.checksum_crc64nvme);
 }
 

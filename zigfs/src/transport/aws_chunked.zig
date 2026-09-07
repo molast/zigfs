@@ -1,14 +1,45 @@
 const std = @import("std");
 const sigv4 = @import("../auth/sigv4.zig");
-const Crc64Nvme = @import("../common/checksum.zig").Crc64Nvme;
+const checksum = @import("../common/checksum.zig");
 const byte_stream = @import("../ports/byte_stream.zig");
 
-const Sha256 = std.crypto.hash.sha2.Sha256;
+const Crc32 = checksum.Crc32;
+const Crc32C = checksum.Crc32C;
+const Crc64Nvme = checksum.Crc64Nvme;
+const Sha1 = checksum.Sha1;
+const Sha256 = checksum.Sha256;
 
 pub const Trailer = enum {
     none,
+    crc32,
+    crc32c,
     crc64nvme,
+    sha1,
+    sha256,
+
+    pub fn algorithm(self: Trailer) ?checksum.Algorithm {
+        return switch (self) {
+            .none => null,
+            .crc32 => .crc32,
+            .crc32c => .crc32c,
+            .crc64nvme => .crc64nvme,
+            .sha1 => .sha1,
+            .sha256 => .sha256,
+        };
+    }
+
+    pub fn fromAlgorithm(value: checksum.Algorithm) Trailer {
+        return switch (value) {
+            .crc32 => .crc32,
+            .crc32c => .crc32c,
+            .crc64nvme => .crc64nvme,
+            .sha1 => .sha1,
+            .sha256 => .sha256,
+        };
+    }
 };
+
+pub const VerifiedChecksum = checksum.Value;
 
 pub const Failure = enum {
     none,
@@ -35,7 +66,12 @@ pub const Source = struct {
     chunk_active: bool = false,
     finished: bool = false,
     failure: Failure = .none,
+    crc32: Crc32 = Crc32.init(),
+    crc32c: Crc32C = Crc32C.init(),
     crc64nvme: Crc64Nvme = Crc64Nvme.init(),
+    sha1: Sha1 = Sha1.init(.{}),
+    sha256: Sha256 = Sha256.init(.{}),
+    verified_checksum: ?VerifiedChecksum = null,
     verified_crc64nvme: ?u64 = null,
 
     pub fn init(
@@ -86,7 +122,11 @@ pub const Source = struct {
             return error.ReadFailed;
         }
         self.chunk_hash.update(buffer[0..count]);
+        self.crc32.update(buffer[0..count]);
+        self.crc32c.update(buffer[0..count]);
         self.crc64nvme.update(buffer[0..count]);
+        self.sha1.update(buffer[0..count]);
+        self.sha256.update(buffer[0..count]);
         self.chunk_remaining -= count;
         self.decoded_length = std.math.add(u64, self.decoded_length, count) catch {
             self.failure = .decoded_length_mismatch;
@@ -153,36 +193,31 @@ pub const Source = struct {
                     return error.ReadFailed;
                 }
             },
-            .crc64nvme => try self.finishCrc64NvmeTrailer(),
+            .crc32, .crc32c, .crc64nvme, .sha1, .sha256 => try self.finishChecksumTrailer(),
         }
         self.finished = true;
     }
 
-    fn finishCrc64NvmeTrailer(self: *Source) error{ReadFailed}!void {
+    fn finishChecksumTrailer(self: *Source) error{ReadFailed}!void {
         const checksum_line = readLfLine(self.reader) catch {
             self.failure = .malformed_trailer;
             return error.ReadFailed;
         };
-        const checksum_prefix = "x-amz-checksum-crc64nvme:";
-        if (!std.mem.startsWith(u8, checksum_line, checksum_prefix)) {
-            self.failure = .malformed_trailer;
-            return error.ReadFailed;
-        }
-        const encoded = checksum_line[checksum_prefix.len..];
-        const decoded_size = std.base64.standard.Decoder.calcSizeForSlice(encoded) catch {
+        const algorithm = self.trailer.algorithm() orelse unreachable;
+        const checksum_header = algorithm.headerName();
+        const separator_index = std.mem.indexOfScalar(u8, checksum_line, ':') orelse {
             self.failure = .malformed_trailer;
             return error.ReadFailed;
         };
-        if (decoded_size != 8) {
+        if (!std.ascii.eqlIgnoreCase(checksum_line[0..separator_index], checksum_header)) {
             self.failure = .malformed_trailer;
             return error.ReadFailed;
         }
-        var checksum_bytes: [8]u8 = undefined;
-        std.base64.standard.Decoder.decode(&checksum_bytes, encoded) catch {
+        const encoded = checksum_line[separator_index + 1 ..];
+        const expected = checksum.decodeValue(algorithm, encoded) orelse {
             self.failure = .malformed_trailer;
             return error.ReadFailed;
         };
-        const expected_checksum = std.mem.readInt(u64, &checksum_bytes, .big);
         var canonical_buffer: [128]u8 = undefined;
         const canonical_trailer = std.fmt.bufPrint(&canonical_buffer, "{s}\n", .{checksum_line}) catch {
             self.failure = .malformed_trailer;
@@ -226,11 +261,35 @@ pub const Source = struct {
             self.failure = .invalid_final_ending;
             return error.ReadFailed;
         }
-        if (self.crc64nvme.final() != expected_checksum) {
+        const actual = self.finalChecksum(self.trailer);
+        if (!checksumEqual(actual, expected)) {
             self.failure = .checksum_mismatch;
             return error.ReadFailed;
         }
-        self.verified_crc64nvme = expected_checksum;
+        self.verified_checksum = expected;
+        switch (expected) {
+            .crc64nvme => |value| self.verified_crc64nvme = value,
+            else => {},
+        }
+    }
+
+    fn finalChecksum(self: *Source, trailer: Trailer) VerifiedChecksum {
+        return switch (trailer) {
+            .none => unreachable,
+            .crc32 => .{ .crc32 = self.crc32.final() },
+            .crc32c => .{ .crc32c = self.crc32c.final() },
+            .crc64nvme => .{ .crc64nvme = self.crc64nvme.final() },
+            .sha1 => blk: {
+                var digest: [20]u8 = undefined;
+                self.sha1.final(&digest);
+                break :blk .{ .sha1 = digest };
+            },
+            .sha256 => blk: {
+                var digest: [32]u8 = undefined;
+                self.sha256.final(&digest);
+                break :blk .{ .sha256 = digest };
+            },
+        };
     }
 
     fn finishChunk(self: *Source) error{ReadFailed}!void {
@@ -252,6 +311,31 @@ pub const Source = struct {
         self.chunk_active = false;
     }
 };
+
+fn checksumEqual(actual: VerifiedChecksum, expected: VerifiedChecksum) bool {
+    return switch (actual) {
+        .crc32 => |value| switch (expected) {
+            .crc32 => |other| value == other,
+            else => false,
+        },
+        .crc32c => |value| switch (expected) {
+            .crc32c => |other| value == other,
+            else => false,
+        },
+        .crc64nvme => |value| switch (expected) {
+            .crc64nvme => |other| value == other,
+            else => false,
+        },
+        .sha1 => |value| switch (expected) {
+            .sha1 => |other| std.mem.eql(u8, &value, &other),
+            else => false,
+        },
+        .sha256 => |value| switch (expected) {
+            .sha256 => |other| std.mem.eql(u8, &value, &other),
+            else => false,
+        },
+    };
+}
 
 fn readCrlfLine(reader: *std.Io.Reader) error{ReadFailed}![]const u8 {
     const raw = (reader.takeDelimiter('\n') catch return error.ReadFailed) orelse {
@@ -368,9 +452,9 @@ test "aws chunked source verifies a signed CRC64NVME trailer before EOF" {
         data_signature,
         "",
     );
-    const checksum = Crc64Nvme.hash(payload);
+    const expected_crc64 = Crc64Nvme.hash(payload);
     var checksum_bytes: [8]u8 = undefined;
-    std.mem.writeInt(u64, &checksum_bytes, checksum, .big);
+    std.mem.writeInt(u64, &checksum_bytes, expected_crc64, .big);
     var checksum_base64_buffer: [12]u8 = undefined;
     const checksum_base64 = std.base64.standard.Encoder.encode(&checksum_base64_buffer, &checksum_bytes);
     var canonical_buffer: [128]u8 = undefined;
@@ -424,7 +508,7 @@ test "aws chunked source verifies a signed CRC64NVME trailer before EOF" {
     const length = try source.interface().read(&output);
     try std.testing.expectEqualStrings(payload, output[0..length]);
     try std.testing.expectEqual(@as(usize, 0), try source.interface().read(&output));
-    try std.testing.expectEqual(checksum, source.verified_crc64nvme.?);
+    try std.testing.expectEqual(expected_crc64, source.verified_crc64nvme.?);
     try std.testing.expectEqual(Failure.none, source.failure);
 }
 
@@ -488,6 +572,109 @@ test "aws chunked source rejects a validly signed wrong trailer checksum" {
     _ = try source.interface().read(&output);
     try std.testing.expectError(error.ReadFailed, source.interface().read(&output));
     try std.testing.expectEqual(Failure.checksum_mismatch, source.failure);
+}
+
+test "aws chunked source verifies every flexible checksum trailer" {
+    const secret_key = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+    const amz_date = "20130524T000000Z";
+    const scope_date = "20130524";
+    const region = "us-east-1";
+    const payload = "all flexible trailer checksums\n";
+    const trailers = [_]Trailer{ .crc32, .crc32c, .crc64nvme, .sha1, .sha256 };
+    for (trailers, 0..) |trailer, index| {
+        const seed_signature = [_]u8{@as(u8, @intCast(index + 1))} ** 32;
+        const data_signature = testChunkSignature(
+            secret_key,
+            amz_date,
+            scope_date,
+            region,
+            seed_signature,
+            payload,
+        );
+        const final_signature = testChunkSignature(
+            secret_key,
+            amz_date,
+            scope_date,
+            region,
+            data_signature,
+            "",
+        );
+        const expected = testPayloadChecksum(payload, trailer);
+        var encoded_buffer: [64]u8 = undefined;
+        const encoded = checksum.encodeValue(expected, &encoded_buffer);
+        var canonical_buffer: [128]u8 = undefined;
+        const canonical_trailer = try std.fmt.bufPrint(
+            &canonical_buffer,
+            "{s}:{s}\n",
+            .{ trailer.algorithm().?.headerName(), encoded },
+        );
+        const trailer_signature = testTrailerSignature(
+            secret_key,
+            amz_date,
+            scope_date,
+            region,
+            final_signature,
+            canonical_trailer,
+        );
+        const data_signature_hex = std.fmt.bytesToHex(data_signature, .lower);
+        const final_signature_hex = std.fmt.bytesToHex(final_signature, .lower);
+        const trailer_signature_hex = std.fmt.bytesToHex(trailer_signature, .lower);
+        const framed = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "{x};chunk-signature={s}\r\n{s}\r\n0;chunk-signature={s}\r\n" ++
+                "{s}\r\nx-amz-trailer-signature:{s}\r\n\r\n",
+            .{
+                payload.len,
+                &data_signature_hex,
+                payload,
+                &final_signature_hex,
+                canonical_trailer,
+                &trailer_signature_hex,
+            },
+        );
+        defer std.testing.allocator.free(framed);
+
+        var reader = std.Io.Reader.fixed(framed);
+        const verifier = try sigv4.StreamingVerifier.init(
+            std.testing.allocator,
+            &.{.{ .name = "x-amz-date", .value = amz_date }},
+            .{
+                .access_key = "AKIDEXAMPLE",
+                .scope_date = scope_date,
+                .region = region,
+                .signed_headers = "host;x-amz-content-sha256;x-amz-date;x-amz-trailer",
+                .signature = seed_signature,
+            },
+            secret_key,
+        );
+        var source = Source.init(&reader, verifier, payload.len, trailer);
+        defer source.deinit();
+        var output: [128]u8 = undefined;
+        try std.testing.expectEqual(payload.len, try source.interface().read(&output));
+        try std.testing.expectEqual(@as(usize, 0), try source.interface().read(&output));
+        try std.testing.expect(source.verified_checksum != null);
+        try std.testing.expect(checksumEqual(source.verified_checksum.?, expected));
+        try std.testing.expectEqual(Failure.none, source.failure);
+    }
+}
+
+fn testPayloadChecksum(payload: []const u8, trailer: Trailer) checksum.Value {
+    return switch (trailer) {
+        .none => unreachable,
+        .crc32 => .{ .crc32 = checksum.Crc32.hash(payload) },
+        .crc32c => .{ .crc32c = checksum.Crc32C.hash(payload) },
+        .crc64nvme => .{ .crc64nvme = checksum.Crc64Nvme.hash(payload) },
+        .sha1 => blk: {
+            var digest: [20]u8 = undefined;
+            checksum.Sha1.hash(payload, &digest, .{});
+            break :blk .{ .sha1 = digest };
+        },
+        .sha256 => blk: {
+            var digest: [32]u8 = undefined;
+            checksum.Sha256.hash(payload, &digest, .{});
+            break :blk .{ .sha256 = digest };
+        },
+    };
 }
 
 fn testChunkSignature(

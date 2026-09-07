@@ -119,7 +119,10 @@ pub const LocalObjectDataStore = struct {
             .token = token,
             .size = copied.size,
             .etag_md5 = copied.etag_md5,
+            .checksum_crc32 = copied.checksum_crc32,
+            .checksum_crc32c = copied.checksum_crc32c,
             .checksum_sha256 = copied.checksum_sha256,
+            .checksum_sha1 = copied.checksum_sha1,
             .checksum_crc64nvme = copied.checksum_crc64nvme,
         };
     }

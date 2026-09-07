@@ -17,7 +17,10 @@ pub const Staged = struct {
     token: id.Uuid,
     size: u64,
     etag_md5: [16]u8,
+    checksum_crc32: u32,
+    checksum_crc32c: u32,
     checksum_sha256: [32]u8,
+    checksum_sha1: [20]u8,
     checksum_crc64nvme: u64,
 };
 

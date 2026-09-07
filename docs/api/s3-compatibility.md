@@ -22,8 +22,8 @@
 - 临时凭证使用 AK/SK/Session Token：Header 请求必须携带并签名 `x-amz-security-token`，Presigned URL 必须携带签名绑定的 `X-Amz-Security-Token`；永久凭证携带 Token 同样被拒绝。
 - 同一请求不能同时携带 Authorization Header 和 Presigned Query；Presigned Query 当前只授权对象级 GET/PUT。
 - `x-amz-*` 扩展 Header 除 `x-amz-content-sha256` 外必须进入 `SignedHeaders`。
-- 支持固定 SHA-256 Hex、`UNSIGNED-PAYLOAD`、`STREAMING-AWS4-HMAC-SHA256-PAYLOAD` 和带 CRC64NVME trailer 的 `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER`。
-- PutObject 和 UploadPart 支持 AWS Flexible Checksums 的 `CRC64NVME` Header 与 signed trailer 模式；校验值参与 SigV4 并在流式落盘时重新计算。
+- 支持固定 SHA-256 Hex、`UNSIGNED-PAYLOAD`、`STREAMING-AWS4-HMAC-SHA256-PAYLOAD` 和带五种 Flexible Checksum trailer 的 `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER`。
+- PutObject 和 UploadPart 支持 AWS Flexible Checksums 的 `CRC32`、`CRC32C`、`CRC64NVME`、`SHA1`、`SHA256` Header 与 signed trailer 模式；校验值参与 SigV4 并在 staged 流式落盘时重新计算。
 - Bucket、Object 和 Credential 状态均由 ZigFS 自有 Metadata Engine 持久化，不依赖数据库。
 
 ## Bucket
@@ -89,7 +89,7 @@ ListObjectsV2 已支持：
 
 - Upload ID 是随机 UUID V4 的 32 位小写 Hex 表示，不包含 Bucket、Key 或磁盘路径。
 - Part Number 范围为 `1..10000`；每个 Part 使用固定缓冲流式落盘并保存 Size、MD5 ETag、SHA-256、LastModified、Data Generation 和提交状态。同一 Part Number 可原子覆盖，并发上传由 Upload 级锁串行提交元数据。
-- UploadPart 支持固定 SHA-256、`Content-MD5`、CRC64NVME Header，以及无 trailer/CRC64NVME signed trailer 两种 AWS streaming chunk signature；错误 checksum 或签名不发布 Part。
+- UploadPart 支持固定 SHA-256、`Content-MD5`、五种 Flexible Checksum Header，以及无 trailer/五种 signed trailer 两种 AWS streaming chunk signature；错误 checksum 或签名不发布 Part。
 - ListParts 支持 `part-number-marker` 和 `max-parts=0..1000`，默认 `1000`，按 Part Number 升序返回。
 - Complete XML 接受 `ETag`/`PartNumber` 两种字段顺序，并兼容 rclone 的 XML 实体引号。请求 Part 必须升序、无重复、存在且 ETag 一致；除最后一个提交 Part 外，每个 Part 至少 5 MiB。
 - Complete 使用固定缓冲把已选 Part 拼接为普通 Object Generation，并复用 Object Metadata CAS 与原子发布流程。最终 ETag 为 `MD5(concat(binary_part_md5))-part_count`。
@@ -103,10 +103,10 @@ PutObject：
 - `Content-Type` 缺失时使用 `application/octet-stream`。
 - `Content-MD5` 可选；非法、重复或不匹配分别返回稳定 Digest 错误。
 - 固定 `X-Amz-Content-Sha256` 会在流式落盘时再次校验，不能只信任签名 Header。
-- 支持 `x-amz-sdk-checksum-algorithm: CRC64NVME` 与 `x-amz-checksum-crc64nvme`；值必须是 8-byte 大端 checksum 的标准 Base64，错误值返回 `BadDigest`，成功响应回写同一 checksum Header。
+- 支持 `x-amz-sdk-checksum-algorithm` 与对应的 `x-amz-checksum-crc32`、`x-amz-checksum-crc32c`、`x-amz-checksum-crc64nvme`、`x-amz-checksum-sha1`、`x-amz-checksum-sha256`；CRC 值使用大端字节、SHA 值使用原始摘要字节并统一采用标准 Base64，错误值返回 `BadDigest`，成功响应回写同一 checksum Header。
 - `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` 按 aws-chunked 帧逐 chunk 验签，校验签名链和 `x-amz-decoded-content-length`；失败的流不会发布对象。
-- `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER` 要求 `Content-Encoding: aws-chunked`、`x-amz-decoded-content-length` 和 `x-amz-trailer: x-amz-checksum-crc64nvme`；ZigFS 在最终 EOF 前同时验证 chunk 签名链、`AWS4-HMAC-SHA256-TRAILER` 签名和 CRC64NVME。
-- Trailer 签名失败返回 `SignatureDoesNotMatch`，checksum 不匹配返回 `BadDigest`，非法 framing 返回 `InvalidRequest`；任何失败均不发布 Object/Part，成功响应回写已验证的 `x-amz-checksum-crc64nvme`。
+- `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER` 要求 `Content-Encoding: aws-chunked`、`x-amz-decoded-content-length` 和对应的 `x-amz-trailer`；`x-amz-sdk-checksum-algorithm` 存在时必须与 Trailer 算法一致，缺失时从 Trailer Header 名称推断以保持既有 CRC64NVME 客户端兼容。ZigFS 在最终 EOF 前同时验证 chunk 签名链、`AWS4-HMAC-SHA256-TRAILER` 签名和声明的五种 checksum。
+- Trailer 签名失败返回 `SignatureDoesNotMatch`，checksum 不匹配返回 `BadDigest`，非法 framing/trailer 返回 `InvalidRequest`；任何失败均不发布 Object/Part，成功响应回写已验证的同名 `x-amz-checksum-*`。
 - `x-amz-meta-*` 名称规范化为小写并持久化；重复名称和超限元数据被拒绝。
 
 DeleteObjects：
@@ -192,7 +192,7 @@ Request ID Header，不返回 XML Body。
 | Multi-Range | V1 当前不支持，返回 `416 InvalidRange` |
 | Temporary Credentials / Session Token | 已实现 Header/Presigned SigV4 Token 绑定、60 秒至 12 小时签发、加密持久化、过期/禁用/Policy 和稳定错误 |
 | S3 POST Policy Upload | 已实现 SigV4 Policy、条件、有效期、multipart 文件流、checksum、成功状态和失败不发布；外部客户端矩阵待补 |
-| CRC32、CRC32C、SHA1、SHA256 streaming trailer checksum | Phase 9 目标；V1 当前只实现 CRC64NVME，其他算法返回 `NotImplemented` |
+| CRC32、CRC32C、CRC64NVME、SHA1、SHA256 streaming trailer checksum | 已实现声明、流式计算、Trailer/签名校验、Header 响应和稳定错误映射 |
 | Virtual-hosted-style | 配置开启后已实现 Host authority 校验、Bucket 提取、带端口 authority、Path-style 兼容和签名 Host 绑定；默认关闭 |
 | CopyObject | 已实现 Path-style 与 Virtual-hosted-style、源/目标 Owner 与 Object 权限、流式复制、COPY/REPLACE 元数据、源/目标条件和标准 `CopyObjectResult` |
 | S3 Object Versioning、ACL、Tagging、Select | V1 非当前范围 |
@@ -201,9 +201,9 @@ Request ID Header，不返回 XML Body。
 
 | 客户端/测试 | 状态 | 覆盖 |
 |---|---|---|
-| Zig 原生环回 TCP Contract Test | Pass | 未签名、错误/过期签名、永久/临时 Credential、Session Token Header/Presigned 正反向、POST Policy（签名、条件、`${filename}`、状态码、大小限制、失败不发布）、禁用 Credential、Bucket/Object CRUD、Digest、Header、XML、List V2 分页、Conditional GET/HEAD/PUT（304/412、ETag/日期优先级、条件 PUT 不发布）、CopyObject（COPY/REPLACE、流式字节一致、标准 XML）、Virtual-hosted Header/Presigned SigV4 与 Host 拒绝、完整 Multipart 生命周期、CRC64NVME signed trailer 正反向与失败不发布、Object/Part 中途断流清理、下载取消释放租约、稳定错误、Method/Query 篡改和过期拒绝 |
+| Zig 原生环回 TCP Contract Test | Pass | 未签名、错误/过期签名、永久/临时 Credential、Session Token Header/Presigned 正反向、POST Policy（签名、条件、`${filename}`、状态码、大小限制、失败不发布）、禁用 Credential、Bucket/Object CRUD、Digest、五种 Flexible Checksum Header/Trailer、XML、List V2 分页、Conditional GET/HEAD/PUT（304/412、ETag/日期优先级、条件 PUT 不发布）、CopyObject（COPY/REPLACE、流式字节一致、标准 XML）、Virtual-hosted Header/Presigned SigV4 与 Host 拒绝、完整 Multipart 生命周期、五种 signed trailer 正向与失败不发布、Object/Part 中途断流清理、下载取消释放租约、稳定错误、Method/Query 篡改和过期拒绝 |
 | AWS 官方 S3 SigV4 GET Object 向量 | Pass | Canonical Request、Scope、HMAC-SHA256，签名 `67fe34c...2722900` |
-| AWS CLI 2.36.38 | Pass | 错误 AK、Bucket/Object CRUD、特殊 Key、List V2/Delimiter/分页、Content-Type、ETag、CRC64NVME、错误 checksum、单 Range `206` 与越界 `416`、Presigned GET、Virtual-hosted-style Create/Put/Get/List/Delete 字节一致性；两 Part Multipart Create/Upload/List/Complete/GET 字节一致性和 Abort |
+| AWS CLI 2.36.38 | Pass | 错误 AK、Bucket/Object CRUD、特殊 Key、List V2/Delimiter/分页、Content-Type、ETag、CRC64NVME、错误 checksum、单 Range `206` 与越界 `416`、Presigned GET、Virtual-hosted-style Create/Put/Get/List/Delete 字节一致性；两 Part Multipart Create/Upload/List/Complete/GET 字节一致性和 Abort；其他 Flexible Checksum 算法的原生客户端命令仍属于扩展矩阵 |
 | MinIO Client (`mc`) 2025-08-13 | Pass with additional POST coverage pending | Alias、Bucket CRUD、Location、List V2、Head/Get、签名流式 Put、DeleteObjects、Presigned GET、CopyObject；70 MiB/5 Part Multipart 上传、复合 ETag、下载 SHA-256 一致；POST Policy 与其他 streaming checksum 变体待追加命令回归 |
 | rclone 1.75.0 | Pass with config | `list_version=2` 下 Bucket/Object CRUD、Metadata、MD5、Presigned GET；5 MiB Part、3 路并发的 70 MiB Multipart 上传和下载 SHA-256 一致；`provider=Other` 默认 ListObjects V1 不在当前范围 |
 | TypeScript/Web Conformance | Pass | Web Crypto SigV4、Web Streams Put/Get、64 位 `bigint`、Range、List V2 Token、Multipart、Abort、错误映射和取消后继续访问 |
