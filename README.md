@@ -88,8 +88,9 @@ Phase 8 Reliability and Performance 已加入确定性故障注入、写能力�
 测试，以及可输出原始 JSON 的 `smoke`/`full` 基准工具。基准结果与硬件、构建模式和并发度绑定，
 不构成脱离环境的性能承诺。
 当前阶段为 Phase 9 S3 Compatibility Hardening and V1 Release Candidate，Conditional
-Requests、CopyObject、Virtual-hosted-style、Temporary Credentials、POST Policy Upload 和 Flexible Checksum Trailer 已完成；接下来优先补齐当前 S3 兼容矩阵中的
-外部客户端回归，再冻结 V1 Release Candidate。
+Requests、CopyObject、Virtual-hosted-style、Temporary Credentials、POST Policy Upload、
+Flexible Checksum Trailer、外部客户端兼容性 Runner 和对外契约同步均已完成；下一项进入
+V1 Release Candidate 发布材料。
 
 外部客户端兼容性 Runner 位于 [compatibility/README.md](compatibility/README.md)，可重复运行
 AWS CLI、MinIO Client、rclone 和原生 HTTP 矩阵，并输出不含凭证的 JSON/Markdown 报告：

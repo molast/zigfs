@@ -58,6 +58,25 @@ export interface Fixture {
     request_id: string
     retryable: boolean
   }>
+  s3_contract: S3Contract
   retry_cases: RetryCase[]
   stream: StreamVector
+}
+
+export interface S3Contract {
+  operation_contracts: Array<{
+    operation: string
+    method: string
+    status: number
+    response: string
+  }>
+  checksum_algorithms: Array<{
+    name: string
+    header: string
+    encoding: string
+  }>
+  etag_examples: string[]
+  session_token_header: string
+  post_policy_file_field: string
+  post_policy_success_statuses: number[]
 }

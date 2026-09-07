@@ -1,7 +1,7 @@
 # 文件 SDK 版本与兼容策略
 
 - **契约版本：** V1.0
-- **更新日期：** 2026-09-03
+- **更新日期：** 2026-09-07
 
 SDK 版本和 ZigFS 服务版本彼此独立。SDK 使用语义化版本 `MAJOR.MINOR.PATCH`；服务端
 兼容范围由 [S3/Data API 兼容矩阵](../api/s3-compatibility.md) 声明，而不是由 SDK 猜测。
@@ -35,5 +35,6 @@ V1 不新增私有能力探测接口。调用方依据公开兼容矩阵选择�
 
 ## 向量版本
 
-`conformance/fixtures/v1.json` 使用独立 `schema_version`。新增可选 Case 可递增
-`vector_revision`；删除 Case、修改既有期望或改变字段含义必须新增 Schema 主版本。
+`conformance/fixtures/v1.json` 使用独立 `schema_version`。当前 `vector_revision` 为 `2`，
+新增可选 Case 可继续递增 `vector_revision`；删除 Case、修改既有期望或改变字段含义必须
+新增 Schema 主版本。

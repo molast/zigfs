@@ -2,7 +2,7 @@
 
 - **契约版本：** V1.0
 - **共享向量：** `conformance/fixtures/v1.json`
-- **更新日期：** 2026-09-03
+- **更新日期：** 2026-09-07
 
 一致性测试分为不依赖服务的共享向量测试和连接隔离 ZigFS 的端到端测试。实现只有同时
 通过两类测试，才能声明兼容对应契约版本。
@@ -16,6 +16,11 @@
 - S3 XML 错误的 Code、Status、Request ID 和 Retryable 映射。
 - 可重放 Body、响应是否开始、操作类型和取消状态共同决定的重试判定。
 - Continuation Token、Upload ID 和 ETag 作为不透明字符串原样往返。
+- ETag 必须保留双引号；Multipart ETag 的 `-part-count` 后缀也必须原样保留。
+- `CRC32`、`CRC32C`、`CRC64NVME`、`SHA1`、`SHA256` 的 checksum Header 使用标准 Base64；
+  `x-amz-security-token` 属于临时凭证签名输入。
+- 条件 GET/HEAD 的 `304`、条件 PUT 的 `412`、CopyObject `200` XML、DeleteObjects `200` XML
+  和 POST Policy 的 `200|201|204` 成功状态按共享契约处理。
 - 固定大小、Chunk 和字节模式的流式测试数据，无需把整个对象载入内存。
 
 ## 端到端场景
@@ -61,4 +66,5 @@ Management API 创建测试 Credential，然后分别执行两套 S3 Adapter。�
 - 任一共享向量、目标语言类型检查、编译或端到端场景失败，Phase 7 不得标记完成。
 - 测试不调用 Admin BFF，不引入管理操作到 SDK Adapter。
 - 测试不接受跳过 Range、Multipart、分页、取消或错误映射的“部分通过”。
-- 新增 S3 能力时先更新兼容矩阵和共享场景，再更新各 Adapter。
+- 新增 S3 能力时先更新兼容矩阵和共享场景，再更新各 Adapter。共享场景和错误映射的事实
+  来源是 `conformance/fixtures/v1.json`，当前 `vector_revision` 为 `2`。

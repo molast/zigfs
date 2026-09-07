@@ -32,6 +32,28 @@ struct ErrorVector: Decodable, Sendable {
     let retryable: Bool
 }
 
+struct OperationContract: Decodable, Sendable {
+    let operation: String
+    let method: String
+    let status: Int
+    let response: String
+}
+
+struct ChecksumAlgorithm: Decodable, Sendable {
+    let name: String
+    let header: String
+    let encoding: String
+}
+
+struct S3Contract: Decodable, Sendable {
+    let operationContracts: [OperationContract]
+    let checksumAlgorithms: [ChecksumAlgorithm]
+    let etagExamples: [String]
+    let sessionTokenHeader: String
+    let postPolicyFileField: String
+    let postPolicySuccessStatuses: [Int]
+}
+
 struct RetryVector: Decodable, Sendable {
     let operation: String
     let method: String
@@ -60,6 +82,7 @@ struct Fixture: Decodable, Sendable {
     let uint64Values: [String]
     let opaqueValues: [String]
     let errors: [ErrorVector]
+    let s3Contract: S3Contract
     let retryCases: [RetryVector]
     let stream: StreamVector
 }

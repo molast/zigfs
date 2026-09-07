@@ -27,9 +27,9 @@ AWS CLI、MinIO Client (`mc`)、rclone 和原生 Node HTTP 的 S3 回归。Runne
 ZigFS 日志到 `<report>.zigfs.log`。`--skip-start` 适用于已经运行的 ZigFS，但必须显式提供
 AK/SK（也可以使用 `ZIGFS_ACCESS_KEY`、`ZIGFS_SECRET_KEY` 和 `ZIGFS_SESSION_TOKEN`）。
 
-每个客户端的测试包括 Bucket 创建/删除、Object 上传/下载、内容校验、List、Head、
-Presigned GET、CopyObject，以及客户端可用时的批量删除或 Multipart 路径。原生 HTTP 还覆盖
-SHA256 Flexible Checksum Header；signed streaming Trailer、POST Policy 和没有稳定 CLI 入口
+每个外部客户端的测试包括 Bucket 创建/删除、Object 上传/下载、内容校验、List、Head、
+Presigned GET 和 CopyObject；AWS CLI、mc 还覆盖批量删除，原生 HTTP 额外覆盖 DeleteObjects
+和 Multipart。signed streaming Trailer、POST Policy 和没有稳定 CLI 入口
 的能力会单独记录为 `Unsupported`，不会伪造 `Passed`。
 
 报告中的 `command` 字段只包含可复现命令和临时文件路径，不包含凭证；`server.config` 记录

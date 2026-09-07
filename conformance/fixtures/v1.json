@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "vector_revision": 1,
+  "vector_revision": 2,
   "sigv4": {
     "method": "GET",
     "path": "/test.txt",
@@ -52,8 +52,218 @@
       "code": "ServiceUnavailable",
       "request_id": "req-service",
       "retryable": true
+    },
+    {
+      "status": 403,
+      "xml": "<Error><Code>AccessDenied</Code><Message>Access Denied.</Message><Resource>/bucket/object</Resource><RequestId>req-access</RequestId></Error>",
+      "code": "AccessDenied",
+      "request_id": "req-access",
+      "retryable": false
+    },
+    {
+      "status": 403,
+      "xml": "<Error><Code>InvalidAccessKeyId</Code><Message>The AWS Access Key Id you provided does not exist.</Message><Resource>/</Resource><RequestId>req-key</RequestId></Error>",
+      "code": "InvalidAccessKeyId",
+      "request_id": "req-key",
+      "retryable": false
+    },
+    {
+      "status": 403,
+      "xml": "<Error><Code>InvalidToken</Code><Message>The provided token is malformed or invalid.</Message><Resource>/bucket/object</Resource><RequestId>req-token</RequestId></Error>",
+      "code": "InvalidToken",
+      "request_id": "req-token",
+      "retryable": false
+    },
+    {
+      "status": 403,
+      "xml": "<Error><Code>ExpiredToken</Code><Message>The provided token has expired.</Message><Resource>/bucket/object</Resource><RequestId>req-expired</RequestId></Error>",
+      "code": "ExpiredToken",
+      "request_id": "req-expired",
+      "retryable": false
+    },
+    {
+      "status": 403,
+      "xml": "<Error><Code>SignatureDoesNotMatch</Code><Message>The request signature we calculated does not match the signature you provided.</Message><Resource>/bucket/object</Resource><RequestId>req-signature</RequestId></Error>",
+      "code": "SignatureDoesNotMatch",
+      "request_id": "req-signature",
+      "retryable": false
+    },
+    {
+      "status": 400,
+      "xml": "<Error><Code>AuthorizationHeaderMalformed</Code><Message>The authorization header is malformed.</Message><Resource>/</Resource><RequestId>req-auth-header</RequestId></Error>",
+      "code": "AuthorizationHeaderMalformed",
+      "request_id": "req-auth-header",
+      "retryable": false
+    },
+    {
+      "status": 400,
+      "xml": "<Error><Code>AuthorizationQueryParametersError</Code><Message>The authorization query parameters are invalid.</Message><Resource>/bucket/object</Resource><RequestId>req-auth-query</RequestId></Error>",
+      "code": "AuthorizationQueryParametersError",
+      "request_id": "req-auth-query",
+      "retryable": false
+    },
+    {
+      "status": 403,
+      "xml": "<Error><Code>RequestTimeTooSkewed</Code><Message>The difference between the request time and the current time is too large.</Message><Resource>/</Resource><RequestId>req-skew</RequestId></Error>",
+      "code": "RequestTimeTooSkewed",
+      "request_id": "req-skew",
+      "retryable": false
+    },
+    {
+      "status": 404,
+      "xml": "<Error><Code>NoSuchBucket</Code><Message>The specified bucket does not exist.</Message><Resource>/missing</Resource><RequestId>req-bucket</RequestId></Error>",
+      "code": "NoSuchBucket",
+      "request_id": "req-bucket",
+      "retryable": false
+    },
+    {
+      "status": 409,
+      "xml": "<Error><Code>BucketAlreadyExists</Code><Message>The requested bucket name is not available.</Message><Resource>/bucket</Resource><RequestId>req-bucket-exists</RequestId></Error>",
+      "code": "BucketAlreadyExists",
+      "request_id": "req-bucket-exists",
+      "retryable": false
+    },
+    {
+      "status": 409,
+      "xml": "<Error><Code>BucketAlreadyOwnedByYou</Code><Message>Your previous request to create the named bucket succeeded and you already own it.</Message><Resource>/bucket</Resource><RequestId>req-bucket-owned</RequestId></Error>",
+      "code": "BucketAlreadyOwnedByYou",
+      "request_id": "req-bucket-owned",
+      "retryable": false
+    },
+    {
+      "status": 409,
+      "xml": "<Error><Code>BucketNotEmpty</Code><Message>The bucket you tried to delete is not empty.</Message><Resource>/bucket</Resource><RequestId>req-bucket-not-empty</RequestId></Error>",
+      "code": "BucketNotEmpty",
+      "request_id": "req-bucket-not-empty",
+      "retryable": false
+    },
+    {
+      "status": 400,
+      "xml": "<Error><Code>InvalidRequest</Code><Message>The request is invalid.</Message><Resource>/bucket/object</Resource><RequestId>req-invalid-request</RequestId></Error>",
+      "code": "InvalidRequest",
+      "request_id": "req-invalid-request",
+      "retryable": false
+    },
+    {
+      "status": 400,
+      "xml": "<Error><Code>InvalidArgument</Code><Message>The specified argument is invalid.</Message><Resource>/bucket/object</Resource><RequestId>req-invalid-argument</RequestId></Error>",
+      "code": "InvalidArgument",
+      "request_id": "req-invalid-argument",
+      "retryable": false
+    },
+    {
+      "status": 400,
+      "xml": "<Error><Code>InvalidLocationConstraint</Code><Message>The specified location constraint is invalid.</Message><Resource>/bucket</Resource><RequestId>req-location</RequestId></Error>",
+      "code": "InvalidLocationConstraint",
+      "request_id": "req-location",
+      "retryable": false
+    },
+    {
+      "status": 400,
+      "xml": "<Error><Code>MalformedXML</Code><Message>The XML you provided was not well-formed or did not validate against our published schema.</Message><Resource>/bucket</Resource><RequestId>req-xml</RequestId></Error>",
+      "code": "MalformedXML",
+      "request_id": "req-xml",
+      "retryable": false
+    },
+    {
+      "status": 400,
+      "xml": "<Error><Code>InvalidDigest</Code><Message>The Content-MD5 you specified was invalid.</Message><Resource>/bucket/object</Resource><RequestId>req-digest</RequestId></Error>",
+      "code": "InvalidDigest",
+      "request_id": "req-digest",
+      "retryable": false
+    },
+    {
+      "status": 400,
+      "xml": "<Error><Code>BadDigest</Code><Message>The checksum you specified did not match what we received.</Message><Resource>/bucket/object</Resource><RequestId>req-bad-digest</RequestId></Error>",
+      "code": "BadDigest",
+      "request_id": "req-bad-digest",
+      "retryable": false
+    },
+    {
+      "status": 400,
+      "xml": "<Error><Code>XAmzContentSHA256Mismatch</Code><Message>The provided x-amz-content-sha256 does not match the payload.</Message><Resource>/bucket/object</Resource><RequestId>req-sha256</RequestId></Error>",
+      "code": "XAmzContentSHA256Mismatch",
+      "request_id": "req-sha256",
+      "retryable": false
+    },
+    {
+      "status": 404,
+      "xml": "<Error><Code>NoSuchUpload</Code><Message>The specified multipart upload does not exist.</Message><Resource>/bucket/object</Resource><RequestId>req-upload</RequestId></Error>",
+      "code": "NoSuchUpload",
+      "request_id": "req-upload",
+      "retryable": false
+    },
+    {
+      "status": 400,
+      "xml": "<Error><Code>InvalidPart</Code><Message>One or more of the specified parts could not be found.</Message><Resource>/bucket/object</Resource><RequestId>req-part</RequestId></Error>",
+      "code": "InvalidPart",
+      "request_id": "req-part",
+      "retryable": false
+    },
+    {
+      "status": 400,
+      "xml": "<Error><Code>InvalidPartOrder</Code><Message>The list of parts was not in ascending order.</Message><Resource>/bucket/object</Resource><RequestId>req-part-order</RequestId></Error>",
+      "code": "InvalidPartOrder",
+      "request_id": "req-part-order",
+      "retryable": false
+    },
+    {
+      "status": 400,
+      "xml": "<Error><Code>EntityTooSmall</Code><Message>Your proposed upload is smaller than the minimum allowed object size.</Message><Resource>/bucket/object</Resource><RequestId>req-small</RequestId></Error>",
+      "code": "EntityTooSmall",
+      "request_id": "req-small",
+      "retryable": false
+    },
+    {
+      "status": 400,
+      "xml": "<Error><Code>EntityTooLarge</Code><Message>Your proposed upload exceeds the maximum allowed object size.</Message><Resource>/bucket/object</Resource><RequestId>req-large</RequestId></Error>",
+      "code": "EntityTooLarge",
+      "request_id": "req-large",
+      "retryable": false
+    },
+    {
+      "status": 501,
+      "xml": "<Error><Code>NotImplemented</Code><Message>A header or operation you provided implies functionality that is not implemented.</Message><Resource>/bucket/object</Resource><RequestId>req-not-implemented</RequestId></Error>",
+      "code": "NotImplemented",
+      "request_id": "req-not-implemented",
+      "retryable": false
+    },
+    {
+      "status": 412,
+      "xml": "<Error><Code>PreconditionFailed</Code><Message>At least one of the preconditions you specified did not hold.</Message><Resource>/bucket/object</Resource><RequestId>req-precondition</RequestId></Error>",
+      "code": "PreconditionFailed",
+      "request_id": "req-precondition",
+      "retryable": false
+    },
+    {
+      "status": 500,
+      "xml": "<Error><Code>InternalError</Code><Message>We encountered an internal error. Please try again.</Message><Resource>/bucket/object</Resource><RequestId>req-internal</RequestId></Error>",
+      "code": "InternalError",
+      "request_id": "req-internal",
+      "retryable": true
     }
   ],
+  "s3_contract": {
+    "operation_contracts": [
+      {"operation": "conditional_get_not_modified", "method": "GET", "status": 304, "response": "empty_body_with_etag"},
+      {"operation": "conditional_precondition_failed", "method": "PUT", "status": 412, "response": "s3_error"},
+      {"operation": "copy_object", "method": "PUT", "status": 200, "response": "CopyObjectResult"},
+      {"operation": "delete_objects", "method": "POST", "status": 200, "response": "DeleteResult"},
+      {"operation": "post_policy_created", "method": "POST", "status": 201, "response": "PostResponse"},
+      {"operation": "post_policy_no_content", "method": "POST", "status": 204, "response": "empty_body"}
+    ],
+    "checksum_algorithms": [
+      {"name": "CRC32", "header": "x-amz-checksum-crc32", "encoding": "standard-base64"},
+      {"name": "CRC32C", "header": "x-amz-checksum-crc32c", "encoding": "standard-base64"},
+      {"name": "CRC64NVME", "header": "x-amz-checksum-crc64nvme", "encoding": "standard-base64"},
+      {"name": "SHA1", "header": "x-amz-checksum-sha1", "encoding": "standard-base64"},
+      {"name": "SHA256", "header": "x-amz-checksum-sha256", "encoding": "standard-base64"}
+    ],
+    "etag_examples": ["\"d41d8cd98f00b204e9800998ecf8427e\"", "\"0123456789abcdef0123456789abcdef-2\""],
+    "session_token_header": "x-amz-security-token",
+    "post_policy_file_field": "file",
+    "post_policy_success_statuses": [200, 201, 204]
+  },
   "retry_cases": [
     {
       "operation": "get_object",

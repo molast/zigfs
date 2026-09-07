@@ -1,7 +1,7 @@
 # 文件 SDK 错误模型
 
 - **契约版本：** V1.0
-- **更新日期：** 2026-09-03
+- **更新日期：** 2026-09-07
 
 所有语言实现必须提供等价的结构化错误：
 
@@ -33,7 +33,7 @@ Secret Key、Authorization、Cookie、完整 Presigned Query 和请求 Body 不�
 | Transport | DNS、连接、TLS、超时、断流 | 仅满足重试前提时 |
 | Cancelled | 调用方取消 | 否 |
 
-未知 S3 Code 仍返回 `ZigFSError`，保留原始 Code。实现不得只凭 Code 判定可重试；还要
+`NotImplemented` 即使是 HTTP `501` 也不可重试。未知 S3 Code 仍返回 `ZigFSError`，保留原始 Code。实现不得只凭 Code 判定可重试；还要
 检查操作幂等性、Body 是否可重放、响应 Body 是否已交付以及取消状态。
 
 ## 重试约束

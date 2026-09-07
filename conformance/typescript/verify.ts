@@ -35,11 +35,34 @@ async function verifySharedVectors(fixture: Fixture): Promise<void> {
   for (const value of fixture.errors) {
     assert(xmlElement(value.xml, 'Code') === value.code, `error code mismatch for ${value.code}`)
     assert(xmlElement(value.xml, 'RequestId') === value.request_id, `request ID mismatch for ${value.code}`)
-    assert((value.status >= 500) === value.retryable, `retryable mismatch for ${value.code}`)
+    const retryableStatus = value.status >= 500 && value.code !== 'NotImplemented'
+    assert(retryableStatus === value.retryable, `retryable mismatch for ${value.code}`)
   }
   for (const value of fixture.retry_cases) {
     assert(shouldRetry(value) === value.expected, `retry decision mismatch for ${value.operation}`)
   }
+  const expectedChecksums = ['CRC32', 'CRC32C', 'CRC64NVME', 'SHA1', 'SHA256']
+  assert(fixture.s3_contract.checksum_algorithms.map((value) => value.name).join(',') === expectedChecksums.join(','), 'checksum contract mismatch')
+  assert(fixture.s3_contract.checksum_algorithms.every((value) => value.encoding === 'standard-base64' && value.header.startsWith('x-amz-checksum-')), 'checksum encoding contract mismatch')
+  assert(fixture.s3_contract.session_token_header === 'x-amz-security-token', 'session token header contract mismatch')
+  assert(fixture.s3_contract.post_policy_file_field === 'file', 'POST Policy file field contract mismatch')
+  assert(fixture.s3_contract.post_policy_success_statuses.join(',') === '200,201,204', 'POST Policy status contract mismatch')
+  assert(fixture.s3_contract.etag_examples.every((value) => value.startsWith('"') && value.endsWith('"')), 'ETag quote contract mismatch')
+  const expectedOperations: Record<string, [string, number, string]> = {
+    conditional_get_not_modified: ['GET', 304, 'empty_body_with_etag'],
+    conditional_precondition_failed: ['PUT', 412, 's3_error'],
+    copy_object: ['PUT', 200, 'CopyObjectResult'],
+    delete_objects: ['POST', 200, 'DeleteResult'],
+    post_policy_created: ['POST', 201, 'PostResponse'],
+    post_policy_no_content: ['POST', 204, 'empty_body'],
+  }
+  for (const contract of fixture.s3_contract.operation_contracts) {
+    const expected = expectedOperations[contract.operation]
+    assert(expected !== undefined, `unknown S3 operation contract: ${contract.operation}`)
+    assert(contract.method === expected[0] && contract.status === expected[1] && contract.response === expected[2], `S3 operation contract mismatch for ${contract.operation}`)
+    delete expectedOperations[contract.operation]
+  }
+  assert(Object.keys(expectedOperations).length === 0, 'S3 operation contract incomplete')
 }
 
 const configPath = process.env.ZIGFS_CONFORMANCE_CONFIG

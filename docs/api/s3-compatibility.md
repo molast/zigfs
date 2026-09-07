@@ -1,6 +1,6 @@
 # S3/Data API 兼容矩阵
 
-- **版本：** V1 Draft 1.0
+- **版本：** V1 Draft 1.1
 - **更新日期：** 2026-09-07
 - **默认 Endpoint：** `http://127.0.0.1:9000`
 - **默认 Region：** `us-east-1`
@@ -15,8 +15,8 @@ Phase 9 的可重复 Runner 位于 [`compatibility/README.md`](../../compatibili
 `phase9-compatibility-v1` JSON/Markdown 报告。当前环境实测版本为 AWS CLI 2.36.38、MinIO
 Client 2025-08-13、rclone 1.75.0 和 Node 24 原生 HTTP。
 
-基础 Bucket/Object/List/Head/Get/Delete、CopyObject、Presigned GET 和 Multipart 流程均由
-Runner 实际执行并校验字节内容。客户端没有稳定入口的 POST Policy、signed streaming Trailer
+Runner 实际执行并校验字节内容；原生 HTTP Runner 另外覆盖 Multipart，AWS CLI、mc 和 rclone
+的多 Part 大文件基线保留在 Phase 5 历史矩阵中。客户端没有稳定入口的 POST Policy、signed streaming Trailer
 checksum，以及 AWS CLI 自动附加但 ZigFS 当前未声明的 DeleteObjects checksum 变体，会明确记为
 `Unsupported`，不计作 `Passed`；真正的协议、状态码或内容错误记为 `Failed`。独立官方 AWS SDK
 运行时尚未安装，报告中记为 `Skipped`。
@@ -203,11 +203,7 @@ Request ID Header，不返回 XML Body。
 | 能力 | 阶段/行为 |
 |---|---|
 | Multi-Range | V1 当前不支持，返回 `416 InvalidRange` |
-| Temporary Credentials / Session Token | 已实现 Header/Presigned SigV4 Token 绑定、60 秒至 12 小时签发、加密持久化、过期/禁用/Policy 和稳定错误 |
-| S3 POST Policy Upload | 已实现 SigV4 Policy、条件、有效期、multipart 文件流、checksum、成功状态和失败不发布；外部客户端矩阵待补 |
-| CRC32、CRC32C、CRC64NVME、SHA1、SHA256 streaming trailer checksum | 已实现声明、流式计算、Trailer/签名校验、Header 响应和稳定错误映射 |
-| Virtual-hosted-style | 配置开启后已实现 Host authority 校验、Bucket 提取、带端口 authority、Path-style 兼容和签名 Host 绑定；默认关闭 |
-| CopyObject | 已实现 Path-style 与 Virtual-hosted-style、源/目标 Owner 与 Object 权限、流式复制、COPY/REPLACE 元数据、源/目标条件和标准 `CopyObjectResult` |
+| DeleteObjects Flexible Checksum Header/Trailer | V1 当前只要求并验证 `Content-MD5`；客户端自动附加的 checksum 扩展返回 `501 NotImplemented` |
 | S3 Object Versioning、ACL、Tagging、Select | V1 非当前范围 |
 
 ## 验证矩阵

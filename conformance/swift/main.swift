@@ -30,11 +30,34 @@ func verifySharedVectors(_ fixture: Fixture) throws {
         let parsed = try parseXML(value.xml)
         try require(parsed["Code"]?.first == value.code, "error code mismatch for \(value.code)")
         try require(parsed["RequestId"]?.first == value.requestId, "request ID mismatch for \(value.code)")
-        try require((value.status >= 500) == value.retryable, "retryable mismatch for \(value.code)")
+        let retryableStatus = value.status >= 500 && value.code != "NotImplemented"
+        try require(retryableStatus == value.retryable, "retryable mismatch for \(value.code)")
     }
     for value in fixture.retryCases {
         try require(shouldRetry(value) == value.expected, "retry decision mismatch for \(value.operation)")
     }
+    let expectedChecksums = ["CRC32", "CRC32C", "CRC64NVME", "SHA1", "SHA256"]
+    try require(fixture.s3Contract.checksumAlgorithms.map(\.name) == expectedChecksums, "checksum contract mismatch")
+    try require(fixture.s3Contract.checksumAlgorithms.allSatisfy { $0.encoding == "standard-base64" && $0.header.hasPrefix("x-amz-checksum-") }, "checksum encoding contract mismatch")
+    try require(fixture.s3Contract.sessionTokenHeader == "x-amz-security-token", "session token header contract mismatch")
+    try require(fixture.s3Contract.postPolicyFileField == "file", "POST Policy file field contract mismatch")
+    try require(fixture.s3Contract.postPolicySuccessStatuses == [200, 201, 204], "POST Policy status contract mismatch")
+    try require(fixture.s3Contract.etagExamples.allSatisfy { $0.hasPrefix("\"") && $0.hasSuffix("\"") }, "ETag quote contract mismatch")
+    let expectedOperations: [String: (String, Int, String)] = [
+        "conditional_get_not_modified": ("GET", 304, "empty_body_with_etag"),
+        "conditional_precondition_failed": ("PUT", 412, "s3_error"),
+        "copy_object": ("PUT", 200, "CopyObjectResult"),
+        "delete_objects": ("POST", 200, "DeleteResult"),
+        "post_policy_created": ("POST", 201, "PostResponse"),
+        "post_policy_no_content": ("POST", 204, "empty_body")
+    ]
+    var seenOperations = Set<String>()
+    for contract in fixture.s3Contract.operationContracts {
+        guard let expected = expectedOperations[contract.operation] else { throw ConformanceError.assertion("unknown S3 operation contract: \(contract.operation)") }
+        try require(contract.method == expected.0 && contract.status == expected.1 && contract.response == expected.2, "S3 operation contract mismatch for \(contract.operation)")
+        seenOperations.insert(contract.operation)
+    }
+    try require(seenOperations == Set(expectedOperations.keys), "S3 operation contract incomplete")
 }
 
 @main

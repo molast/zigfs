@@ -10,6 +10,11 @@ ZigFS 维护三套相互独立的网络契约：
 
 Health 与监控契约见 [operations.md](operations.md)。
 
+S3/Data API 的客户端验证由 [compatibility/README.md](../../compatibility/README.md) 中的
+Phase 9 Runner 执行；共享 SDK 向量位于 `conformance/fixtures/v1.json`（当前
+`vector_revision: 2`）。Management API 的 OpenAPI 文档版本为 `1.0.0`，Admin BFF 仍只是
+网页转发层，不拥有 Bucket、Object 或 Credential 状态。
+
 Phase 5 的 S3 Bucket/Object/List V2、Multipart、单 Range、Presigned GET/PUT、Signature V4
 Header/Streaming 以及五种 Flexible Checksum signed trailer 已实现，并覆盖上传断流和下载取消语义。
 Phase 9 已补齐 GET/HEAD/PUT 的 Conditional Requests，包括 ETag/HTTP 日期条件、304/412

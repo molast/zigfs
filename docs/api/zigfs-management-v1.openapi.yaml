@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ZigFS Management API
-  version: 0.1.0
+  version: 1.0.0
   description: >-
     ZigFS 独立提供的管理接口。Admin 只是调用方之一；授权用户和自动化系统
     可以在不部署 Admin 的情况下直接调用。管理员身份、密码校验、Token
@@ -68,6 +68,12 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateBucketRequest"
       responses:
+        "200":
+          description: 已存在且属于请求中的 owner（幂等结果）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bucket"
         "201":
           description: 已创建
           content:
@@ -297,7 +303,7 @@ components:
       properties:
         token:
           type: string
-          writeOnly: true
+          readOnly: true
         token_type:
           type: string
           const: Bearer
@@ -411,6 +417,7 @@ components:
           format: date-time
     AccessKey:
       type: object
+      additionalProperties: false
       required: [id, access_key, kind, owner, enabled, policy, created_at]
       properties:
         id:
@@ -420,9 +427,11 @@ components:
           type: string
         secret_key:
           type: string
+          readOnly: true
           description: 仅当前开发阶段由 List/Create 返回，供 Admin 联调展示；不写入日志。
         session_token:
           type: string
+          readOnly: true
           description: 临时凭证的 Session Token；永久凭证不返回。
         kind:
           type: string
@@ -459,7 +468,7 @@ components:
           minLength: 1
           maxLength: 256
         policy:
-          $ref: "#/components/schemas/CredentialPolicy"
+          $ref: "#/components/schemas/CredentialPolicyInput"
         ttl_seconds:
           type: integer
           format: int64
@@ -474,6 +483,7 @@ components:
           properties:
             secret_key:
               type: string
+              readOnly: true
             session_token:
               type: string
               description: 临时凭证必须返回；永久凭证不返回。
@@ -489,6 +499,23 @@ components:
       type: object
       additionalProperties: false
       required: [bucket_read, bucket_write, object_read, object_write]
+      properties:
+        bucket_read:
+          type: boolean
+          default: true
+        bucket_write:
+          type: boolean
+          default: true
+        object_read:
+          type: boolean
+          default: true
+        object_write:
+          type: boolean
+          default: true
+    CredentialPolicyInput:
+      type: object
+      additionalProperties: false
+      description: 创建请求中的可选策略字段；省略字段时 ZigFS 使用 true。
       properties:
         bucket_read:
           type: boolean
@@ -616,10 +643,25 @@ components:
           const: true
     Error:
       type: object
+      additionalProperties: false
       required: [code, message, request_id, details]
       properties:
         code:
           type: string
+          enum:
+            - Unauthorized
+            - NotFound
+            - PayloadTooLarge
+            - InvalidOwner
+            - InvalidAccessKey
+            - AccessKeyNotFound
+            - AccessKeyDisabled
+            - InvalidCredentialTTL
+            - Conflict
+            - CorruptMetadata
+            - StorageUnavailable
+            - StorageNotReady
+            - MethodNotAllowed
         message:
           type: string
         request_id:
