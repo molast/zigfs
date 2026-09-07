@@ -27,38 +27,47 @@ export function LoginView({ onLogin }: LoginViewProps) {
 
   return (
     <main className="login-shell">
-      <form className="login-panel" onSubmit={submit}>
-        <div className="brand-mark">ZF</div>
-        <div>
-          <p className="eyebrow">ZigFS</p>
-          <h1>管理中心</h1>
+      <section className="login-branding">
+        <div className="login-logo"><span className="brand-mark">ZF</span><strong>ZigFS</strong></div>
+        <div className="login-copy">
+          <h1>对象存储管理中心</h1>
+          <p>查看服务状态，管理 Bucket、对象和访问凭证。所有管理数据均由 ZigFS API 提供。</p>
         </div>
-        <label htmlFor="admin-username">管理员账号</label>
-        <input
-          id="admin-username"
-          name="username"
-          type="text"
-          autoComplete="username"
-          value={username}
-          onChange={(event) => setUsername(event.target.value)}
-          required
-          autoFocus
-        />
-        <label htmlFor="admin-password">管理员密码</label>
-        <input
-          id="admin-password"
-          name="password"
-          type="password"
-          autoComplete="current-password"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          required
-        />
-        {error && <p className="form-error" role="alert">{error}</p>}
-        <button className="primary-button" type="submit" disabled={submitting}>
-          {submitting ? '登录中...' : '登录'}
-        </button>
-      </form>
+        <span className="login-version">ZigFS Admin v0.1.0</span>
+      </section>
+      <div className="login-form-wrap">
+        <form className="login-panel" onSubmit={submit}>
+          <h2>登录</h2>
+          <p>使用 ZigFS 中配置的管理员账号继续</p>
+          <label htmlFor="admin-username">管理员账号</label>
+          <input
+            id="admin-username"
+            name="username"
+            type="text"
+            autoComplete="username"
+            placeholder="请输入管理员账号"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            required
+            autoFocus
+          />
+          <label htmlFor="admin-password">管理员密码</label>
+          <input
+            id="admin-password"
+            name="password"
+            type="password"
+            autoComplete="current-password"
+            placeholder="请输入管理员密码"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            required
+          />
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="primary-button" type="submit" disabled={submitting}>
+            {submitting ? '登录中...' : '登录'}
+          </button>
+        </form>
+      </div>
     </main>
   )
 }

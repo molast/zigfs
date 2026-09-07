@@ -8,7 +8,7 @@ AWS CLI、MinIO Client (`mc`)、rclone 和原生 Node HTTP 的 S3 回归。Runne
 ./compatibility/run.sh
 ```
 
-默认会检测 PATH 中的 `aws`、`mc` 和 `rclone`。缺失客户端记为 `Skipped`；客户端命令不支持
+默认会检测 PATH 中的 `aws`、`mc`、`rclone`，以及本机 Ruby `aws-sdk-s3`。缺失客户端记为 `Skipped`；客户端命令不支持
 某个 S3 能力记为 `Unsupported`；协议、状态码或内容校验错误记为 `Failed`。报告默认写入
 `compatibility/reports/latest.json` 和同名 `.md` 文件，该目录已加入 `.gitignore`。
 
@@ -31,6 +31,10 @@ AK/SK（也可以使用 `ZIGFS_ACCESS_KEY`、`ZIGFS_SECRET_KEY` 和 `ZIGFS_SESSI
 Presigned GET 和 CopyObject；AWS CLI、mc 还覆盖批量删除，原生 HTTP 额外覆盖 DeleteObjects
 和 Multipart。signed streaming Trailer、POST Policy 和没有稳定 CLI 入口
 的能力会单独记录为 `Unsupported`，不会伪造 `Passed`。
+
+`aws-sdk` 使用已安装的 Ruby `aws-sdk-s3` 执行独立的 Bucket/Object/Copy/Delete 生命周期。
+它是兼容性验证工具，不是 ZigFS 或 Admin 的运行时依赖；如果 Ruby gem 不可用，报告会保留
+`Skipped`，不能据此宣称独立 SDK Gate 通过。
 
 报告中的 `command` 字段只包含可复现命令和临时文件路径，不包含凭证；`server.config` 记录
 实际使用的 endpoint、Region、metrics、缓冲区和数据根模式。报告 schema 为

@@ -10,6 +10,7 @@ import {
   sha256Hex,
   signRequest,
 } from '../conformance/typescript/sigv4.ts'
+import { redactCommand } from './report.mjs'
 
 const execFileAsync = promisify(execFile)
 const KiB = 1024
@@ -497,7 +498,10 @@ const report = {
   schema_version: 1,
   generated_at: new Date().toISOString(),
   profile: options.profile,
-  command: process.env.ZIGFS_BENCH_COMMAND ?? process.argv.join(' '),
+  command: redactCommand(
+    process.env.ZIGFS_BENCH_COMMAND ?? process.argv.join(' '),
+    options.adminPassword,
+  ),
   endpoint: options.endpoint,
   build_mode: process.env.ZIGFS_BENCH_BUILD_MODE ?? 'unknown',
   zig_version: process.env.ZIGFS_BENCH_ZIG_VERSION ?? 'unknown',

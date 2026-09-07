@@ -15,6 +15,9 @@ Object Data、格式信息、实例身份和 Master Key 共同组成一个一致
 5. 用 S3 Head/Get、List 和管理只读接口核对 Bucket/Object 数量、大小和 checksum，
    验证无误后再切换流量。
 
+Release Candidate 升级前后的具体命令和回滚边界见
+[V1 升级运行手册](release/upgrade-v1.md) 与 [V1 回滚运行手册](release/rollback-v1.md)。
+
 示例（停止服务后执行，目标路径必须是专用目录）：
 
 ```bash

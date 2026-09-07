@@ -13,7 +13,8 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 
 ## 当前状态
 
-当前已完成工程初始化和架构边界搭建：
+当前已完成 0.1 Release Candidate（服务版本 `0.1.0`，候选标签 `v0.1.0-rc.1`）的工程、
+协议、恢复和发布准备：
 
 - Zig 0.16 项目、构建和测试入口
 - YAML 配置与代码内默认值
@@ -87,10 +88,10 @@ Phase 7 SDK Conformance 已完成语言无关契约和共享向量，并由 Type
 Phase 8 Reliability and Performance 已加入确定性故障注入、写能力探针、索引重建和数据校验损坏
 测试，以及可输出原始 JSON 的 `smoke`/`full` 基准工具。基准结果与硬件、构建模式和并发度绑定，
 不构成脱离环境的性能承诺。
-当前阶段为 Phase 9 S3 Compatibility Hardening and V1 Release Candidate，Conditional
-Requests、CopyObject、Virtual-hosted-style、Temporary Credentials、POST Policy Upload、
-Flexible Checksum Trailer、外部客户端兼容性 Runner 和对外契约同步均已完成；下一项进入
-V1 Release Candidate 发布材料。
+Phase 9 S3 Compatibility Hardening and 0.1 Release Candidate 已完成。Conditional Requests、
+CopyObject、Virtual-hosted-style、Temporary Credentials、POST Policy Upload、Flexible
+Checksum Trailer、外部客户端兼容性 Runner、对外契约同步、RC 发布材料和全量 Gate 均已完成。
+发布版本仍为服务版本 `0.1.0`，候选标签为 `v0.1.0-rc.1`。
 
 外部客户端兼容性 Runner 位于 [compatibility/README.md](compatibility/README.md)，可重复运行
 AWS CLI、MinIO Client、rclone 和原生 HTTP 矩阵，并输出不含凭证的 JSON/Markdown 报告：
@@ -99,10 +100,13 @@ AWS CLI、MinIO Client、rclone 和原生 HTTP 矩阵，并输出不含凭证的
 ./compatibility/run.sh
 ```
 
+AWS S3 全量操作覆盖和未实现边界见 [docs/api/s3-api-coverage.md](docs/api/s3-api-coverage.md)。
+
 运维、备份恢复和 V1 限制见 [docs/operations.md](docs/operations.md)、
 [docs/backup-and-recovery.md](docs/backup-and-recovery.md) 和
-[docs/known-limitations.md](docs/known-limitations.md)。基准工作负载和采样方法见
-[docs/benchmarks.md](docs/benchmarks.md)。
+[docs/known-limitations.md](docs/known-limitations.md)。0.1 Release Candidate 的版本、
+构建、升级、回滚和发布检查见 [docs/release/v1-release-candidate.md](docs/release/v1-release-candidate.md)。
+基准工作负载和采样方法见 [docs/benchmarks.md](docs/benchmarks.md)。
 
 ## SDK 一致性验证
 

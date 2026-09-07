@@ -10,6 +10,10 @@ ZigFS 维护三套相互独立的网络契约：
 
 Health 与监控契约见 [operations.md](operations.md)。
 
+AWS S3 的完整操作级覆盖盘点见 [s3-api-coverage.md](s3-api-coverage.md)。该清单区分
+“核心 V1 操作已实现”和“整个 AWS S3 操作仍未实现”，不能仅依据某个单独的 CRUD 操作
+判断 ZigFS 已覆盖全部 S3 API。
+
 S3/Data API 的客户端验证由 [compatibility/README.md](../../compatibility/README.md) 中的
 Phase 9 Runner 执行；共享 SDK 向量位于 `conformance/fixtures/v1.json`（当前
 `vector_revision: 2`）。Management API 的 OpenAPI 文档版本为 `1.0.0`，Admin BFF 仍只是

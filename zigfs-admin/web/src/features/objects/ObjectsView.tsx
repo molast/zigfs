@@ -1,4 +1,18 @@
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react'
+import {
+  ArrowLeft,
+  Copy,
+  Download,
+  ExternalLink,
+  File,
+  FolderOpen,
+  Info,
+  RefreshCw,
+  Search,
+  Trash2,
+  Upload,
+  X,
+} from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type { AccessKey, Bucket, ObjectSummary, PresignObjectResponse } from '../../types/api'
 
@@ -6,6 +20,12 @@ interface ObjectsViewProps {
   api: ApiClient
   initialBucket?: string
   onBack: () => void
+}
+
+interface UploadProgress {
+  loaded: number
+  total: number
+  percent: number
 }
 
 export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProps) {
@@ -18,35 +38,38 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
   const [nextToken, setNextToken] = useState('')
   const [putKey, setPutKey] = useState('')
   const [file, setFile] = useState<File | null>(null)
-  const [generated, setGenerated] = useState<PresignObjectResponse | null>(null)
+  const [showUpload, setShowUpload] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null)
   const [deletingKey, setDeletingKey] = useState('')
   const [detail, setDetail] = useState<ObjectSummary | null>(null)
   const [detailUrl, setDetailUrl] = useState<PresignObjectResponse | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
   const fileInput = useRef<HTMLInputElement>(null)
+  const uploadRequest = useRef<XMLHttpRequest | null>(null)
 
   useEffect(() => {
     Promise.all([api.listBuckets(), api.listAccessKeys()])
       .then(([bucketItems, keyItems]) => {
+        const enabledKeys = keyItems.filter((item) => item.enabled)
         setBuckets(bucketItems)
-        setAccessKeys(keyItems.filter((item) => item.enabled))
+        setAccessKeys(enabledKeys)
         setBucket((current) => current || initialBucket || bucketItems[0]?.name || '')
-        setAccessKey((current) => current || keyItems.find((item) => item.enabled)?.access_key || '')
+        setAccessKey((current) => current || enabledKeys[0]?.access_key || '')
       })
       .catch((reason: Error) => setError(reason.message))
-  }, [api])
+  }, [api, initialBucket])
 
   async function load(reset: boolean) {
     if (!bucket) return
     try {
       setLoading(true)
       setError('')
-      const result = await api.listObjects(bucket, prefix, reset ? '' : nextToken)
+      const result = await api.listObjects(bucket, prefix.trim(), reset ? '' : nextToken)
       setObjects((current) => reset ? result.items : [...current, ...result.items])
       setNextToken(result.continuation_token ?? '')
     } catch (reason) {
@@ -60,15 +83,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     if (bucket) void load(true)
   }, [bucket])
 
-  async function createPresign(key: string, method: 'GET' | 'PUT' | 'DELETE') {
-    if (!accessKey || !bucket || !key) return
-    try {
-      setError('')
-      setGenerated(await api.presignObject(accessKey, bucket, key, method, 900))
-    } catch (reason) {
-      setError((reason as Error).message)
-    }
-  }
+  useEffect(() => () => uploadRequest.current?.abort(), [])
 
   function selectFile(event: ChangeEvent<HTMLInputElement>) {
     const selected = event.target.files?.[0] ?? null
@@ -86,22 +101,28 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       setError('')
       setNotice('')
       const presigned = await api.presignObject(accessKey, bucket, key, 'PUT', 900)
-      const response = await fetch(presigned.url, {
-        method: 'PUT',
-        headers: { 'Content-Type': file.type || 'application/octet-stream' },
-        body: file,
+      setUploadProgress({ loaded: 0, total: file.size, percent: 0 })
+      await putFile(presigned.url, file, setUploadProgress, (request) => {
+        uploadRequest.current = request
       })
-      if (!response.ok) throw new Error(`上传失败（${response.status}）`)
       setFile(null)
       setPutKey('')
+      setShowUpload(false)
       if (fileInput.current) fileInput.current.value = ''
       setNotice(`已上传 ${key}`)
       await load(true)
     } catch (reason) {
-      setError((reason as Error).message)
+      if (reason instanceof Error && reason.name === 'AbortError') setNotice('上传已取消，可重新开始上传')
+      else setError((reason as Error).message)
     } finally {
+      uploadRequest.current = null
       setUploading(false)
+      setUploadProgress(null)
     }
+  }
+
+  function cancelUpload() {
+    uploadRequest.current?.abort()
   }
 
   async function download(object: ObjectSummary) {
@@ -177,81 +198,117 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     <section>
       <header className="page-header">
         <div>
-          <button className="back-button" type="button" onClick={onBack}>← Buckets</button>
-          <p className="eyebrow">Data plane</p>
-          <h2>{bucket || 'Objects'}</h2>
-          <p className="page-description">浏览、上传和下载这个 Bucket 中的对象。</p>
+          <button className="back-button" type="button" onClick={onBack}><ArrowLeft className="button-icon" aria-hidden="true" />返回 Buckets</button>
+          <h2>Object Browser</h2>
+          <p className="page-description">浏览、上传、下载和管理 Bucket 中的对象。</p>
         </div>
         <span className="count-badge">{objects.length}{nextToken ? '+' : ''} 个对象</span>
       </header>
+
+      <div className="object-location" aria-label="当前对象路径">
+        <FolderOpen className="object-location-icon" aria-hidden="true" />
+        <button className="object-location-link" type="button" onClick={onBack} disabled={!bucket}>{bucket || '未选择 Bucket'}</button>
+        <b>/</b><span>{prefix.trim() || 'root'}</span>
+      </div>
       {error && <p className="error-banner">{error}</p>}
       {notice && <p className="success-banner">{notice}</p>}
-      <section className="panel object-controls">
-        <div className="toolbar-row">
-          <label>
-            Bucket
-            <select aria-label="Bucket" value={bucket} onChange={(event) => setBucket(event.target.value)} required>
-              {buckets.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
-            </select>
+
+      <div className="page-toolbar">
+        <div className="toolbar-leading object-toolbar-leading">
+          <select aria-label="Bucket" value={bucket} onChange={(event) => setBucket(event.target.value)} disabled={uploading} required>
+            {buckets.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+          </select>
+          <label className="search-box">
+            <Search aria-hidden="true" />
+            <input
+              aria-label="Object prefix"
+              placeholder="按对象 Key 前缀筛选"
+              value={prefix}
+              onChange={(event) => setPrefix(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') void load(true) }}
+            />
           </label>
-          <label>
-            Prefix filter
-            <input aria-label="Object prefix" placeholder="prefix/" value={prefix} onChange={(event) => setPrefix(event.target.value)} />
-          </label>
-          <button className="secondary-button toolbar-button" type="button" onClick={() => void load(true)} disabled={!bucket || loading}>{loading ? '加载中...' : '查询'}</button>
-          <button className="secondary-button toolbar-button" type="button" onClick={() => void load(true)} disabled={!bucket || loading}>刷新</button>
         </div>
-        <div className="upload-row">
-          <div className="upload-copy"><strong>上传对象</strong><span>文件将通过 Presigned URL 直接上传到 ZigFS。</span></div>
-          <form className="upload-form" onSubmit={upload}>
-            <input ref={fileInput} type="file" onChange={selectFile} aria-label="选择文件" />
-            <input aria-label="Object key" placeholder="对象 Key，例如 images/logo.png" value={putKey} onChange={(event) => setPutKey(event.target.value)} required />
-            <button className="primary-button" type="submit" disabled={!file || !putKey.trim() || !bucket || !accessKey || uploading}>{uploading ? '上传中...' : '上传文件'}</button>
-          </form>
+        <div className="toolbar-actions">
+          <button className="primary-button" type="button" onClick={() => setShowUpload((current) => !current)} disabled={!bucket || !accessKey || uploading}>
+            <Upload className="button-icon" aria-hidden="true" />{uploading ? '上传中...' : showUpload ? '关闭上传' : '上传文件'}
+          </button>
+          <button className="secondary-button" type="button" onClick={() => void load(true)} disabled={!bucket || loading}>
+            <RefreshCw className={`button-icon${loading ? ' spinning' : ''}`} aria-hidden="true" />{loading ? '加载中...' : '刷新'}
+          </button>
         </div>
-        <label className="signing-key">
-          Signing key
-          <select value={accessKey} onChange={(event) => setAccessKey(event.target.value)}>
+      </div>
+
+      <div className="signing-bar">
+        <span>Signing credential</span>
+        {accessKeys.length > 0 ? (
+          <select value={accessKey} onChange={(event) => setAccessKey(event.target.value)} aria-label="Signing credential" disabled={uploading}>
             {accessKeys.map((item) => <option key={item.id} value={item.access_key}>{item.owner} · {item.access_key}</option>)}
           </select>
-        </label>
-      </section>
-      {generated && (
-        <div className="presign-band">
-          <a href={generated.url} target="_blank" rel="noreferrer">{generated.url}</a>
-          <span>{new Date(generated.expires_at).toLocaleString()}</span>
-          <button type="button" onClick={() => void navigator.clipboard.writeText(generated.url)}>复制</button>
-        </div>
-      )}
-      <div className="table-wrap">
-        <table>
-          <thead><tr><th>Key</th><th>Size</th><th>ETag</th><th>Modified</th><th /></tr></thead>
-          <tbody>
-            {objects.map((object) => (
-              <tr key={object.key}>
-                <td className="object-key">{object.key}</td>
-                <td>{formatBytes(object.size)}</td>
-                <td><code>{object.etag}</code></td>
-                <td>{new Date(object.last_modified).toLocaleString()}</td>
-                <td className="table-actions">
-                  <button className="secondary-button" type="button" onClick={() => void openDetail(object)}>详情</button>
-                  <button className="secondary-button" type="button" onClick={() => void download(object)} disabled={!accessKey}>下载</button>
-                  <button className="danger-button" type="button" onClick={() => void removeObject(object)} disabled={!accessKey || deletingKey === object.key}>{deletingKey === object.key ? '删除中...' : '删除'}</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        ) : <strong>没有可用的 Access Key</strong>}
       </div>
-      {objects.length === 0 && !loading && <div className="empty-state empty-panel"><strong>这个 Bucket 还是空的</strong><span>选择一个文件上传，对象会显示在这里。</span></div>}
-      {loading && <p className="loading-state">正在加载对象...</p>}
+
+      {showUpload && (
+        <section className="panel create-panel upload-panel">
+          <div className="section-heading"><div><h3>上传对象</h3><p>对象字节通过 Presigned URL 直接传输到 ZigFS。</p></div></div>
+          <form className="upload-form" onSubmit={upload}>
+            <input ref={fileInput} type="file" onChange={selectFile} aria-label="选择文件" disabled={uploading} />
+            <input aria-label="Object key" placeholder="对象 Key，例如 images/logo.png" value={putKey} onChange={(event) => setPutKey(event.target.value)} disabled={uploading} required />
+            <button className="primary-button" type="submit" disabled={!file || !putKey.trim() || !bucket || !accessKey || uploading}><Upload className="button-icon" aria-hidden="true" />{uploading ? '上传中...' : '开始上传'}</button>
+          </form>
+          {uploading && uploadProgress && (
+            <div className="upload-progress" aria-live="polite">
+              <div className="upload-progress-heading">
+                <div><strong>{file?.name}</strong><span>{formatBytes(uploadProgress.loaded)} / {formatBytes(uploadProgress.total)} · {uploadProgress.percent}%</span></div>
+                <button className="secondary-button" type="button" onClick={cancelUpload}><X className="button-icon" aria-hidden="true" />取消上传</button>
+              </div>
+              <div
+                className="upload-progress-track"
+                role="progressbar"
+                aria-label={`${file?.name ?? '对象'}上传进度`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={uploadProgress.percent}
+              >
+                <span style={{ width: `${uploadProgress.percent}%` }} />
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      <section className="panel table-panel">
+        <div className="table-wrap">
+          <table className="object-table">
+            <thead><tr><th>Object</th><th>Size</th><th>ETag</th><th>Last Modified</th><th>Actions</th></tr></thead>
+            <tbody>
+              {objects.map((object) => (
+                <tr key={object.key}>
+                  <td className="object-key"><div className="file-cell"><File className="file-symbol" aria-hidden="true" /><span>{object.key}</span></div></td>
+                  <td>{formatBytes(object.size)}</td>
+                  <td><code>{object.etag}</code></td>
+                  <td>{new Date(object.last_modified).toLocaleString()}</td>
+                  <td className="table-actions">
+                    <button className="secondary-button" type="button" onClick={() => void openDetail(object)}><Info className="button-icon" aria-hidden="true" />详情</button>
+                    <button className="secondary-button" type="button" onClick={() => void download(object)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>
+                    <button className="danger-button" type="button" onClick={() => void removeObject(object)} disabled={!accessKey || deletingKey === object.key}><Trash2 className="button-icon" aria-hidden="true" />{deletingKey === object.key ? '删除中...' : '删除'}</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {objects.length === 0 && !loading && <div className="empty-state empty-panel"><strong>这个 Bucket 还是空的</strong><span>上传文件后，对象会显示在这里。</span></div>}
+        {loading && <p className="loading-state">正在加载对象...</p>}
+      </section>
       {nextToken && <button className="load-more" type="button" onClick={() => void load(false)}>加载更多</button>}
+
       {detail && (
         <div className="drawer-backdrop" role="presentation" onClick={closeDetail}>
           <aside className="detail-drawer" role="dialog" aria-modal="true" aria-label="对象详情" onClick={(event) => event.stopPropagation()}>
             <header className="drawer-header">
               <div><p className="eyebrow">Object details</p><h3>{detail.key}</h3></div>
-              <button className="icon-button" type="button" aria-label="关闭详情" onClick={closeDetail}>×</button>
+              <button className="icon-button" type="button" aria-label="关闭详情" onClick={closeDetail}><X aria-hidden="true" /></button>
             </header>
             <div className="preview-frame">
               {isImageKey(detail.key) && detailUrl ? <img src={detailUrl.url} alt={detail.key} /> : <div className="format-icon" aria-label={`${fileExtension(detail.key)} 文件`}>{fileExtension(detail.key)}</div>}
@@ -267,12 +324,49 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
               <div><dt>Modified</dt><dd>{new Date(detail.last_modified).toLocaleString()}</dd></div>
               {detailUrl && <div><dt>Link expires</dt><dd>{new Date(detailUrl.expires_at).toLocaleString()}</dd></div>}
             </dl>
-            {detailUrl && <div className="drawer-actions"><a className="secondary-button" href={detailUrl.url} target="_blank" rel="noreferrer">打开预览链接</a><button className="secondary-button" type="button" onClick={() => void copyDetailUrl()}>复制链接</button></div>}
+            {detailUrl && <div className="drawer-actions"><a className="secondary-button" href={detailUrl.url} target="_blank" rel="noreferrer"><ExternalLink className="button-icon" aria-hidden="true" />打开预览链接</a><button className="secondary-button" type="button" onClick={() => void copyDetailUrl()}><Copy className="button-icon" aria-hidden="true" />复制链接</button></div>}
           </aside>
         </div>
       )}
     </section>
   )
+}
+
+function putFile(
+  url: string,
+  file: File,
+  onProgress: (progress: UploadProgress) => void,
+  onRequest: (request: XMLHttpRequest) => void,
+) {
+  return new Promise<void>((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    request.open('PUT', url)
+    request.setRequestHeader('Content-Type', file.type || 'application/octet-stream')
+
+    request.upload.addEventListener('progress', (event) => {
+      const total = event.lengthComputable && event.total > 0 ? event.total : file.size
+      const loaded = Math.min(event.loaded, total || event.loaded)
+      const percent = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0
+      onProgress({ loaded, total, percent })
+    })
+    request.addEventListener('load', () => {
+      if (request.status >= 200 && request.status < 300) {
+        onProgress({ loaded: file.size, total: file.size, percent: 100 })
+        resolve()
+      } else {
+        reject(new Error(`上传失败（${request.status}）`))
+      }
+    })
+    request.addEventListener('error', () => reject(new Error('上传失败（网络错误）')))
+    request.addEventListener('abort', () => {
+      const error = new Error('上传已取消')
+      error.name = 'AbortError'
+      reject(error)
+    })
+
+    onRequest(request)
+    request.send(file)
+  })
 }
 
 function formatBytes(bytes: number) {

@@ -92,6 +92,13 @@ function commandExists(command) {
   return spawnSync('which', [command], { stdio: 'ignore' }).status === 0
 }
 
+function awsSdkRuntime() {
+  if (!commandExists('ruby')) return null
+  const result = spawnSync('ruby', ['-e', 'require "aws-sdk-s3"; print Aws::S3::GEM_VERSION'], { encoding: 'utf8' })
+  if (result.status !== 0) return null
+  return (result.stdout ?? '').trim() || null
+}
+
 function runCommand(command, args, options = {}) {
   const timeoutMs = options.timeoutMs ?? 120_000
   return new Promise((resolveResult) => {
@@ -597,9 +604,26 @@ async function runRclone(report, context) {
   }
 }
 
-async function runAwsSdk(report) {
-  report.notes.push('No AWS SDK runtime is installed in this repository. Install/configure an official SDK adapter and pass --client aws-sdk to execute it.')
-  addTest(report, 'sdk-runtime', { status: 'Skipped', reason: 'official AWS SDK adapter is not installed' })
+async function runAwsSdk(report, context) {
+  const script = join(scriptDir, 'aws_sdk_probe.rb')
+  const command = commandText('ruby', [script, context.endpoint, context.region])
+  const result = await runCommand('ruby', [script, context.endpoint, context.region], {
+    env: {
+      ZIGFS_COMPAT_ACCESS_KEY: context.accessKey,
+      ZIGFS_COMPAT_SECRET_KEY: context.secretKey,
+      ZIGFS_COMPAT_SESSION_TOKEN: context.sessionToken ?? '',
+    },
+    timeoutMs: 120_000,
+  })
+  if (result.code !== 0) {
+    addTest(report, 'sdk-bucket-object-lifecycle', {
+      status: 'Failed',
+      error: result.stderr.trim() || result.stdout.trim() || `ruby exited with ${result.code}`,
+      command,
+    })
+    return
+  }
+  addTest(report, 'sdk-bucket-object-lifecycle', { status: 'Passed', command })
 }
 
 async function main() {
@@ -675,8 +699,9 @@ async function main() {
     }
     const context = { endpoint: options.endpoint, region: options.region, accessKey: options.accessKey, secretKey: options.secretKey, sessionToken: options.sessionToken }
     for (const client of selected) {
-      const available = client === 'http' || (client === 'aws-sdk' ? false : commandExists(client))
-      const version = client === 'http' ? `node ${process.versions.node}` : client === 'aws-sdk' ? null : available ? versionOf(client, client === 'rclone' ? ['version'] : ['--version']) : null
+      const sdkVersion = client === 'aws-sdk' ? awsSdkRuntime() : null
+      const available = client === 'http' || (client === 'aws-sdk' ? sdkVersion !== null : commandExists(client))
+      const version = client === 'http' ? `node ${process.versions.node}` : client === 'aws-sdk' ? (sdkVersion ? `ruby aws-sdk-s3 ${sdkVersion}` : null) : available ? versionOf(client, client === 'rclone' ? ['version'] : ['--version']) : null
       const clientReport = createClientReport(client, available, version)
       report.clients.push(clientReport)
       if (!available) {
@@ -687,7 +712,7 @@ async function main() {
       else if (client === 'aws') await runAwsCli(clientReport, context)
       else if (client === 'mc') await runMc(clientReport, context)
       else if (client === 'rclone') await runRclone(clientReport, context)
-      else await runAwsSdk(clientReport)
+      else await runAwsSdk(clientReport, context)
       if (clientReport.status === 'Failed') report.status = 'Failed'
     }
   } catch (error) {

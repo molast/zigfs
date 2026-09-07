@@ -1,5 +1,7 @@
 # zigfs
 
+0.1 Release Candidate: `v0.1.0-rc.1` (service version: `0.1.0`).
+
 ZigFS data-plane service. This project owns the S3 API, object data, metadata,
 transaction journal, indexes, recovery, and storage backends.
 
@@ -46,11 +48,14 @@ DELETE /{bucket}/{object}?uploadId=ID
 ```
 
 S3 endpoints use path-style requests and Signature V4 Header authentication. Object-level
-GET and PUT also accept Signature V4 Presigned Query authentication with a maximum lifetime
-of seven days. DeleteObjects, single-range GetObject, the complete Multipart lifecycle, and
-signed aws-chunked PutObject/UploadPart are supported, including the CRC64NVME signed trailer
-variant. Interrupted fixed-length uploads fail without publishing Object/Part data, and a
-canceled GetObject releases its read lease. Conditional requests, temporary credentials,
-virtual-hosted-style requests, S3 POST Policy uploads, and non-CRC64NVME streaming trailer
-checksums are not yet implemented. Management authentication endpoints are available;
-remaining Management business routes return `501 Not Implemented`.
+GET, PUT and DELETE also accept Signature V4 Presigned Query authentication with a maximum
+lifetime of seven days. DeleteObjects, single-range GetObject, the complete Multipart
+lifecycle, and signed aws-chunked PutObject/UploadPart are supported, including all five
+Flexible Checksum signed trailer variants. Interrupted fixed-length uploads fail without
+publishing Object/Part data, and a canceled GetObject releases its read lease. Conditional
+requests, temporary credentials, virtual-hosted-style requests, and S3 POST Policy uploads
+are supported. Management authentication and business routes are available under
+`/_admin/v1`; the Admin application is only a web client and does not own storage state.
+
+Storage compatibility and release upgrade rules are documented in
+`../docs/release/v1-release-candidate.md`.

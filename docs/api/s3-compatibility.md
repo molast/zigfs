@@ -7,6 +7,7 @@
 
 本文是 ZigFS 文件操作接口和后续多语言 SDK 的能力事实来源。`Implemented`
 表示 Handler、鉴权、持久化和 Zig 原生 TCP 回归测试已完成；外部客户端实测状态单独列出。
+AWS S3 操作的全量盘点和未实现边界见 [s3-api-coverage.md](s3-api-coverage.md)。
 
 ## 外部客户端回归
 
@@ -19,7 +20,8 @@ Runner 实际执行并校验字节内容；原生 HTTP Runner 另外覆盖 Multi
 的多 Part 大文件基线保留在 Phase 5 历史矩阵中。客户端没有稳定入口的 POST Policy、signed streaming Trailer
 checksum，以及 AWS CLI 自动附加但 ZigFS 当前未声明的 DeleteObjects checksum 变体，会明确记为
 `Unsupported`，不计作 `Passed`；真正的协议、状态码或内容错误记为 `Failed`。独立官方 AWS SDK
-运行时尚未安装，报告中记为 `Skipped`。
+运行时可选；当前 Ruby `aws-sdk-s3` 已由 Compatibility Runner 作为独立验证工具覆盖，
+未安装时才记为 `Skipped`。
 
 ## 请求模型
 
@@ -218,7 +220,7 @@ Request ID Header，不返回 XML Body。
 | Phase 9 Compatibility Runner / Node 24 HTTP | Pass with Unsupported coverage | 原生 SigV4 Header/Presigned、Bucket/Object/List、CopyObject、Multipart、DeleteObjects 和 SHA256 Flexible Checksum Header；Node fetch 无法构造 signed streaming Trailer，记为 `Unsupported` |
 | TypeScript/Web Conformance | Pass | Web Crypto SigV4、Web Streams Put/Get、64 位 `bigint`、Range、List V2 Token、Multipart、Abort、错误映射和取消后继续访问 |
 | Swift/iOS Conformance | Pass | CryptoKit SigV4、Foundation 文件/响应流、64 位 `UInt64`、Range、List V2 Token、Multipart、Abort、错误映射和取消后继续访问 |
-| 独立 AWS SDK / signed trailer 外部扩展 | Phase 9 Additional coverage: Pending | AWS CLI、mc、rclone 不作为独立 SDK 运行时；Phase 9 将补充独立 AWS SDK 运行时和更多 trailer 变体验证 |
+| 独立 AWS SDK / signed trailer 外部扩展 | Phase 9 Additional coverage: Pass/Partial | Ruby `aws-sdk-s3` Bucket/Object/Copy/Delete 生命周期已通过；客户端 signed trailer 选择能力继续按各自 CLI 限制记录 |
 
 AK/SK 的创建、禁用、删除和 Policy 配置不属于 S3/Data API；它们是 ZigFS
 Management API。文件 SDK 只建立在本文声明的 S3 操作之上，不包含管理操作。

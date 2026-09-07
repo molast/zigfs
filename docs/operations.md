@@ -43,6 +43,10 @@ Prometheus 只连接独立 Metrics Listener。至少监控 `zigfs_ready`、请�
 对象数据和 Metadata 的 fsync、Checksum、Metadata Commit 和 Journal 语义不能因
 性能调优而关闭。
 
+0.1 Release Candidate 的完整升级、拒绝和回滚步骤见
+[docs/release/v1-release-candidate.md](release/v1-release-candidate.md)、
+[升级运行手册](release/upgrade-v1.md) 和 [回滚运行手册](release/rollback-v1.md)。
+
 ## 故障排查
 
 - `StorageNotWritable`：检查路径权限、挂载模式、容量和 inode；确认目录未被同名
