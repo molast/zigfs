@@ -26,9 +26,9 @@ import { ObjectsView } from './features/objects/ObjectsView'
 import { SettingsView } from './features/settings/SettingsView'
 import { StorageView } from './features/storage/StorageView'
 import { SystemView } from './features/system/SystemView'
+import { appRoutePath, createAppRoute, parseAppRoute, type AppRoute, type View } from './routes'
 import type { AdminSession } from './types/api'
 
-type View = 'dashboard' | 'buckets' | 'bucket-detail' | 'objects' | 'access-keys' | 'storage' | 'system' | 'settings'
 type Availability = 'checking' | 'ready' | 'offline' | 'not-ready'
 
 interface NavItem {
@@ -64,8 +64,7 @@ const viewMeta: Record<View, { section: string; label: string }> = {
 
 export default function App() {
   const [session, setSession] = useState<AdminSession | null>()
-  const [view, setView] = useState<View>('dashboard')
-  const [selectedBucket, setSelectedBucket] = useState('')
+  const [route, setRoute] = useState<AppRoute>(() => parseAppRoute(window.location.pathname))
   const [availability, setAvailability] = useState<Availability>('checking')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
@@ -93,6 +92,12 @@ export default function App() {
     void bootstrap()
   }, [api])
 
+  useEffect(() => {
+    const syncRoute = () => setRoute(parseAppRoute(window.location.pathname))
+    window.addEventListener('popstate', syncRoute)
+    return () => window.removeEventListener('popstate', syncRoute)
+  }, [])
+
   if (availability === 'offline' || availability === 'not-ready') {
     return <ServiceUnavailable state={availability} retry={() => void bootstrap()} />
   }
@@ -115,11 +120,15 @@ export default function App() {
     }
   }
 
-  function navigate(nextView: View) {
-    setView(nextView)
+  function navigate(nextView: View, bucket = '') {
+    const nextRoute = createAppRoute(nextView, bucket)
+    const path = appRoutePath(nextRoute)
+    if (window.location.pathname !== path) window.history.pushState(null, '', path)
+    setRoute(nextRoute)
     setMobileSidebarOpen(false)
   }
 
+  const { view, bucket: selectedBucket } = route
   const meta = viewMeta[view]
   const isBucketsActive = view === 'buckets' || view === 'bucket-detail' || view === 'objects'
 
@@ -195,20 +204,16 @@ export default function App() {
         <main className="content">
           {view === 'dashboard' && <DashboardView api={api} />}
           {view === 'buckets' && <BucketsView api={api} onOpenBucket={(name) => {
-            setSelectedBucket(name)
-            setView('bucket-detail')
+            navigate('bucket-detail', name)
           }} />}
           {view === 'bucket-detail' && <BucketDetailView
             api={api}
             bucketName={selectedBucket}
-            onBack={() => setView('buckets')}
-            onOpenObjects={() => setView('objects')}
-            onDeleted={() => {
-              setSelectedBucket('')
-              setView('buckets')
-            }}
+            onBack={() => navigate('buckets')}
+            onOpenObjects={() => navigate('objects', selectedBucket)}
+            onDeleted={() => navigate('buckets')}
           />}
-          {view === 'objects' && <ObjectsView api={api} initialBucket={selectedBucket} onBack={() => setView('bucket-detail')} />}
+          {view === 'objects' && <ObjectsView api={api} initialBucket={selectedBucket} onBack={() => navigate('bucket-detail', selectedBucket)} />}
           {view === 'access-keys' && <AccessKeysView api={api} />}
           {view === 'storage' && <StorageView api={api} />}
           {view === 'system' && <SystemView api={api} />}
