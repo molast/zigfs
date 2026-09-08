@@ -564,8 +564,8 @@ td small { display: block; margin-top: 3px; color: var(--text-muted); font-size:
 .object-table .sticky-actions-column { position: sticky; right: 0; z-index: 2; text-align: center; background: var(--surface); box-shadow: -1px 0 0 var(--border), -8px 0 16px rgb(15 23 42 / 4%); }
 .object-table th.sticky-actions-column { z-index: 3; background: var(--surface-subtle); }
 .object-table tbody tr:hover .sticky-actions-column { background: var(--surface-hover); }
-.object-table .table-actions { display: table-cell; padding: 7px 10px; }
-.action-menu-trigger { width: 30px; height: 30px; margin: 0 auto; border-color: transparent; color: var(--text-muted); }
+.object-table .table-actions { display: table-cell; padding: 7px 10px; text-align: center; vertical-align: middle; }
+.object-table .action-menu-trigger { width: 30px; height: 30px; min-height: 30px; margin: 0 auto; padding: 0; display: grid; border-color: transparent; color: var(--text-muted); }
 .action-menu-trigger:hover, .action-menu-trigger[aria-expanded="true"] { color: var(--accent-strong); border-color: var(--border-strong); background: var(--accent-soft); }
 .action-menu-trigger svg { width: 17px; height: 17px; }
 .action-menu-popover { position: fixed; z-index: 130; min-width: 180px; padding: 5px; display: grid; gap: 2px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface); box-shadow: 0 12px 32px rgb(15 23 42 / 18%); }

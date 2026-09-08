@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import {
   ArrowLeft,
   Archive,
+  ChartPie,
   CircleX,
-  Database,
   FolderOpen,
   Gauge,
   KeyRound,
@@ -187,7 +187,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
             <SettingItem icon={Shield} label="Access Policy" value="Private" />
             <SettingItem icon={LockKeyhole} label="Encryption" value="Disabled" />
             <div className="bucket-usage">
-              <Database aria-hidden="true" />
+              <ChartPie aria-hidden="true" />
               <div><span>Reported Usage</span><strong>{formatBytes(usage.bytes)}</strong><small>{usage.objects.toLocaleString()} 个对象</small></div>
             </div>
             <SettingItem icon={CircleX} label="Replication" value="Disabled" status="disabled" />
