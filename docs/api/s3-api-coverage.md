@@ -116,7 +116,7 @@ ZigFS 0.1 已纳入 Versioning 和 Lifecycle 的核心子集。其余操作不�
 | `UploadPart` | `PUT /{bucket}/{key}?partNumber&uploadId` | `Implemented` | 支持并发 Part、覆盖、MD5、SHA-256、五种 Flexible Checksum 和 signed trailer。 |
 | `UploadPartCopy` | `PUT /{bucket}/{key}?partNumber&uploadId` + `x-amz-copy-source` | `Not Implemented` | 不提供服务端 Multipart Part Copy。 |
 | `ListParts` | `GET /{bucket}/{key}?uploadId` | `Implemented` | 支持 Part Number Marker、分页和升序结果。 |
-| `CompleteMultipartUpload` | `POST /{bucket}/{key}?uploadId` | `Implemented` | 校验 Part 顺序/ETag，提交普通 Object Generation 和复合 ETag。 |
+| `CompleteMultipartUpload` | `POST /{bucket}/{key}?uploadId` | `Implemented` | 校验 Part 顺序/ETag，以 Metadata CAS 发布有序 Part Manifest 和复合 ETag，不复制完整对象。 |
 | `AbortMultipartUpload` | `DELETE /{bucket}/{key}?uploadId` | `Implemented` | Tombstone Upload Metadata 并清理 Part 数据。 |
 | `ListMultipartUploads` | `GET /{bucket}?uploads` | `Implemented` | 支持 Prefix、Delimiter、Key/UploadId Marker、分页和 URL Encoding。 |
 

@@ -1112,8 +1112,7 @@ fn validateRequest(
 }
 
 const LeaseSource = struct {
-    data_store: data_store_port.ObjectDataStore,
-    location: data_store_port.Location,
+    lease: *ReadLease,
     size: u64,
     offset: u64,
 
@@ -1127,8 +1126,7 @@ const LeaseSource = struct {
         if (buffer.len == 0) return error.ReadFailed;
         const requested = @min(self.size - self.offset, @as(u64, @intCast(buffer.len)));
         var sink = RangeBufferSink{ .buffer = buffer[0..@intCast(requested)] };
-        self.data_store.readRange(
-            self.location,
+        self.lease.streamRange(
             self.offset,
             requested,
             sink.interface(),
@@ -1136,6 +1134,29 @@ const LeaseSource = struct {
         if (sink.written != requested) return error.ReadFailed;
         self.offset += requested;
         return @intCast(requested);
+    }
+};
+
+const VerifyingPartSink = struct {
+    downstream: byte_stream.Sink,
+    sha256: std.crypto.hash.sha2.Sha256 = std.crypto.hash.sha2.Sha256.init(.{}),
+    size: u64 = 0,
+
+    fn interface(self: *VerifyingPartSink) byte_stream.Sink {
+        return .{ .context = self, .vtable = &.{ .write_all = writeAll } };
+    }
+
+    fn writeAll(context: *anyopaque, bytes: []const u8) byte_stream.Sink.Error!void {
+        const self: *VerifyingPartSink = @ptrCast(@alignCast(context));
+        self.downstream.writeAll(bytes) catch return error.WriteFailed;
+        self.sha256.update(bytes);
+        self.size = std.math.add(u64, self.size, bytes.len) catch return error.WriteFailed;
+    }
+
+    fn digest(self: *VerifyingPartSink) [32]u8 {
+        var value: [32]u8 = undefined;
+        self.sha256.final(&value);
+        return value;
     }
 };
 
@@ -1161,6 +1182,30 @@ fn locationFor(object: anytype) data_store_port.Location {
         .object_id = object.id,
         .data_generation = object.data_generation,
     };
+}
+
+fn multipartLocation(upload_id: @import("../common/id.zig").Uuid, part: object_domain.MultipartPart) multipart_data_store_port.Location {
+    return .{
+        .upload_id = upload_id,
+        .part_number = part.number,
+        .data_generation = part.data_generation,
+    };
+}
+
+fn manifestIntegrityDigest(manifest: object_domain.MultipartManifestView) [32]u8 {
+    var hash = std.crypto.hash.sha2.Sha256.init(.{});
+    hash.update(&manifest.upload_id);
+    var encoded: [58]u8 = undefined;
+    for (manifest.parts) |part| {
+        std.mem.writeInt(u16, encoded[0..2], part.number, .little);
+        std.mem.writeInt(u64, encoded[2..10], part.size, .little);
+        @memcpy(encoded[10..42], &part.checksum_sha256);
+        @memcpy(encoded[42..58], &part.data_generation);
+        hash.update(&encoded);
+    }
+    var result: [32]u8 = undefined;
+    hash.final(&result);
+    return result;
 }
 
 fn mapBucketStoreError(err: bucket_store_port.Error) Error {
@@ -1242,6 +1287,17 @@ fn mapExistingDataError(err: data_store_port.Error) Error {
     };
 }
 
+fn mapExistingMultipartDataError(err: multipart_data_store_port.Error) Error {
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.SinkWriteFailed => error.OutputWriteFailed,
+        error.CorruptData, error.NotFound => error.CorruptData,
+        error.Conflict => error.Conflict,
+        error.InvalidValue => error.CorruptMetadata,
+        error.SourceReadFailed, error.Unavailable => error.Unavailable,
+    };
+}
+
 test "object service puts gets overwrites and tombstones objects" {
     const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
     const MetadataBucketStore = @import("../metadata/bucket_store.zig").MetadataBucketStore;
@@ -1285,6 +1341,7 @@ test "object service puts gets overwrites and tombstones objects" {
         bucket_store.interface(),
         object_store.interface(),
         data_store.interface(),
+        null,
         &index,
         &state_mutex,
         &object_locks,
@@ -1434,6 +1491,7 @@ test "object service rejects missing buckets bad checksums and failed sources" {
         bucket_store.interface(),
         object_store.interface(),
         data_store.interface(),
+        null,
         &index,
         &state_mutex,
         &object_locks,
@@ -1511,6 +1569,7 @@ test "object service preserves version history delete markers and suspended null
         bucket_store.interface(),
         object_store.interface(),
         data_store.interface(),
+        null,
         &index,
         &state_mutex,
         &object_locks,

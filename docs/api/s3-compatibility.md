@@ -134,9 +134,10 @@ ListObjectsV2 已支持：
 - ListParts 支持 `part-number-marker` 和 `max-parts=0..1000`，默认 `1000`，按 Part Number 升序返回。
 - ListMultipartUploads 支持 `prefix`、`delimiter`、`key-marker`、`upload-id-marker`、`max-uploads=0..1000` 和 `encoding-type=url`，按 Key、UploadId 稳定排序；因此客户端丢失进程内状态后仍可发现未完成 Upload。
 - Complete XML 接受 `ETag`/`PartNumber` 两种字段顺序，并兼容 rclone 的 XML 实体引号。请求 Part 必须升序、无重复、存在且 ETag 一致；除最后一个提交 Part 外，每个 Part 至少 5 MiB。
-- Complete 使用固定缓冲把已选 Part 拼接为普通 Object Generation，并复用 Object Metadata CAS 与原子发布流程。最终 ETag 为 `MD5(concat(binary_part_md5))-part_count`。
-- Complete 或 Abort 成功后，Upload Metadata 提交 Tombstone，再清理整个 Upload 数据目录，不会删除或修改此前已完成的对象。
-- 启动时清理已提交 Tombstone 的残留 Part，并按 `s3.multipart_expiry_seconds` 清理超时未完成上传；默认 7 天，允许 60 秒至 30 天。
+- Complete 验证已选 Part 的存在性后，以 Object Metadata CAS 原子发布有序 Part Manifest，不重新读取、拼接或复制完整对象。最终 ETag 为 `MD5(concat(binary_part_md5))-part_count`。
+- Complete 成功后 Upload Metadata 提交 Tombstone，Manifest 引用的 Part 转由对象版本持有；Abort 只清理未完成 Upload，不会触碰已完成对象的 Part。
+- GET 按 Manifest 顺序读取 Part，Range 只读取相交 Part；完整 GET 逐 Part 校验 Size/SHA-256。启动 GC 同时以活动 Upload 和所有对象版本 Manifest 计算可达 Part，清理 Tombstone、覆盖 Part 和失败提交留下的孤儿。
+- `s3.multipart_expiry_seconds` 清理超时未完成上传；默认 7 天，允许 60 秒至 30 天。
 - Multipart 接受 Signature V4 Header 和标准 Presigned Query。Presigned Query 可用于 Create、UploadPart、ListParts、ListMultipartUploads、Complete 和 Abort，完整绑定 `uploadId`、`partNumber` 等 Query 参数。
 - 暂停/恢复以 Part 为边界：客户端暂停时停止或中止当前请求；恢复时通过 ListMultipartUploads/ListParts 跳过已提交 Part。PutObject 和单个 UploadPart 不支持从请求体中间继续，中断的 Part 必须重传。
 

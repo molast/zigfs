@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowRight, Folder, Plus, RefreshCw, Search, Trash2 } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
+import { useToast } from '../../components/ToastProvider'
 import type { Bucket } from '../../types/api'
 
 interface BucketsViewProps {
@@ -9,6 +10,7 @@ interface BucketsViewProps {
 }
 
 export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
+  const showToast = useToast()
   const [buckets, setBuckets] = useState<Bucket[]>([])
   const [name, setName] = useState('')
   const [owner, setOwner] = useState('')
@@ -48,6 +50,7 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
       setOwner('')
       setShowCreate(false)
       await refresh()
+      showToast(`已创建 Bucket ${name.trim()}`)
     } catch (reason) {
       setError((reason as Error).message)
     }
@@ -59,6 +62,7 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
       setError('')
       await api.deleteBucket(bucket)
       await refresh()
+      showToast(`已删除 Bucket ${bucket}`)
     } catch (reason) {
       setError((reason as Error).message)
     }

@@ -402,6 +402,39 @@ test "object payload round trips required metadata" {
     try std.testing.expectEqual(@as(usize, 2), decoded.value.user_metadata.len);
     try std.testing.expectEqualStrings("mobile", decoded.value.user_metadata[0].value);
     try std.testing.expectEqualSlices(u8, &value.data_generation, &decoded.value.data_generation);
+    try std.testing.expect(decoded.value.multipart_manifest == null);
+}
+
+test "object payload round trips multipart manifest" {
+    var value = testValue();
+    const upload_id: id.Uuid = .{ 3, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 };
+    const parts = [_]object_domain.MultipartPart{
+        .{
+            .number = 1,
+            .size = 100,
+            .checksum_sha256 = .{3} ** 32,
+            .data_generation = .{ 4, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 },
+        },
+        .{
+            .number = 3,
+            .size = 23,
+            .checksum_sha256 = .{4} ** 32,
+            .data_generation = .{ 5, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 },
+        },
+    };
+    value.size = 123;
+    value.etag_part_count = parts.len;
+    value.multipart_manifest = .{ .upload_id = upload_id, .parts = &parts };
+    const bytes = try encode(std.testing.allocator, value);
+    defer std.testing.allocator.free(bytes);
+    const decoded = try decode(std.testing.allocator, bytes);
+    defer decoded.deinit(std.testing.allocator);
+    const manifest = decoded.value.multipart_manifest orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualSlices(u8, &upload_id, &manifest.upload_id);
+    try std.testing.expectEqual(@as(usize, 2), manifest.parts.len);
+    try std.testing.expectEqual(@as(u16, 3), manifest.parts[1].number);
+    try std.testing.expectEqual(@as(u64, 23), manifest.parts[1].size);
+    try std.testing.expectEqualSlices(u8, &parts[1].data_generation, &manifest.parts[1].data_generation);
 }
 
 test "object payload rejects incompatible and malformed records" {

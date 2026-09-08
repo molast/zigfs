@@ -18,6 +18,8 @@ import {
   X,
 } from 'lucide-react'
 import { ApiError, type ApiClient } from '../../api/client'
+import { ActionMenu } from '../../components/ActionMenu'
+import { useToast } from '../../components/ToastProvider'
 import type { AccessKey, MultipartUpload, MultipartUploadSummary, ObjectSummary, ObjectVersion, PresignObjectResponse } from '../../types/api'
 import {
   choosePartSize,
@@ -55,7 +57,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
   const [file, setFile] = useState<File | null>(null)
   const [showUpload, setShowUpload] = useState(false)
   const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
+  const showToast = useToast()
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null)
@@ -131,7 +133,6 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     const selected = event.target.files?.[0] ?? null
     setFile(selected)
     if (selected && !putKey) setPutKey(selected.name)
-    setNotice('')
   }
 
   async function loadMultipartUploads() {
@@ -200,7 +201,6 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     if (!file || !key || !bucket || !accessKey) return
     try {
       setError('')
-      setNotice('')
       const created = await api.createMultipartUpload(bucket, key, file.type || 'application/octet-stream')
       const task: UploadTask = {
         uploadId: created.upload_id,
@@ -239,7 +239,6 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     uploadControl.current = control
     setUploading(true)
     setError('')
-    setNotice('')
     let committedBytes = task.uploadedBytes
     let committedParts = task.completedParts
     try {
@@ -331,7 +330,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
         if (!(await completionPublished(task))) throw reason
       }
       setUploadTasks((current) => current.filter((item) => item.uploadId !== task.uploadId))
-      setNotice(`已上传 ${task.key}`)
+      showToast(`已上传 ${task.key}`)
       await load(true)
     } catch (reason) {
       if (control.cancelled) {
@@ -344,7 +343,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
           status: 'paused',
           error: undefined,
         })
-        setNotice(`已暂停 ${task.key}`)
+        showToast(`已暂停 ${task.key}`)
       } else {
         const message = (reason as Error).message
         updateUploadTask(task.uploadId, { status: 'failed', error: message })
@@ -368,7 +367,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     if (!window.confirm(`取消上传“${task.key}”并删除已上传的分片？`)) return
     const control = uploadControl.current
     if (control?.uploadId === task.uploadId && control.completing) {
-      setNotice(`正在完成 ${task.key}`)
+      showToast(`正在完成 ${task.key}`)
       return
     }
     if (control?.uploadId === task.uploadId) {
@@ -379,7 +378,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     try {
       await api.abortMultipartUpload(task.uploadId, task.bucket, task.key)
       setUploadTasks((current) => current.filter((item) => item.uploadId !== task.uploadId))
-      setNotice(`已取消 ${task.key}`)
+      showToast(`已取消 ${task.key}`)
     } catch (reason) {
       const message = (reason as Error).message
       updateUploadTask(task.uploadId, { status: 'failed', error: message })
@@ -436,7 +435,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     if (!accessKey || !bucket) return
     try {
       setError('')
-      setNotice(`正在准备 ${object.key}`)
+      showToast(`正在准备 ${object.key}`)
       const presigned = await api.presignObject(accessKey, bucket, object.key, 'GET', 900)
       const response = await fetch(presigned.url)
       if (!response.ok) throw new Error(`下载失败（${response.status}）`)
@@ -449,10 +448,9 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       link.click()
       link.remove()
       window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-      setNotice(`已下载 ${object.key}`)
+      showToast(`已下载 ${object.key}`)
     } catch (reason) {
       setError((reason as Error).message)
-      setNotice('')
     }
   }
 
@@ -460,7 +458,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     if (!accessKey || !bucket || version.is_delete_marker) return
     try {
       setError('')
-      setNotice(`正在准备 ${version.key} 的指定版本`)
+      showToast(`正在准备 ${version.key} 的指定版本`)
       const presigned = await api.presignObject(accessKey, bucket, version.key, 'GET', 900, { versionId: version.version_id })
       const response = await fetch(presigned.url)
       if (!response.ok) throw new Error(`下载失败（${response.status}）`)
@@ -473,10 +471,9 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       link.click()
       link.remove()
       window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-      setNotice(`已下载 ${version.key} 的版本 ${shortVersionId(version.version_id)}`)
+      showToast(`已下载 ${version.key} 的版本 ${shortVersionId(version.version_id)}`)
     } catch (reason) {
       setError((reason as Error).message)
-      setNotice('')
     }
   }
 
@@ -510,7 +507,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       const response = await fetch(presigned.url, { method: 'DELETE' })
       if (!response.ok) throw new Error(`删除失败（${response.status}）`)
       if (detail?.key === object.key) closeDetail()
-      setNotice(`已删除 ${object.key}`)
+      showToast(`已删除 ${object.key}`)
       await load(true)
     } catch (reason) {
       setError((reason as Error).message)
@@ -529,7 +526,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       const presigned = await api.presignObject(accessKey, bucket, version.key, 'DELETE', 900, { versionId: version.version_id })
       const response = await fetch(presigned.url, { method: 'DELETE' })
       if (!response.ok) throw new Error(`删除版本失败（${response.status}）`)
-      setNotice(`已永久删除 ${version.key} 的${target} ${shortVersionId(version.version_id)}`)
+      showToast(`已永久删除 ${version.key} 的${target} ${shortVersionId(version.version_id)}`)
       await load(true)
     } catch (reason) {
       setError((reason as Error).message)
@@ -548,7 +545,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       const presigned = await api.presignObject(accessKey, bucket, version.key, 'DELETE', 900, { versionId: version.version_id })
       const response = await fetch(presigned.url, { method: 'DELETE' })
       if (!response.ok) throw new Error(`恢复对象失败（${response.status}）`)
-      setNotice(`已恢复 ${version.key}`)
+      showToast(`已恢复 ${version.key}`)
       await load(true)
     } catch (reason) {
       setError((reason as Error).message)
@@ -572,7 +569,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
         headers: presigned.required_headers,
       })
       if (!response.ok) throw new Error(`回溯版本失败（${response.status}）`)
-      setNotice(`已将 ${version.key} 回溯到版本 ${shortVersionId(version.version_id)}`)
+      showToast(`已将 ${version.key} 回溯到版本 ${shortVersionId(version.version_id)}`)
       await load(true)
     } catch (reason) {
       setError((reason as Error).message)
@@ -584,7 +581,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
   async function copyDetailUrl() {
     if (!detailUrl) return
     await navigator.clipboard.writeText(detailUrl.url)
-    setNotice('预览链接已复制')
+    showToast('预览链接已复制')
   }
 
   return (
@@ -604,7 +601,6 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
         <b>/</b><span>{prefix.trim() || 'root'}</span>
       </div>
       {error && <p className="error-banner">{error}</p>}
-      {notice && <p className="success-banner">{notice}</p>}
 
       <div className="page-toolbar">
         <div className="toolbar-leading object-toolbar-leading">
@@ -710,21 +706,23 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       <section className="panel table-panel">
         <div className="table-wrap">
           {viewMode === 'current' ? <table className="object-table">
-            <thead><tr><th>Object</th><th>Size</th><th>Last Modified</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Object</th><th>Size</th><th>Last Modified</th><th className="sticky-actions-column">Actions</th></tr></thead>
             <tbody>{objects.map((object) => (
                 <tr key={object.key}>
                   <td className="object-key"><div className="file-cell"><File className="file-symbol" aria-hidden="true" /><span>{object.key}</span></div></td>
                   <td>{formatBytes(object.size)}</td>
                   <td>{new Date(object.last_modified).toLocaleString()}</td>
-                  <td className="table-actions">
-                    <button className="secondary-button" type="button" onClick={() => void openDetail(object)}><Info className="button-icon" aria-hidden="true" />详情</button>
-                    <button className="secondary-button" type="button" onClick={() => void download(object)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>
-                    <button className="danger-button" type="button" onClick={() => void removeObject(object)} disabled={!accessKey || deletingKey === object.key}><Trash2 className="button-icon" aria-hidden="true" />{deletingKey === object.key ? '删除中...' : '删除'}</button>
+                  <td className="table-actions sticky-actions-column">
+                    <ActionMenu label={`管理 ${object.key}`}>
+                      <button type="button" role="menuitem" onClick={() => void openDetail(object)}><Info className="button-icon" aria-hidden="true" />详情</button>
+                      <button type="button" role="menuitem" onClick={() => void download(object)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>
+                      <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeObject(object)} disabled={!accessKey || deletingKey === object.key}><Trash2 className="button-icon" aria-hidden="true" />{deletingKey === object.key ? '删除中...' : '删除'}</button>
+                    </ActionMenu>
                   </td>
                 </tr>
               ))}</tbody>
           </table> : <table className="object-table version-table">
-            <thead><tr><th>Object</th><th>Version ID</th><th>State</th><th>Size</th><th>Last Modified</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Object</th><th>Version ID</th><th>State</th><th>Size</th><th>Last Modified</th><th className="sticky-actions-column">Actions</th></tr></thead>
             <tbody>{versions.map((version) => {
               const identity = `${version.key}\u0000${version.version_id}`
               const restoring = restoringVersion === identity
@@ -734,11 +732,13 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
                 <td><div className="version-badges">{version.is_latest && <span className="status-badge latest">Latest</span>}{version.is_delete_marker && <span className="status-badge delete-marker">DeleteMarker</span>}{!version.is_latest && !version.is_delete_marker && <span className="status-badge">Previous</span>}</div></td>
                 <td>{version.is_delete_marker ? '-' : formatBytes(version.size)}</td>
                 <td>{new Date(version.last_modified).toLocaleString()}</td>
-                <td className="table-actions">
-                  {!version.is_delete_marker && <button className="secondary-button" type="button" onClick={() => void downloadVersion(version)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>}
-                  {version.is_delete_marker && version.is_latest && <button className="secondary-button" type="button" onClick={() => void restoreDeletedObject(version)} disabled={!accessKey || restoring}><RotateCcw className={`button-icon${restoring ? ' spinning' : ''}`} aria-hidden="true" />{restoring ? '恢复中...' : '恢复对象'}</button>}
-                  {!version.is_delete_marker && !version.is_latest && <button className="secondary-button" type="button" onClick={() => void rewindVersion(version)} disabled={!accessKey || restoring}><History className={`button-icon${restoring ? ' spinning' : ''}`} aria-hidden="true" />{restoring ? '回溯中...' : '回溯到此版本'}</button>}
-                  {(!version.is_delete_marker || !version.is_latest) && <button className="danger-button" type="button" onClick={() => void removeVersion(version)} disabled={!accessKey || deletingVersion === identity}><Trash2 className="button-icon" aria-hidden="true" />{deletingVersion === identity ? '删除中...' : version.is_delete_marker ? '删除标记' : '永久删除'}</button>}
+                <td className="table-actions sticky-actions-column">
+                  <ActionMenu label={`管理 ${version.key} 的版本 ${shortVersionId(version.version_id)}`}>
+                    {!version.is_delete_marker && <button type="button" role="menuitem" onClick={() => void downloadVersion(version)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>}
+                    {version.is_delete_marker && version.is_latest && <button type="button" role="menuitem" onClick={() => void restoreDeletedObject(version)} disabled={!accessKey || restoring}><RotateCcw className={`button-icon${restoring ? ' spinning' : ''}`} aria-hidden="true" />{restoring ? '恢复中...' : '恢复对象'}</button>}
+                    {!version.is_delete_marker && !version.is_latest && <button type="button" role="menuitem" onClick={() => void rewindVersion(version)} disabled={!accessKey || restoring}><History className={`button-icon${restoring ? ' spinning' : ''}`} aria-hidden="true" />{restoring ? '回溯中...' : '回溯到此版本'}</button>}
+                    {(!version.is_delete_marker || !version.is_latest) && <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeVersion(version)} disabled={!accessKey || deletingVersion === identity}><Trash2 className="button-icon" aria-hidden="true" />{deletingVersion === identity ? '删除中...' : version.is_delete_marker ? '删除标记' : '永久删除'}</button>}
+                  </ActionMenu>
                 </td>
               </tr>
             })}</tbody>

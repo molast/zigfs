@@ -17,6 +17,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
+import { useToast } from '../../components/ToastProvider'
 import type { Bucket, BucketConfiguration } from '../../types/api'
 import { LifecycleRulesEditor } from './LifecycleRulesEditor'
 import { parseLifecycleConfiguration, serializeLifecycleConfiguration, type LifecycleRule } from './lifecycle'
@@ -37,6 +38,7 @@ interface BucketUsage {
 const sections = ['Summary', 'Events', 'Replication', 'Lifecycle', 'Access', 'Anonymous']
 
 export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDeleted }: BucketDetailViewProps) {
+  const showToast = useToast()
   const [bucket, setBucket] = useState<Bucket | null>(null)
   const [configuration, setConfiguration] = useState<BucketConfiguration | null>(null)
   const [activeSection, setActiveSection] = useState<'Summary' | 'Lifecycle'>('Summary')
@@ -92,6 +94,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       setDeleting(true)
       setError('')
       await api.deleteBucket(bucketName)
+      showToast(`已删除 Bucket ${bucketName}`)
       onDeleted()
     } catch (reason) {
       setError((reason as Error).message)
@@ -106,6 +109,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       setError('')
       setConfiguration(await api.updateBucketConfiguration(bucketName, { versioning }))
       setBucket((current) => current ? { ...current, versioning } : current)
+      showToast(`Versioning 已更新为 ${versioning}`)
     } catch (reason) {
       setError((reason as Error).message)
     } finally {
@@ -125,6 +129,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       setConfiguration(updated)
       setLifecycleRules(rules)
       setBucket((current) => current ? { ...current, lifecycle_enabled: rules.length > 0 } : current)
+      showToast(rules.length > 0 ? 'Lifecycle 规则已保存' : 'Lifecycle 规则已清除')
     } catch (reason) {
       setError((reason as Error).message)
       throw reason

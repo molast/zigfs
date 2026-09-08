@@ -250,6 +250,16 @@ pub const MultipartService = struct {
             .exact = upload.metadata_generation,
         }) catch |err| return mapStoreError(err);
         self.index.publishUpload(&prepared, generation);
+        if (replacing) {
+            const replaced = upload.parts[position];
+            if (!std.mem.eql(u8, &replaced.data_generation, &data_generation)) {
+                _ = self.data_store.deleteGeneration(.{
+                    .upload_id = upload.id,
+                    .part_number = replaced.number,
+                    .data_generation = replaced.data_generation,
+                }) catch {};
+            }
+        }
         return new_part;
     }
 
@@ -434,7 +444,7 @@ pub const MultipartService = struct {
         self.state_mutex.unlock(self.io);
         defer upload.deinit(self.allocator);
 
-        const parts = self.allocator.alloc(multipart_domain.Part, requested_parts.len) catch return error.OutOfMemory;
+        const parts = self.allocator.alloc(object_domain.MultipartPart, requested_parts.len) catch return error.OutOfMemory;
         defer self.allocator.free(parts);
         var total_size: u64 = 0;
         var composite_hash = std.crypto.hash.Md5.init(.{});
@@ -448,15 +458,22 @@ pub const MultipartService = struct {
             }
             total_size = std.math.add(u64, total_size, stored.size) catch return error.InvalidPart;
             composite_hash.update(&stored.etag_md5);
-            parts[index] = stored;
+            parts[index] = .{
+                .number = stored.number,
+                .size = stored.size,
+                .checksum_sha256 = stored.checksum_sha256,
+                .data_generation = stored.data_generation,
+            };
         }
         var composite_etag: [16]u8 = undefined;
         composite_hash.final(&composite_etag);
-        var source = PartSource.init(self.data_store, upload.id, parts);
-        const object = self.objects.put(bucket_name, key, source.interface(), .{
+        const object = self.objects.commitMultipart(bucket_name, key, .{
+            .upload_id = upload.id,
+            .parts = parts,
+        }, total_size, .{
             .content_type = upload.content_type,
             .user_metadata = @ptrCast(upload.user_metadata),
-            .multipart_etag = .{
+            .etag = .{
                 .digest = composite_etag,
                 .part_count = @intCast(parts.len),
             },
@@ -478,7 +495,7 @@ pub const MultipartService = struct {
             return error.CorruptMetadata;
         }
         self.state_mutex.unlock(self.io);
-        self.data_store.deleteUpload(upload.id) catch {};
+        self.cleanupUnreferencedUploadParts(upload.id, parts) catch {};
         return object;
     }
 
@@ -616,72 +633,27 @@ pub const MultipartService = struct {
             .tombstone => error.CorruptMetadata,
         };
     }
-};
 
-const PartSource = struct {
-    data_store: data_store_port.MultipartDataStore,
-    upload_id: id.Uuid,
-    parts: []const multipart_domain.Part,
-    part_index: usize = 0,
-    part_offset: u64 = 0,
-    sha256: std.crypto.hash.sha2.Sha256 = std.crypto.hash.sha2.Sha256.init(.{}),
-
-    fn init(data_store: data_store_port.MultipartDataStore, upload_id: id.Uuid, parts: []const multipart_domain.Part) PartSource {
-        return .{ .data_store = data_store, .upload_id = upload_id, .parts = parts };
-    }
-
-    fn interface(self: *PartSource) byte_stream.Source {
-        return .{ .context = self, .vtable = &.{ .read = read } };
-    }
-
-    fn read(context: *anyopaque, buffer: []u8) byte_stream.Source.Error!usize {
-        const self: *PartSource = @ptrCast(@alignCast(context));
-        if (buffer.len == 0) return 0;
-        while (self.part_index < self.parts.len) {
-            const part = self.parts[self.part_index];
-            if (self.part_offset == part.size) {
-                try self.finishPart(part);
-                continue;
+    fn cleanupUnreferencedUploadParts(
+        self: MultipartService,
+        upload_id: id.Uuid,
+        retained: []const object_domain.MultipartPart,
+    ) data_store_port.Error!void {
+        const scan = try self.data_store.scanGenerations(self.allocator);
+        defer scan.deinit(self.allocator);
+        for (scan.generations) |generation| {
+            if (!std.mem.eql(u8, &generation.location.upload_id, &upload_id)) continue;
+            var reachable = false;
+            for (retained) |part| {
+                if (generation.location.part_number == part.number and
+                    std.mem.eql(u8, &generation.location.data_generation, &part.data_generation))
+                {
+                    reachable = true;
+                    break;
+                }
             }
-            const requested: usize = @intCast(@min(part.size - self.part_offset, buffer.len));
-            var sink: BufferSink = .{ .buffer = buffer[0..requested] };
-            self.data_store.readRange(.{
-                .upload_id = self.upload_id,
-                .part_number = part.number,
-                .data_generation = part.data_generation,
-            }, self.part_offset, requested, sink.interface()) catch return error.ReadFailed;
-            if (sink.written != requested) return error.ReadFailed;
-            self.sha256.update(buffer[0..requested]);
-            self.part_offset += requested;
-            if (self.part_offset == part.size) try self.finishPart(part);
-            return requested;
+            if (!reachable) _ = try self.data_store.deleteGeneration(generation.location);
         }
-        return 0;
-    }
-
-    fn finishPart(self: *PartSource, part: multipart_domain.Part) byte_stream.Source.Error!void {
-        var actual: [32]u8 = undefined;
-        self.sha256.final(&actual);
-        if (!std.crypto.timing_safe.eql([32]u8, actual, part.checksum_sha256)) return error.ReadFailed;
-        self.part_index += 1;
-        self.part_offset = 0;
-        self.sha256 = std.crypto.hash.sha2.Sha256.init(.{});
-    }
-};
-
-const BufferSink = struct {
-    buffer: []u8,
-    written: usize = 0,
-
-    fn interface(self: *BufferSink) byte_stream.Sink {
-        return .{ .context = self, .vtable = &.{ .write_all = writeAll } };
-    }
-
-    fn writeAll(context: *anyopaque, bytes: []const u8) byte_stream.Sink.Error!void {
-        const self: *BufferSink = @ptrCast(@alignCast(context));
-        if (bytes.len > self.buffer.len - self.written) return error.WriteFailed;
-        @memcpy(self.buffer[self.written .. self.written + bytes.len], bytes);
-        self.written += bytes.len;
     }
 };
 

@@ -55,7 +55,7 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 - Admin 版本视图：查看 DeleteMarker、删除最新 DeleteMarker 恢复对象，以及通过标准 CopyObject 回溯任意旧版本
 - Admin Lifecycle 规则页：新增、编辑、启停和删除当前版本、非当前版本及过期 DeleteMarker 的 Expiry 规则
 - AWS SigV4 aws-chunked 签名链，以及五种 Flexible Checksum signed trailer 的签名与 checksum 校验
-- S3 Multipart Create、并发 UploadPart、ListParts、ListMultipartUploads、Complete、Abort、复合 ETag 和启动超时清理
+- S3 Multipart Create、并发 UploadPart、ListParts、ListMultipartUploads、Manifest-only Complete、Abort、复合 ETag 和启动超时清理
 - Multipart 以 Part 为边界暂停/恢复；支持 Presigned 全生命周期、Upload ID 重发现和跳过已提交 Part
 - 真实环回 TCP S3 集成测试，覆盖鉴权拒绝、CRUD、分页、Policy 与 Credential 禁用
 - ZigFS Management API：Bucket、Object 管理视图、Presign、AK/SK、Storage、System、Health 和 Settings
@@ -99,7 +99,7 @@ Checksum Trailer、外部客户端兼容性 Runner、对外契约同步、RC 发
 发布版本仍为服务版本 `0.1.0`，候选标签为 `v0.1.0-rc.1`。
 Phase 10 Resumable Multipart Upload 已完成 ZigFS S3/Management 能力与 Admin 操作链路：客户端可通过
 `ListMultipartUploads` 和 `ListParts` 恢复未完成上传，Admin 支持真实分片进度、暂停、继续、失败重试、
-取消清理以及刷新页面后重新选择原文件继续。全部 Part 上传后，Admin 会显示独立的“完成中”状态；
+取消清理以及刷新页面后重新选择原文件继续。全部 Part 上传后，Complete 只发布引用既有 Part 的对象 Manifest，不重新读取或复制完整文件；
 若刷新或网络中断导致 Complete 响应丢失，会根据 UploadId 和最终 Object 自动校准结果。单次 `PutObject` 和单个 `UploadPart` 仍遵循 S3 语义，
 不能从请求体中间续传，中断的 Part 必须完整重传。
 Phase 11 Object Versioning and Lifecycle 已完成：版本历史和 Lifecycle 规则由 ZigFS 自有 Metadata

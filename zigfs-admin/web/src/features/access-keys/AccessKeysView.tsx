@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
+import { useToast } from '../../components/ToastProvider'
 import type { AccessKey, CreatedAccessKey, CredentialPolicy } from '../../types/api'
 
 const fullAccess: CredentialPolicy = {
@@ -18,6 +19,7 @@ const readOnly: CredentialPolicy = {
 }
 
 export function AccessKeysView({ api }: { api: ApiClient }) {
+  const showToast = useToast()
   const [keys, setKeys] = useState<AccessKey[]>([])
   const [owner, setOwner] = useState('')
   const [policy, setPolicy] = useState<'full' | 'read-only'>('full')
@@ -64,6 +66,7 @@ export function AccessKeysView({ api }: { api: ApiClient }) {
       setOwner('')
       setShowCreate(false)
       await refresh()
+      showToast(`已创建 Access Key ${result.access_key}`)
     } catch (reason) {
       setError((reason as Error).message)
     }
@@ -74,6 +77,7 @@ export function AccessKeysView({ api }: { api: ApiClient }) {
       setError('')
       await api.setAccessKeyEnabled(key.id, !key.enabled)
       await refresh()
+      showToast(`已${key.enabled ? '停用' : '启用'} Access Key ${key.access_key}`)
     } catch (reason) {
       setError((reason as Error).message)
     }
@@ -85,6 +89,7 @@ export function AccessKeysView({ api }: { api: ApiClient }) {
       setError('')
       await api.deleteAccessKey(key.id)
       await refresh()
+      showToast(`已删除 Access Key ${key.access_key}`)
     } catch (reason) {
       setError((reason as Error).message)
     }

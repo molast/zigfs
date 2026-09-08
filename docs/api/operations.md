@@ -80,6 +80,11 @@ Multipart 暂停/恢复以 Part 为边界。恢复端先用 `ListMultipartUpload
 `ListParts` 获取已提交 Part；已提交 Part 可跳过，上传中断的 Part 必须完整重传。单次
 `PutObject` 和单个 `UploadPart` 不提供请求体字节中点续传。
 
+UploadPart 成功时 Part 已经作为不可变数据持久化。CompleteMultipartUpload 只校验 Part、计算
+复合 ETag 并通过 Object Metadata CAS 发布有序 Manifest，不重新读取或复制完整对象；GET 按
+Manifest 顺序读取，Range 只访问相交 Part。活动 Upload 和所有对象版本的 Manifest 都进入 GC
+可达集合，只有永久删除对象版本后，不再被引用的 Part 才可物理回收。
+
 完整 Header、Query、XML、错误和已知差异见
 [s3-compatibility.md](s3-compatibility.md)。对象 GET/HEAD/PUT 支持 ETag 和 HTTP 日期条件请求，S3 API 不经过 Go Admin。
 

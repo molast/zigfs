@@ -308,6 +308,7 @@ test "lifecycle scanner expires noncurrent versions and sole delete markers" {
         bucket_store.interface(),
         object_store.interface(),
         data_store.interface(),
+        null,
         &index,
         &state_mutex,
         &object_locks,
