@@ -19,6 +19,7 @@ import {
 import { ApiError, createApiClient } from './api/client'
 import { AccessKeysView } from './features/access-keys/AccessKeysView'
 import { LoginView } from './features/auth/LoginView'
+import { BucketDetailView } from './features/buckets/BucketDetailView'
 import { BucketsView } from './features/buckets/BucketsView'
 import { DashboardView } from './features/dashboard/DashboardView'
 import { ObjectsView } from './features/objects/ObjectsView'
@@ -27,7 +28,7 @@ import { StorageView } from './features/storage/StorageView'
 import { SystemView } from './features/system/SystemView'
 import type { AdminSession } from './types/api'
 
-type View = 'dashboard' | 'buckets' | 'objects' | 'access-keys' | 'storage' | 'system' | 'settings'
+type View = 'dashboard' | 'buckets' | 'bucket-detail' | 'objects' | 'access-keys' | 'storage' | 'system' | 'settings'
 type Availability = 'checking' | 'ready' | 'offline' | 'not-ready'
 
 interface NavItem {
@@ -38,7 +39,7 @@ interface NavItem {
 
 const navigation: Array<{ label: string; items: NavItem[] }> = [
   { label: '工作台', items: [{ view: 'dashboard', label: 'Overview', icon: LayoutDashboard }] },
-  { label: '对象存储', items: [{ view: 'buckets', label: 'Browser', icon: FolderOpen }] },
+  { label: '对象存储', items: [{ view: 'buckets', label: 'Buckets', icon: FolderOpen }] },
   { label: '访问控制', items: [{ view: 'access-keys', label: 'Access Keys', icon: KeyRound }] },
   {
     label: '服务状态',
@@ -52,8 +53,9 @@ const navigation: Array<{ label: string; items: NavItem[] }> = [
 
 const viewMeta: Record<View, { section: string; label: string }> = {
   dashboard: { section: 'System', label: 'Overview' },
-  buckets: { section: 'Browser', label: 'Buckets' },
-  objects: { section: 'Browser', label: 'Objects' },
+  buckets: { section: 'Buckets', label: 'All Buckets' },
+  'bucket-detail': { section: 'Buckets', label: 'Summary' },
+  objects: { section: 'Buckets', label: 'Objects' },
   'access-keys': { section: 'Access Control', label: 'Access Keys' },
   storage: { section: 'System', label: 'Storage' },
   system: { section: 'System', label: 'Runtime' },
@@ -119,7 +121,7 @@ export default function App() {
   }
 
   const meta = viewMeta[view]
-  const isBrowserActive = view === 'buckets' || view === 'objects'
+  const isBucketsActive = view === 'buckets' || view === 'bucket-detail' || view === 'objects'
 
   return (
     <div className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}${mobileSidebarOpen ? ' sidebar-open' : ''}${darkTheme ? ' theme-dark' : ''}`}>
@@ -135,7 +137,7 @@ export default function App() {
             <div className="nav-group" key={group.label}>
               <span className="nav-section-label">{group.label}</span>
               {group.items.map((item) => {
-                const active = item.view === 'buckets' ? isBrowserActive : view === item.view
+                const active = item.view === 'buckets' ? isBucketsActive : view === item.view
                 const Icon = item.icon
                 return (
                   <button
@@ -169,7 +171,9 @@ export default function App() {
             </button>
             <button className="topbar-icon mobile-sidebar-toggle" type="button" aria-label="打开导航" onClick={() => setMobileSidebarOpen(true)}><Menu aria-hidden="true" /></button>
             <div className="breadcrumbs" aria-label="Breadcrumb">
-              <span>{meta.section}</span><b>/</b><strong>{view === 'objects' && selectedBucket ? selectedBucket : meta.label}</strong>
+              <span>{meta.section}</span><b>/</b>
+              {(view === 'bucket-detail' || view === 'objects') && selectedBucket ? <><span>{selectedBucket}</span><b>/</b></> : null}
+              <strong>{meta.label}</strong>
             </div>
           </div>
           <div className="topbar-actions">
@@ -192,9 +196,19 @@ export default function App() {
           {view === 'dashboard' && <DashboardView api={api} />}
           {view === 'buckets' && <BucketsView api={api} onOpenBucket={(name) => {
             setSelectedBucket(name)
-            setView('objects')
+            setView('bucket-detail')
           }} />}
-          {view === 'objects' && <ObjectsView api={api} initialBucket={selectedBucket} onBack={() => setView('buckets')} />}
+          {view === 'bucket-detail' && <BucketDetailView
+            api={api}
+            bucketName={selectedBucket}
+            onBack={() => setView('buckets')}
+            onOpenObjects={() => setView('objects')}
+            onDeleted={() => {
+              setSelectedBucket('')
+              setView('buckets')
+            }}
+          />}
+          {view === 'objects' && <ObjectsView api={api} initialBucket={selectedBucket} onBack={() => setView('bucket-detail')} />}
           {view === 'access-keys' && <AccessKeysView api={api} />}
           {view === 'storage' && <StorageView api={api} />}
           {view === 'system' && <SystemView api={api} />}

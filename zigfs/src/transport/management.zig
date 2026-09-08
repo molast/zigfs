@@ -3,11 +3,14 @@ const Application = @import("../application/mod.zig").Application;
 const bucket_service = @import("../application/bucket_service.zig");
 const credential_service = @import("../application/credential_service.zig");
 const management_service = @import("../application/management_service.zig");
+const multipart_service = @import("../application/multipart_service.zig");
 const object_listing = @import("../application/object_listing.zig");
 const credential_domain = @import("../domain/credential.zig");
 const object_domain = @import("../domain/object.zig");
+const multipart_domain = @import("../domain/multipart.zig");
 const sigv4 = @import("../auth/sigv4.zig");
 const time = @import("../common/time.zig");
+const s3_multipart = @import("s3_multipart.zig");
 const version = @import("../version.zig").value;
 
 pub const api_prefix = "/_admin/v1";
@@ -28,6 +31,11 @@ pub const routes = [_]Route{
     .{ .method = .delete, .path = "/_admin/v1/buckets/:name" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/objects" },
     .{ .method = .post, .path = "/_admin/v1/objects/presign" },
+    .{ .method = .post, .path = "/_admin/v1/multipart-uploads" },
+    .{ .method = .get, .path = "/_admin/v1/buckets/:name/multipart-uploads" },
+    .{ .method = .get, .path = "/_admin/v1/multipart-uploads/:id" },
+    .{ .method = .post, .path = "/_admin/v1/multipart-uploads/:id/complete" },
+    .{ .method = .delete, .path = "/_admin/v1/multipart-uploads/:id" },
     .{ .method = .get, .path = "/_admin/v1/access-keys" },
     .{ .method = .post, .path = "/_admin/v1/access-keys" },
     .{ .method = .patch, .path = "/_admin/v1/access-keys/:id" },
@@ -55,6 +63,16 @@ pub fn serveRequest(
     }
     if (std.mem.startsWith(u8, path, api_prefix ++ "/buckets/")) {
         const resource = path[(api_prefix ++ "/buckets/").len..];
+        if (std.mem.endsWith(u8, resource, "/multipart-uploads")) {
+            if (request.head.method != .GET) {
+                return respondMethodNotAllowed(request, request_id, "GET");
+            }
+            const raw_name = resource[0 .. resource.len - "/multipart-uploads".len];
+            if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '/') != null) {
+                return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+            }
+            return serveListMultipartUploads(request, application, request_id, raw_name, target);
+        }
         if (std.mem.endsWith(u8, resource, "/objects")) {
             if (request.head.method != .GET) {
                 return respondMethodNotAllowed(request, request_id, "GET");
@@ -78,6 +96,29 @@ pub fn serveRequest(
             return respondMethodNotAllowed(request, request_id, "POST");
         }
         return servePresignObject(request, application, request_id);
+    }
+    if (std.mem.eql(u8, path, api_prefix ++ "/multipart-uploads")) {
+        if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
+        return serveCreateMultipartUpload(request, application, request_id);
+    }
+    if (std.mem.startsWith(u8, path, api_prefix ++ "/multipart-uploads/")) {
+        const resource = path[(api_prefix ++ "/multipart-uploads/").len..];
+        if (std.mem.endsWith(u8, resource, "/complete")) {
+            if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
+            const upload_id = resource[0 .. resource.len - "/complete".len];
+            if (upload_id.len == 0 or std.mem.indexOfScalar(u8, upload_id, '/') != null) {
+                return respondError(request, request_id, .bad_request, "InvalidUploadId", "upload id is invalid");
+            }
+            return serveCompleteMultipartUpload(request, application, request_id, upload_id);
+        }
+        if (resource.len == 0 or std.mem.indexOfScalar(u8, resource, '/') != null) {
+            return respondError(request, request_id, .bad_request, "InvalidUploadId", "upload id is invalid");
+        }
+        return switch (request.head.method) {
+            .GET => serveGetMultipartUpload(request, application, request_id, resource, target),
+            .DELETE => serveAbortMultipartUpload(request, application, request_id, resource, target),
+            else => respondMethodNotAllowed(request, request_id, "GET, DELETE"),
+        };
     }
     if (std.mem.eql(u8, path, api_prefix ++ "/access-keys")) {
         return switch (request.head.method) {
@@ -235,7 +276,232 @@ const PresignObjectRequest = struct {
     key: []const u8,
     method: []const u8,
     expires_seconds: u64,
+    upload_id: ?[]const u8 = null,
+    part_number: ?u16 = null,
 };
+
+const CreateMultipartUploadRequest = struct {
+    bucket: []const u8,
+    key: []const u8,
+    content_type: []const u8 = "application/octet-stream",
+};
+
+const CompleteMultipartPartRequest = struct {
+    part_number: u16,
+    etag: []const u8,
+};
+
+const CompleteMultipartUploadRequest = struct {
+    bucket: []const u8,
+    key: []const u8,
+    parts: []const CompleteMultipartPartRequest,
+};
+
+fn serveCreateMultipartUpload(
+    request: *std.http.Server.Request,
+    application: *Application,
+    request_id: []const u8,
+) !std.http.Status {
+    const parsed = try parseJsonBody(CreateMultipartUploadRequest, request, application.allocator, request_id) orelse {
+        return .bad_request;
+    };
+    defer parsed.deinit();
+    const multiparts = application.multipartService() orelse return respondNotReady(request, request_id);
+    const upload = multiparts.create(parsed.value.bucket, parsed.value.key, .{
+        .content_type = parsed.value.content_type,
+    }) catch |err| return respondMultipartError(request, request_id, err);
+    defer upload.deinit(application.allocator);
+    audit(application, request_id, "create_multipart_upload", parsed.value.key, "created");
+    return respondMultipartUpload(request, application, request_id, .created, upload);
+}
+
+fn serveListMultipartUploads(
+    request: *std.http.Server.Request,
+    application: *Application,
+    request_id: []const u8,
+    raw_bucket: []const u8,
+    target: []const u8,
+) !std.http.Status {
+    const bucket = decodeComponent(application.allocator, raw_bucket, false) catch {
+        return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+    };
+    defer application.allocator.free(bucket);
+    var query = parseMultipartListQuery(application.allocator, target) catch {
+        return respondError(request, request_id, .bad_request, "InvalidQuery", "multipart list query is invalid");
+    };
+    defer query.deinit(application.allocator);
+    const multiparts = application.multipartService() orelse return respondNotReady(request, request_id);
+    const result = multiparts.listUploads(bucket, .{
+        .prefix = query.prefix orelse "",
+        .key_marker = query.key_marker,
+        .upload_id_marker = query.upload_id_marker,
+        .max_uploads = query.max_uploads,
+    }) catch |err| return respondMultipartError(request, request_id, err);
+    defer result.deinit(application.allocator);
+
+    var output: std.Io.Writer.Allocating = .init(application.allocator);
+    defer output.deinit();
+    var json: std.json.Stringify = .{ .writer = &output.writer };
+    try json.beginObject();
+    try json.objectField("items");
+    try json.beginArray();
+    for (result.uploads) |upload| {
+        try json.beginObject();
+        try json.objectField("upload_id");
+        try json.write(upload.upload_id);
+        try json.objectField("bucket");
+        try json.write(bucket);
+        try json.objectField("key");
+        try json.write(upload.key);
+        try json.objectField("initiated_at");
+        var initiated_buffer: [20]u8 = undefined;
+        try json.write(time.formatIso8601(upload.initiated_at_unix_seconds, &initiated_buffer) catch return error.WriteFailed);
+        try json.endObject();
+    }
+    try json.endArray();
+    try json.objectField("is_truncated");
+    try json.write(result.is_truncated);
+    if (result.next_key_marker) |marker| {
+        try json.objectField("next_key_marker");
+        try json.write(marker);
+    }
+    if (result.next_upload_id_marker) |marker| {
+        try json.objectField("next_upload_id_marker");
+        try json.write(marker);
+    }
+    try json.endObject();
+    return respondJsonBytes(request, request_id, .ok, output.written());
+}
+
+fn serveGetMultipartUpload(
+    request: *std.http.Server.Request,
+    application: *Application,
+    request_id: []const u8,
+    upload_id: []const u8,
+    target: []const u8,
+) !std.http.Status {
+    var address = parseMultipartAddressQuery(application.allocator, target) catch {
+        return respondError(request, request_id, .bad_request, "InvalidQuery", "multipart address is invalid");
+    };
+    defer address.deinit(application.allocator);
+    if (address.bucket == null or address.key == null) {
+        return respondError(request, request_id, .bad_request, "InvalidQuery", "bucket and key are required");
+    }
+    const multiparts = application.multipartService() orelse return respondNotReady(request, request_id);
+    const upload = multiparts.listParts(address.bucket.?, address.key.?, upload_id) catch |err| {
+        return respondMultipartError(request, request_id, err);
+    };
+    defer upload.deinit(application.allocator);
+    return respondMultipartUpload(request, application, request_id, .ok, upload);
+}
+
+fn serveCompleteMultipartUpload(
+    request: *std.http.Server.Request,
+    application: *Application,
+    request_id: []const u8,
+    upload_id: []const u8,
+) !std.http.Status {
+    const parsed = try parseJsonBody(CompleteMultipartUploadRequest, request, application.allocator, request_id) orelse {
+        return .bad_request;
+    };
+    defer parsed.deinit();
+    if (parsed.value.parts.len == 0 or parsed.value.parts.len > multipart_domain.max_parts) {
+        return respondError(request, request_id, .bad_request, "InvalidPart", "completion parts are invalid");
+    }
+    const parts = application.allocator.alloc(multipart_service.CompletePart, parsed.value.parts.len) catch {
+        return respondError(request, request_id, .service_unavailable, "StorageUnavailable", "storage service is unavailable");
+    };
+    defer application.allocator.free(parts);
+    for (parsed.value.parts, 0..) |part, index| {
+        parts[index] = .{
+            .number = part.part_number,
+            .etag_md5 = s3_multipart.parseEtag(part.etag) orelse {
+                return respondError(request, request_id, .bad_request, "InvalidPart", "part ETag is invalid");
+            },
+        };
+    }
+    const multiparts = application.multipartService() orelse return respondNotReady(request, request_id);
+    const object = multiparts.complete(parsed.value.bucket, parsed.value.key, upload_id, parts) catch |err| {
+        return respondMultipartError(request, request_id, err);
+    };
+    defer object.deinit(application.allocator);
+    audit(application, request_id, "complete_multipart_upload", parsed.value.key, "completed");
+    var output: std.Io.Writer.Allocating = .init(application.allocator);
+    defer output.deinit();
+    var json: std.json.Stringify = .{ .writer = &output.writer };
+    try writeObject(&json, object);
+    return respondJsonBytes(request, request_id, .ok, output.written());
+}
+
+fn serveAbortMultipartUpload(
+    request: *std.http.Server.Request,
+    application: *Application,
+    request_id: []const u8,
+    upload_id: []const u8,
+    target: []const u8,
+) !std.http.Status {
+    var address = parseMultipartAddressQuery(application.allocator, target) catch {
+        return respondError(request, request_id, .bad_request, "InvalidQuery", "multipart address is invalid");
+    };
+    defer address.deinit(application.allocator);
+    if (address.bucket == null or address.key == null) {
+        return respondError(request, request_id, .bad_request, "InvalidQuery", "bucket and key are required");
+    }
+    const multiparts = application.multipartService() orelse return respondNotReady(request, request_id);
+    multiparts.abort(address.bucket.?, address.key.?, upload_id) catch |err| {
+        if (err != error.UploadNotFound) return respondMultipartError(request, request_id, err);
+    };
+    audit(application, request_id, "abort_multipart_upload", address.key.?, "aborted");
+    return respondNoContent(request, request_id);
+}
+
+fn respondMultipartUpload(
+    request: *std.http.Server.Request,
+    application: *Application,
+    request_id: []const u8,
+    status: std.http.Status,
+    upload: multipart_domain.Upload,
+) !std.http.Status {
+    var output: std.Io.Writer.Allocating = .init(application.allocator);
+    defer output.deinit();
+    var json: std.json.Stringify = .{ .writer = &output.writer };
+    try json.beginObject();
+    var upload_id_buffer: [32]u8 = undefined;
+    try json.objectField("upload_id");
+    try json.write(multipart_domain.formatUploadId(upload.id, &upload_id_buffer));
+    try json.objectField("bucket");
+    try json.write(upload.bucket_name);
+    try json.objectField("key");
+    try json.write(upload.key);
+    try json.objectField("content_type");
+    try json.write(upload.content_type);
+    try json.objectField("initiated_at");
+    var initiated_buffer: [20]u8 = undefined;
+    try json.write(time.formatIso8601(upload.initiated_at_unix_seconds, &initiated_buffer) catch return error.WriteFailed);
+    try json.objectField("parts");
+    try json.beginArray();
+    var uploaded_bytes: u64 = 0;
+    for (upload.parts) |part| {
+        uploaded_bytes += part.size;
+        try json.beginObject();
+        try json.objectField("part_number");
+        try json.write(part.number);
+        try json.objectField("size");
+        try json.write(part.size);
+        try json.objectField("etag");
+        const etag = std.fmt.bytesToHex(part.etag_md5, .lower);
+        try json.write(&etag);
+        try json.objectField("last_modified");
+        var modified_buffer: [20]u8 = undefined;
+        try json.write(time.formatIso8601(part.last_modified_unix_seconds, &modified_buffer) catch return error.WriteFailed);
+        try json.endObject();
+    }
+    try json.endArray();
+    try json.objectField("uploaded_bytes");
+    try json.write(uploaded_bytes);
+    try json.endObject();
+    return respondJsonBytes(request, request_id, status, output.written());
+}
 
 fn servePresignObject(
     request: *std.http.Server.Request,
@@ -247,10 +513,14 @@ fn servePresignObject(
     };
     defer parsed.deinit();
     const value = parsed.value;
+    const multipart_part = value.upload_id != null or value.part_number != null;
     if ((!std.mem.eql(u8, value.method, "GET") and
         !std.mem.eql(u8, value.method, "PUT") and
         !std.mem.eql(u8, value.method, "DELETE")) or
-        value.expires_seconds == 0 or value.expires_seconds > sigv4.max_presigned_expiry_seconds)
+        value.expires_seconds == 0 or value.expires_seconds > sigv4.max_presigned_expiry_seconds or
+        (multipart_part and (value.upload_id == null or value.part_number == null or
+            !std.mem.eql(u8, value.method, "PUT") or value.part_number.? == 0 or
+            value.part_number.? > multipart_domain.max_parts)))
     {
         return respondError(request, request_id, .bad_request, "InvalidPresignRequest", "method or expiry is invalid");
     }
@@ -279,6 +549,13 @@ fn servePresignObject(
     if (!std.mem.eql(u8, bucket.owner, material.owner)) {
         return respondError(request, request_id, .forbidden, "AccessDenied", "access key does not own this bucket");
     }
+    if (multipart_part) {
+        const multiparts = application.multipartService() orelse return respondNotReady(request, request_id);
+        const upload = multiparts.listParts(value.bucket, value.key, value.upload_id.?) catch |err| {
+            return respondMultipartError(request, request_id, err);
+        };
+        upload.deinit(application.allocator);
+    }
 
     const encoded_key = try encodePath(application.allocator, value.key);
     defer application.allocator.free(encoded_key);
@@ -288,11 +565,20 @@ fn servePresignObject(
     else
         endpoint_host;
     defer if (application.config.s3_virtual_hosted_style) application.allocator.free(host);
-    const unsigned_target = if (application.config.s3_virtual_hosted_style)
+    const base_target = if (application.config.s3_virtual_hosted_style)
         try std.fmt.allocPrint(application.allocator, "/{s}", .{encoded_key})
     else
         try std.fmt.allocPrint(application.allocator, "/{s}/{s}", .{ bucket.name, encoded_key });
-    defer application.allocator.free(unsigned_target);
+    defer application.allocator.free(base_target);
+    const unsigned_target = if (multipart_part)
+        try std.fmt.allocPrint(application.allocator, "{s}?partNumber={d}&uploadId={s}", .{
+            base_target,
+            value.part_number.?,
+            value.upload_id.?,
+        })
+    else
+        base_target;
+    defer if (multipart_part) application.allocator.free(unsigned_target);
     const headers = [_]sigv4.Header{.{ .name = "host", .value = host }};
     const now = std.Io.Clock.real.now(application.io.?).toSeconds();
     var date_buffer: [16]u8 = undefined;
@@ -553,7 +839,7 @@ fn writeBucket(json: *std.json.Stringify, bucket: anytype) !void {
     });
 }
 
-fn writeObject(json: *std.json.Stringify, object: object_listing.Entry) !void {
+fn writeObject(json: *std.json.Stringify, object: anytype) !void {
     var modified_buffer: [20]u8 = undefined;
     const last_modified = try time.formatIso8601(object.last_modified_unix_seconds, &modified_buffer);
     const etag_hex = std.fmt.bytesToHex(object.etag_md5, .lower);
@@ -643,6 +929,31 @@ const ListQuery = struct {
     }
 };
 
+const MultipartListQuery = struct {
+    prefix: ?[]u8 = null,
+    key_marker: ?[]u8 = null,
+    upload_id_marker: ?[]u8 = null,
+    max_uploads: usize = multipart_service.max_list_uploads,
+
+    fn deinit(self: *MultipartListQuery, allocator: std.mem.Allocator) void {
+        if (self.prefix) |value| allocator.free(value);
+        if (self.key_marker) |value| allocator.free(value);
+        if (self.upload_id_marker) |value| allocator.free(value);
+        self.* = .{};
+    }
+};
+
+const MultipartAddressQuery = struct {
+    bucket: ?[]u8 = null,
+    key: ?[]u8 = null,
+
+    fn deinit(self: *MultipartAddressQuery, allocator: std.mem.Allocator) void {
+        if (self.bucket) |value| allocator.free(value);
+        if (self.key) |value| allocator.free(value);
+        self.* = .{};
+    }
+};
+
 fn parseListQuery(allocator: std.mem.Allocator, target: []const u8) !ListQuery {
     const separator = std.mem.indexOfScalar(u8, target, '?') orelse return .{};
     const raw_query = target[separator + 1 ..];
@@ -668,6 +979,88 @@ fn parseListQuery(allocator: std.mem.Allocator, target: []const u8) !ListQuery {
                 return error.InvalidQuery;
             }
             result.continuation_token = value;
+        } else {
+            allocator.free(value);
+            return error.InvalidQuery;
+        }
+    }
+    return result;
+}
+
+fn parseMultipartListQuery(allocator: std.mem.Allocator, target: []const u8) !MultipartListQuery {
+    var result: MultipartListQuery = .{};
+    errdefer result.deinit(allocator);
+    const query_start = std.mem.indexOfScalar(u8, target, '?') orelse return result;
+    const raw_query = target[query_start + 1 ..];
+    if (raw_query.len == 0) return result;
+    var parameters = std.mem.splitScalar(u8, raw_query, '&');
+    while (parameters.next()) |parameter| {
+        if (parameter.len == 0) return error.InvalidQuery;
+        const equals = std.mem.indexOfScalar(u8, parameter, '=');
+        const name = if (equals) |position| parameter[0..position] else parameter;
+        const raw_value = if (equals) |position| parameter[position + 1 ..] else "";
+        const value = try decodeComponent(allocator, raw_value, true);
+        if (std.mem.eql(u8, name, "prefix")) {
+            if (result.prefix != null) {
+                allocator.free(value);
+                return error.InvalidQuery;
+            }
+            result.prefix = value;
+        } else if (std.mem.eql(u8, name, "key_marker")) {
+            if (result.key_marker != null) {
+                allocator.free(value);
+                return error.InvalidQuery;
+            }
+            result.key_marker = value;
+        } else if (std.mem.eql(u8, name, "upload_id_marker")) {
+            if (result.upload_id_marker != null) {
+                allocator.free(value);
+                return error.InvalidQuery;
+            }
+            result.upload_id_marker = value;
+        } else if (std.mem.eql(u8, name, "max_uploads")) {
+            if (value.len == 0) {
+                allocator.free(value);
+                return error.InvalidQuery;
+            }
+            result.max_uploads = std.fmt.parseInt(usize, value, 10) catch {
+                allocator.free(value);
+                return error.InvalidQuery;
+            };
+            allocator.free(value);
+        } else {
+            allocator.free(value);
+            return error.InvalidQuery;
+        }
+    }
+    return result;
+}
+
+fn parseMultipartAddressQuery(allocator: std.mem.Allocator, target: []const u8) !MultipartAddressQuery {
+    var result: MultipartAddressQuery = .{};
+    errdefer result.deinit(allocator);
+    const query_start = std.mem.indexOfScalar(u8, target, '?') orelse return result;
+    const raw_query = target[query_start + 1 ..];
+    if (raw_query.len == 0) return result;
+    var parameters = std.mem.splitScalar(u8, raw_query, '&');
+    while (parameters.next()) |parameter| {
+        if (parameter.len == 0) return error.InvalidQuery;
+        const equals = std.mem.indexOfScalar(u8, parameter, '=');
+        const name = if (equals) |position| parameter[0..position] else parameter;
+        const raw_value = if (equals) |position| parameter[position + 1 ..] else "";
+        const value = try decodeComponent(allocator, raw_value, true);
+        if (std.mem.eql(u8, name, "bucket")) {
+            if (result.bucket != null) {
+                allocator.free(value);
+                return error.InvalidQuery;
+            }
+            result.bucket = value;
+        } else if (std.mem.eql(u8, name, "key")) {
+            if (result.key != null) {
+                allocator.free(value);
+                return error.InvalidQuery;
+            }
+            result.key = value;
         } else {
             allocator.free(value);
             return error.InvalidQuery;
@@ -756,6 +1149,28 @@ fn respondListingError(
         error.BucketNotFound => respondError(request, request_id, .not_found, "BucketNotFound", "bucket does not exist"),
         error.CorruptMetadata => respondError(request, request_id, .service_unavailable, "CorruptMetadata", "object metadata requires recovery"),
         error.OutOfMemory, error.Unavailable => respondError(request, request_id, .service_unavailable, "StorageUnavailable", "storage service is unavailable"),
+    };
+}
+
+fn respondMultipartError(
+    request: *std.http.Server.Request,
+    request_id: []const u8,
+    err: multipart_service.Error,
+) !std.http.Status {
+    return switch (err) {
+        error.InvalidBucketName => respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid"),
+        error.InvalidObjectKey => respondError(request, request_id, .bad_request, "InvalidObjectKey", "object key is invalid"),
+        error.InvalidContentType => respondError(request, request_id, .bad_request, "InvalidContentType", "content type is invalid"),
+        error.InvalidUserMetadata => respondError(request, request_id, .bad_request, "InvalidUserMetadata", "user metadata is invalid"),
+        error.InvalidUploadId => respondError(request, request_id, .bad_request, "InvalidUploadId", "upload id is invalid"),
+        error.InvalidPartNumber, error.InvalidPart, error.InvalidPartOrder, error.EntityTooSmall => respondError(request, request_id, .bad_request, "InvalidPart", "multipart parts are invalid"),
+        error.InvalidListOptions => respondError(request, request_id, .bad_request, "InvalidQuery", "multipart list query is invalid"),
+        error.BucketNotFound => respondError(request, request_id, .not_found, "BucketNotFound", "bucket does not exist"),
+        error.UploadNotFound => respondError(request, request_id, .not_found, "UploadNotFound", "multipart upload does not exist"),
+        error.ChecksumMismatch => respondError(request, request_id, .bad_request, "ChecksumMismatch", "part checksum does not match"),
+        error.Conflict => respondError(request, request_id, .conflict, "Conflict", "multipart upload changed concurrently"),
+        error.CorruptMetadata, error.CorruptData => respondError(request, request_id, .service_unavailable, "CorruptMetadata", "multipart data requires recovery"),
+        error.InputReadFailed, error.OutOfMemory, error.Unavailable => respondError(request, request_id, .service_unavailable, "StorageUnavailable", "storage service is unavailable"),
     };
 }
 

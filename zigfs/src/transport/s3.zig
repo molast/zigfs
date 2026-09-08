@@ -119,11 +119,7 @@ pub fn serveRequest(
     if (uses_presigned_auth and authorization_header != null) {
         return respondError(request, allocator, .invalid_request, request_id);
     }
-    if (uses_presigned_auth and
-        parsed.operation != .get_object and
-        parsed.operation != .put_object and
-        parsed.operation != .delete_object)
-    {
+    if (uses_presigned_auth and !allowsPresigned(parsed.operation)) {
         return respondError(request, allocator, .access_denied, request_id);
     }
 
@@ -256,6 +252,14 @@ pub fn serveRequest(
             headers.items,
             request_id,
         ),
+        .list_multipart_uploads => serveListMultipartUploads(
+            request,
+            application,
+            parsed,
+            auth_material.owner,
+            headers.items,
+            request_id,
+        ),
         .put_object => servePutObject(
             request,
             application,
@@ -354,6 +358,7 @@ fn actionFor(operation: protocol.Operation) ?credential_domain.Action {
         .delete_bucket => .delete_bucket,
         .delete_objects => .delete_object,
         .list_objects_v2 => .list_objects,
+        .list_multipart_uploads => .head_bucket,
         .put_object => .put_object,
         .get_object => .get_object,
         .head_object => .head_object,
@@ -363,6 +368,22 @@ fn actionFor(operation: protocol.Operation) ?credential_domain.Action {
         .abort_multipart_upload => .delete_object,
         .post_policy_upload => .put_object,
         .unsupported => null,
+    };
+}
+
+fn allowsPresigned(operation: protocol.Operation) bool {
+    return switch (operation) {
+        .get_object,
+        .put_object,
+        .delete_object,
+        .list_multipart_uploads,
+        .create_multipart_upload,
+        .upload_part,
+        .list_parts,
+        .complete_multipart_upload,
+        .abort_multipart_upload,
+        => true,
+        else => false,
     };
 }
 
@@ -612,6 +633,125 @@ fn serveListObjects(
     };
     defer application.allocator.free(xml);
     return respondXml(request, xml, .ok, request_id, &.{});
+}
+
+fn serveListMultipartUploads(
+    request: *std.http.Server.Request,
+    application: *Application,
+    parsed: protocol.ParsedTarget,
+    owner: []const u8,
+    headers: []const sigv4.Header,
+    request_id: []const u8,
+) !std.http.Status {
+    if (ensureEmptyRequest(request, headers) != null) {
+        return respondError(request, application.allocator, .invalid_request, request_id);
+    }
+    const uploads_query = parsed.query("uploads") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+    if (uploads_query.len != 0) {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    }
+    const bucket = ensureBucketOwner(application, parsed.bucket.?, owner) catch |err| {
+        return respondError(request, application.allocator, mapBucketError(err), request_id);
+    };
+    bucket.deinit(application.allocator);
+    const prefix = parsed.query("prefix") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    } orelse "";
+    const delimiter = parsed.query("delimiter") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    const key_marker = parsed.query("key-marker") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    const upload_id_marker = parsed.query("upload-id-marker") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    const max_uploads_text = parsed.query("max-uploads") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    const max_uploads = if (max_uploads_text) |value|
+        std.fmt.parseInt(usize, value, 10) catch {
+            return respondError(request, application.allocator, .invalid_argument, request_id);
+        }
+    else
+        multipart_service.max_list_uploads;
+    const encoding_type = parsed.query("encoding-type") catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
+    if (encoding_type != null and !std.mem.eql(u8, encoding_type.?, "url")) {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    }
+    const multiparts = application.multipartService() orelse {
+        return respondError(request, application.allocator, .service_unavailable, request_id);
+    };
+    const result = multiparts.listUploads(parsed.bucket.?, .{
+        .prefix = prefix,
+        .delimiter = delimiter,
+        .key_marker = key_marker,
+        .upload_id_marker = upload_id_marker,
+        .max_uploads = max_uploads,
+    }) catch |err| {
+        return respondError(request, application.allocator, mapMultipartError(err), request_id);
+    };
+    defer result.deinit(application.allocator);
+
+    var xml: std.Io.Writer.Allocating = .init(application.allocator);
+    defer xml.deinit();
+    const writer = &xml.writer;
+    writer.writeAll("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListMultipartUploadsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Bucket>") catch {
+        return respondError(request, application.allocator, .internal_error, request_id);
+    };
+    protocol.writeXmlEscaped(writer, parsed.bucket.?) catch return error.WriteFailed;
+    writer.writeAll("</Bucket><KeyMarker>") catch return error.WriteFailed;
+    if (key_marker) |value| writeEncodedXml(writer, value, encoding_type != null) catch return error.WriteFailed;
+    writer.writeAll("</KeyMarker><UploadIdMarker>") catch return error.WriteFailed;
+    if (upload_id_marker) |value| protocol.writeXmlEscaped(writer, value) catch return error.WriteFailed;
+    writer.writeAll("</UploadIdMarker>") catch return error.WriteFailed;
+    if (result.is_truncated) {
+        writer.writeAll("<NextKeyMarker>") catch return error.WriteFailed;
+        if (result.next_key_marker) |value| writeEncodedXml(writer, value, encoding_type != null) catch return error.WriteFailed;
+        writer.writeAll("</NextKeyMarker><NextUploadIdMarker>") catch return error.WriteFailed;
+        if (result.next_upload_id_marker) |value| protocol.writeXmlEscaped(writer, value) catch return error.WriteFailed;
+        writer.writeAll("</NextUploadIdMarker>") catch return error.WriteFailed;
+    }
+    if (delimiter) |value| {
+        writer.writeAll("<Delimiter>") catch return error.WriteFailed;
+        writeEncodedXml(writer, value, encoding_type != null) catch return error.WriteFailed;
+        writer.writeAll("</Delimiter>") catch return error.WriteFailed;
+    }
+    writer.writeAll("<Prefix>") catch return error.WriteFailed;
+    writeEncodedXml(writer, prefix, encoding_type != null) catch return error.WriteFailed;
+    writer.print("</Prefix><MaxUploads>{d}</MaxUploads><IsTruncated>{s}</IsTruncated>", .{
+        max_uploads,
+        if (result.is_truncated) "true" else "false",
+    }) catch return error.WriteFailed;
+    if (encoding_type != null) writer.writeAll("<EncodingType>url</EncodingType>") catch return error.WriteFailed;
+    for (result.uploads) |upload| {
+        writer.writeAll("<Upload><Key>") catch return error.WriteFailed;
+        writeEncodedXml(writer, upload.key, encoding_type != null) catch return error.WriteFailed;
+        writer.writeAll("</Key><UploadId>") catch return error.WriteFailed;
+        protocol.writeXmlEscaped(writer, upload.upload_id) catch return error.WriteFailed;
+        writer.writeAll("</UploadId><Initiator><ID>") catch return error.WriteFailed;
+        protocol.writeXmlEscaped(writer, owner) catch return error.WriteFailed;
+        writer.writeAll("</ID><DisplayName>") catch return error.WriteFailed;
+        protocol.writeXmlEscaped(writer, owner) catch return error.WriteFailed;
+        writer.writeAll("</DisplayName></Initiator><Owner><ID>") catch return error.WriteFailed;
+        protocol.writeXmlEscaped(writer, owner) catch return error.WriteFailed;
+        writer.writeAll("</ID><DisplayName>") catch return error.WriteFailed;
+        protocol.writeXmlEscaped(writer, owner) catch return error.WriteFailed;
+        writer.writeAll("</DisplayName></Owner><StorageClass>STANDARD</StorageClass><Initiated>") catch return error.WriteFailed;
+        protocol.writeIsoTime(writer, upload.initiated_at_unix_seconds) catch return error.WriteFailed;
+        writer.writeAll("</Initiated></Upload>") catch return error.WriteFailed;
+    }
+    for (result.common_prefixes) |common_prefix| {
+        writer.writeAll("<CommonPrefixes><Prefix>") catch return error.WriteFailed;
+        writeEncodedXml(writer, common_prefix, encoding_type != null) catch return error.WriteFailed;
+        writer.writeAll("</Prefix></CommonPrefixes>") catch return error.WriteFailed;
+    }
+    writer.writeAll("</ListMultipartUploadsResult>\n") catch return error.WriteFailed;
+    return respondXml(request, xml.written(), .ok, request_id, &.{});
 }
 
 fn servePutObject(
@@ -3106,6 +3246,7 @@ fn mapMultipartError(err: multipart_service.Error) protocol.ErrorKind {
         error.InvalidPartOrder => .invalid_part_order,
         error.EntityTooSmall => .entity_too_small,
         error.InvalidPartNumber,
+        error.InvalidListOptions,
         error.InvalidObjectKey,
         error.InvalidContentType,
         error.InvalidUserMetadata,
@@ -3137,6 +3278,7 @@ fn mapListingError(err: object_listing.Error) protocol.ErrorKind {
 test "S3 operation policy mapping keeps Bucket and Object permissions separate" {
     try std.testing.expectEqual(credential_domain.Action.list_buckets, actionFor(.list_buckets).?);
     try std.testing.expectEqual(credential_domain.Action.head_bucket, actionFor(.get_bucket_location).?);
+    try std.testing.expectEqual(credential_domain.Action.head_bucket, actionFor(.list_multipart_uploads).?);
     try std.testing.expectEqual(credential_domain.Action.put_object, actionFor(.put_object).?);
     try std.testing.expectEqual(credential_domain.Action.put_object, actionFor(.upload_part).?);
     try std.testing.expectEqual(credential_domain.Action.get_object, actionFor(.list_parts).?);

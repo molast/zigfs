@@ -147,6 +147,91 @@ paths:
             application/json:
               schema:
                 $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/ListObjectsResponse"
+  /api/v1/buckets/{name}/multipart-uploads:
+    get:
+      operationId: listMultipartUploads
+      parameters:
+        - $ref: "./zigfs-management-v1.openapi.yaml#/components/parameters/BucketName"
+        - name: prefix
+          in: query
+          schema:
+            type: string
+        - name: key_marker
+          in: query
+          schema:
+            type: string
+        - name: upload_id_marker
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ZigFS 中持久化的未完成上传
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/ListMultipartUploadsResponse"
+  /api/v1/multipart-uploads:
+    post:
+      operationId: createMultipartUpload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/CreateMultipartUploadRequest"
+      responses:
+        "201":
+          description: ZigFS 已持久化上传任务
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/MultipartUpload"
+  /api/v1/multipart-uploads/{uploadId}:
+    parameters:
+      - $ref: "./zigfs-management-v1.openapi.yaml#/components/parameters/UploadID"
+      - name: bucket
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: key
+        in: query
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getMultipartUpload
+      responses:
+        "200":
+          description: ZigFS 已提交分片
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/MultipartUpload"
+    delete:
+      operationId: abortMultipartUpload
+      responses:
+        "204":
+          description: ZigFS 已取消上传并清理分片
+  /api/v1/multipart-uploads/{uploadId}/complete:
+    post:
+      operationId: completeMultipartUpload
+      parameters:
+        - $ref: "./zigfs-management-v1.openapi.yaml#/components/parameters/UploadID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/CompleteMultipartUploadRequest"
+      responses:
+        "200":
+          description: ZigFS 已原子发布对象
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/Object"
   /api/v1/objects/presign:
     post:
       operationId: presignObject

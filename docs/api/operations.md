@@ -1,7 +1,7 @@
 # 运维与网络接口
 
-- **契约版本：** V1.1
-- **更新日期：** 2026-09-07
+- **契约版本：** V1.2
+- **更新日期：** 2026-09-08
 
 ## ZigFS
 
@@ -13,6 +13,12 @@
 | GET | `/_admin/v1/system` | Management 凭证 | 版本、运行时间和对象统计 |
 | GET | `/_admin/v1/storage` | Management 凭证 | 容量与磁盘状态 |
 | GET | `/_admin/v1/settings` | Management 凭证 | 脱敏后的只读生效配置 |
+| POST | `/_admin/v1/multipart-uploads` | Management 凭证 | 创建并持久化 Multipart Upload |
+| GET | `/_admin/v1/buckets/{name}/multipart-uploads` | Management 凭证 | 发现 Bucket 中未完成的上传 |
+| GET | `/_admin/v1/multipart-uploads/{id}?bucket=&key=` | Management 凭证 | 查询 Upload 与已提交 Parts |
+| POST | `/_admin/v1/multipart-uploads/{id}/complete` | Management 凭证 | 使用 Part Number/ETag 完成上传 |
+| DELETE | `/_admin/v1/multipart-uploads/{id}?bucket=&key=` | Management 凭证 | 取消上传并清理已提交分片 |
+| POST | `/_admin/v1/objects/presign` | Management 凭证 | 生成对象或 UploadPart 的短时效直传 URL |
 
 `storage` 在 V1 报告当前可见对象的逻辑字节数；`total` 和 `available` 在没有正式容量
 Backend 时为 `null`，不能把单个平台的文件系统调用结果冒充为可移植容量契约。
@@ -20,7 +26,7 @@ Backend 时为 `null`，不能把单个平台的文件系统调用结果冒充�
 ## S3/Data API
 
 以下接口由 ZigFS `server.api_address` 直接提供，默认使用 Signature V4 Header 认证；
-对象级 GetObject 和 PutObject 也支持 Signature V4 Presigned Query：
+对象级 GetObject、PutObject、DeleteObject 与 Multipart 全生命周期也支持 Signature V4 Presigned Query：
 
 永久凭证使用 AK/SK。临时凭证还必须携带 Session Token：Header SigV4 使用已进入
 `SignedHeaders` 的 `x-amz-security-token`，Presigned Query 使用签名绑定的
@@ -55,6 +61,11 @@ Multipart Upload：
 | GET | `/{bucket}/{object}?uploadId=ID` | ListParts |
 | POST | `/{bucket}/{object}?uploadId=ID` | CompleteMultipartUpload |
 | DELETE | `/{bucket}/{object}?uploadId=ID` | AbortMultipartUpload |
+| GET | `/{bucket}?uploads=` | ListMultipartUploads |
+
+Multipart 暂停/恢复以 Part 为边界。恢复端先用 `ListMultipartUploads` 找回 Upload ID，再用
+`ListParts` 获取已提交 Part；已提交 Part 可跳过，上传中断的 Part 必须完整重传。单次
+`PutObject` 和单个 `UploadPart` 不提供请求体字节中点续传。
 
 完整 Header、Query、XML、错误和已知差异见
 [s3-compatibility.md](s3-compatibility.md)。对象 GET/HEAD/PUT 支持 ETag 和 HTTP 日期条件请求，S3 API 不经过 Go Admin。

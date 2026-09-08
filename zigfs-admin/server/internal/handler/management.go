@@ -15,6 +15,11 @@ type ManagementService interface {
 	DeleteBucket(ctx context.Context, name string) error
 	ListObjects(ctx context.Context, bucket, prefix, cursor string) (contract.ListObjectsResponse, error)
 	PresignObject(ctx context.Context, request contract.PresignObjectRequest) (contract.PresignObjectResponse, error)
+	CreateMultipartUpload(ctx context.Context, request contract.CreateMultipartUploadRequest) (contract.MultipartUpload, error)
+	ListMultipartUploads(ctx context.Context, bucket, prefix, keyMarker, uploadIDMarker string) (contract.ListMultipartUploadsResponse, error)
+	GetMultipartUpload(ctx context.Context, uploadID, bucket, key string) (contract.MultipartUpload, error)
+	CompleteMultipartUpload(ctx context.Context, uploadID string, request contract.CompleteMultipartUploadRequest) (contract.Object, error)
+	AbortMultipartUpload(ctx context.Context, uploadID, bucket, key string) error
 	ListAccessKeys(ctx context.Context) (contract.ListAccessKeysResponse, error)
 	CreateAccessKey(ctx context.Context, request contract.CreateAccessKeyRequest) (contract.CreateAccessKeyResponse, error)
 	UpdateAccessKey(ctx context.Context, id string, request contract.UpdateAccessKeyRequest) (contract.AccessKey, error)
@@ -89,6 +94,75 @@ func (handler *Management) PresignObject(ctx *gin.Context) {
 		return
 	}
 	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) CreateMultipartUpload(ctx *gin.Context) {
+	var request contract.CreateMultipartUploadRequest
+	if err := ctx.ShouldBindJSON(&request); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "request body is invalid")
+		return
+	}
+	response, err := handler.service.CreateMultipartUpload(ctx.Request.Context(), request)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusCreated, response)
+}
+
+func (handler *Management) ListMultipartUploads(ctx *gin.Context) {
+	response, err := handler.service.ListMultipartUploads(
+		ctx.Request.Context(),
+		ctx.Param("name"),
+		ctx.Query("prefix"),
+		ctx.Query("key_marker"),
+		ctx.Query("upload_id_marker"),
+	)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) GetMultipartUpload(ctx *gin.Context) {
+	response, err := handler.service.GetMultipartUpload(
+		ctx.Request.Context(),
+		ctx.Param("id"),
+		ctx.Query("bucket"),
+		ctx.Query("key"),
+	)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) CompleteMultipartUpload(ctx *gin.Context) {
+	var request contract.CompleteMultipartUploadRequest
+	if err := ctx.ShouldBindJSON(&request); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "request body is invalid")
+		return
+	}
+	response, err := handler.service.CompleteMultipartUpload(ctx.Request.Context(), ctx.Param("id"), request)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) AbortMultipartUpload(ctx *gin.Context) {
+	if ctx.Query("bucket") == "" || ctx.Query("key") == "" {
+		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "bucket and key are required")
+		return
+	}
+	if err := handler.service.AbortMultipartUpload(ctx.Request.Context(), ctx.Param("id"), ctx.Query("bucket"), ctx.Query("key")); err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.Status(http.StatusNoContent)
 }
 
 func (handler *Management) ListAccessKeys(ctx *gin.Context) {

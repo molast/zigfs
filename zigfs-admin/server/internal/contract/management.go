@@ -35,11 +35,58 @@ type PresignObjectRequest struct {
 	Key           string `json:"key" binding:"required"`
 	Method        string `json:"method" binding:"required"`
 	ExpiresSecond int64  `json:"expires_seconds" binding:"required"`
+	UploadID      string `json:"upload_id,omitempty"`
+	PartNumber    int    `json:"part_number,omitempty" binding:"omitempty,min=1,max=10000"`
 }
 
 type PresignObjectResponse struct {
 	URL       string    `json:"url"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type MultipartUploadSummary struct {
+	UploadID    string    `json:"upload_id"`
+	Bucket      string    `json:"bucket"`
+	Key         string    `json:"key"`
+	InitiatedAt time.Time `json:"initiated_at"`
+}
+
+type MultipartPart struct {
+	PartNumber   int       `json:"part_number"`
+	Size         int64     `json:"size"`
+	ETag         string    `json:"etag"`
+	LastModified time.Time `json:"last_modified"`
+}
+
+type MultipartUpload struct {
+	MultipartUploadSummary
+	ContentType   string          `json:"content_type"`
+	Parts         []MultipartPart `json:"parts"`
+	UploadedBytes int64           `json:"uploaded_bytes"`
+}
+
+type ListMultipartUploadsResponse struct {
+	Items              []MultipartUploadSummary `json:"items"`
+	IsTruncated        bool                     `json:"is_truncated"`
+	NextKeyMarker      string                   `json:"next_key_marker,omitempty"`
+	NextUploadIDMarker string                   `json:"next_upload_id_marker,omitempty"`
+}
+
+type CreateMultipartUploadRequest struct {
+	Bucket      string `json:"bucket" binding:"required"`
+	Key         string `json:"key" binding:"required"`
+	ContentType string `json:"content_type" binding:"required"`
+}
+
+type CompleteMultipartPartRequest struct {
+	PartNumber int    `json:"part_number" binding:"required,min=1,max=10000"`
+	ETag       string `json:"etag" binding:"required"`
+}
+
+type CompleteMultipartUploadRequest struct {
+	Bucket string                         `json:"bucket" binding:"required"`
+	Key    string                         `json:"key" binding:"required"`
+	Parts  []CompleteMultipartPartRequest `json:"parts" binding:"required,min=1,max=10000,dive"`
 }
 
 type AccessKey struct {

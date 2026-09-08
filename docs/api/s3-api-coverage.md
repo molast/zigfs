@@ -1,7 +1,7 @@
 # AWS S3 API 全量覆盖清单
 
 - **文档版本：** 0.1.0
-- **更新日期：** 2026-09-07
+- **更新日期：** 2026-09-08
 - **适用服务版本：** ZigFS `0.1.0` / `v0.1.0-rc.1`
 - **关联契约：** [S3/Data API 兼容矩阵](s3-compatibility.md)
 
@@ -29,7 +29,7 @@ Header、Query、权限模型或高级存储语义。参数级细节以兼容矩
 |---|---|
 | Service/Bucket 基础读写 | `Implemented`：ListBuckets、Create/Head/DeleteBucket、GetBucketLocation、ListObjectsV2。 |
 | Object/List 核心文件操作 | `Implemented`：Put/Get/Head/Delete、DeleteObjects、CopyObject、单 Range 和 Browser POST；旧版 List、Versioning、ACL、Tagging 等仍有缺口。 |
-| Multipart | `Implemented`：Create、UploadPart、ListParts、Complete、Abort；ListMultipartUploads 和 UploadPartCopy 未实现。 |
+| Multipart | `Implemented`：Create、UploadPart、ListParts、ListMultipartUploads、Complete、Abort 和 Presigned Multipart；UploadPartCopy 未实现。 |
 | Bucket 配置、治理和云集成 | `Out of Scope` 或 `Not Implemented`：见下方逐项清单。 |
 | S3 Express、Object Lambda、S3 Tables | `Out of Scope`：这些是独立服务形态或专用集成，不属于 ZigFS 0.1 普通 S3 API。 |
 
@@ -118,10 +118,12 @@ Header、Query、权限模型或高级存储语义。参数级细节以兼容矩
 | `ListParts` | `GET /{bucket}/{key}?uploadId` | `Implemented` | 支持 Part Number Marker、分页和升序结果。 |
 | `CompleteMultipartUpload` | `POST /{bucket}/{key}?uploadId` | `Implemented` | 校验 Part 顺序/ETag，提交普通 Object Generation 和复合 ETag。 |
 | `AbortMultipartUpload` | `DELETE /{bucket}/{key}?uploadId` | `Implemented` | Tombstone Upload Metadata 并清理 Part 数据。 |
-| `ListMultipartUploads` | `GET /{bucket}?uploads` | `Not Implemented` | 不提供 Bucket 级未完成 Upload 列表。 |
+| `ListMultipartUploads` | `GET /{bucket}?uploads` | `Implemented` | 支持 Prefix、Delimiter、Key/UploadId Marker、分页和 URL Encoding。 |
 
-Multipart 的 V1 鉴权只接受 Signature V4 Authorization Header；对象级 Presigned URL 不扩展为
-Presigned Multipart。除最后一个 Part 外，Complete 时执行 AWS 最小 Part Size 规则。
+Multipart 同时支持 Signature V4 Authorization Header 和标准 Presigned Query；签名绑定 Multipart
+Query 参数，最长有效期 7 天。除最后一个 Part 外，Complete 时执行 AWS 最小 Part Size 规则。
+暂停发生在 Part 边界：恢复方使用 `ListMultipartUploads` 找回 UploadId、用 `ListParts` 确认已提交
+Part，再上传缺失 Part。单次 PutObject 或单个 UploadPart 中断后必须重传该请求。
 
 ## ZigFS 已实现的协议能力
 
@@ -150,7 +152,7 @@ Presigned Multipart。除最后一个 Part 外，Complete 时执行 AWS 最小 P
 
 后续版本应按文件 SDK 真实需求和兼容收益排序，而不是按 AWS API 数量堆叠：
 
-1. `ListObjects`/`ListObjectVersions`、`ListMultipartUploads`、`UploadPartCopy` 等文件生命周期补齐。
+1. `ListObjects`/`ListObjectVersions`、`UploadPartCopy` 等文件生命周期补齐。
 2. Object Tagging、Bucket Tagging 和 Versioning，先确定 Metadata Record 版本与 GC 语义。
 3. ACL/Policy/Ownership Controls，先确定 Owner、Policy 和 Admin Management API 的统一权限模型。
 4. CORS、Lifecycle、Notification、Replication、Encryption 等平台配置能力。

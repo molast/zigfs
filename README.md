@@ -51,7 +51,8 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 - Path-style 与可配置 Virtual-hosted-style S3 Router、Host-aware SigV4、稳定 XML 错误，以及 Bucket/Object/List V2 HTTP Handler
 - S3 Put/Get 流式传输、Content-MD5/SHA-256 与 CRC32/CRC32C/CRC64NVME/SHA1/SHA256 Flexible Checksum 校验、ETag、用户元数据和分页响应
 - AWS SigV4 aws-chunked 签名链，以及五种 Flexible Checksum signed trailer 的签名与 checksum 校验
-- S3 Multipart Create、并发 UploadPart、ListParts、Complete、Abort、复合 ETag 和启动超时清理
+- S3 Multipart Create、并发 UploadPart、ListParts、ListMultipartUploads、Complete、Abort、复合 ETag 和启动超时清理
+- Multipart 以 Part 为边界暂停/恢复；支持 Presigned 全生命周期、Upload ID 重发现和跳过已提交 Part
 - 真实环回 TCP S3 集成测试，覆盖鉴权拒绝、CRUD、分页、Policy 与 Credential 禁用
 - ZigFS Management API：Bucket、Object 管理视图、Presign、AK/SK、Storage、System、Health 和 Settings
 - ZigFS YAML 管理员身份、Management 登录和短期会话校验，以及统一 JSON 错误和危险操作审计日志
@@ -92,6 +93,11 @@ Phase 9 S3 Compatibility Hardening and 0.1 Release Candidate 已完成。Conditi
 CopyObject、Virtual-hosted-style、Temporary Credentials、POST Policy Upload、Flexible
 Checksum Trailer、外部客户端兼容性 Runner、对外契约同步、RC 发布材料和全量 Gate 均已完成。
 发布版本仍为服务版本 `0.1.0`，候选标签为 `v0.1.0-rc.1`。
+Phase 10 Resumable Multipart Upload 已完成 ZigFS S3/Management 能力与 Admin 操作链路：客户端可通过
+`ListMultipartUploads` 和 `ListParts` 恢复未完成上传，Admin 支持真实分片进度、暂停、继续、失败重试、
+取消清理以及刷新页面后重新选择原文件继续。全部 Part 上传后，Admin 会显示独立的“完成中”状态；
+若刷新或网络中断导致 Complete 响应丢失，会根据 UploadId 和最终 Object 自动校准结果。单次 `PutObject` 和单个 `UploadPart` 仍遵循 S3 语义，
+不能从请求体中间续传，中断的 Part 必须完整重传。
 
 外部客户端兼容性 Runner 位于 [compatibility/README.md](compatibility/README.md)，可重复运行
 AWS CLI、MinIO Client、rclone 和原生 HTTP 矩阵，并输出不含凭证的 JSON/Markdown 报告：
@@ -258,6 +264,7 @@ go run ./cmd/admin
 | `ZIGFS_ADMIN_LISTEN` | `:9001` | Admin HTTP 监听地址 |
 | `ZIGFS_ENDPOINT` | `http://127.0.0.1:9000` | ZigFS API 地址 |
 | `ZIGFS_WEB_ROOT` | `../web/dist` | React 构建产物目录 |
+| `ZIGFS_UPSTREAM_TIMEOUT` | `15m` | Admin 等待 ZigFS 管理操作完成的最长时间，使用 Go duration 语法 |
 
 Admin Server 不配置管理员账号、密码或固定 Management Token。登录信息由它转发给
 ZigFS；ZigFS 签发的短期 Token 只通过 HttpOnly Cookie 随请求转交。

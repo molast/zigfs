@@ -9,6 +9,7 @@ pub const Operation = enum {
     delete_bucket,
     delete_objects,
     list_objects_v2,
+    list_multipart_uploads,
     put_object,
     get_object,
     head_object,
@@ -243,7 +244,9 @@ fn classify(
                 .post_policy_upload
             else
                 .unsupported,
-            .GET => if (hasQueryValue(parameters, "list-type", "2"))
+            .GET => if (queryShape(parameters, "uploads") == .empty)
+                .list_multipart_uploads
+            else if (hasQueryValue(parameters, "list-type", "2"))
                 .list_objects_v2
             else if (hasQueryValue(parameters, "location", ""))
                 .get_bucket_location
@@ -511,6 +514,10 @@ test "S3 target parsing separates path-style buckets objects and List V2" {
     defer list.deinit();
     try std.testing.expectEqual(.list_objects_v2, list.operation);
     try std.testing.expectEqualStrings("photos/", (try list.query("prefix")).?);
+
+    const multipart_uploads = try parseTarget(std.testing.allocator, .GET, "/project-assets?uploads=&prefix=photos%2F");
+    defer multipart_uploads.deinit();
+    try std.testing.expectEqual(.list_multipart_uploads, multipart_uploads.operation);
 
     const location = try parseTarget(std.testing.allocator, .GET, "/project-assets?location=");
     defer location.deinit();

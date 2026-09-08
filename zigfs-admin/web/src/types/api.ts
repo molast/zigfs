@@ -66,6 +66,33 @@ export interface PresignObjectResponse {
   expires_at: string
 }
 
+export interface MultipartUploadSummary {
+  upload_id: string
+  bucket: string
+  key: string
+  initiated_at: string
+}
+
+export interface MultipartPart {
+  part_number: number
+  size: number
+  etag: string
+  last_modified: string
+}
+
+export interface MultipartUpload extends MultipartUploadSummary {
+  content_type: string
+  parts: MultipartPart[]
+  uploaded_bytes: number
+}
+
+export interface ListMultipartUploadsResponse {
+  items: MultipartUploadSummary[]
+  is_truncated: boolean
+  next_key_marker?: string
+  next_upload_id_marker?: string
+}
+
 export interface StorageInfo {
   measurement: 'logical_object_bytes'
   total: number | null

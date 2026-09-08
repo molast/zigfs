@@ -116,6 +116,106 @@ paths:
                 $ref: "#/components/schemas/ListObjectsResponse"
         default:
           $ref: "#/components/responses/Error"
+  /_admin/v1/buckets/{name}/multipart-uploads:
+    get:
+      operationId: listManagementMultipartUploads
+      summary: 列出 Bucket 中未完成的 Multipart Upload
+      parameters:
+        - $ref: "#/components/parameters/BucketName"
+        - name: prefix
+          in: query
+          schema:
+            type: string
+        - name: key_marker
+          in: query
+          schema:
+            type: string
+        - name: upload_id_marker
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 持久化的未完成上传任务
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListMultipartUploadsResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /_admin/v1/multipart-uploads:
+    post:
+      operationId: createManagementMultipartUpload
+      summary: 创建可暂停和恢复的 Multipart Upload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMultipartUploadRequest"
+      responses:
+        "201":
+          description: 已创建并持久化 Upload Metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MultipartUpload"
+        default:
+          $ref: "#/components/responses/Error"
+  /_admin/v1/multipart-uploads/{uploadId}:
+    parameters:
+      - $ref: "#/components/parameters/UploadID"
+      - name: bucket
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: key
+        in: query
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getManagementMultipartUpload
+      summary: 查询已提交分片并恢复上传状态
+      responses:
+        "200":
+          description: Multipart Upload 及已提交 Part
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MultipartUpload"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: abortManagementMultipartUpload
+      summary: 取消上传并删除已提交分片
+      responses:
+        "204":
+          description: 已取消或任务不存在
+        default:
+          $ref: "#/components/responses/Error"
+  /_admin/v1/multipart-uploads/{uploadId}/complete:
+    post:
+      operationId: completeManagementMultipartUpload
+      summary: 使用已提交 Part 原子完成对象
+      parameters:
+        - $ref: "#/components/parameters/UploadID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteMultipartUploadRequest"
+      responses:
+        "200":
+          description: 已发布对象
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Object"
+        default:
+          $ref: "#/components/responses/Error"
   /_admin/v1/objects/presign:
     post:
       operationId: presignObject
@@ -274,6 +374,13 @@ components:
       description: V1 中等于 access_key，作为 Credential 的稳定管理标识。
       schema:
         type: string
+    UploadID:
+      name: uploadId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[A-Fa-f0-9]{32}$"
   responses:
     Error:
       description: 失败
@@ -405,6 +512,13 @@ components:
           format: int64
           minimum: 1
           maximum: 604800
+        upload_id:
+          type: string
+          description: 与 part_number 同时提供时生成标准 UploadPart Presigned URL。
+        part_number:
+          type: integer
+          minimum: 1
+          maximum: 10000
     PresignObjectResponse:
       type: object
       required: [url, expires_at]
@@ -415,6 +529,108 @@ components:
         expires_at:
           type: string
           format: date-time
+    MultipartUploadSummary:
+      type: object
+      additionalProperties: false
+      required: [upload_id, bucket, key, initiated_at]
+      properties:
+        upload_id:
+          type: string
+        bucket:
+          type: string
+        key:
+          type: string
+        initiated_at:
+          type: string
+          format: date-time
+    MultipartPart:
+      type: object
+      additionalProperties: false
+      required: [part_number, size, etag, last_modified]
+      properties:
+        part_number:
+          type: integer
+          minimum: 1
+          maximum: 10000
+        size:
+          type: integer
+          format: int64
+          minimum: 0
+        etag:
+          type: string
+          pattern: "^[A-Fa-f0-9]{32}$"
+        last_modified:
+          type: string
+          format: date-time
+    MultipartUpload:
+      allOf:
+        - $ref: "#/components/schemas/MultipartUploadSummary"
+        - type: object
+          required: [content_type, parts, uploaded_bytes]
+          properties:
+            content_type:
+              type: string
+            parts:
+              type: array
+              items:
+                $ref: "#/components/schemas/MultipartPart"
+            uploaded_bytes:
+              type: integer
+              format: int64
+              minimum: 0
+    ListMultipartUploadsResponse:
+      type: object
+      additionalProperties: false
+      required: [items, is_truncated]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/MultipartUploadSummary"
+        is_truncated:
+          type: boolean
+        next_key_marker:
+          type: string
+        next_upload_id_marker:
+          type: string
+    CreateMultipartUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [bucket, key, content_type]
+      properties:
+        bucket:
+          type: string
+        key:
+          type: string
+        content_type:
+          type: string
+    CompleteMultipartPartRequest:
+      type: object
+      additionalProperties: false
+      required: [part_number, etag]
+      properties:
+        part_number:
+          type: integer
+          minimum: 1
+          maximum: 10000
+        etag:
+          type: string
+          pattern: '^"?[A-Fa-f0-9]{32}"?$'
+    CompleteMultipartUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [bucket, key, parts]
+      properties:
+        bucket:
+          type: string
+        key:
+          type: string
+        parts:
+          type: array
+          minItems: 1
+          maxItems: 10000
+          items:
+            $ref: "#/components/schemas/CompleteMultipartPartRequest"
     AccessKey:
       type: object
       additionalProperties: false

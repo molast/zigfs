@@ -6,6 +6,9 @@ import type {
   CreatedAccessKey,
   CredentialPolicy,
   ListObjectsResponse,
+  ListMultipartUploadsResponse,
+  MultipartUpload,
+  ObjectSummary,
   ManagementHealth,
   PresignObjectResponse,
   Settings,
@@ -84,6 +87,7 @@ export function createApiClient() {
       key: string,
       method: 'GET' | 'PUT' | 'DELETE',
       expiresSeconds: number,
+      multipart?: { uploadId: string; partNumber: number },
     ) => request<PresignObjectResponse>('/api/v1/objects/presign', {
       method: 'POST',
       body: JSON.stringify({
@@ -92,8 +96,46 @@ export function createApiClient() {
         key,
         method,
         expires_seconds: expiresSeconds,
+        ...(multipart ? { upload_id: multipart.uploadId, part_number: multipart.partNumber } : {}),
       }),
     }),
+    createMultipartUpload: (bucket: string, key: string, contentType: string) =>
+      request<MultipartUpload>('/api/v1/multipart-uploads', {
+        method: 'POST',
+        body: JSON.stringify({ bucket, key, content_type: contentType }),
+      }),
+    listMultipartUploads: (bucket: string, prefix = '', keyMarker = '', uploadIDMarker = '') => {
+      const query = new URLSearchParams()
+      if (prefix) query.set('prefix', prefix)
+      if (keyMarker) query.set('key_marker', keyMarker)
+      if (uploadIDMarker) query.set('upload_id_marker', uploadIDMarker)
+      const suffix = query.size ? `?${query.toString()}` : ''
+      return request<ListMultipartUploadsResponse>(
+        `/api/v1/buckets/${encodeURIComponent(bucket)}/multipart-uploads${suffix}`,
+      )
+    },
+    getMultipartUpload: (uploadId: string, bucket: string, key: string) => {
+      const query = new URLSearchParams({ bucket, key })
+      return request<MultipartUpload>(
+        `/api/v1/multipart-uploads/${encodeURIComponent(uploadId)}?${query.toString()}`,
+      )
+    },
+    completeMultipartUpload: (
+      uploadId: string,
+      bucket: string,
+      key: string,
+      parts: Array<{ part_number: number; etag: string }>,
+    ) => request<ObjectSummary>(`/api/v1/multipart-uploads/${encodeURIComponent(uploadId)}/complete`, {
+      method: 'POST',
+      body: JSON.stringify({ bucket, key, parts }),
+    }),
+    abortMultipartUpload: (uploadId: string, bucket: string, key: string) => {
+      const query = new URLSearchParams({ bucket, key })
+      return request<void>(
+        `/api/v1/multipart-uploads/${encodeURIComponent(uploadId)}?${query.toString()}`,
+        { method: 'DELETE' },
+      )
+    },
     listAccessKeys: async () =>
       (await request<{ items: AccessKey[] }>('/api/v1/access-keys')).items,
     createAccessKey: (owner: string, policy: CredentialPolicy, ttlSeconds?: number) =>

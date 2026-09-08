@@ -1498,6 +1498,78 @@ test "ZigFS Management API directly serves the Phase 6 contract" {
     try std.testing.expectEqual(std.http.Status.ok, presigned_get.status);
     try std.testing.expectEqualStrings("management-object", presigned_get.body);
 
+    const create_multipart = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .POST,
+        "/_admin/v1/multipart-uploads",
+        token,
+        "{\"bucket\":\"project-assets\",\"key\":\"reports/resume.bin\",\"content_type\":\"application/octet-stream\"}",
+    );
+    defer create_multipart.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.created, create_multipart.status);
+    const MultipartResponse = struct { upload_id: []const u8 };
+    const multipart_json = try std.json.parseFromSlice(
+        MultipartResponse,
+        std.testing.allocator,
+        create_multipart.body,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer multipart_json.deinit();
+    const management_upload_id = multipart_json.value.upload_id;
+
+    const listed_multipart = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .GET,
+        "/_admin/v1/buckets/project-assets/multipart-uploads?prefix=reports%2F",
+        token,
+        "",
+    );
+    defer listed_multipart.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, listed_multipart.status);
+    try std.testing.expect(std.mem.indexOf(u8, listed_multipart.body, management_upload_id) != null);
+
+    const multipart_presign_body = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"access_key\":\"{s}\",\"bucket\":\"project-assets\",\"key\":\"reports/resume.bin\",\"method\":\"PUT\",\"expires_seconds\":60,\"upload_id\":\"{s}\",\"part_number\":1}}",
+        .{ key_json.value.access_key, management_upload_id },
+    );
+    defer std.testing.allocator.free(multipart_presign_body);
+    const multipart_presign = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .POST,
+        "/_admin/v1/objects/presign",
+        token,
+        multipart_presign_body,
+    );
+    defer multipart_presign.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, multipart_presign.status);
+    try std.testing.expect(std.mem.indexOf(u8, multipart_presign.body, "partNumber=1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, multipart_presign.body, management_upload_id) != null);
+
+    const abort_target = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "/_admin/v1/multipart-uploads/{s}?bucket=project-assets&key=reports%2Fresume.bin",
+        .{management_upload_id},
+    );
+    defer std.testing.allocator.free(abort_target);
+    const abort_multipart = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .DELETE,
+        abort_target,
+        token,
+        "",
+    );
+    defer abort_multipart.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.no_content, abort_multipart.status);
+
     const storage = try sendTestManagementRequest(
         std.testing.allocator,
         std.testing.io,
@@ -2960,6 +3032,22 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
     const upload_id = create.body[upload_id_start + "<UploadId>".len .. upload_id_end];
     try std.testing.expectEqual(@as(usize, 32), upload_id.len);
 
+    const active_uploads = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/project-assets?prefix=multipart&uploads=",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer active_uploads.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, active_uploads.status);
+    try std.testing.expect(std.mem.indexOf(u8, active_uploads.body, "<Key>multipart.bin</Key>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, active_uploads.body, upload_id) != null);
+
     const part_body = "one small final part";
     const upload_target = try std.fmt.allocPrint(
         std.testing.allocator,
@@ -2967,7 +3055,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
         .{upload_id},
     );
     defer std.testing.allocator.free(upload_target);
-    const uploaded = try sendTestSignedRequest(
+    const uploaded = try sendTestPresignedRequest(
         std.testing.allocator,
         std.testing.io,
         address,

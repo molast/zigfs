@@ -7,14 +7,27 @@ import {
   File,
   FolderOpen,
   Info,
+  Pause,
+  Play,
   RefreshCw,
+  RotateCcw,
   Search,
   Trash2,
   Upload,
   X,
 } from 'lucide-react'
-import type { ApiClient } from '../../api/client'
-import type { AccessKey, Bucket, ObjectSummary, PresignObjectResponse } from '../../types/api'
+import { ApiError, type ApiClient } from '../../api/client'
+import type { AccessKey, MultipartUpload, MultipartUploadSummary, ObjectSummary, PresignObjectResponse } from '../../types/api'
+import {
+  choosePartSize,
+  formatBytes,
+  inferPartSize,
+  loadPersistedTasks,
+  persistTasks,
+  putPart,
+  validateResumeFile,
+  type UploadTask,
+} from './multipart-upload'
 
 interface ObjectsViewProps {
   api: ApiClient
@@ -29,9 +42,8 @@ interface UploadProgress {
 }
 
 export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProps) {
-  const [buckets, setBuckets] = useState<Bucket[]>([])
   const [accessKeys, setAccessKeys] = useState<AccessKey[]>([])
-  const [bucket, setBucket] = useState('')
+  const bucket = initialBucket
   const [accessKey, setAccessKey] = useState('')
   const [prefix, setPrefix] = useState('')
   const [objects, setObjects] = useState<ObjectSummary[]>([])
@@ -44,25 +56,32 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null)
+  const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([])
+  const [uploadsLoading, setUploadsLoading] = useState(false)
   const [deletingKey, setDeletingKey] = useState('')
   const [detail, setDetail] = useState<ObjectSummary | null>(null)
   const [detailUrl, setDetailUrl] = useState<PresignObjectResponse | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
   const fileInput = useRef<HTMLInputElement>(null)
-  const uploadRequest = useRef<XMLHttpRequest | null>(null)
+  const uploadControl = useRef<{
+    uploadId: string
+    paused: boolean
+    cancelled: boolean
+    completing: boolean
+    request: XMLHttpRequest | null
+  } | null>(null)
+  const uploadsHydrated = useRef(false)
 
   useEffect(() => {
-    Promise.all([api.listBuckets(), api.listAccessKeys()])
-      .then(([bucketItems, keyItems]) => {
+    api.listAccessKeys()
+      .then((keyItems) => {
         const enabledKeys = keyItems.filter((item) => item.enabled)
-        setBuckets(bucketItems)
         setAccessKeys(enabledKeys)
-        setBucket((current) => current || initialBucket || bucketItems[0]?.name || '')
         setAccessKey((current) => current || enabledKeys[0]?.access_key || '')
       })
       .catch((reason: Error) => setError(reason.message))
-  }, [api, initialBucket])
+  }, [api])
 
   async function load(reset: boolean) {
     if (!bucket) return
@@ -83,7 +102,20 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     if (bucket) void load(true)
   }, [bucket])
 
-  useEffect(() => () => uploadRequest.current?.abort(), [])
+  useEffect(() => () => {
+    if (uploadControl.current) {
+      uploadControl.current.paused = true
+      uploadControl.current.request?.abort()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (uploadsHydrated.current) persistTasks(uploadTasks, bucket)
+  }, [uploadTasks])
+
+  useEffect(() => {
+    if (bucket) void loadMultipartUploads()
+  }, [bucket])
 
   function selectFile(event: ChangeEvent<HTMLInputElement>) {
     const selected = event.target.files?.[0] ?? null
@@ -92,37 +124,302 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     setNotice('')
   }
 
+  async function loadMultipartUploads() {
+    if (!bucket) return
+    try {
+      uploadsHydrated.current = false
+      setUploadsLoading(true)
+      setError('')
+      let keyMarker = ''
+      let uploadIDMarker = ''
+      const summaries: MultipartUploadSummary[] = []
+      do {
+        const page = await api.listMultipartUploads(bucket, '', keyMarker, uploadIDMarker)
+        summaries.push(...page.items)
+        keyMarker = page.is_truncated ? page.next_key_marker ?? '' : ''
+        uploadIDMarker = page.is_truncated ? page.next_upload_id_marker ?? '' : ''
+        if (!page.is_truncated) break
+      } while (keyMarker)
+      const detailResults = await Promise.all(summaries.map(async (summary) => {
+        try {
+          return await api.getMultipartUpload(summary.upload_id, summary.bucket, summary.key)
+        } catch (reason) {
+          // Complete removes the UploadId after publishing the Object. The
+          // upload can therefore disappear between ListUploads and ListParts.
+          if (isMultipartUploadMissing(reason)) return null
+          throw reason
+        }
+      }))
+      const details = detailResults.filter((upload): upload is MultipartUpload => upload !== null)
+      const completedDuringSync = details.length !== summaries.length
+      const persisted = loadPersistedTasks()
+      setUploadTasks((current) => {
+        const live = new Map(current.map((task) => [task.uploadId, task]))
+        return details.map((upload) => {
+          const existing = live.get(upload.upload_id)
+          const saved = persisted.get(upload.upload_id)
+          return {
+            uploadId: upload.upload_id,
+            bucket: upload.bucket,
+            key: upload.key,
+            fileName: existing?.fileName || saved?.fileName || upload.key.split('/').pop() || upload.key,
+            fileSize: existing?.fileSize || saved?.fileSize || 0,
+            lastModified: existing?.lastModified || saved?.lastModified || 0,
+            contentType: existing?.contentType || saved?.contentType || upload.content_type,
+            partSize: existing?.partSize || saved?.partSize || upload.parts[0]?.size || 0,
+            initiatedAt: upload.initiated_at,
+            uploadedBytes: upload.uploaded_bytes,
+            completedParts: upload.parts.length,
+            status: existing?.status === 'uploading' ? 'uploading' : 'paused',
+            file: existing?.file,
+          }
+        })
+      })
+      uploadsHydrated.current = true
+      if (completedDuringSync) await load(true)
+    } catch (reason) {
+      setError((reason as Error).message)
+    } finally {
+      setUploadsLoading(false)
+    }
+  }
+
   async function upload(event: FormEvent) {
     event.preventDefault()
     const key = putKey.trim()
     if (!file || !key || !bucket || !accessKey) return
     try {
-      setUploading(true)
       setError('')
       setNotice('')
-      const presigned = await api.presignObject(accessKey, bucket, key, 'PUT', 900)
-      setUploadProgress({ loaded: 0, total: file.size, percent: 0 })
-      await putFile(presigned.url, file, setUploadProgress, (request) => {
-        uploadRequest.current = request
-      })
+      const created = await api.createMultipartUpload(bucket, key, file.type || 'application/octet-stream')
+      const task: UploadTask = {
+        uploadId: created.upload_id,
+        bucket,
+        key,
+        fileName: file.name,
+        fileSize: file.size,
+        lastModified: file.lastModified,
+        contentType: file.type || 'application/octet-stream',
+        partSize: choosePartSize(file.size),
+        initiatedAt: created.initiated_at,
+        uploadedBytes: 0,
+        completedParts: 0,
+        status: 'paused',
+        file,
+      }
+      setUploadTasks((current) => [task, ...current])
       setFile(null)
       setPutKey('')
-      setShowUpload(false)
       if (fileInput.current) fileInput.current.value = ''
-      setNotice(`已上传 ${key}`)
+      await runUpload(task, file)
+    } catch (reason) {
+      setError((reason as Error).message)
+    }
+  }
+
+  async function runUpload(task: UploadTask, selectedFile: File) {
+    if (!accessKey || uploadControl.current) return
+    const control = {
+      uploadId: task.uploadId,
+      paused: false,
+      cancelled: false,
+      completing: false,
+      request: null as XMLHttpRequest | null,
+    }
+    uploadControl.current = control
+    setUploading(true)
+    setError('')
+    setNotice('')
+    let committedBytes = task.uploadedBytes
+    let committedParts = task.completedParts
+    try {
+      const serverUpload = await api.getMultipartUpload(task.uploadId, task.bucket, task.key)
+      const partSize = inferPartSize(serverUpload, selectedFile.size, task.partSize)
+      validateResumeFile(task, serverUpload, selectedFile, partSize)
+      const completed = new Map(serverUpload.parts.map((part) => [part.part_number, part]))
+      committedBytes = serverUpload.parts.reduce((sum, part) => sum + part.size, 0)
+      committedParts = completed.size
+      const partCount = Math.max(1, Math.ceil(selectedFile.size / partSize))
+      updateUploadTask(task.uploadId, {
+        file: selectedFile,
+        fileName: selectedFile.name,
+        fileSize: selectedFile.size,
+        lastModified: selectedFile.lastModified,
+        contentType: selectedFile.type || task.contentType || 'application/octet-stream',
+        partSize,
+        uploadedBytes: committedBytes,
+        completedParts: completed.size,
+        status: 'uploading',
+        error: undefined,
+      })
+      reportUploadProgress(committedBytes, selectedFile.size)
+
+      for (let partNumber = 1; partNumber <= partCount; partNumber += 1) {
+        if (completed.has(partNumber)) continue
+        if (control.paused) throw abortError()
+        const start = (partNumber - 1) * partSize
+        const body = selectedFile.slice(start, Math.min(start + partSize, selectedFile.size))
+        let etag = ''
+        let lastError: Error | null = null
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          try {
+            const presigned = await api.presignObject(accessKey, task.bucket, task.key, 'PUT', 900, {
+              uploadId: task.uploadId,
+              partNumber,
+            })
+            if (control.paused) throw abortError()
+            etag = await putPart(
+              presigned.url,
+              body,
+              task.contentType,
+              ({ loaded }) => {
+                const totalLoaded = Math.min(selectedFile.size, committedBytes + loaded)
+                reportUploadProgress(totalLoaded, selectedFile.size)
+                updateUploadTask(task.uploadId, { uploadedBytes: totalLoaded })
+              },
+              (request) => { control.request = request },
+            )
+            control.request = null
+            break
+          } catch (reason) {
+            control.request = null
+            if (control.paused || (reason instanceof Error && reason.name === 'AbortError')) throw abortError()
+            lastError = reason as Error
+            if (attempt < 3) await delay(attempt * 300)
+          }
+        }
+        if (!etag) throw lastError ?? new Error(`第 ${partNumber} 分片上传失败`)
+        completed.set(partNumber, {
+          part_number: partNumber,
+          size: body.size,
+          etag,
+          last_modified: new Date().toISOString(),
+        })
+        committedBytes += body.size
+        committedParts = completed.size
+        updateUploadTask(task.uploadId, {
+          uploadedBytes: committedBytes,
+          completedParts: committedParts,
+        })
+      }
+      if (control.paused) throw abortError()
+      control.completing = true
+      updateUploadTask(task.uploadId, {
+        uploadedBytes: selectedFile.size,
+        completedParts: completed.size,
+        status: 'completing',
+        error: undefined,
+      })
+      const completionParts = [...completed.values()]
+        .sort((left, right) => left.part_number - right.part_number)
+        .map((part) => ({ part_number: part.part_number, etag: part.etag }))
+      try {
+        await api.completeMultipartUpload(task.uploadId, task.bucket, task.key, completionParts)
+      } catch (reason) {
+        // The response can be lost after ZigFS has committed the Object. Do
+        // not leave a false failed task when the UploadId is already gone.
+        if (!(await completionPublished(task))) throw reason
+      }
+      setUploadTasks((current) => current.filter((item) => item.uploadId !== task.uploadId))
+      setNotice(`已上传 ${task.key}`)
       await load(true)
     } catch (reason) {
-      if (reason instanceof Error && reason.name === 'AbortError') setNotice('上传已取消，可重新开始上传')
-      else setError((reason as Error).message)
+      if (control.cancelled) {
+        return
+      }
+      if (reason instanceof Error && reason.name === 'AbortError') {
+        updateUploadTask(task.uploadId, {
+          uploadedBytes: committedBytes,
+          completedParts: committedParts,
+          status: 'paused',
+          error: undefined,
+        })
+        setNotice(`已暂停 ${task.key}`)
+      } else {
+        const message = (reason as Error).message
+        updateUploadTask(task.uploadId, { status: 'failed', error: message })
+        setError(message)
+      }
     } finally {
-      uploadRequest.current = null
+      if (uploadControl.current === control) uploadControl.current = null
       setUploading(false)
       setUploadProgress(null)
     }
   }
 
-  function cancelUpload() {
-    uploadRequest.current?.abort()
+  function pauseUpload(task: UploadTask) {
+    const control = uploadControl.current
+    if (!control || control.uploadId !== task.uploadId || control.completing) return
+    control.paused = true
+    control.request?.abort()
+  }
+
+  async function abortUpload(task: UploadTask) {
+    if (!window.confirm(`取消上传“${task.key}”并删除已上传的分片？`)) return
+    const control = uploadControl.current
+    if (control?.uploadId === task.uploadId && control.completing) {
+      setNotice(`正在完成 ${task.key}`)
+      return
+    }
+    if (control?.uploadId === task.uploadId) {
+      control.paused = true
+      control.cancelled = true
+      control.request?.abort()
+    }
+    try {
+      await api.abortMultipartUpload(task.uploadId, task.bucket, task.key)
+      setUploadTasks((current) => current.filter((item) => item.uploadId !== task.uploadId))
+      setNotice(`已取消 ${task.key}`)
+    } catch (reason) {
+      const message = (reason as Error).message
+      updateUploadTask(task.uploadId, { status: 'failed', error: message })
+      setError(message)
+    }
+  }
+
+  function attachResumeFile(task: UploadTask, event: ChangeEvent<HTMLInputElement>) {
+    const selected = event.target.files?.[0]
+    event.target.value = ''
+    if (!selected) return
+    if ((task.fileSize > 0 && task.fileSize !== selected.size) ||
+        (task.lastModified > 0 && task.lastModified !== selected.lastModified)) {
+      updateUploadTask(task.uploadId, { status: 'failed', error: '文件大小或修改时间与原上传任务不一致' })
+      return
+    }
+    updateUploadTask(task.uploadId, {
+      file: selected,
+      fileName: selected.name,
+      fileSize: selected.size,
+      lastModified: selected.lastModified,
+      contentType: selected.type || task.contentType,
+      status: 'paused',
+      error: undefined,
+    })
+  }
+
+  function updateUploadTask(uploadId: string, changes: Partial<UploadTask>) {
+    setUploadTasks((current) => current.map((task) => task.uploadId === uploadId ? { ...task, ...changes } : task))
+  }
+
+  function reportUploadProgress(loaded: number, total: number) {
+    setUploadProgress({ loaded, total, percent: total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0 })
+  }
+
+  async function completionPublished(task: UploadTask) {
+    try {
+      await api.getMultipartUpload(task.uploadId, task.bucket, task.key)
+      return false
+    } catch (reason) {
+      if (!isMultipartUploadMissing(reason)) throw reason
+    }
+
+    let continuationToken = ''
+    do {
+      const result = await api.listObjects(task.bucket, task.key, continuationToken)
+      if (result.items.some((object) => object.key === task.key)) return true
+      continuationToken = result.continuation_token ?? ''
+    } while (continuationToken)
+    return false
   }
 
   async function download(object: ObjectSummary) {
@@ -198,7 +495,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     <section>
       <header className="page-header">
         <div>
-          <button className="back-button" type="button" onClick={onBack}><ArrowLeft className="button-icon" aria-hidden="true" />返回 Buckets</button>
+          <button className="back-button" type="button" onClick={onBack}><ArrowLeft className="button-icon" aria-hidden="true" />返回 Bucket</button>
           <h2>Object Browser</h2>
           <p className="page-description">浏览、上传、下载和管理 Bucket 中的对象。</p>
         </div>
@@ -215,9 +512,6 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
 
       <div className="page-toolbar">
         <div className="toolbar-leading object-toolbar-leading">
-          <select aria-label="Bucket" value={bucket} onChange={(event) => setBucket(event.target.value)} disabled={uploading} required>
-            {buckets.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
-          </select>
           <label className="search-box">
             <Search aria-hidden="true" />
             <input
@@ -230,8 +524,8 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
           </label>
         </div>
         <div className="toolbar-actions">
-          <button className="primary-button" type="button" onClick={() => setShowUpload((current) => !current)} disabled={!bucket || !accessKey || uploading}>
-            <Upload className="button-icon" aria-hidden="true" />{uploading ? '上传中...' : showUpload ? '关闭上传' : '上传文件'}
+          <button className="primary-button" type="button" onClick={() => setShowUpload((current) => !current)} disabled={!bucket || !accessKey}>
+            <Upload className="button-icon" aria-hidden="true" />{showUpload ? '关闭上传' : uploadTasks.length > 0 ? `上传任务 (${uploadTasks.length})` : '上传文件'}
           </button>
           <button className="secondary-button" type="button" onClick={() => void load(true)} disabled={!bucket || loading}>
             <RefreshCw className={`button-icon${loading ? ' spinning' : ''}`} aria-hidden="true" />{loading ? '加载中...' : '刷新'}
@@ -250,28 +544,64 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
 
       {showUpload && (
         <section className="panel create-panel upload-panel">
-          <div className="section-heading"><div><h3>上传对象</h3><p>对象字节通过 Presigned URL 直接传输到 ZigFS。</p></div></div>
+          <div className="section-heading"><div><h3>上传对象</h3><p>Multipart 分片通过 Presigned URL 直接传输到 ZigFS。</p></div></div>
           <form className="upload-form" onSubmit={upload}>
             <input ref={fileInput} type="file" onChange={selectFile} aria-label="选择文件" disabled={uploading} />
             <input aria-label="Object key" placeholder="对象 Key，例如 images/logo.png" value={putKey} onChange={(event) => setPutKey(event.target.value)} disabled={uploading} required />
             <button className="primary-button" type="submit" disabled={!file || !putKey.trim() || !bucket || !accessKey || uploading}><Upload className="button-icon" aria-hidden="true" />{uploading ? '上传中...' : '开始上传'}</button>
           </form>
-          {uploading && uploadProgress && (
-            <div className="upload-progress" aria-live="polite">
-              <div className="upload-progress-heading">
-                <div><strong>{file?.name}</strong><span>{formatBytes(uploadProgress.loaded)} / {formatBytes(uploadProgress.total)} · {uploadProgress.percent}%</span></div>
-                <button className="secondary-button" type="button" onClick={cancelUpload}><X className="button-icon" aria-hidden="true" />取消上传</button>
-              </div>
-              <div
-                className="upload-progress-track"
-                role="progressbar"
-                aria-label={`${file?.name ?? '对象'}上传进度`}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={uploadProgress.percent}
-              >
-                <span style={{ width: `${uploadProgress.percent}%` }} />
-              </div>
+          {(uploadTasks.length > 0 || uploadsLoading) && (
+            <div className="upload-task-list" aria-live="polite">
+              <div className="upload-task-list-heading"><strong>未完成上传</strong><span>{uploadsLoading ? '同步中...' : `${uploadTasks.length} 个任务`}</span></div>
+              {uploadTasks.map((task) => {
+                const active = task.status === 'uploading' || task.status === 'completing'
+                const taskProgress = active && uploadProgress
+                  ? uploadProgress
+                  : {
+                      loaded: task.uploadedBytes,
+                      total: task.fileSize,
+                      percent: task.fileSize > 0 ? Math.min(100, Math.round((task.uploadedBytes / task.fileSize) * 100)) : 0,
+                    }
+                return (
+                  <article className="upload-task" key={task.uploadId}>
+                    <div className="upload-task-main">
+                      <div className="upload-task-title"><strong>{task.key}</strong><span className={`upload-status ${task.status}`}>{task.status === 'uploading' ? '上传中' : task.status === 'completing' ? '完成中' : task.status === 'failed' ? '失败' : '已暂停'}</span></div>
+                      <span>{task.fileName} · {task.fileSize > 0 ? `${formatBytes(taskProgress.loaded)} / ${formatBytes(task.fileSize)}` : formatBytes(task.uploadedBytes)} · {task.completedParts} 个分片</span>
+                      {task.status === 'completing' && <span>ZigFS 正在完成对象</span>}
+                      {task.error && <span className="upload-task-error">{task.error}</span>}
+                      {!task.file && task.status !== 'uploading' && <span>需要重新选择本地文件</span>}
+                    </div>
+                    <div className="upload-task-actions">
+                      {task.status === 'uploading' ? (
+                        <button className="secondary-button" type="button" onClick={() => pauseUpload(task)}><Pause className="button-icon" aria-hidden="true" />暂停</button>
+                      ) : task.status === 'completing' ? (
+                        <button className="secondary-button" type="button" disabled><RefreshCw className="button-icon spinning" aria-hidden="true" />完成中</button>
+                      ) : task.file ? (
+                        <button className="secondary-button" type="button" disabled={uploading || !accessKey} onClick={() => void runUpload(task, task.file!)}>
+                          {task.status === 'failed' ? <RotateCcw className="button-icon" aria-hidden="true" /> : <Play className="button-icon" aria-hidden="true" />}
+                          {task.status === 'failed' ? '重试' : '继续'}
+                        </button>
+                      ) : (
+                        <label className={`secondary-button file-picker-button${uploading ? ' disabled' : ''}`}>
+                          <Upload className="button-icon" aria-hidden="true" />选择原文件
+                          <input type="file" disabled={uploading} onChange={(event) => attachResumeFile(task, event)} />
+                        </label>
+                      )}
+                      <button className="danger-button" type="button" disabled={task.status === 'completing' || (uploading && !active)} onClick={() => void abortUpload(task)}><Trash2 className="button-icon" aria-hidden="true" />取消</button>
+                    </div>
+                    <div
+                      className="upload-progress-track"
+                      role="progressbar"
+                      aria-label={`${task.fileName}上传进度`}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={taskProgress.percent}
+                    >
+                      <span style={{ width: `${taskProgress.percent}%` }} />
+                    </div>
+                  </article>
+                )
+              })}
             </div>
           )}
         </section>
@@ -280,13 +610,12 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       <section className="panel table-panel">
         <div className="table-wrap">
           <table className="object-table">
-            <thead><tr><th>Object</th><th>Size</th><th>ETag</th><th>Last Modified</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Object</th><th>Size</th><th>Last Modified</th><th>Actions</th></tr></thead>
             <tbody>
               {objects.map((object) => (
                 <tr key={object.key}>
                   <td className="object-key"><div className="file-cell"><File className="file-symbol" aria-hidden="true" /><span>{object.key}</span></div></td>
                   <td>{formatBytes(object.size)}</td>
-                  <td><code>{object.etag}</code></td>
                   <td>{new Date(object.last_modified).toLocaleString()}</td>
                   <td className="table-actions">
                     <button className="secondary-button" type="button" onClick={() => void openDetail(object)}><Info className="button-icon" aria-hidden="true" />详情</button>
@@ -332,53 +661,18 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
   )
 }
 
-function putFile(
-  url: string,
-  file: File,
-  onProgress: (progress: UploadProgress) => void,
-  onRequest: (request: XMLHttpRequest) => void,
-) {
-  return new Promise<void>((resolve, reject) => {
-    const request = new XMLHttpRequest()
-    request.open('PUT', url)
-    request.setRequestHeader('Content-Type', file.type || 'application/octet-stream')
-
-    request.upload.addEventListener('progress', (event) => {
-      const total = event.lengthComputable && event.total > 0 ? event.total : file.size
-      const loaded = Math.min(event.loaded, total || event.loaded)
-      const percent = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0
-      onProgress({ loaded, total, percent })
-    })
-    request.addEventListener('load', () => {
-      if (request.status >= 200 && request.status < 300) {
-        onProgress({ loaded: file.size, total: file.size, percent: 100 })
-        resolve()
-      } else {
-        reject(new Error(`上传失败（${request.status}）`))
-      }
-    })
-    request.addEventListener('error', () => reject(new Error('上传失败（网络错误）')))
-    request.addEventListener('abort', () => {
-      const error = new Error('上传已取消')
-      error.name = 'AbortError'
-      reject(error)
-    })
-
-    onRequest(request)
-    request.send(file)
-  })
+function abortError() {
+  const error = new Error('上传已暂停')
+  error.name = 'AbortError'
+  return error
 }
 
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let value = bytes / 1024
-  let index = 0
-  while (value >= 1024 && index < units.length - 1) {
-    value /= 1024
-    index += 1
-  }
-  return `${value.toFixed(1)} ${units[index]}`
+function isMultipartUploadMissing(reason: unknown) {
+  return reason instanceof ApiError && reason.status === 404 && reason.body.code === 'UploadNotFound'
+}
+
+function delay(milliseconds: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 }
 
 function fileExtension(key: string) {

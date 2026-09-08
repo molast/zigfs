@@ -35,6 +35,26 @@ func (service *Management) PresignObject(ctx context.Context, request contract.P
 	return service.zig.PresignObject(ctx, request)
 }
 
+func (service *Management) CreateMultipartUpload(ctx context.Context, request contract.CreateMultipartUploadRequest) (contract.MultipartUpload, error) {
+	return service.zig.CreateMultipartUpload(ctx, request)
+}
+
+func (service *Management) ListMultipartUploads(ctx context.Context, bucket, prefix, keyMarker, uploadIDMarker string) (contract.ListMultipartUploadsResponse, error) {
+	return service.zig.ListMultipartUploads(ctx, bucket, prefix, keyMarker, uploadIDMarker)
+}
+
+func (service *Management) GetMultipartUpload(ctx context.Context, uploadID, bucket, key string) (contract.MultipartUpload, error) {
+	return service.zig.GetMultipartUpload(ctx, uploadID, bucket, key)
+}
+
+func (service *Management) CompleteMultipartUpload(ctx context.Context, uploadID string, request contract.CompleteMultipartUploadRequest) (contract.Object, error) {
+	return service.zig.CompleteMultipartUpload(ctx, uploadID, request)
+}
+
+func (service *Management) AbortMultipartUpload(ctx context.Context, uploadID, bucket, key string) error {
+	return service.zig.AbortMultipartUpload(ctx, uploadID, bucket, key)
+}
+
 func (service *Management) ListAccessKeys(ctx context.Context) (contract.ListAccessKeysResponse, error) {
 	return service.zig.ListAccessKeys(ctx)
 }

@@ -28,14 +28,14 @@ checksum，以及 AWS CLI 自动附加但 ZigFS 当前未声明的 DeleteObjects
 - 默认使用 Path-style：`/{bucket}/{object}`。配置 `s3.virtual_hosted_style: true` 后，
   同时支持 Virtual-hosted-style：`Host: {bucket}.{s3.public_endpoint authority}`、
   `/{object}`；精确 `s3.public_endpoint authority` 仍支持 Path-style。
-- Bucket API 使用 Signature V4 Authorization Header；对象级 GET/PUT 同时支持 Header 和 Presigned Query。
+- Bucket API 使用 Signature V4 Authorization Header；对象级 GET/PUT/DELETE 与 Multipart 全生命周期同时支持 Header 和 Presigned Query。
 - Credential Scope Service 固定为 `s3`，Region 必须等于 YAML `s3.region`。
 - Header 鉴权必须提供 `Host`、`X-Amz-Date`、`X-Amz-Content-Sha256` 和 `Authorization`；Presigned Query 只要求请求携带其 `SignedHeaders` 中声明的 Header。
 - 默认允许 900 秒时钟偏差，可通过 `s3.request_time_skew_seconds` 配置为 60 至 3600 秒。
 - Presigned URL 的 `X-Amz-Expires` 必须为 `1..604800` 秒；未来时间沿用上述偏差窗口，超过有效期立即拒绝。
 - Presigned URL 必须包含 Algorithm、Credential、Date、Expires、SignedHeaders 和 Signature；签名绑定 Method、完整 Path、全部 Query 和声明的 Header。
 - 临时凭证使用 AK/SK/Session Token：Header 请求必须携带并签名 `x-amz-security-token`，Presigned URL 必须携带签名绑定的 `X-Amz-Security-Token`；永久凭证携带 Token 同样被拒绝。
-- 同一请求不能同时携带 Authorization Header 和 Presigned Query；Presigned Query 当前只授权对象级 GET/PUT。
+- 同一请求不能同时携带 Authorization Header 和 Presigned Query；Presigned Query 可授权对象级 GET/PUT/DELETE，以及 Create/UploadPart/ListParts/ListMultipartUploads/Complete/Abort Multipart Upload。
 - `x-amz-*` 扩展 Header 除 `x-amz-content-sha256` 外必须进入 `SignedHeaders`。
 - 支持固定 SHA-256 Hex、`UNSIGNED-PAYLOAD`、`STREAMING-AWS4-HMAC-SHA256-PAYLOAD` 和带五种 Flexible Checksum trailer 的 `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER`。
 - PutObject 和 UploadPart 支持 AWS Flexible Checksums 的 `CRC32`、`CRC32C`、`CRC64NVME`、`SHA1`、`SHA256` Header 与 signed trailer 模式；校验值参与 SigV4 并在 staged 流式落盘时重新计算。
@@ -99,6 +99,7 @@ ListObjectsV2 已支持：
 | CreateMultipartUpload | `POST /{bucket}/{key}?uploads=` | Implemented | `200` XML + `UploadId` | Object Write |
 | UploadPart | `PUT /{bucket}/{key}?partNumber=N&uploadId=ID` | Implemented | `200` + quoted MD5 `ETag` | Object Write |
 | ListParts | `GET /{bucket}/{key}?uploadId=ID` | Implemented | `200` XML | Object Read |
+| ListMultipartUploads | `GET /{bucket}?uploads=` | Implemented | `200` XML + Upload/CommonPrefixes 分页 | Bucket Read |
 | CompleteMultipartUpload | `POST /{bucket}/{key}?uploadId=ID` | Implemented | `200` XML + composite `ETag` | Object Write |
 | AbortMultipartUpload | `DELETE /{bucket}/{key}?uploadId=ID` | Implemented | `204` | Object Write |
 
@@ -106,11 +107,13 @@ ListObjectsV2 已支持：
 - Part Number 范围为 `1..10000`；每个 Part 使用固定缓冲流式落盘并保存 Size、MD5 ETag、SHA-256、LastModified、Data Generation 和提交状态。同一 Part Number 可原子覆盖，并发上传由 Upload 级锁串行提交元数据。
 - UploadPart 支持固定 SHA-256、`Content-MD5`、五种 Flexible Checksum Header，以及无 trailer/五种 signed trailer 两种 AWS streaming chunk signature；错误 checksum 或签名不发布 Part。
 - ListParts 支持 `part-number-marker` 和 `max-parts=0..1000`，默认 `1000`，按 Part Number 升序返回。
+- ListMultipartUploads 支持 `prefix`、`delimiter`、`key-marker`、`upload-id-marker`、`max-uploads=0..1000` 和 `encoding-type=url`，按 Key、UploadId 稳定排序；因此客户端丢失进程内状态后仍可发现未完成 Upload。
 - Complete XML 接受 `ETag`/`PartNumber` 两种字段顺序，并兼容 rclone 的 XML 实体引号。请求 Part 必须升序、无重复、存在且 ETag 一致；除最后一个提交 Part 外，每个 Part 至少 5 MiB。
 - Complete 使用固定缓冲把已选 Part 拼接为普通 Object Generation，并复用 Object Metadata CAS 与原子发布流程。最终 ETag 为 `MD5(concat(binary_part_md5))-part_count`。
 - Complete 或 Abort 成功后，Upload Metadata 提交 Tombstone，再清理整个 Upload 数据目录，不会删除或修改此前已完成的对象。
 - 启动时清理已提交 Tombstone 的残留 Part，并按 `s3.multipart_expiry_seconds` 清理超时未完成上传；默认 7 天，允许 60 秒至 30 天。
-- Multipart 当前只接受 Signature V4 Header 鉴权；对象级 Presigned GET/PUT 不扩大为 Presigned Multipart。
+- Multipart 接受 Signature V4 Header 和标准 Presigned Query。Presigned Query 可用于 Create、UploadPart、ListParts、ListMultipartUploads、Complete 和 Abort，完整绑定 `uploadId`、`partNumber` 等 Query 参数。
+- 暂停/恢复以 Part 为边界：客户端暂停时停止或中止当前请求；恢复时通过 ListMultipartUploads/ListParts 跳过已提交 Part。PutObject 和单个 UploadPart 不支持从请求体中间继续，中断的 Part 必须重传。
 
 PutObject：
 

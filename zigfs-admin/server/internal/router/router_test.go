@@ -60,6 +60,26 @@ func (managementService) PresignObject(context.Context, contract.PresignObjectRe
 	return contract.PresignObjectResponse{}, nil
 }
 
+func (managementService) CreateMultipartUpload(context.Context, contract.CreateMultipartUploadRequest) (contract.MultipartUpload, error) {
+	return contract.MultipartUpload{}, nil
+}
+
+func (managementService) ListMultipartUploads(context.Context, string, string, string, string) (contract.ListMultipartUploadsResponse, error) {
+	return contract.ListMultipartUploadsResponse{}, nil
+}
+
+func (managementService) GetMultipartUpload(context.Context, string, string, string) (contract.MultipartUpload, error) {
+	return contract.MultipartUpload{}, nil
+}
+
+func (managementService) CompleteMultipartUpload(context.Context, string, contract.CompleteMultipartUploadRequest) (contract.Object, error) {
+	return contract.Object{}, nil
+}
+
+func (managementService) AbortMultipartUpload(context.Context, string, string, string) error {
+	return nil
+}
+
 func (managementService) ListAccessKeys(context.Context) (contract.ListAccessKeysResponse, error) {
 	return contract.ListAccessKeysResponse{}, nil
 }

@@ -601,6 +601,74 @@ test "multipart lifecycle streams concurrent parts completes and aborts without 
     try std.testing.expectEqualSlices(u8, &object.etag_md5, &after_abort.etag_md5);
 }
 
+test "multipart upload listing supports discovery delimiters and stable resume markers" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(data_root);
+    var app = Application.initWithAllocator(
+        .{ .data_root = data_root, .metrics_enabled = false },
+        std.testing.allocator,
+    );
+    defer app.deinit(std.testing.io);
+    try app.initialize(std.testing.io);
+    const bucket = try app.bucketService().?.create("project-assets", "owner-a");
+    defer bucket.deinit(std.testing.allocator);
+    const multiparts = app.multipartService().?;
+
+    const nested = try multiparts.create("project-assets", "photos/2026/a.bin", .{});
+    defer nested.deinit(std.testing.allocator);
+    const root = try multiparts.create("project-assets", "photos/root.bin", .{});
+    defer root.deinit(std.testing.allocator);
+    const duplicate_a = try multiparts.create("project-assets", "same.bin", .{});
+    defer duplicate_a.deinit(std.testing.allocator);
+    const duplicate_b = try multiparts.create("project-assets", "same.bin", .{});
+    defer duplicate_b.deinit(std.testing.allocator);
+
+    const first = try multiparts.listUploads("project-assets", .{
+        .prefix = "photos/",
+        .delimiter = "/",
+        .max_uploads = 1,
+    });
+    defer first.deinit(std.testing.allocator);
+    try std.testing.expect(first.is_truncated);
+    try std.testing.expectEqual(@as(usize, 0), first.uploads.len);
+    try std.testing.expectEqual(@as(usize, 1), first.common_prefixes.len);
+    try std.testing.expectEqualStrings("photos/2026/", first.common_prefixes[0]);
+    try std.testing.expectEqualStrings("photos/2026/", first.next_key_marker.?);
+    try std.testing.expect(first.next_upload_id_marker == null);
+
+    const second = try multiparts.listUploads("project-assets", .{
+        .prefix = "photos/",
+        .delimiter = "/",
+        .key_marker = first.next_key_marker,
+        .max_uploads = 1,
+    });
+    defer second.deinit(std.testing.allocator);
+    try std.testing.expect(!second.is_truncated);
+    try std.testing.expectEqual(@as(usize, 1), second.uploads.len);
+    try std.testing.expectEqualStrings("photos/root.bin", second.uploads[0].key);
+
+    const duplicate_page = try multiparts.listUploads("project-assets", .{
+        .prefix = "same.bin",
+        .max_uploads = 1,
+    });
+    defer duplicate_page.deinit(std.testing.allocator);
+    try std.testing.expect(duplicate_page.is_truncated);
+    try std.testing.expectEqual(@as(usize, 1), duplicate_page.uploads.len);
+    try std.testing.expectEqualStrings("same.bin", duplicate_page.next_key_marker.?);
+    try std.testing.expect(duplicate_page.next_upload_id_marker != null);
+
+    const resumed = try multiparts.listUploads("project-assets", .{
+        .prefix = "same.bin",
+        .key_marker = duplicate_page.next_key_marker,
+        .upload_id_marker = duplicate_page.next_upload_id_marker,
+    });
+    defer resumed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), resumed.uploads.len);
+    try std.testing.expect(!std.mem.eql(u8, duplicate_page.uploads[0].upload_id, resumed.uploads[0].upload_id));
+}
+
 test "startup recovery expires multipart metadata and part data" {
     const multipart_payload = @import("../metadata/multipart_payload.zig");
     const test_streams = @import("../testing/streams.zig");

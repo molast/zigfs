@@ -22,6 +22,7 @@ pub const Error = error{
     InvalidPartNumber,
     InvalidPart,
     InvalidPartOrder,
+    InvalidListOptions,
     EntityTooSmall,
     BucketNotFound,
     UploadNotFound,
@@ -31,6 +32,44 @@ pub const Error = error{
     CorruptMetadata,
     CorruptData,
     Unavailable,
+};
+
+pub const max_list_uploads: usize = 1000;
+
+pub const ListUploadsOptions = struct {
+    prefix: []const u8 = "",
+    delimiter: ?[]const u8 = null,
+    key_marker: ?[]const u8 = null,
+    upload_id_marker: ?[]const u8 = null,
+    max_uploads: usize = max_list_uploads,
+};
+
+pub const UploadSummary = struct {
+    upload_id: []u8,
+    key: []u8,
+    initiated_at_unix_seconds: i64,
+
+    pub fn deinit(self: UploadSummary, allocator: std.mem.Allocator) void {
+        allocator.free(self.upload_id);
+        allocator.free(self.key);
+    }
+};
+
+pub const ListUploadsResult = struct {
+    uploads: []UploadSummary,
+    common_prefixes: [][]u8,
+    is_truncated: bool,
+    next_key_marker: ?[]u8,
+    next_upload_id_marker: ?[]u8,
+
+    pub fn deinit(self: ListUploadsResult, allocator: std.mem.Allocator) void {
+        for (self.uploads) |upload| upload.deinit(allocator);
+        allocator.free(self.uploads);
+        for (self.common_prefixes) |prefix| allocator.free(prefix);
+        allocator.free(self.common_prefixes);
+        if (self.next_key_marker) |marker| allocator.free(marker);
+        if (self.next_upload_id_marker) |marker| allocator.free(marker);
+    }
 };
 
 pub const CreateOptions = struct {
@@ -227,6 +266,145 @@ pub const MultipartService = struct {
         self.state_mutex.lockUncancelable(self.io);
         defer self.state_mutex.unlock(self.io);
         return self.loadMatchingUploadLocked(bucket_name, key, upload_id);
+    }
+
+    pub fn listUploads(
+        self: MultipartService,
+        bucket_name: []const u8,
+        options: ListUploadsOptions,
+    ) Error!ListUploadsResult {
+        bucket_domain.validateName(bucket_name) catch return error.InvalidBucketName;
+        if (options.max_uploads > max_list_uploads or
+            (options.delimiter != null and options.delimiter.?.len == 0) or
+            (options.upload_id_marker != null and options.key_marker == null))
+        {
+            return error.InvalidListOptions;
+        }
+
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
+        const bucket = try self.loadBucketLocked(bucket_name);
+        defer bucket.deinit(self.allocator);
+
+        var candidates: std.ArrayList(UploadSummary) = .empty;
+        defer {
+            for (candidates.items) |upload| upload.deinit(self.allocator);
+            candidates.deinit(self.allocator);
+        }
+        for (self.index.uploadEntries()) |entry| {
+            const upload = try self.loadUploadLocked(entry.name);
+            defer upload.deinit(self.allocator);
+            if (!std.mem.eql(u8, upload.bucket_name, bucket_name) or
+                !std.mem.eql(u8, &upload.bucket_id, &bucket.id) or
+                !std.mem.startsWith(u8, upload.key, options.prefix))
+            {
+                continue;
+            }
+            const upload_id = self.allocator.dupe(u8, entry.name) catch return error.OutOfMemory;
+            errdefer self.allocator.free(upload_id);
+            const key = self.allocator.dupe(u8, upload.key) catch return error.OutOfMemory;
+            candidates.append(self.allocator, .{
+                .upload_id = upload_id,
+                .key = key,
+                .initiated_at_unix_seconds = upload.initiated_at_unix_seconds,
+            }) catch {
+                self.allocator.free(key);
+                return error.OutOfMemory;
+            };
+        }
+        std.mem.sort(UploadSummary, candidates.items, {}, lessThanUploadSummary);
+
+        var uploads: std.ArrayList(UploadSummary) = .empty;
+        errdefer {
+            for (uploads.items) |upload| upload.deinit(self.allocator);
+            uploads.deinit(self.allocator);
+        }
+        var common_prefixes: std.ArrayList([]u8) = .empty;
+        errdefer {
+            for (common_prefixes.items) |prefix| self.allocator.free(prefix);
+            common_prefixes.deinit(self.allocator);
+        }
+        var emitted: usize = 0;
+        var is_truncated = false;
+        var last_key: ?[]const u8 = null;
+        var last_upload_id: ?[]const u8 = null;
+
+        for (candidates.items) |candidate| {
+            if (!isAfterUploadMarker(candidate, options.key_marker, options.upload_id_marker)) continue;
+            if (options.delimiter) |delimiter| {
+                const suffix = candidate.key[options.prefix.len..];
+                if (std.mem.indexOf(u8, suffix, delimiter)) |position| {
+                    const prefix_end = options.prefix.len + position + delimiter.len;
+                    const common_prefix = candidate.key[0..prefix_end];
+                    if (options.key_marker) |marker| {
+                        if (std.mem.order(u8, common_prefix, marker) != .gt) continue;
+                    }
+                    if (common_prefixes.items.len != 0 and
+                        std.mem.eql(u8, common_prefixes.items[common_prefixes.items.len - 1], common_prefix))
+                    {
+                        continue;
+                    }
+                    if (emitted == options.max_uploads) {
+                        is_truncated = true;
+                        break;
+                    }
+                    const owned_prefix = self.allocator.dupe(u8, common_prefix) catch return error.OutOfMemory;
+                    common_prefixes.append(self.allocator, owned_prefix) catch {
+                        self.allocator.free(owned_prefix);
+                        return error.OutOfMemory;
+                    };
+                    emitted += 1;
+                    last_key = owned_prefix;
+                    last_upload_id = null;
+                    continue;
+                }
+            }
+            if (emitted == options.max_uploads) {
+                is_truncated = true;
+                break;
+            }
+            const upload_id = self.allocator.dupe(u8, candidate.upload_id) catch return error.OutOfMemory;
+            errdefer self.allocator.free(upload_id);
+            const key = self.allocator.dupe(u8, candidate.key) catch return error.OutOfMemory;
+            uploads.append(self.allocator, .{
+                .upload_id = upload_id,
+                .key = key,
+                .initiated_at_unix_seconds = candidate.initiated_at_unix_seconds,
+            }) catch {
+                self.allocator.free(key);
+                return error.OutOfMemory;
+            };
+            emitted += 1;
+            last_key = key;
+            last_upload_id = upload_id;
+        }
+
+        const next_key_marker = if (is_truncated and last_key != null)
+            self.allocator.dupe(u8, last_key.?) catch return error.OutOfMemory
+        else
+            null;
+        errdefer if (next_key_marker) |marker| self.allocator.free(marker);
+        const next_upload_id_marker = if (is_truncated and last_upload_id != null)
+            self.allocator.dupe(u8, last_upload_id.?) catch return error.OutOfMemory
+        else
+            null;
+        const owned_uploads = uploads.toOwnedSlice(self.allocator) catch return error.OutOfMemory;
+        errdefer {
+            for (owned_uploads) |upload| upload.deinit(self.allocator);
+            self.allocator.free(owned_uploads);
+        }
+        const owned_common_prefixes = common_prefixes.toOwnedSlice(self.allocator) catch return error.OutOfMemory;
+        errdefer {
+            for (owned_common_prefixes) |common_prefix| self.allocator.free(common_prefix);
+            self.allocator.free(owned_common_prefixes);
+        }
+        return .{
+            .uploads = owned_uploads,
+            .common_prefixes = owned_common_prefixes,
+            .is_truncated = is_truncated,
+            .next_key_marker = next_key_marker,
+            .next_upload_id_marker = next_upload_id_marker,
+        };
     }
 
     pub fn complete(
@@ -525,6 +703,28 @@ fn lowerBoundPart(parts: []const multipart_domain.Part, part_number: u16) usize 
         if (parts[middle].number < part_number) low = middle + 1 else high = middle;
     }
     return low;
+}
+
+fn lessThanUploadSummary(_: void, left: UploadSummary, right: UploadSummary) bool {
+    const key_order = std.mem.order(u8, left.key, right.key);
+    if (key_order != .eq) return key_order == .lt;
+    return std.mem.order(u8, left.upload_id, right.upload_id) == .lt;
+}
+
+fn isAfterUploadMarker(
+    upload: UploadSummary,
+    key_marker: ?[]const u8,
+    upload_id_marker: ?[]const u8,
+) bool {
+    const marker = key_marker orelse return true;
+    return switch (std.mem.order(u8, upload.key, marker)) {
+        .lt => false,
+        .gt => true,
+        .eq => if (upload_id_marker) |upload_marker|
+            std.mem.order(u8, upload.upload_id, upload_marker) == .gt
+        else
+            false,
+    };
 }
 
 fn mapBucketStoreError(err: bucket_store_port.Error) Error {

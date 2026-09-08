@@ -108,6 +108,50 @@ func (client *Client) PresignObject(ctx context.Context, request contract.Presig
 	return response, err
 }
 
+func (client *Client) CreateMultipartUpload(ctx context.Context, request contract.CreateMultipartUploadRequest) (contract.MultipartUpload, error) {
+	var response contract.MultipartUpload
+	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/multipart-uploads", request, &response)
+	return response, err
+}
+
+func (client *Client) ListMultipartUploads(ctx context.Context, bucket, prefix, keyMarker, uploadIDMarker string) (contract.ListMultipartUploadsResponse, error) {
+	query := url.Values{}
+	if prefix != "" {
+		query.Set("prefix", prefix)
+	}
+	if keyMarker != "" {
+		query.Set("key_marker", keyMarker)
+	}
+	if uploadIDMarker != "" {
+		query.Set("upload_id_marker", uploadIDMarker)
+	}
+	path := "/_admin/v1/buckets/" + url.PathEscape(bucket) + "/multipart-uploads"
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var response contract.ListMultipartUploadsResponse
+	err := client.requestJSON(ctx, http.MethodGet, path, nil, &response)
+	return response, err
+}
+
+func (client *Client) GetMultipartUpload(ctx context.Context, uploadID, bucket, key string) (contract.MultipartUpload, error) {
+	query := url.Values{"bucket": {bucket}, "key": {key}}
+	var response contract.MultipartUpload
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/multipart-uploads/"+url.PathEscape(uploadID)+"?"+query.Encode(), nil, &response)
+	return response, err
+}
+
+func (client *Client) CompleteMultipartUpload(ctx context.Context, uploadID string, request contract.CompleteMultipartUploadRequest) (contract.Object, error) {
+	var response contract.Object
+	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/multipart-uploads/"+url.PathEscape(uploadID)+"/complete", request, &response)
+	return response, err
+}
+
+func (client *Client) AbortMultipartUpload(ctx context.Context, uploadID, bucket, key string) error {
+	query := url.Values{"bucket": {bucket}, "key": {key}}
+	return client.requestJSON(ctx, http.MethodDelete, "/_admin/v1/multipart-uploads/"+url.PathEscape(uploadID)+"?"+query.Encode(), nil, nil)
+}
+
 func (client *Client) ListAccessKeys(ctx context.Context) (contract.ListAccessKeysResponse, error) {
 	var response contract.ListAccessKeysResponse
 	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/access-keys", nil, &response)

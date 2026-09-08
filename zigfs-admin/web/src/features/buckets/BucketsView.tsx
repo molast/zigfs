@@ -68,7 +68,7 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
     <section>
       <header className="page-header">
         <div>
-          <p className="eyebrow">Browser</p>
+          <p className="eyebrow">Buckets</p>
           <h2>Buckets</h2>
           <p className="page-description">组织和浏览 ZigFS 中的对象存储空间。</p>
         </div>
