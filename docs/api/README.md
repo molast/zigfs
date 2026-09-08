@@ -33,3 +33,5 @@ S3 POST Policy Upload 也已实现：Policy 使用 SigV4 直接签名，支持�
 Phase 6 ZigFS Management、Gin BFF 与 Admin 页面已完成；Phase 7 已由 TypeScript/Web 和
 Swift/iOS Adapter 通过共享向量及隔离 ZigFS 端到端文件操作 Gate。具体状态以 S3 兼容矩阵、
 SDK 一致性契约和 OpenAPI Operation 描述为准。
+Phase 11 已加入 Bucket Versioning、DeleteMarker、指定版本操作、ListObjectVersions 与声明的
+Lifecycle 子集；配置和历史仍由 ZigFS Management API 提供，Admin BFF 不保存第二事实来源。

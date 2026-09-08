@@ -13,6 +13,43 @@ pub const Status = enum(u8) {
     active = 1,
 };
 
+pub const VersionId = union(enum) {
+    null_version,
+    uuid: id.Uuid,
+
+    pub const encoded_length: usize = 32;
+
+    pub fn write(self: VersionId, buffer: *[encoded_length]u8) []const u8 {
+        return switch (self) {
+            .null_version => "null",
+            .uuid => |value| encoded: {
+                const hex = std.fmt.bytesToHex(value, .lower);
+                @memcpy(buffer, &hex);
+                break :encoded buffer;
+            },
+        };
+    }
+
+    pub fn eql(left: VersionId, right: VersionId) bool {
+        return switch (left) {
+            .null_version => right == .null_version,
+            .uuid => |left_value| switch (right) {
+                .null_version => false,
+                .uuid => |right_value| std.mem.eql(u8, &left_value, &right_value),
+            },
+        };
+    }
+};
+
+pub fn parseVersionId(value: []const u8) error{InvalidVersionId}!VersionId {
+    if (std.mem.eql(u8, value, "null")) return .null_version;
+    if (value.len != VersionId.encoded_length) return error.InvalidVersionId;
+    var decoded: id.Uuid = undefined;
+    _ = std.fmt.hexToBytes(&decoded, value) catch return error.InvalidVersionId;
+    if (!id.isValidV4(decoded)) return error.InvalidVersionId;
+    return .{ .uuid = decoded };
+}
+
 pub const UserMetadata = struct {
     name: []const u8,
     value: []const u8,
@@ -42,6 +79,7 @@ pub const View = struct {
     user_metadata: []const UserMetadata,
     data_generation: id.Uuid,
     status: Status,
+    version_id: VersionId = .null_version,
 };
 
 pub const Object = struct {
@@ -59,6 +97,7 @@ pub const Object = struct {
     data_generation: id.Uuid,
     status: Status,
     metadata_generation: u64,
+    version_id: VersionId = .null_version,
 
     pub fn deinit(self: Object, allocator: std.mem.Allocator) void {
         allocator.free(self.bucket_name);
@@ -83,6 +122,7 @@ pub const Object = struct {
             .user_metadata = ownedMetadataViews(self.user_metadata),
             .data_generation = self.data_generation,
             .status = self.status,
+            .version_id = self.version_id,
         };
     }
 };
@@ -126,8 +166,72 @@ pub fn cloneFromView(
         .data_generation = source.data_generation,
         .status = source.status,
         .metadata_generation = metadata_generation,
+        .version_id = source.version_id,
     };
 }
+
+pub const DeleteMarker = struct {
+    bucket_name: []u8,
+    key: []u8,
+    version_id: VersionId,
+    last_modified_unix_seconds: i64,
+
+    pub fn deinit(self: DeleteMarker, allocator: std.mem.Allocator) void {
+        allocator.free(self.bucket_name);
+        allocator.free(self.key);
+    }
+
+    pub fn clone(self: DeleteMarker, allocator: std.mem.Allocator) std.mem.Allocator.Error!DeleteMarker {
+        const bucket_name = try allocator.dupe(u8, self.bucket_name);
+        errdefer allocator.free(bucket_name);
+        return .{
+            .bucket_name = bucket_name,
+            .key = try allocator.dupe(u8, self.key),
+            .version_id = self.version_id,
+            .last_modified_unix_seconds = self.last_modified_unix_seconds,
+        };
+    }
+};
+
+pub const VersionEntry = union(enum) {
+    object: Object,
+    delete_marker: DeleteMarker,
+
+    pub fn deinit(self: VersionEntry, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .object => |value| value.deinit(allocator),
+            .delete_marker => |value| value.deinit(allocator),
+        }
+    }
+
+    pub fn versionId(self: VersionEntry) VersionId {
+        return switch (self) {
+            .object => |value| value.version_id,
+            .delete_marker => |value| value.version_id,
+        };
+    }
+
+    pub fn modifiedAt(self: VersionEntry) i64 {
+        return switch (self) {
+            .object => |value| value.last_modified_unix_seconds,
+            .delete_marker => |value| value.last_modified_unix_seconds,
+        };
+    }
+};
+
+pub const History = struct {
+    bucket_name: []u8,
+    key: []u8,
+    entries: []VersionEntry,
+    metadata_generation: u64,
+
+    pub fn deinit(self: History, allocator: std.mem.Allocator) void {
+        allocator.free(self.bucket_name);
+        allocator.free(self.key);
+        for (self.entries) |entry| entry.deinit(allocator);
+        allocator.free(self.entries);
+    }
+};
 
 fn ownedMetadataViews(entries: []const OwnedUserMetadata) []const UserMetadata {
     return @ptrCast(entries);

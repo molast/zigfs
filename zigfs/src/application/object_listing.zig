@@ -121,7 +121,7 @@ pub const ObjectListingService = struct {
         };
         defer indexed.deinit(self.allocator);
 
-        const objects = self.allocator.alloc(Entry, indexed.objects.len) catch {
+        var objects = self.allocator.alloc(Entry, indexed.objects.len) catch {
             return error.OutOfMemory;
         };
         var initialized_objects: usize = 0;
@@ -129,13 +129,14 @@ pub const ObjectListingService = struct {
             for (objects[0..initialized_objects]) |entry| entry.deinit(self.allocator);
             self.allocator.free(objects);
         }
-        for (indexed.objects, 0..) |key, object_index| {
+        for (indexed.objects) |key| {
             const record = self.object_store.get(self.allocator, bucket_name, key) catch |err| {
                 return mapObjectStoreError(err);
             };
             defer record.deinit(self.allocator);
             const object = switch (record) {
                 .active => |value| value,
+                .delete_marker => continue,
                 .tombstone => return error.CorruptMetadata,
             };
             const indexed_generation = self.index.objectGeneration(bucket_name, key) orelse {
@@ -144,7 +145,7 @@ pub const ObjectListingService = struct {
             if (object.metadata_generation != indexed_generation) {
                 return error.CorruptMetadata;
             }
-            objects[object_index] = .{
+            objects[initialized_objects] = .{
                 .key = self.allocator.dupe(u8, object.key) catch return error.OutOfMemory,
                 .size = object.size,
                 .etag_md5 = object.etag_md5,
@@ -153,6 +154,9 @@ pub const ObjectListingService = struct {
             };
             initialized_objects += 1;
         }
+        objects = self.allocator.realloc(objects, initialized_objects) catch {
+            return error.OutOfMemory;
+        };
 
         const common_prefixes = self.allocator.alloc([]u8, indexed.common_prefixes.len) catch {
             return error.OutOfMemory;

@@ -127,6 +127,54 @@ paths:
       responses:
         "204":
           description: 已删除或不存在
+  /api/v1/buckets/{name}/configuration:
+    get:
+      operationId: getBucketConfiguration
+      summary: 转发读取 ZigFS Bucket 配置
+      parameters:
+        - $ref: "./zigfs-management-v1.openapi.yaml#/components/parameters/BucketName"
+      responses:
+        "200":
+          description: ZigFS 当前配置
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/BucketConfiguration"
+    patch:
+      operationId: updateBucketConfiguration
+      summary: 转发更新 ZigFS Bucket 配置
+      parameters:
+        - $ref: "./zigfs-management-v1.openapi.yaml#/components/parameters/BucketName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/UpdateBucketConfigurationRequest"
+      responses:
+        "200":
+          description: ZigFS 更新后的配置
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/BucketConfiguration"
+  /api/v1/buckets/{name}/versions:
+    get:
+      operationId: listObjectVersions
+      summary: 转发读取 ZigFS 对象版本历史
+      parameters:
+        - $ref: "./zigfs-management-v1.openapi.yaml#/components/parameters/BucketName"
+        - name: prefix
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 对象版本与 DeleteMarker
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/ListObjectVersionsResponse"
   /api/v1/buckets/{name}/objects:
     get:
       operationId: listObjects

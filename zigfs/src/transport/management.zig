@@ -5,6 +5,7 @@ const credential_service = @import("../application/credential_service.zig");
 const management_service = @import("../application/management_service.zig");
 const multipart_service = @import("../application/multipart_service.zig");
 const object_listing = @import("../application/object_listing.zig");
+const lifecycle_service = @import("../application/lifecycle_service.zig");
 const credential_domain = @import("../domain/credential.zig");
 const object_domain = @import("../domain/object.zig");
 const multipart_domain = @import("../domain/multipart.zig");
@@ -14,7 +15,7 @@ const s3_multipart = @import("s3_multipart.zig");
 const version = @import("../version.zig").value;
 
 pub const api_prefix = "/_admin/v1";
-const max_body_size = 16 * 1024;
+const max_body_size = 1024 * 1024;
 
 pub const Method = enum { get, post, patch, delete };
 
@@ -29,6 +30,9 @@ pub const routes = [_]Route{
     .{ .method = .get, .path = "/_admin/v1/buckets" },
     .{ .method = .post, .path = "/_admin/v1/buckets" },
     .{ .method = .delete, .path = "/_admin/v1/buckets/:name" },
+    .{ .method = .get, .path = "/_admin/v1/buckets/:name/configuration" },
+    .{ .method = .patch, .path = "/_admin/v1/buckets/:name/configuration" },
+    .{ .method = .get, .path = "/_admin/v1/buckets/:name/versions" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/objects" },
     .{ .method = .post, .path = "/_admin/v1/objects/presign" },
     .{ .method = .post, .path = "/_admin/v1/multipart-uploads" },
@@ -63,6 +67,25 @@ pub fn serveRequest(
     }
     if (std.mem.startsWith(u8, path, api_prefix ++ "/buckets/")) {
         const resource = path[(api_prefix ++ "/buckets/").len..];
+        if (std.mem.endsWith(u8, resource, "/configuration")) {
+            const raw_name = resource[0 .. resource.len - "/configuration".len];
+            if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '/') != null) {
+                return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+            }
+            return switch (request.head.method) {
+                .GET => serveGetBucketConfiguration(request, application, request_id, raw_name),
+                .PATCH => serveUpdateBucketConfiguration(request, application, request_id, raw_name),
+                else => respondMethodNotAllowed(request, request_id, "GET, PATCH"),
+            };
+        }
+        if (std.mem.endsWith(u8, resource, "/versions")) {
+            if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
+            const raw_name = resource[0 .. resource.len - "/versions".len];
+            if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '/') != null) {
+                return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+            }
+            return serveListObjectVersions(request, application, request_id, raw_name, target);
+        }
         if (std.mem.endsWith(u8, resource, "/multipart-uploads")) {
             if (request.head.method != .GET) {
                 return respondMethodNotAllowed(request, request_id, "GET");
@@ -231,6 +254,140 @@ fn serveDeleteBucket(
     return respondNoContent(request, request_id);
 }
 
+const UpdateBucketConfigurationRequest = struct {
+    versioning: ?[]const u8 = null,
+    lifecycle_configuration: ?[]const u8 = null,
+    clear_lifecycle: bool = false,
+};
+
+fn serveGetBucketConfiguration(
+    request: *std.http.Server.Request,
+    application: *Application,
+    request_id: []const u8,
+    raw_name: []const u8,
+) !std.http.Status {
+    const name = decodeComponent(application.allocator, raw_name, false) catch {
+        return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+    };
+    defer application.allocator.free(name);
+    const service = application.bucketService() orelse return respondNotReady(request, request_id);
+    const bucket = service.head(name) catch |err| return respondBucketError(request, request_id, err);
+    defer bucket.deinit(application.allocator);
+    return respondBucketConfiguration(request, request_id, bucket);
+}
+
+fn serveUpdateBucketConfiguration(
+    request: *std.http.Server.Request,
+    application: *Application,
+    request_id: []const u8,
+    raw_name: []const u8,
+) !std.http.Status {
+    const name = decodeComponent(application.allocator, raw_name, false) catch {
+        return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+    };
+    defer application.allocator.free(name);
+    const parsed = try parseJsonBody(UpdateBucketConfigurationRequest, request, application.allocator, request_id) orelse return .bad_request;
+    defer parsed.deinit();
+    if (parsed.value.versioning == null and parsed.value.lifecycle_configuration == null and !parsed.value.clear_lifecycle) {
+        return respondError(request, request_id, .bad_request, "InvalidRequest", "at least one bucket setting is required");
+    }
+    if (parsed.value.lifecycle_configuration != null and parsed.value.clear_lifecycle) {
+        return respondError(request, request_id, .bad_request, "InvalidRequest", "lifecycle configuration cannot be set and cleared together");
+    }
+    const service = application.bucketService() orelse return respondNotReady(request, request_id);
+    if (parsed.value.versioning) |status| {
+        const versioning: @import("../domain/bucket.zig").Versioning = if (std.mem.eql(u8, status, "Enabled"))
+            .enabled
+        else if (std.mem.eql(u8, status, "Suspended"))
+            .suspended
+        else
+            return respondError(request, request_id, .bad_request, "InvalidVersioning", "versioning must be Enabled or Suspended");
+        const updated = service.setVersioning(name, versioning) catch |err| return respondBucketError(request, request_id, err);
+        updated.deinit(application.allocator);
+    }
+    if (parsed.value.lifecycle_configuration) |configuration_xml| {
+        const configuration = lifecycle_service.parse(application.allocator, configuration_xml) catch |err| {
+            return respondError(
+                request,
+                request_id,
+                if (err == error.UnsupportedFeature) .not_implemented else .bad_request,
+                if (err == error.UnsupportedFeature) "UnsupportedLifecycleFeature" else "InvalidLifecycleConfiguration",
+                "lifecycle configuration is invalid or unsupported",
+            );
+        };
+        configuration.deinit(application.allocator);
+        const updated = service.putLifecycle(name, configuration_xml) catch |err| return respondBucketError(request, request_id, err);
+        updated.deinit(application.allocator);
+    } else if (parsed.value.clear_lifecycle) {
+        const updated = service.deleteLifecycle(name) catch |err| return respondBucketError(request, request_id, err);
+        updated.deinit(application.allocator);
+    }
+    const bucket = service.head(name) catch |err| return respondBucketError(request, request_id, err);
+    defer bucket.deinit(application.allocator);
+    audit(application, request_id, "update_bucket_configuration", name, "updated");
+    return respondBucketConfiguration(request, request_id, bucket);
+}
+
+fn respondBucketConfiguration(
+    request: *std.http.Server.Request,
+    request_id: []const u8,
+    bucket: @import("../domain/bucket.zig").Bucket,
+) !std.http.Status {
+    return respondJson(request, request_id, .ok, .{
+        .name = bucket.name,
+        .versioning = switch (bucket.versioning) {
+            .unversioned => "Unversioned",
+            .enabled => "Enabled",
+            .suspended => "Suspended",
+        },
+        .lifecycle_configuration = bucket.lifecycle_configuration,
+    });
+}
+
+fn serveListObjectVersions(
+    request: *std.http.Server.Request,
+    application: *Application,
+    request_id: []const u8,
+    raw_name: []const u8,
+    target: []const u8,
+) !std.http.Status {
+    const bucket = decodeComponent(application.allocator, raw_name, false) catch {
+        return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+    };
+    defer application.allocator.free(bucket);
+    var query = parseListQuery(application.allocator, target) catch {
+        return respondError(request, request_id, .bad_request, "InvalidQuery", "list query is invalid");
+    };
+    defer query.deinit(application.allocator);
+    if (query.continuation_token != null) return respondError(request, request_id, .bad_request, "InvalidQuery", "continuation_token is not supported for version browsing");
+    const service = application.objectService() orelse return respondNotReady(request, request_id);
+    const result = service.listVersions(bucket, query.prefix orelse "") catch |err| {
+        return respondError(request, request_id, .internal_server_error, "ListVersionsFailed", @errorName(err));
+    };
+    defer result.deinit(application.allocator);
+    var output: std.Io.Writer.Allocating = .init(application.allocator);
+    defer output.deinit();
+    var json: std.json.Stringify = .{ .writer = &output.writer };
+    try json.beginObject();
+    try json.objectField("items");
+    try json.beginArray();
+    for (result.entries) |entry| {
+        var version_buffer: [object_domain.VersionId.encoded_length]u8 = undefined;
+        var modified_buffer: [20]u8 = undefined;
+        try json.write(.{
+            .key = entry.key,
+            .version_id = entry.version_id.write(&version_buffer),
+            .is_latest = entry.is_latest,
+            .is_delete_marker = entry.is_delete_marker,
+            .size = entry.size,
+            .last_modified = time.formatIso8601(entry.last_modified_unix_seconds, &modified_buffer) catch return error.WriteFailed,
+        });
+    }
+    try json.endArray();
+    try json.endObject();
+    return respondJsonBytes(request, request_id, .ok, output.written());
+}
+
 fn serveListObjects(
     request: *std.http.Server.Request,
     application: *Application,
@@ -278,6 +435,7 @@ const PresignObjectRequest = struct {
     expires_seconds: u64,
     upload_id: ?[]const u8 = null,
     part_number: ?u16 = null,
+    version_id: ?[]const u8 = null,
 };
 
 const CreateMultipartUploadRequest = struct {
@@ -514,13 +672,20 @@ fn servePresignObject(
     defer parsed.deinit();
     const value = parsed.value;
     const multipart_part = value.upload_id != null or value.part_number != null;
+    const requested_version = if (value.version_id) |version_id|
+        object_domain.parseVersionId(version_id) catch {
+            return respondError(request, request_id, .bad_request, "InvalidVersionId", "version ID is invalid");
+        }
+    else
+        null;
     if ((!std.mem.eql(u8, value.method, "GET") and
         !std.mem.eql(u8, value.method, "PUT") and
         !std.mem.eql(u8, value.method, "DELETE")) or
         value.expires_seconds == 0 or value.expires_seconds > sigv4.max_presigned_expiry_seconds or
         (multipart_part and (value.upload_id == null or value.part_number == null or
             !std.mem.eql(u8, value.method, "PUT") or value.part_number.? == 0 or
-            value.part_number.? > multipart_domain.max_parts)))
+            value.part_number.? > multipart_domain.max_parts)) or
+        (requested_version != null and (multipart_part or std.mem.eql(u8, value.method, "PUT"))))
     {
         return respondError(request, request_id, .bad_request, "InvalidPresignRequest", "method or expiry is invalid");
     }
@@ -576,9 +741,11 @@ fn servePresignObject(
             value.part_number.?,
             value.upload_id.?,
         })
+    else if (value.version_id) |version_id|
+        try std.fmt.allocPrint(application.allocator, "{s}?versionId={s}", .{ base_target, version_id })
     else
         base_target;
-    defer if (multipart_part) application.allocator.free(unsigned_target);
+    defer if (multipart_part or value.version_id != null) application.allocator.free(unsigned_target);
     const headers = [_]sigv4.Header{.{ .name = "host", .value = host }};
     const now = std.Io.Clock.real.now(application.io.?).toSeconds();
     var date_buffer: [16]u8 = undefined;
@@ -821,6 +988,7 @@ fn serveSettings(
         .s3_region = config.s3_region,
         .request_time_skew_seconds = config.s3_request_time_skew_seconds,
         .multipart_expiry_seconds = config.s3_multipart_expiry_seconds,
+        .lifecycle_scan_interval_seconds = config.s3_lifecycle_scan_interval_seconds,
         .stream_buffer_size = config.stream_buffer_size,
         .metrics_enabled = config.metrics_enabled,
         .metrics_address = config.metrics_address,
@@ -835,6 +1003,12 @@ fn writeBucket(json: *std.json.Stringify, bucket: anytype) !void {
     try json.write(.{
         .name = bucket.name,
         .owner = bucket.owner,
+        .versioning = switch (bucket.versioning) {
+            .unversioned => "Unversioned",
+            .enabled => "Enabled",
+            .suspended => "Suspended",
+        },
+        .lifecycle_enabled = bucket.lifecycle_configuration != null,
         .created_at = created_at,
     });
 }

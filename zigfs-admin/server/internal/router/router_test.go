@@ -52,6 +52,18 @@ func (managementService) CreateBucket(context.Context, contract.CreateBucketRequ
 
 func (managementService) DeleteBucket(context.Context, string) error { return nil }
 
+func (managementService) GetBucketConfiguration(context.Context, string) (contract.BucketConfiguration, error) {
+	return contract.BucketConfiguration{Name: "bucket", Versioning: "Unversioned"}, nil
+}
+
+func (managementService) UpdateBucketConfiguration(context.Context, string, contract.UpdateBucketConfigurationRequest) (contract.BucketConfiguration, error) {
+	return contract.BucketConfiguration{Name: "bucket", Versioning: "Enabled"}, nil
+}
+
+func (managementService) ListObjectVersions(context.Context, string, string) (contract.ListObjectVersionsResponse, error) {
+	return contract.ListObjectVersionsResponse{}, nil
+}
+
 func (managementService) ListObjects(context.Context, string, string, string) (contract.ListObjectsResponse, error) {
 	return contract.ListObjectsResponse{}, nil
 }

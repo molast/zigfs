@@ -13,6 +13,9 @@ type ManagementService interface {
 	ListBuckets(ctx context.Context) (contract.ListBucketsResponse, error)
 	CreateBucket(ctx context.Context, request contract.CreateBucketRequest) (contract.Bucket, error)
 	DeleteBucket(ctx context.Context, name string) error
+	GetBucketConfiguration(ctx context.Context, name string) (contract.BucketConfiguration, error)
+	UpdateBucketConfiguration(ctx context.Context, name string, request contract.UpdateBucketConfigurationRequest) (contract.BucketConfiguration, error)
+	ListObjectVersions(ctx context.Context, bucket, prefix string) (contract.ListObjectVersionsResponse, error)
 	ListObjects(ctx context.Context, bucket, prefix, cursor string) (contract.ListObjectsResponse, error)
 	PresignObject(ctx context.Context, request contract.PresignObjectRequest) (contract.PresignObjectResponse, error)
 	CreateMultipartUpload(ctx context.Context, request contract.CreateMultipartUploadRequest) (contract.MultipartUpload, error)
@@ -66,6 +69,38 @@ func (handler *Management) DeleteBucket(ctx *gin.Context) {
 		return
 	}
 	ctx.Status(http.StatusNoContent)
+}
+
+func (handler *Management) GetBucketConfiguration(ctx *gin.Context) {
+	response, err := handler.service.GetBucketConfiguration(ctx.Request.Context(), ctx.Param("name"))
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) UpdateBucketConfiguration(ctx *gin.Context) {
+	var request contract.UpdateBucketConfigurationRequest
+	if err := ctx.ShouldBindJSON(&request); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "request body is invalid")
+		return
+	}
+	response, err := handler.service.UpdateBucketConfiguration(ctx.Request.Context(), ctx.Param("name"), request)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) ListObjectVersions(ctx *gin.Context) {
+	response, err := handler.service.ListObjectVersions(ctx.Request.Context(), ctx.Param("name"), ctx.Query("prefix"))
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
 }
 
 func (handler *Management) ListObjects(ctx *gin.Context) {

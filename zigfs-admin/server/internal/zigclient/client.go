@@ -84,6 +84,32 @@ func (client *Client) DeleteBucket(ctx context.Context, name string) error {
 	return client.requestJSON(ctx, http.MethodDelete, "/_admin/v1/buckets/"+url.PathEscape(name), nil, nil)
 }
 
+func (client *Client) GetBucketConfiguration(ctx context.Context, name string) (contract.BucketConfiguration, error) {
+	var response contract.BucketConfiguration
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/buckets/"+url.PathEscape(name)+"/configuration", nil, &response)
+	return response, err
+}
+
+func (client *Client) UpdateBucketConfiguration(ctx context.Context, name string, request contract.UpdateBucketConfigurationRequest) (contract.BucketConfiguration, error) {
+	var response contract.BucketConfiguration
+	err := client.requestJSON(ctx, http.MethodPatch, "/_admin/v1/buckets/"+url.PathEscape(name)+"/configuration", request, &response)
+	return response, err
+}
+
+func (client *Client) ListObjectVersions(ctx context.Context, bucket, prefix string) (contract.ListObjectVersionsResponse, error) {
+	query := url.Values{}
+	if prefix != "" {
+		query.Set("prefix", prefix)
+	}
+	path := "/_admin/v1/buckets/" + url.PathEscape(bucket) + "/versions"
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var response contract.ListObjectVersionsResponse
+	err := client.requestJSON(ctx, http.MethodGet, path, nil, &response)
+	return response, err
+}
+
 func (client *Client) ListObjects(ctx context.Context, bucket, prefix, cursor string) (contract.ListObjectsResponse, error) {
 	query := url.Values{}
 	if prefix != "" {

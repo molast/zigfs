@@ -2,6 +2,7 @@ const std = @import("std");
 const object_domain = @import("../domain/object.zig");
 const object_key = @import("object_key.zig");
 const object_payload = @import("object_payload.zig");
+const object_history_payload = @import("object_history_payload.zig");
 const object_store_port = @import("../ports/object_store.zig");
 const repository_port = @import("../ports/metadata_repository.zig");
 
@@ -15,7 +16,9 @@ pub const MetadataObjectStore = struct {
     pub fn interface(self: *MetadataObjectStore) object_store_port.ObjectStore {
         return .{ .context = self, .vtable = &.{
             .get = getImpl,
+            .get_history = getHistoryImpl,
             .put = putImpl,
+            .put_history = putHistoryImpl,
             .tombstone = tombstoneImpl,
         } };
     }
@@ -26,6 +29,27 @@ pub const MetadataObjectStore = struct {
         bucket: []const u8,
         key: []const u8,
     ) object_store_port.Error!object_store_port.Record {
+        const history_record = try getHistoryImpl(context, allocator, bucket, key);
+        defer history_record.deinit(allocator);
+        return switch (history_record) {
+            .tombstone => |generation| .{ .tombstone = generation },
+            .active => |history| switch (history.entries[0]) {
+                .object => |object| .{ .active = object_domain.cloneFromView(
+                    allocator,
+                    object.view(),
+                    history.metadata_generation,
+                ) catch return error.OutOfMemory },
+                .delete_marker => |marker| .{ .delete_marker = marker.clone(allocator) catch return error.OutOfMemory },
+            },
+        };
+    }
+
+    fn getHistoryImpl(
+        context: *anyopaque,
+        allocator: std.mem.Allocator,
+        bucket: []const u8,
+        key: []const u8,
+    ) object_store_port.Error!object_store_port.HistoryRecord {
         const self: *MetadataObjectStore = @ptrCast(@alignCast(context));
         const repository_key = object_key.encode(allocator, bucket, key) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -37,6 +61,24 @@ pub const MetadataObjectStore = struct {
         };
         defer record.deinit(allocator);
         if (record.tombstone) return .{ .tombstone = record.generation };
+
+        if (object_history_payload.isHistory(record.payload)) {
+            const history = object_history_payload.decode(
+                allocator,
+                record.payload,
+                record.generation,
+            ) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.CorruptMetadata,
+            };
+            if (!std.mem.eql(u8, history.bucket_name, bucket) or
+                !std.mem.eql(u8, history.key, key))
+            {
+                history.deinit(allocator);
+                return error.CorruptMetadata;
+            }
+            return .{ .active = history };
+        }
 
         const decoded = object_payload.decode(allocator, record.payload) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -53,7 +95,19 @@ pub const MetadataObjectStore = struct {
             decoded.value,
             record.generation,
         ) catch return error.OutOfMemory;
-        return .{ .active = owned };
+        errdefer owned.deinit(allocator);
+        const owned_bucket = allocator.dupe(u8, bucket) catch return error.OutOfMemory;
+        errdefer allocator.free(owned_bucket);
+        const owned_key = allocator.dupe(u8, key) catch return error.OutOfMemory;
+        errdefer allocator.free(owned_key);
+        const entries = allocator.alloc(object_domain.VersionEntry, 1) catch return error.OutOfMemory;
+        entries[0] = .{ .object = owned };
+        return .{ .active = .{
+            .bucket_name = owned_bucket,
+            .key = owned_key,
+            .entries = entries,
+            .metadata_generation = record.generation,
+        } };
     }
 
     fn putImpl(
@@ -73,6 +127,36 @@ pub const MetadataObjectStore = struct {
         };
         defer allocator.free(repository_key);
         const payload = object_payload.encode(allocator, value) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidValue,
+        };
+        defer allocator.free(payload);
+        return self.repository.put(
+            allocator,
+            .object,
+            repository_key,
+            mapExpectedGeneration(expected_generation),
+            payload,
+        ) catch |err| mapRepositoryError(err);
+    }
+
+    fn putHistoryImpl(
+        context: *anyopaque,
+        allocator: std.mem.Allocator,
+        history: *const object_domain.History,
+        expected_generation: object_store_port.ExpectedGeneration,
+    ) object_store_port.Error!u64 {
+        const self: *MetadataObjectStore = @ptrCast(@alignCast(context));
+        const repository_key = object_key.encode(
+            allocator,
+            history.bucket_name,
+            history.key,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.InvalidKey => return error.InvalidValue,
+        };
+        defer allocator.free(repository_key);
+        const payload = object_history_payload.encode(allocator, history) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidValue,
         };
@@ -168,6 +252,7 @@ test "metadata object store owns encoding CAS tombstones and corruption checks" 
             try std.testing.expectEqualStrings(value.content_type, object.content_type);
             try std.testing.expectEqualStrings("mobile", object.user_metadata[0].value);
         },
+        .delete_marker => return error.TestUnexpectedResult,
         .tombstone => return error.TestUnexpectedResult,
     }
     const deleted_generation = try store.tombstone(
@@ -182,6 +267,7 @@ test "metadata object store owns encoding CAS tombstones and corruption checks" 
             object.deinit(std.testing.allocator);
             return error.TestUnexpectedResult;
         },
+        .delete_marker => return error.TestUnexpectedResult,
         .tombstone => |actual| try std.testing.expectEqual(deleted_generation, actual),
     }
 

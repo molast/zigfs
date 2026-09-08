@@ -40,11 +40,18 @@ pub const MetadataBucketStore = struct {
         const owned_name = allocator.dupe(u8, decoded.name) catch return error.OutOfMemory;
         errdefer allocator.free(owned_name);
         const owned_owner = allocator.dupe(u8, decoded.owner) catch return error.OutOfMemory;
+        errdefer allocator.free(owned_owner);
+        const owned_lifecycle = if (decoded.lifecycle_configuration) |configuration|
+            allocator.dupe(u8, configuration) catch return error.OutOfMemory
+        else
+            null;
         return .{ .active = .{
             .id = decoded.id,
             .name = owned_name,
             .owner = owned_owner,
             .status = decoded.status,
+            .versioning = decoded.versioning,
+            .lifecycle_configuration = owned_lifecycle,
             .created_at_unix_seconds = decoded.created_at_unix_seconds,
             .generation = record.generation,
         } };
@@ -62,6 +69,8 @@ pub const MetadataBucketStore = struct {
             .name = value.name,
             .owner = value.owner,
             .status = value.status,
+            .versioning = value.versioning,
+            .lifecycle_configuration = value.lifecycle_configuration,
             .created_at_unix_seconds = value.created_at_unix_seconds,
         }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,

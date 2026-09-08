@@ -95,26 +95,31 @@ pub const ObjectGcService = struct {
         reachable: *std.AutoHashMap(LocationKey, void),
     ) Error!void {
         for (self.index.objectEntries()) |entry| {
-            const record = self.object_store.get(
+            const record = self.object_store.getHistory(
                 self.allocator,
                 entry.bucket,
                 entry.key,
             ) catch |err| return mapObjectStoreError(err);
             defer record.deinit(self.allocator);
-            const object = switch (record) {
+            const history = switch (record) {
                 .active => |value| value,
                 .tombstone => return error.CorruptMetadata,
             };
-            if (object.metadata_generation != entry.generation) {
+            if (history.metadata_generation != entry.generation) {
                 return error.CorruptMetadata;
             }
-            const key = locationKey(.{
-                .bucket_id = object.bucket_id,
-                .object_id = object.id,
-                .data_generation = object.data_generation,
-            });
-            if (reachable.contains(key)) return error.CorruptMetadata;
-            reachable.put(key, {}) catch return error.OutOfMemory;
+            for (history.entries) |version| switch (version) {
+                .delete_marker => {},
+                .object => |object| {
+                    const key = locationKey(.{
+                        .bucket_id = object.bucket_id,
+                        .object_id = object.id,
+                        .data_generation = object.data_generation,
+                    });
+                    if (reachable.contains(key)) return error.CorruptMetadata;
+                    reachable.put(key, {}) catch return error.OutOfMemory;
+                },
+            };
         }
     }
 };

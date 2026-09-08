@@ -3,12 +3,14 @@ import type {
   AdminSession,
   ApiErrorBody,
   Bucket,
+  BucketConfiguration,
   CreatedAccessKey,
   CredentialPolicy,
   ListObjectsResponse,
   ListMultipartUploadsResponse,
   MultipartUpload,
   ObjectSummary,
+  ObjectVersion,
   ManagementHealth,
   PresignObjectResponse,
   Settings,
@@ -72,6 +74,23 @@ export function createApiClient() {
       }),
     deleteBucket: (name: string) =>
       request<void>(`/api/v1/buckets/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    getBucketConfiguration: (name: string) =>
+      request<BucketConfiguration>(`/api/v1/buckets/${encodeURIComponent(name)}/configuration`),
+    updateBucketConfiguration: (
+      name: string,
+      update: { versioning?: 'Enabled' | 'Suspended'; lifecycle_configuration?: string; clear_lifecycle?: boolean },
+    ) => request<BucketConfiguration>(`/api/v1/buckets/${encodeURIComponent(name)}/configuration`, {
+      method: 'PATCH',
+      body: JSON.stringify(update),
+    }),
+    listObjectVersions: async (bucket: string, prefix = '') => {
+      const query = new URLSearchParams()
+      if (prefix) query.set('prefix', prefix)
+      const suffix = query.size ? `?${query.toString()}` : ''
+      return (await request<{ items: ObjectVersion[] }>(
+        `/api/v1/buckets/${encodeURIComponent(bucket)}/versions${suffix}`,
+      )).items
+    },
     listObjects: (bucket: string, prefix = '', continuationToken = '') => {
       const query = new URLSearchParams()
       if (prefix) query.set('prefix', prefix)
@@ -87,7 +106,7 @@ export function createApiClient() {
       key: string,
       method: 'GET' | 'PUT' | 'DELETE',
       expiresSeconds: number,
-      multipart?: { uploadId: string; partNumber: number },
+      options?: { uploadId?: string; partNumber?: number; versionId?: string },
     ) => request<PresignObjectResponse>('/api/v1/objects/presign', {
       method: 'POST',
       body: JSON.stringify({
@@ -96,7 +115,8 @@ export function createApiClient() {
         key,
         method,
         expires_seconds: expiresSeconds,
-        ...(multipart ? { upload_id: multipart.uploadId, part_number: multipart.partNumber } : {}),
+        ...(options?.uploadId && options.partNumber ? { upload_id: options.uploadId, part_number: options.partNumber } : {}),
+        ...(options?.versionId ? { version_id: options.versionId } : {}),
       }),
     }),
     createMultipartUpload: (bucket: string, key: string, contentType: string) =>

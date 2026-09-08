@@ -29,6 +29,7 @@ pub const object_listing = @import("object_listing.zig");
 pub const multipart_service = @import("multipart_service.zig");
 pub const management_service = @import("management_service.zig");
 pub const object_service = @import("object_service.zig");
+pub const lifecycle_service = @import("lifecycle_service.zig");
 
 pub const Application = struct {
     allocator: std.mem.Allocator,
@@ -272,6 +273,14 @@ pub const Application = struct {
             &self.state_mutex,
             &self.object_locks,
         );
+    }
+
+    pub fn lifecycleService(self: *Application) ?lifecycle_service.LifecycleService {
+        return .{
+            .allocator = self.allocator,
+            .buckets = self.bucketService() orelse return null,
+            .objects = self.objectService() orelse return null,
+        };
     }
 
     pub fn credentialService(self: *Application) ?credential_service.CredentialService {

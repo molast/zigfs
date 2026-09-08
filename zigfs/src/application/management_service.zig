@@ -46,6 +46,7 @@ pub const ManagementService = struct {
         defer self.state_mutex.unlock(self.io);
 
         var object_bytes: u64 = 0;
+        var object_count: u64 = 0;
         for (self.index.objectEntries()) |entry| {
             const record = self.object_store.get(
                 self.allocator,
@@ -55,6 +56,7 @@ pub const ManagementService = struct {
             defer record.deinit(self.allocator);
             const object = switch (record) {
                 .active => |value| value,
+                .delete_marker => continue,
                 .tombstone => return error.CorruptMetadata,
             };
             if (object.metadata_generation != entry.generation) {
@@ -63,12 +65,13 @@ pub const ManagementService = struct {
             object_bytes = std.math.add(u64, object_bytes, object.size) catch {
                 return error.CorruptMetadata;
             };
+            object_count += 1;
         }
 
         const now = std.Io.Clock.real.now(self.io).toSeconds();
         return .{
             .buckets = @intCast(self.index.bucketEntries().len),
-            .objects = @intCast(self.index.objectEntries().len),
+            .objects = object_count,
             .object_bytes = object_bytes,
             .uptime_seconds = if (now > self.started_at_unix_seconds)
                 @intCast(now - self.started_at_unix_seconds)

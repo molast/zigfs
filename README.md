@@ -50,6 +50,8 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 - Signature V4 Header/Presigned Query 验签、Canonical URI/Query/Header、Region Scope、Payload Hash、有效期和时钟偏差校验
 - Path-style 与可配置 Virtual-hosted-style S3 Router、Host-aware SigV4、稳定 XML 错误，以及 Bucket/Object/List V2 HTTP Handler
 - S3 Put/Get 流式传输、Content-MD5/SHA-256 与 CRC32/CRC32C/CRC64NVME/SHA1/SHA256 Flexible Checksum 校验、ETag、用户元数据和分页响应
+- S3 Bucket Versioning：Enabled/Suspended、不可变 Version ID、DeleteMarker、指定版本 GET/HEAD/DELETE 和 ListObjectVersions
+- S3 Lifecycle：持久化规则、当前/非当前版本过期、过期 DeleteMarker 清理和 YAML 可配置后台扫描周期
 - AWS SigV4 aws-chunked 签名链，以及五种 Flexible Checksum signed trailer 的签名与 checksum 校验
 - S3 Multipart Create、并发 UploadPart、ListParts、ListMultipartUploads、Complete、Abort、复合 ETag 和启动超时清理
 - Multipart 以 Part 为边界暂停/恢复；支持 Presigned 全生命周期、Upload ID 重发现和跳过已提交 Part
@@ -98,6 +100,9 @@ Phase 10 Resumable Multipart Upload 已完成 ZigFS S3/Management 能力与 Admi
 取消清理以及刷新页面后重新选择原文件继续。全部 Part 上传后，Admin 会显示独立的“完成中”状态；
 若刷新或网络中断导致 Complete 响应丢失，会根据 UploadId 和最终 Object 自动校准结果。单次 `PutObject` 和单个 `UploadPart` 仍遵循 S3 语义，
 不能从请求体中间续传，中断的 Part 必须完整重传。
+Phase 11 Object Versioning and Lifecycle 已完成：版本历史和 Lifecycle 规则由 ZigFS 自有 Metadata
+Engine 持久化，S3 标准接口负责文件客户端操作，Management API 负责 Admin 配置与历史查看；
+Admin 仍然不保存 Bucket、Object、版本或规则状态。
 
 外部客户端兼容性 Runner 位于 [compatibility/README.md](compatibility/README.md)，可重复运行
 AWS CLI、MinIO Client、rclone 和原生 HTTP 矩阵，并输出不含凭证的 JSON/Markdown 报告：
@@ -176,8 +181,8 @@ File SDK / S3 Client
 
 三类接口相互独立：
 
-- **S3/Data API**：Bucket、Object、PUT/GET、Multipart、Range 和 Presigned URL。
-- **ZigFS Management API**：Bucket 管理视图、AK/SK、Storage、System 和动态配置。
+- **S3/Data API**：Bucket、Object、PUT/GET、Multipart、Range、Presigned URL、Versioning 和 Lifecycle。
+- **ZigFS Management API**：Bucket 配置与版本管理视图、AK/SK、Storage、System 和动态配置。
 - **Admin BFF API**：只服务 React 网页操作，不是文件 SDK 的接口。
 
 多语言 SDK 面向 Android、iOS、Web 和业务服务中的文件上传下载。AK/SK 的创建、禁用和删除属于管理操作，不进入文件 SDK。
@@ -223,6 +228,7 @@ s3:
   region: "us-east-1"
   request_time_skew_seconds: 900
   multipart_expiry_seconds: 604800
+  lifecycle_scan_interval_seconds: 300
 
 admin:
   username: "admin"

@@ -17,6 +17,7 @@ pub const multipart_payload = @import("multipart_payload.zig");
 pub const multipart_store = @import("multipart_store.zig");
 pub const object_key = @import("object_key.zig");
 pub const object_payload = @import("object_payload.zig");
+pub const object_history_payload = @import("object_history_payload.zig");
 pub const object_store = @import("object_store.zig");
 pub const record = @import("record.zig");
 pub const recovery = @import("recovery.zig");

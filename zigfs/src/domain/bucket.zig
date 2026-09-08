@@ -9,17 +9,26 @@ pub const Status = enum(u8) {
     active = 1,
 };
 
+pub const Versioning = enum(u8) {
+    unversioned = 0,
+    enabled = 1,
+    suspended = 2,
+};
+
 pub const Bucket = struct {
     id: id.Uuid,
     name: []u8,
     owner: []u8,
     status: Status,
+    versioning: Versioning = .unversioned,
+    lifecycle_configuration: ?[]u8 = null,
     created_at_unix_seconds: i64,
     generation: u64,
 
     pub fn deinit(self: Bucket, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.owner);
+        if (self.lifecycle_configuration) |configuration| allocator.free(configuration);
     }
 };
 

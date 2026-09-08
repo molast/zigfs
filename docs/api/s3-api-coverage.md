@@ -28,9 +28,9 @@ Header、Query、权限模型或高级存储语义。参数级细节以兼容矩
 | API 域 | V1 结论 |
 |---|---|
 | Service/Bucket 基础读写 | `Implemented`：ListBuckets、Create/Head/DeleteBucket、GetBucketLocation、ListObjectsV2。 |
-| Object/List 核心文件操作 | `Implemented`：Put/Get/Head/Delete、DeleteObjects、CopyObject、单 Range 和 Browser POST；旧版 List、Versioning、ACL、Tagging 等仍有缺口。 |
+| Object/List 核心文件操作 | `Implemented`：Put/Get/Head/Delete、DeleteObjects、CopyObject、单 Range、Browser POST、Versioning、DeleteMarker 和 ListObjectVersions；旧版 List、ACL、Tagging 等仍有缺口。 |
 | Multipart | `Implemented`：Create、UploadPart、ListParts、ListMultipartUploads、Complete、Abort 和 Presigned Multipart；UploadPartCopy 未实现。 |
-| Bucket 配置、治理和云集成 | `Out of Scope` 或 `Not Implemented`：见下方逐项清单。 |
+| Bucket 配置、治理和云集成 | `Partial`：Versioning 与 Lifecycle 的声明子集已实现；其余能力为 `Out of Scope` 或 `Not Implemented`。 |
 | S3 Express、Object Lambda、S3 Tables | `Out of Scope`：这些是独立服务形态或专用集成，不属于 ZigFS 0.1 普通 S3 API。 |
 
 ## Service 与 Bucket API
@@ -59,19 +59,19 @@ Header、Query、权限模型或高级存储语义。参数级细节以兼容矩
 
 ### Bucket 配置与云集成
 
-以下操作均未纳入 ZigFS 0.1。它们不是 Bucket/Object 核心文件读写的必要条件，后续如需支持
-必须单独增加数据模型、权限边界、持久化记录、契约和兼容性测试。
+ZigFS 0.1 已纳入 Versioning 和 Lifecycle 的核心子集。其余操作不是 Bucket/Object 核心文件
+读写的必要条件，后续如需支持必须单独增加数据模型、权限边界、持久化记录、契约和兼容性测试。
 
 | AWS 操作 | 状态 | AWS 能力 |
 |---|---|---|
 | `GetBucketCors` / `PutBucketCors` / `DeleteBucketCors` | `Out of Scope` | CORS 配置 |
-| `GetBucketLifecycleConfiguration` / `PutBucketLifecycleConfiguration` / `DeleteBucketLifecycle` | `Out of Scope` | Lifecycle/过期规则 |
+| `GetBucketLifecycleConfiguration` / `PutBucketLifecycleConfiguration` / `DeleteBucketLifecycle` | `Implemented` | 持久化 XML；支持 Prefix、当前版本 Expiration、NoncurrentVersionExpiration 和 ExpiredObjectDeleteMarker；Transition、Tag Filter、Size Filter 与 AbortIncompleteMultipartUpload 返回 `NotImplemented`。 |
 | `GetBucketLogging` / `PutBucketLogging` | `Out of Scope` | Server access logging |
 | `GetBucketNotificationConfiguration` / `PutBucketNotificationConfiguration` | `Out of Scope` | SNS/SQS/Lambda 通知 |
 | `GetBucketReplication` / `PutBucketReplication` / `DeleteBucketReplication` | `Out of Scope` | 跨 Region/跨 Bucket 复制 |
 | `GetBucketTagging` / `PutBucketTagging` / `DeleteBucketTagging` | `Not Implemented` | Bucket Tagging |
-| `GetBucketVersioning` / `PutBucketVersioning` | `Not Implemented` | Object Versioning 开关 |
-| `ListObjectVersions` | `Not Implemented` | 版本对象列表 |
+| `GetBucketVersioning` / `PutBucketVersioning` | `Implemented` | 支持从 Unversioned 启用，以及 Enabled/Suspended 切换；不支持恢复为 Unversioned。 |
+| `ListObjectVersions` | `Implemented` | 支持 Prefix、Delimiter、KeyMarker、VersionIdMarker、MaxKeys 与 URL Encoding。 |
 | `GetBucketWebsite` / `PutBucketWebsite` / `DeleteBucketWebsite` | `Out of Scope` | 静态网站托管 |
 | `GetBucketEncryption` / `PutBucketEncryption` / `DeleteBucketEncryption` | `Out of Scope` | S3 SSE/KMS 默认加密配置；Credential Secret 的内部加密不等同于该 API。 |
 | `GetPublicAccessBlock` / `PutPublicAccessBlock` / `DeletePublicAccessBlock` | `Out of Scope` | 公共访问阻断 |
@@ -92,10 +92,10 @@ Header、Query、权限模型或高级存储语义。参数级细节以兼容矩
 | `ListObjectsV2` | `GET /{bucket}?list-type=2` | `Implemented` | 支持 Prefix、Delimiter、分页 Token、StartAfter、EncodingType 和 FetchOwner。 |
 | `PutObject` | `PUT /{bucket}/{key}` | `Implemented` | 支持流式写入、Metadata、MD5、SHA-256、五种 Flexible Checksum 和 aws-chunked。 |
 | `PostObject`（Browser POST） | `POST /{bucket}` | `Implemented` | 支持 SigV4 POST Policy、条件、文件流和失败不发布语义；未支持的表单扩展返回 `NotImplemented`。 |
-| `GetObject` | `GET /{bucket}/{key}` | `Implemented` | 支持完整对象和单范围请求；Multi-Range、部分响应覆盖参数不在 V1。 |
-| `HeadObject` | `HEAD /{bucket}/{key}` | `Implemented` | 返回大小、ETag、Last-Modified、Content-Type、Metadata 和 checksum。 |
-| `DeleteObject` | `DELETE /{bucket}/{key}` | `Implemented` | 幂等 Tombstone，延迟 GC。 |
-| `DeleteObjects` | `POST /{bucket}?delete` | `Implemented` | 最多 1000 个 Key，必须携带正确 Content-MD5，支持 Quiet 和逐项结果。 |
+| `GetObject` | `GET /{bucket}/{key}` | `Implemented` | 支持完整对象、单范围请求和 `versionId` 指定版本；Multi-Range、部分响应覆盖参数不在 V1。 |
+| `HeadObject` | `HEAD /{bucket}/{key}` | `Implemented` | 返回大小、ETag、Last-Modified、Content-Type、Metadata、checksum 和按需返回的 Version ID。 |
+| `DeleteObject` | `DELETE /{bucket}/{key}` | `Implemented` | 未版本化 Bucket 使用 Tombstone；已启用/暂停版本管理的 Bucket 按 S3 语义创建 DeleteMarker 或永久删除指定 `versionId`，物理数据由 GC 延迟回收。 |
+| `DeleteObjects` | `POST /{bucket}?delete` | `Implemented` | 最多 1000 个 Key，支持 Content-MD5 或五种 Flexible Checksum Header、Quiet 和逐项结果；批量 `VersionId` 尚未实现。 |
 | `CopyObject` | `PUT /{bucket}/{key}` + `x-amz-copy-source` | `Implemented` | 支持 COPY/REPLACE Metadata、源/目标权限、条件和流式复制。 |
 | `GetObjectAttributes` | `GET /{bucket}/{key}?attributes` | `Not Implemented` | 不提供独立 Object Attributes 响应。 |
 | `GetObjectAcl` | `GET /{bucket}/{key}?acl` | `Not Implemented` | 不提供 S3 ACL。 |
@@ -135,16 +135,18 @@ Part，再上传缺失 Part。单次 PutObject 或单个 UploadPart 中断后必
 | Presigned GET/PUT/DELETE | `Implemented` | 最长 7 天；临时凭证的 Session Token 参与签名并受凭证寿命约束。 |
 | Temporary Credentials | `Implemented` | AK/SK/Session Token 由 ZigFS Metadata 持久化并加密，Admin 只调用 Management API。 |
 | Path-style / Virtual-hosted-style | `Implemented` | 默认 Path-style；Virtual-hosted-style 由 `s3.virtual_hosted_style` 开启。 |
-| Flexible Checksum | `Implemented` | CRC32、CRC32C、CRC64NVME、SHA1、SHA256 的 Header/签名 Trailer；DeleteObjects 仍只要求 Content-MD5。 |
+| Flexible Checksum | `Implemented` | CRC32、CRC32C、CRC64NVME、SHA1、SHA256；PutObject/UploadPart 支持 Header/签名 Trailer，XML Body 操作支持 Header。 |
 | Conditional Requests | `Implemented` | GET/HEAD/PUT 的 ETag 和 HTTP 日期条件，含 304/412 与条件写 CAS。 |
+| Object Versioning | `Implemented` | Bucket Enabled/Suspended、不可变 Version ID、DeleteMarker、指定版本 GET/HEAD/DELETE 和 ListObjectVersions。 |
+| Lifecycle Scanner | `Implemented` | YAML 可配置扫描周期；清理当前版本、非当前版本和仅剩的过期 DeleteMarker。 |
 
 ## 0.1 已知差异
 
 这些差异不能从“核心操作已实现”推断为已支持：
 
 1. Multi-Range 请求返回 `416 InvalidRange`。
-2. DeleteObjects 的 Flexible Checksum Header/Trailer 变体返回 `501 NotImplemented`；Content-MD5 仍是必需校验。
-3. Object Versioning、ACL、Tagging、Select、Object Lock 和 Bucket 配置类 API 未实现或不在范围内。
+2. DeleteObjects 接受 Content-MD5 或单个 Flexible Checksum Header，但尚不解析每个 `<Object>` 中的 `VersionId`；signed streaming Trailer 也不用于该 XML 操作。
+3. Versioning 与 Lifecycle 仅保证本文声明的子集；MFA Delete、Object Lock、Lifecycle Transition、Tag/Size Filter 和未完成 Multipart 生命周期动作未实现。
 4. POST Policy 只支持兼容矩阵中声明的字段和 checksum；ACL、redirect、其他 checksum 与未识别表单字段返回 `NotImplemented`。
 5. 单个已实现操作的非 V1 Header、Query、XML 字段不自动获得兼容保证；新增支持必须更新本文和 [兼容矩阵](s3-compatibility.md)。
 
@@ -152,10 +154,10 @@ Part，再上传缺失 Part。单次 PutObject 或单个 UploadPart 中断后必
 
 后续版本应按文件 SDK 真实需求和兼容收益排序，而不是按 AWS API 数量堆叠：
 
-1. `ListObjects`/`ListObjectVersions`、`UploadPartCopy` 等文件生命周期补齐。
-2. Object Tagging、Bucket Tagging 和 Versioning，先确定 Metadata Record 版本与 GC 语义。
+1. `ListObjects`、`UploadPartCopy` 等剩余文件生命周期接口。
+2. Object Tagging、Bucket Tagging，以及 Lifecycle Tag/Size Filter 和 Multipart 清理动作。
 3. ACL/Policy/Ownership Controls，先确定 Owner、Policy 和 Admin Management API 的统一权限模型。
-4. CORS、Lifecycle、Notification、Replication、Encryption 等平台配置能力。
+4. CORS、Notification、Replication、Encryption 等平台配置能力。
 5. Select、Object Lock、Inventory、Analytics、Intelligent-Tiering 和云厂商集成类能力。
 
 每个新增操作必须同时提交：HTTP/XML/错误契约、鉴权与权限规则、Metadata/Journal 设计、正常/异常/恢复测试、至少一个真实客户端验证，以及对应语言 SDK 映射。服务版本仍按 `0.1.x` 演进，不能因新增 S3 操作直接改成 `1.0.0`。

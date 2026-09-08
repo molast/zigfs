@@ -6,6 +6,7 @@ const multipart_domain = @import("../domain/multipart.zig");
 const multipart_payload = @import("multipart_payload.zig");
 const object_key = @import("object_key.zig");
 const object_payload = @import("object_payload.zig");
+const object_history_payload = @import("object_history_payload.zig");
 const repository_port = @import("../ports/metadata_repository.zig");
 
 pub const Error = error{
@@ -522,15 +523,29 @@ pub const MetadataIndex = struct {
             },
             .object => {
                 const parsed = object_key.parse(record.key) orelse return error.CorruptRecord;
-                const decoded = object_payload.decode(self.allocator, record.payload) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => return error.CorruptRecord,
-                };
-                defer decoded.deinit(self.allocator);
-                if (!std.mem.eql(u8, decoded.value.bucket_name, parsed.bucket) or
-                    !std.mem.eql(u8, decoded.value.key, parsed.key))
-                {
-                    return error.CorruptRecord;
+                if (object_history_payload.isHistory(record.payload)) {
+                    const history = object_history_payload.decode(
+                        self.allocator,
+                        record.payload,
+                        record.generation,
+                    ) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.CorruptRecord,
+                    };
+                    defer history.deinit(self.allocator);
+                    if (!std.mem.eql(u8, history.bucket_name, parsed.bucket) or
+                        !std.mem.eql(u8, history.key, parsed.key)) return error.CorruptRecord;
+                } else {
+                    const decoded = object_payload.decode(self.allocator, record.payload) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.CorruptRecord,
+                    };
+                    defer decoded.deinit(self.allocator);
+                    if (!std.mem.eql(u8, decoded.value.bucket_name, parsed.bucket) or
+                        !std.mem.eql(u8, decoded.value.key, parsed.key))
+                    {
+                        return error.CorruptRecord;
+                    }
                 }
                 const bucket = self.allocator.dupe(u8, parsed.bucket) catch return error.OutOfMemory;
                 errdefer self.allocator.free(bucket);

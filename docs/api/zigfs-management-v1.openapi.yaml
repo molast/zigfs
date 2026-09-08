@@ -93,6 +93,61 @@ paths:
           description: 已删除或不存在
         default:
           $ref: "#/components/responses/Error"
+  /_admin/v1/buckets/{name}/configuration:
+    get:
+      operationId: getBucketConfiguration
+      summary: 获取 Bucket Versioning 与 Lifecycle 配置
+      parameters:
+        - $ref: "#/components/parameters/BucketName"
+      responses:
+        "200":
+          description: ZigFS 持久化的 Bucket 配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BucketConfiguration"
+        default:
+          $ref: "#/components/responses/Error"
+    patch:
+      operationId: updateBucketConfiguration
+      summary: 更新 Bucket Versioning 或 Lifecycle 配置
+      description: 更新直接提交到 ZigFS Metadata Engine；Admin 不保存副本。
+      parameters:
+        - $ref: "#/components/parameters/BucketName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateBucketConfigurationRequest"
+      responses:
+        "200":
+          description: 更新后的 Bucket 配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BucketConfiguration"
+        default:
+          $ref: "#/components/responses/Error"
+  /_admin/v1/buckets/{name}/versions:
+    get:
+      operationId: listManagementObjectVersions
+      summary: 获取 Bucket 中的对象版本与 DeleteMarker
+      parameters:
+        - $ref: "#/components/parameters/BucketName"
+        - name: prefix
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 版本历史管理视图
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListObjectVersionsResponse"
+        default:
+          $ref: "#/components/responses/Error"
   /_admin/v1/buckets/{name}/objects:
     get:
       operationId: listObjects
@@ -437,7 +492,7 @@ components:
     Bucket:
       type: object
       additionalProperties: false
-      required: [name, owner, created_at]
+      required: [name, owner, created_at, versioning, lifecycle_enabled]
       properties:
         name:
           type: string
@@ -446,6 +501,11 @@ components:
         created_at:
           type: string
           format: date-time
+        versioning:
+          type: string
+          enum: [Unversioned, Enabled, Suspended]
+        lifecycle_enabled:
+          type: boolean
     ListBucketsResponse:
       type: object
       required: [items]
@@ -465,6 +525,35 @@ components:
           type: string
           minLength: 1
           maxLength: 256
+    BucketConfiguration:
+      type: object
+      additionalProperties: false
+      required: [name, versioning]
+      properties:
+        name:
+          type: string
+        versioning:
+          type: string
+          enum: [Unversioned, Enabled, Suspended]
+        lifecycle_configuration:
+          type: string
+          description: 原始 S3 LifecycleConfiguration XML；未配置时省略。
+    UpdateBucketConfigurationRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        versioning:
+          type: string
+          enum: [Enabled, Suspended]
+        lifecycle_configuration:
+          type: string
+          minLength: 1
+          description: ZigFS 校验并持久化的 S3 LifecycleConfiguration XML。
+        clear_lifecycle:
+          type: boolean
+          const: true
+          description: 删除已有 Lifecycle 配置；不能与 lifecycle_configuration 同时提供。
     Object:
       type: object
       required: [key, size, etag, last_modified]
@@ -490,6 +579,36 @@ components:
             $ref: "#/components/schemas/Object"
         continuation_token:
           type: string
+    ObjectVersion:
+      type: object
+      additionalProperties: false
+      required: [key, version_id, is_latest, is_delete_marker, size, last_modified]
+      properties:
+        key:
+          type: string
+        version_id:
+          type: string
+          description: ZigFS/S3 不透明版本标识，未版本化或 Suspended 的当前槽位为 null。
+        is_latest:
+          type: boolean
+        is_delete_marker:
+          type: boolean
+        size:
+          type: integer
+          format: int64
+          minimum: 0
+        last_modified:
+          type: string
+          format: date-time
+    ListObjectVersionsResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ObjectVersion"
     PresignObjectRequest:
       type: object
       additionalProperties: false
@@ -519,6 +638,9 @@ components:
           type: integer
           minimum: 1
           maximum: 10000
+        version_id:
+          type: string
+          description: GET 或 DELETE 时生成指定对象版本的 Presigned URL。
     PresignObjectResponse:
       type: object
       required: [url, expires_at]
@@ -823,6 +945,7 @@ components:
         - s3_region
         - request_time_skew_seconds
         - multipart_expiry_seconds
+        - lifecycle_scan_interval_seconds
         - stream_buffer_size
         - metrics_enabled
         - metrics_address
@@ -844,6 +967,11 @@ components:
         multipart_expiry_seconds:
           type: integer
           format: int64
+        lifecycle_scan_interval_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 86400
         stream_buffer_size:
           type: integer
           format: int64

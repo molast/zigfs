@@ -3,9 +3,36 @@ package contract
 import "time"
 
 type Bucket struct {
-	Name      string    `json:"name"`
-	Owner     string    `json:"owner"`
-	CreatedAt time.Time `json:"created_at"`
+	Name             string    `json:"name"`
+	Owner            string    `json:"owner"`
+	CreatedAt        time.Time `json:"created_at"`
+	Versioning       string    `json:"versioning"`
+	LifecycleEnabled bool      `json:"lifecycle_enabled"`
+}
+
+type BucketConfiguration struct {
+	Name                   string `json:"name"`
+	Versioning             string `json:"versioning"`
+	LifecycleConfiguration string `json:"lifecycle_configuration,omitempty"`
+}
+
+type UpdateBucketConfigurationRequest struct {
+	Versioning             string `json:"versioning,omitempty"`
+	LifecycleConfiguration string `json:"lifecycle_configuration,omitempty"`
+	ClearLifecycle         bool   `json:"clear_lifecycle,omitempty"`
+}
+
+type ObjectVersion struct {
+	Key            string    `json:"key"`
+	VersionID      string    `json:"version_id"`
+	IsLatest       bool      `json:"is_latest"`
+	IsDeleteMarker bool      `json:"is_delete_marker"`
+	Size           int64     `json:"size"`
+	LastModified   time.Time `json:"last_modified"`
+}
+
+type ListObjectVersionsResponse struct {
+	Items []ObjectVersion `json:"items"`
 }
 
 type ListBucketsResponse struct {
@@ -37,6 +64,7 @@ type PresignObjectRequest struct {
 	ExpiresSecond int64  `json:"expires_seconds" binding:"required"`
 	UploadID      string `json:"upload_id,omitempty"`
 	PartNumber    int    `json:"part_number,omitempty" binding:"omitempty,min=1,max=10000"`
+	VersionID     string `json:"version_id,omitempty"`
 }
 
 type PresignObjectResponse struct {
@@ -142,15 +170,16 @@ type ManagementHealthResponse struct {
 }
 
 type SettingsResponse struct {
-	APIAddress             string `json:"api_address"`
-	S3PublicEndpoint       string `json:"s3_public_endpoint"`
-	S3VirtualHostedStyle   bool   `json:"s3_virtual_hosted_style"`
-	S3Region               string `json:"s3_region"`
-	RequestTimeSkewSeconds int64  `json:"request_time_skew_seconds"`
-	MultipartExpirySeconds int64  `json:"multipart_expiry_seconds"`
-	StreamBufferSize       int64  `json:"stream_buffer_size"`
-	MetricsEnabled         bool   `json:"metrics_enabled"`
-	MetricsAddress         string `json:"metrics_address"`
-	AdminSessionTTLSeconds int64  `json:"admin_session_ttl_seconds"`
-	ReloadRequired         bool   `json:"reload_required"`
+	APIAddress                   string `json:"api_address"`
+	S3PublicEndpoint             string `json:"s3_public_endpoint"`
+	S3VirtualHostedStyle         bool   `json:"s3_virtual_hosted_style"`
+	S3Region                     string `json:"s3_region"`
+	RequestTimeSkewSeconds       int64  `json:"request_time_skew_seconds"`
+	MultipartExpirySeconds       int64  `json:"multipart_expiry_seconds"`
+	LifecycleScanIntervalSeconds int64  `json:"lifecycle_scan_interval_seconds"`
+	StreamBufferSize             int64  `json:"stream_buffer_size"`
+	MetricsEnabled               bool   `json:"metrics_enabled"`
+	MetricsAddress               string `json:"metrics_address"`
+	AdminSessionTTLSeconds       int64  `json:"admin_session_ttl_seconds"`
+	ReloadRequired               bool   `json:"reload_required"`
 }

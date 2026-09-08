@@ -25,6 +25,8 @@ pub const Error = error{
     CorruptData,
     InvalidRange,
     ConditionNotMet,
+    InvalidVersionId,
+    DeleteMarker,
     Unavailable,
 };
 
@@ -54,6 +56,32 @@ pub const MultipartEtag = struct {
 
 pub const DeleteResult = struct {
     deleted: bool,
+    delete_marker: bool = false,
+    version_id: ?object_domain.VersionId = null,
+};
+
+pub const VersionListEntry = struct {
+    key: []u8,
+    version_id: object_domain.VersionId,
+    is_latest: bool,
+    is_delete_marker: bool,
+    size: u64,
+    etag_md5: [16]u8,
+    etag_part_count: u16,
+    last_modified_unix_seconds: i64,
+
+    pub fn deinit(self: VersionListEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.key);
+    }
+};
+
+pub const VersionList = struct {
+    entries: []VersionListEntry,
+
+    pub fn deinit(self: VersionList, allocator: std.mem.Allocator) void {
+        for (self.entries) |entry| entry.deinit(allocator);
+        allocator.free(self.entries);
+    }
 };
 
 pub const ReadLease = struct {
@@ -264,11 +292,14 @@ pub const ObjectService = struct {
             return error.BucketNotFound;
         }
 
-        const current = try self.loadObjectLocked(bucket_name, key);
+        const current = try self.loadHistoryLocked(bucket_name, key);
         defer if (current) |record| record.deinit(self.allocator);
         if (options.expected_current) |expected| {
             const current_generation: ?u64 = if (current) |record| switch (record) {
-                .active => |object| object.metadata_generation,
+                .active => |history| switch (history.entries[0]) {
+                    .object => history.metadata_generation,
+                    .delete_marker => null,
+                },
                 .tombstone => null,
             } else null;
             switch (expected) {
@@ -277,16 +308,14 @@ pub const ObjectService = struct {
             }
         }
         var expected_generation: object_store_port.ExpectedGeneration = .missing;
-        const object_id = if (current) |record| switch (record) {
-            .active => |object| active: {
-                expected_generation = .{ .exact = object.metadata_generation };
-                break :active object.id;
-            },
-            .tombstone => |generation| deleted: {
+        if (current) |record| switch (record) {
+            .active => |history| expected_generation = .{ .exact = history.metadata_generation },
+            .tombstone => |generation| {
                 expected_generation = .{ .exact = generation };
-                break :deleted @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable;
             },
-        } else @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable;
+        };
+        const object_id = reusableNullVersionObjectId(current, bucket.versioning) orelse
+            (@import("../common/id.zig").randomV4(self.io) catch return error.Unavailable);
         const data_generation = staged.token;
         const modified_at = std.Io.Clock.real.now(self.io).toSeconds();
         const value: object_store_port.Value = .{
@@ -303,13 +332,28 @@ pub const ObjectService = struct {
             .user_metadata = options.user_metadata,
             .data_generation = data_generation,
             .status = .active,
+            .version_id = if (bucket.versioning == .enabled)
+                .{ .uuid = @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable }
+            else
+                .null_version,
         };
         var owned = object_domain.cloneFromView(self.allocator, value, 0) catch return error.OutOfMemory;
         errdefer owned.deinit(self.allocator);
+        var history = buildHistoryWithObject(
+            self.allocator,
+            value,
+            current,
+            bucket.versioning,
+        ) catch return error.OutOfMemory;
+        defer history.deinit(self.allocator);
         var prepared = self.index.prepareObject(bucket_name, key) catch |err| return mapIndexError(err);
         defer prepared.deinit(self.index.allocator);
         self.data_store.publish(staged, .{ .bucket_id = bucket.id, .object_id = object_id, .data_generation = data_generation }) catch |err| return mapPublishError(err);
-        const metadata_generation = self.object_store.put(self.allocator, value, expected_generation) catch |err| return mapObjectStoreError(err);
+        const metadata_generation = self.object_store.putHistory(
+            self.allocator,
+            &history,
+            expected_generation,
+        ) catch |err| return mapObjectStoreError(err);
         self.index.publishObject(&prepared, metadata_generation);
         owned.metadata_generation = metadata_generation;
         return owned;
@@ -367,6 +411,34 @@ pub const ObjectService = struct {
         };
     }
 
+    pub fn openVersion(
+        self: ObjectService,
+        bucket_name: []const u8,
+        key: []const u8,
+        version_id: object_domain.VersionId,
+    ) Error!ReadLease {
+        try validateAddress(bucket_name, key);
+        const object_lock = self.object_locks.get(bucket_name, key);
+        object_lock.lockSharedUncancelable(self.io);
+        errdefer object_lock.unlockShared(self.io);
+        self.state_mutex.lockUncancelable(self.io);
+        const object = self.loadVersionLocked(bucket_name, key, version_id) catch |err| {
+            self.state_mutex.unlock(self.io);
+            return err;
+        };
+        self.state_mutex.unlock(self.io);
+        errdefer object.deinit(self.allocator);
+        const size = self.data_store.stat(locationFor(object)) catch |err| return mapExistingDataError(err);
+        if (size != object.size) return error.CorruptData;
+        return .{
+            .allocator = self.allocator,
+            .io = self.io,
+            .data_store = self.data_store,
+            .object_lock = object_lock,
+            .object = object,
+        };
+    }
+
     pub fn delete(
         self: ObjectService,
         bucket_name: []const u8,
@@ -381,22 +453,96 @@ pub const ObjectService = struct {
 
         const bucket = try self.loadBucketLocked(bucket_name);
         defer bucket.deinit(self.allocator);
-        const current = try self.loadObjectLocked(bucket_name, key) orelse {
-            return .{ .deleted = false };
-        };
-        defer current.deinit(self.allocator);
-        const object = switch (current) {
-            .active => |active| active,
-            .tombstone => return .{ .deleted = false },
-        };
-        _ = self.object_store.tombstone(
+        const current = try self.loadHistoryLocked(bucket_name, key);
+        defer if (current) |record| record.deinit(self.allocator);
+        if (bucket.versioning == .unversioned) {
+            const record = current orelse return .{ .deleted = false };
+            const generation = switch (record) {
+                .active => |history| history.metadata_generation,
+                .tombstone => return .{ .deleted = false },
+            };
+            _ = self.object_store.tombstone(
+                self.allocator,
+                bucket_name,
+                key,
+                generation,
+            ) catch |err| return mapObjectStoreError(err);
+            if (!self.index.removeObject(bucket_name, key)) return error.CorruptMetadata;
+            return .{ .deleted = true };
+        }
+
+        const version_id: object_domain.VersionId = if (bucket.versioning == .enabled)
+            .{ .uuid = @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable }
+        else
+            .null_version;
+        const modified_at = std.Io.Clock.real.now(self.io).toSeconds();
+        var history = buildHistoryWithDeleteMarker(
             self.allocator,
             bucket_name,
             key,
-            object.metadata_generation,
-        ) catch |err| return mapObjectStoreError(err);
-        if (!self.index.removeObject(bucket_name, key)) return error.CorruptMetadata;
-        return .{ .deleted = true };
+            version_id,
+            modified_at,
+            current,
+            bucket.versioning,
+        ) catch return error.OutOfMemory;
+        defer history.deinit(self.allocator);
+        const expected_generation: object_store_port.ExpectedGeneration = if (current) |record| switch (record) {
+            .active => |existing| .{ .exact = existing.metadata_generation },
+            .tombstone => |generation| .{ .exact = generation },
+        } else .missing;
+        var prepared = self.index.prepareObject(bucket_name, key) catch |err| return mapIndexError(err);
+        defer prepared.deinit(self.index.allocator);
+        const generation = self.object_store.putHistory(self.allocator, &history, expected_generation) catch |err| return mapObjectStoreError(err);
+        self.index.publishObject(&prepared, generation);
+        return .{ .deleted = true, .delete_marker = true, .version_id = version_id };
+    }
+
+    pub fn deleteVersion(
+        self: ObjectService,
+        bucket_name: []const u8,
+        key: []const u8,
+        version_id: object_domain.VersionId,
+    ) Error!DeleteResult {
+        try validateAddress(bucket_name, key);
+        const object_lock = self.object_locks.get(bucket_name, key);
+        object_lock.lockUncancelable(self.io);
+        defer object_lock.unlock(self.io);
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
+        const bucket = try self.loadBucketLocked(bucket_name);
+        defer bucket.deinit(self.allocator);
+        const current = try self.loadHistoryLocked(bucket_name, key) orelse {
+            return .{ .deleted = false, .version_id = version_id };
+        };
+        defer current.deinit(self.allocator);
+        const existing = switch (current) {
+            .active => |history| history,
+            .tombstone => return .{ .deleted = false, .version_id = version_id },
+        };
+        var found: ?usize = null;
+        for (existing.entries, 0..) |entry, index| {
+            if (object_domain.VersionId.eql(entry.versionId(), version_id)) {
+                found = index;
+                break;
+            }
+        }
+        const remove_index = found orelse return .{ .deleted = false, .version_id = version_id };
+        const was_delete_marker = switch (existing.entries[remove_index]) {
+            .delete_marker => true,
+            .object => false,
+        };
+        if (existing.entries.len == 1) {
+            _ = self.object_store.tombstone(self.allocator, bucket_name, key, existing.metadata_generation) catch |err| return mapObjectStoreError(err);
+            if (!self.index.removeObject(bucket_name, key)) return error.CorruptMetadata;
+        } else {
+            var history = cloneHistoryWithout(self.allocator, existing, remove_index) catch return error.OutOfMemory;
+            defer history.deinit(self.allocator);
+            const generation = self.object_store.putHistory(self.allocator, &history, .{ .exact = existing.metadata_generation }) catch |err| return mapObjectStoreError(err);
+            var prepared = self.index.prepareObject(bucket_name, key) catch |err| return mapIndexError(err);
+            defer prepared.deinit(self.index.allocator);
+            self.index.publishObject(&prepared, generation);
+        }
+        return .{ .deleted = true, .delete_marker = was_delete_marker, .version_id = version_id };
     }
 
     fn loadBucketLocked(
@@ -450,11 +596,70 @@ pub const ObjectService = struct {
                     return error.CorruptMetadata;
                 }
             },
+            .delete_marker => {
+                if (indexed_generation == null) {
+                    record.deinit(self.allocator);
+                    return error.CorruptMetadata;
+                }
+            },
             .tombstone => {
                 if (indexed_generation != null) return error.CorruptMetadata;
             },
         }
         return record;
+    }
+
+    fn loadHistoryLocked(
+        self: ObjectService,
+        bucket_name: []const u8,
+        key: []const u8,
+    ) Error!?object_store_port.HistoryRecord {
+        const indexed_generation = self.index.objectGeneration(bucket_name, key);
+        const record = self.object_store.getHistory(self.allocator, bucket_name, key) catch |err| switch (err) {
+            error.NotFound => {
+                if (indexed_generation != null) return error.CorruptMetadata;
+                return null;
+            },
+            else => return mapObjectStoreError(err),
+        };
+        switch (record) {
+            .active => |history| {
+                if (indexed_generation == null or indexed_generation.? != history.metadata_generation) {
+                    history.deinit(self.allocator);
+                    return error.CorruptMetadata;
+                }
+            },
+            .tombstone => if (indexed_generation != null) return error.CorruptMetadata,
+        }
+        return record;
+    }
+
+    fn loadVersionLocked(
+        self: ObjectService,
+        bucket_name: []const u8,
+        key: []const u8,
+        version_id: object_domain.VersionId,
+    ) Error!object_domain.Object {
+        const bucket = try self.loadBucketLocked(bucket_name);
+        defer bucket.deinit(self.allocator);
+        const record = try self.loadHistoryLocked(bucket_name, key) orelse return error.ObjectNotFound;
+        defer record.deinit(self.allocator);
+        const history = switch (record) {
+            .active => |active| active,
+            .tombstone => return error.ObjectNotFound,
+        };
+        for (history.entries) |entry| {
+            if (!object_domain.VersionId.eql(entry.versionId(), version_id)) continue;
+            return switch (entry) {
+                .object => |object| object_domain.cloneFromView(
+                    self.allocator,
+                    object.view(),
+                    history.metadata_generation,
+                ) catch return error.OutOfMemory,
+                .delete_marker => error.DeleteMarker,
+            };
+        }
+        return error.ObjectNotFound;
     }
 
     fn loadActiveObjectLocked(
@@ -469,10 +674,246 @@ pub const ObjectService = struct {
         };
         return switch (current) {
             .active => |object| object,
+            .delete_marker => |marker| {
+                marker.deinit(self.allocator);
+                return error.ObjectNotFound;
+            },
             .tombstone => error.ObjectNotFound,
         };
     }
+
+    pub fn listVersions(
+        self: ObjectService,
+        bucket_name: []const u8,
+        prefix: []const u8,
+    ) Error!VersionList {
+        bucket_domain.validateName(bucket_name) catch return error.InvalidBucketName;
+        if (prefix.len > object_domain.max_key_length or std.mem.indexOfScalar(u8, prefix, 0) != null) {
+            return error.InvalidObjectKey;
+        }
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
+        const bucket = try self.loadBucketLocked(bucket_name);
+        defer bucket.deinit(self.allocator);
+        var entries: std.ArrayList(VersionListEntry) = .empty;
+        errdefer {
+            for (entries.items) |entry| entry.deinit(self.allocator);
+            entries.deinit(self.allocator);
+        }
+        for (self.index.objectEntries()) |indexed| {
+            if (!std.mem.eql(u8, indexed.bucket, bucket_name) or !std.mem.startsWith(u8, indexed.key, prefix)) continue;
+            const record = self.object_store.getHistory(self.allocator, bucket_name, indexed.key) catch |err| return mapObjectStoreError(err);
+            defer record.deinit(self.allocator);
+            const history = switch (record) {
+                .active => |active| active,
+                .tombstone => return error.CorruptMetadata,
+            };
+            if (history.metadata_generation != indexed.generation) return error.CorruptMetadata;
+            for (history.entries, 0..) |entry, version_index| {
+                const key = self.allocator.dupe(u8, indexed.key) catch return error.OutOfMemory;
+                errdefer self.allocator.free(key);
+                const summary: VersionListEntry = switch (entry) {
+                    .object => |object| .{
+                        .key = key,
+                        .version_id = object.version_id,
+                        .is_latest = version_index == 0,
+                        .is_delete_marker = false,
+                        .size = object.size,
+                        .etag_md5 = object.etag_md5,
+                        .etag_part_count = object.etag_part_count,
+                        .last_modified_unix_seconds = object.last_modified_unix_seconds,
+                    },
+                    .delete_marker => |marker| .{
+                        .key = key,
+                        .version_id = marker.version_id,
+                        .is_latest = version_index == 0,
+                        .is_delete_marker = true,
+                        .size = 0,
+                        .etag_md5 = .{0} ** 16,
+                        .etag_part_count = 0,
+                        .last_modified_unix_seconds = marker.last_modified_unix_seconds,
+                    },
+                };
+                entries.append(self.allocator, summary) catch return error.OutOfMemory;
+            }
+        }
+        return .{ .entries = entries.toOwnedSlice(self.allocator) catch return error.OutOfMemory };
+    }
+
+    pub fn findDeleteMarker(
+        self: ObjectService,
+        bucket_name: []const u8,
+        key: []const u8,
+        version_id: ?object_domain.VersionId,
+    ) Error!?object_domain.DeleteMarker {
+        try validateAddress(bucket_name, key);
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
+        const bucket = try self.loadBucketLocked(bucket_name);
+        defer bucket.deinit(self.allocator);
+        const record = try self.loadHistoryLocked(bucket_name, key) orelse return null;
+        defer record.deinit(self.allocator);
+        const history = switch (record) {
+            .active => |active| active,
+            .tombstone => return null,
+        };
+        for (history.entries, 0..) |entry, index| {
+            if (version_id) |requested| {
+                if (!object_domain.VersionId.eql(entry.versionId(), requested)) continue;
+            } else if (index != 0) break;
+            return switch (entry) {
+                .object => null,
+                .delete_marker => |marker| marker.clone(self.allocator) catch return error.OutOfMemory,
+            };
+        }
+        return null;
+    }
 };
+
+fn buildHistoryWithObject(
+    allocator: std.mem.Allocator,
+    value: object_domain.View,
+    current: ?object_store_port.HistoryRecord,
+    versioning: bucket_domain.Versioning,
+) std.mem.Allocator.Error!object_domain.History {
+    return buildHistory(allocator, .{ .object = value }, current, versioning);
+}
+
+fn reusableNullVersionObjectId(
+    current: ?object_store_port.HistoryRecord,
+    versioning: bucket_domain.Versioning,
+) ?@import("../common/id.zig").Uuid {
+    if (versioning == .enabled) return null;
+    const record = current orelse return null;
+    const history = switch (record) {
+        .active => |value| value,
+        .tombstone => return null,
+    };
+    for (history.entries) |entry| switch (entry) {
+        .object => |object| if (object.version_id == .null_version) return object.id,
+        .delete_marker => {},
+    };
+    return null;
+}
+
+const NewHistoryEntry = union(enum) {
+    object: object_domain.View,
+    delete_marker: struct {
+        bucket_name: []const u8,
+        key: []const u8,
+        version_id: object_domain.VersionId,
+        modified_at: i64,
+    },
+};
+
+fn buildHistoryWithDeleteMarker(
+    allocator: std.mem.Allocator,
+    bucket_name: []const u8,
+    key: []const u8,
+    version_id: object_domain.VersionId,
+    modified_at: i64,
+    current: ?object_store_port.HistoryRecord,
+    versioning: bucket_domain.Versioning,
+) std.mem.Allocator.Error!object_domain.History {
+    return buildHistory(allocator, .{ .delete_marker = .{
+        .bucket_name = bucket_name,
+        .key = key,
+        .version_id = version_id,
+        .modified_at = modified_at,
+    } }, current, versioning);
+}
+
+fn buildHistory(
+    allocator: std.mem.Allocator,
+    new_entry: NewHistoryEntry,
+    current: ?object_store_port.HistoryRecord,
+    versioning: bucket_domain.Versioning,
+) std.mem.Allocator.Error!object_domain.History {
+    const bucket_name = switch (new_entry) {
+        .object => |value| value.bucket_name,
+        .delete_marker => |value| value.bucket_name,
+    };
+    const key = switch (new_entry) {
+        .object => |value| value.key,
+        .delete_marker => |value| value.key,
+    };
+    const existing: ?object_domain.History = if (current) |record| switch (record) {
+        .active => |history| history,
+        .tombstone => null,
+    } else null;
+    var retained: usize = 0;
+    if (existing) |history| {
+        for (history.entries) |entry| {
+            if (versioning == .unversioned) continue;
+            if (versioning == .suspended and entry.versionId() == .null_version) continue;
+            retained += 1;
+        }
+    }
+    const owned_bucket = try allocator.dupe(u8, bucket_name);
+    errdefer allocator.free(owned_bucket);
+    const owned_key = try allocator.dupe(u8, key);
+    errdefer allocator.free(owned_key);
+    const entries = try allocator.alloc(object_domain.VersionEntry, retained + 1);
+    var initialized: usize = 0;
+    errdefer {
+        for (entries[0..initialized]) |entry| entry.deinit(allocator);
+        allocator.free(entries);
+    }
+    entries[0] = switch (new_entry) {
+        .object => |value| .{ .object = try object_domain.cloneFromView(allocator, value, 0) },
+        .delete_marker => |value| marker: {
+            const marker_bucket = try allocator.dupe(u8, value.bucket_name);
+            errdefer allocator.free(marker_bucket);
+            break :marker .{ .delete_marker = .{
+                .bucket_name = marker_bucket,
+                .key = try allocator.dupe(u8, value.key),
+                .version_id = value.version_id,
+                .last_modified_unix_seconds = value.modified_at,
+            } };
+        },
+    };
+    initialized = 1;
+    if (existing) |history| for (history.entries) |entry| {
+        if (versioning == .unversioned) continue;
+        if (versioning == .suspended and entry.versionId() == .null_version) continue;
+        entries[initialized] = try cloneVersionEntry(allocator, entry);
+        initialized += 1;
+    };
+    return .{ .bucket_name = owned_bucket, .key = owned_key, .entries = entries, .metadata_generation = 0 };
+}
+
+fn cloneVersionEntry(
+    allocator: std.mem.Allocator,
+    entry: object_domain.VersionEntry,
+) std.mem.Allocator.Error!object_domain.VersionEntry {
+    return switch (entry) {
+        .object => |object| .{ .object = try object_domain.cloneFromView(allocator, object.view(), object.metadata_generation) },
+        .delete_marker => |marker| .{ .delete_marker = try marker.clone(allocator) },
+    };
+}
+
+fn cloneHistoryWithout(
+    allocator: std.mem.Allocator,
+    history: object_domain.History,
+    remove_index: usize,
+) std.mem.Allocator.Error!object_domain.History {
+    const bucket = try allocator.dupe(u8, history.bucket_name);
+    errdefer allocator.free(bucket);
+    const key = try allocator.dupe(u8, history.key);
+    errdefer allocator.free(key);
+    const entries = try allocator.alloc(object_domain.VersionEntry, history.entries.len - 1);
+    var initialized: usize = 0;
+    errdefer {
+        for (entries[0..initialized]) |entry| entry.deinit(allocator);
+        allocator.free(entries);
+    }
+    for (history.entries, 0..) |entry, index| {
+        if (index == remove_index) continue;
+        entries[initialized] = try cloneVersionEntry(allocator, entry);
+        initialized += 1;
+    }
+    return .{ .bucket_name = bucket, .key = key, .entries = entries, .metadata_generation = history.metadata_generation };
+}
 
 fn validateAddress(bucket_name: []const u8, key: []const u8) Error!void {
     bucket_domain.validateName(bucket_name) catch return error.InvalidBucketName;
@@ -849,4 +1290,115 @@ test "object service rejects missing buckets bad checksums and failed sources" {
         error.InputReadFailed,
         objects.put("project-assets", "failed", failing_source.interface(), .{}),
     );
+}
+
+test "object service preserves version history delete markers and suspended null versions" {
+    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MetadataBucketStore = @import("../metadata/bucket_store.zig").MetadataBucketStore;
+    const MetadataObjectStore = @import("../metadata/object_store.zig").MetadataObjectStore;
+    const LocalObjectDataStore = @import("../backend/local_object_data.zig").LocalObjectDataStore;
+    const BucketService = @import("bucket_service.zig").BucketService;
+    const streaming = @import("../common/streaming.zig");
+    const test_streams = @import("../testing/streams.zig");
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".zigfs/tmp");
+    try tmp.dir.createDirPath(std.testing.io, "objects");
+    var memory = MemoryMetadataRepository.init(std.testing.allocator);
+    defer memory.deinit();
+    var bucket_store = MetadataBucketStore.init(memory.interface());
+    var object_store = MetadataObjectStore.init(memory.interface());
+    var data_store = LocalObjectDataStore.init(
+        std.testing.allocator,
+        tmp.dir,
+        std.testing.io,
+        streaming.min_buffer_size,
+    );
+    var index = index_module.MetadataIndex.init(std.testing.allocator);
+    defer index.deinit();
+    try index.rebuild(memory.interface());
+    var state_mutex: std.Io.Mutex = .init;
+    var object_locks: ObjectLockPool = .{};
+    const buckets = BucketService.init(
+        std.testing.allocator,
+        std.testing.io,
+        bucket_store.interface(),
+        &index,
+        &state_mutex,
+    );
+    const created_bucket = try buckets.create("versioned-assets", "owner-a");
+    created_bucket.deinit(std.testing.allocator);
+    const enabled_bucket = try buckets.setVersioning("versioned-assets", .enabled);
+    enabled_bucket.deinit(std.testing.allocator);
+    const objects = ObjectService.init(
+        std.testing.allocator,
+        std.testing.io,
+        bucket_store.interface(),
+        object_store.interface(),
+        data_store.interface(),
+        &index,
+        &state_mutex,
+        &object_locks,
+    );
+
+    var first_source = test_streams.SliceSource.init("first");
+    const first = try objects.put("versioned-assets", "release.txt", first_source.interface(), .{});
+    defer first.deinit(std.testing.allocator);
+    var second_source = test_streams.SliceSource.init("second");
+    const second = try objects.put("versioned-assets", "release.txt", second_source.interface(), .{});
+    defer second.deinit(std.testing.allocator);
+    try std.testing.expect(first.version_id != .null_version);
+    try std.testing.expect(second.version_id != .null_version);
+    try std.testing.expect(!object_domain.VersionId.eql(first.version_id, second.version_id));
+    try std.testing.expect(!std.mem.eql(u8, &first.id, &second.id));
+
+    const initial_versions = try objects.listVersions("versioned-assets", "release");
+    defer initial_versions.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), initial_versions.entries.len);
+    try std.testing.expect(initial_versions.entries[0].is_latest);
+    try std.testing.expect(object_domain.VersionId.eql(second.version_id, initial_versions.entries[0].version_id));
+
+    var first_sink = test_streams.CollectingSink.init(std.testing.allocator);
+    defer first_sink.deinit();
+    var first_lease = try objects.openVersion("versioned-assets", "release.txt", first.version_id);
+    try first_lease.stream(first_sink.interface());
+    first_lease.deinit();
+    try std.testing.expectEqualStrings("first", first_sink.bytes.items);
+
+    const deleted = try objects.delete("versioned-assets", "release.txt");
+    try std.testing.expect(deleted.deleted and deleted.delete_marker);
+    try std.testing.expect(deleted.version_id != null);
+    try std.testing.expectError(error.ObjectNotFound, objects.head("versioned-assets", "release.txt"));
+    const with_marker = try objects.listVersions("versioned-assets", "release");
+    defer with_marker.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 3), with_marker.entries.len);
+    try std.testing.expect(with_marker.entries[0].is_latest and with_marker.entries[0].is_delete_marker);
+
+    const removed_marker = try objects.deleteVersion("versioned-assets", "release.txt", deleted.version_id.?);
+    try std.testing.expect(removed_marker.deleted and removed_marker.delete_marker);
+    const restored = try objects.head("versioned-assets", "release.txt");
+    defer restored.deinit(std.testing.allocator);
+    try std.testing.expect(object_domain.VersionId.eql(second.version_id, restored.version_id));
+    try std.testing.expect((try objects.deleteVersion("versioned-assets", "release.txt", second.version_id)).deleted);
+    const previous = try objects.head("versioned-assets", "release.txt");
+    defer previous.deinit(std.testing.allocator);
+    try std.testing.expect(object_domain.VersionId.eql(first.version_id, previous.version_id));
+
+    const suspended_bucket = try buckets.setVersioning("versioned-assets", .suspended);
+    suspended_bucket.deinit(std.testing.allocator);
+    var null_source = test_streams.SliceSource.init("null one");
+    const null_one = try objects.put("versioned-assets", "release.txt", null_source.interface(), .{});
+    defer null_one.deinit(std.testing.allocator);
+    var replacement_source = test_streams.SliceSource.init("null two");
+    const null_two = try objects.put("versioned-assets", "release.txt", replacement_source.interface(), .{});
+    defer null_two.deinit(std.testing.allocator);
+    try std.testing.expect(null_one.version_id == .null_version);
+    try std.testing.expect(null_two.version_id == .null_version);
+    try std.testing.expectEqualSlices(u8, &null_one.id, &null_two.id);
+    const suspended_versions = try objects.listVersions("versioned-assets", "release");
+    defer suspended_versions.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), suspended_versions.entries.len);
+    try std.testing.expect(suspended_versions.entries[0].version_id == .null_version);
+    try std.testing.expect(object_domain.VersionId.eql(first.version_id, suspended_versions.entries[1].version_id));
 }

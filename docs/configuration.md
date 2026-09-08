@@ -30,6 +30,7 @@ s3:
   region: "us-east-1"
   request_time_skew_seconds: 900
   multipart_expiry_seconds: 604800
+  lifecycle_scan_interval_seconds: 300
 
 admin:
   username: "admin"
@@ -50,6 +51,7 @@ admin:
 | `s3.virtual_hosted_style` | `false` | bool | 是否接受 `<bucket>.<public_endpoint authority>/<key>`；关闭时仅使用 Path-style |
 | `s3.request_time_skew_seconds` | `900` | integer | Header 签名及 Presigned 未来签发时间允许的时钟偏差，允许 60 至 3600 秒 |
 | `s3.multipart_expiry_seconds` | `604800` | integer | 启动恢复时清理未完成 Multipart Upload 的超时，允许 60 至 2592000 秒 |
+| `s3.lifecycle_scan_interval_seconds` | `300` | integer | 后台 Lifecycle Scanner 周期，允许 1 至 86400 秒；规则和清理状态只保存在 ZigFS |
 
 Presigned URL 的最大有效期遵循 S3 Signature V4 标准，固定为 604800 秒（7 天），不通过 YAML 放宽。
 

@@ -13,6 +13,9 @@
 | GET | `/_admin/v1/system` | Management 凭证 | 版本、运行时间和对象统计 |
 | GET | `/_admin/v1/storage` | Management 凭证 | 容量与磁盘状态 |
 | GET | `/_admin/v1/settings` | Management 凭证 | 脱敏后的只读生效配置 |
+| GET | `/_admin/v1/buckets/{name}/configuration` | Management 凭证 | 获取 Bucket Versioning/Lifecycle 配置 |
+| PATCH | `/_admin/v1/buckets/{name}/configuration` | Management 凭证 | 更新 Bucket Versioning/Lifecycle 配置 |
+| GET | `/_admin/v1/buckets/{name}/versions?prefix=` | Management 凭证 | 查看对象版本与 DeleteMarker |
 | POST | `/_admin/v1/multipart-uploads` | Management 凭证 | 创建并持久化 Multipart Upload |
 | GET | `/_admin/v1/buckets/{name}/multipart-uploads` | Management 凭证 | 发现 Bucket 中未完成的上传 |
 | GET | `/_admin/v1/multipart-uploads/{id}?bucket=&key=` | Management 凭证 | 查询 Upload 与已提交 Parts |
@@ -44,13 +47,19 @@ Backend 时为 `null`，不能把单个平台的文件系统调用结果冒充�
 | GET | `/{bucket}?location=` | GetBucketLocation |
 | DELETE | `/{bucket}` | DeleteBucket |
 | GET | `/{bucket}?list-type=2` | ListObjectsV2 |
+| GET | `/{bucket}?versions=` | ListObjectVersions |
+| GET | `/{bucket}?versioning=` | GetBucketVersioning |
+| PUT | `/{bucket}?versioning=` | PutBucketVersioning |
+| GET | `/{bucket}?lifecycle=` | GetBucketLifecycleConfiguration |
+| PUT | `/{bucket}?lifecycle=` | PutBucketLifecycleConfiguration |
+| DELETE | `/{bucket}?lifecycle=` | DeleteBucketLifecycle |
 | POST | `/{bucket}?delete=` | DeleteObjects |
 | POST | `/{bucket}` | S3 POST Policy Upload（`multipart/form-data`） |
 | PUT | `/{bucket}/{object}` | PutObject |
 | PUT | `/{bucket}/{object}` + `x-amz-copy-source` | CopyObject |
-| GET | `/{bucket}/{object}` | GetObject |
-| HEAD | `/{bucket}/{object}` | HeadObject |
-| DELETE | `/{bucket}/{object}` | DeleteObject |
+| GET | `/{bucket}/{object}[?versionId=ID]` | GetObject / GetObjectVersion |
+| HEAD | `/{bucket}/{object}[?versionId=ID]` | HeadObject / HeadObjectVersion |
+| DELETE | `/{bucket}/{object}[?versionId=ID]` | DeleteObject / DeleteObjectVersion |
 
 Multipart Upload：
 
@@ -83,12 +92,16 @@ multipart 解析失败均不会发布对象。
 - `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER` 还需要 `Content-Encoding: aws-chunked`、
   `x-amz-decoded-content-length` 和 `x-amz-trailer`，服务端在发布 Object/Part 前验证完整签名链。
 - `DeleteObjects` 请求体使用 `<Delete>` 根元素，最多 1000 个 `<Object><Key>...</Key></Object>`，
-  必须提供正确的 `Content-MD5`，成功返回 `200` XML。
+  必须提供正确的 `Content-MD5` 或一个 Flexible Checksum Header，成功返回 `200` XML；批量
+  `VersionId` 尚未实现。
 - ETag 始终是带双引号的 opaque 字符串；Multipart ETag 使用 `"<md5>-<part-count>"` 形式，
   客户端不得去掉引号或将其当作安全摘要。
 - 条件请求使用 `If-Match`、`If-None-Match`、`If-Modified-Since`、`If-Unmodified-Since`；
   GET/HEAD 未变化返回 `304`，写入前置条件失败返回 `412 PreconditionFailed`。
 - 临时凭证必须携带 `x-amz-security-token`，该 Header 或 Presigned Query 参数必须参与 SigV4 签名。
+- 版本化 Bucket 的 Put/Copy/Multipart Complete 返回 `x-amz-version-id`；普通删除按状态创建
+  DeleteMarker，带 `versionId` 的删除永久移除指定版本。Lifecycle Scanner 周期由
+  `s3.lifecycle_scan_interval_seconds` 配置。
 
 Prometheus 默认通过独立的 `127.0.0.1:9090` Listener 拉取指标：
 

@@ -6,6 +6,7 @@ import {
   ExternalLink,
   File,
   FolderOpen,
+  History,
   Info,
   Pause,
   Play,
@@ -17,7 +18,7 @@ import {
   X,
 } from 'lucide-react'
 import { ApiError, type ApiClient } from '../../api/client'
-import type { AccessKey, MultipartUpload, MultipartUploadSummary, ObjectSummary, PresignObjectResponse } from '../../types/api'
+import type { AccessKey, MultipartUpload, MultipartUploadSummary, ObjectSummary, ObjectVersion, PresignObjectResponse } from '../../types/api'
 import {
   choosePartSize,
   formatBytes,
@@ -46,7 +47,9 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
   const bucket = initialBucket
   const [accessKey, setAccessKey] = useState('')
   const [prefix, setPrefix] = useState('')
+  const [viewMode, setViewMode] = useState<'current' | 'versions'>('current')
   const [objects, setObjects] = useState<ObjectSummary[]>([])
+  const [versions, setVersions] = useState<ObjectVersion[]>([])
   const [nextToken, setNextToken] = useState('')
   const [putKey, setPutKey] = useState('')
   const [file, setFile] = useState<File | null>(null)
@@ -59,6 +62,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
   const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([])
   const [uploadsLoading, setUploadsLoading] = useState(false)
   const [deletingKey, setDeletingKey] = useState('')
+  const [deletingVersion, setDeletingVersion] = useState('')
   const [detail, setDetail] = useState<ObjectSummary | null>(null)
   const [detailUrl, setDetailUrl] = useState<PresignObjectResponse | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -88,9 +92,14 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     try {
       setLoading(true)
       setError('')
-      const result = await api.listObjects(bucket, prefix.trim(), reset ? '' : nextToken)
-      setObjects((current) => reset ? result.items : [...current, ...result.items])
-      setNextToken(result.continuation_token ?? '')
+      if (viewMode === 'versions') {
+        setVersions(await api.listObjectVersions(bucket, prefix.trim()))
+        setNextToken('')
+      } else {
+        const result = await api.listObjects(bucket, prefix.trim(), reset ? '' : nextToken)
+        setObjects((current) => reset ? result.items : [...current, ...result.items])
+        setNextToken(result.continuation_token ?? '')
+      }
     } catch (reason) {
       setError((reason as Error).message)
     } finally {
@@ -100,7 +109,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
 
   useEffect(() => {
     if (bucket) void load(true)
-  }, [bucket])
+  }, [bucket, viewMode])
 
   useEffect(() => () => {
     if (uploadControl.current) {
@@ -446,6 +455,30 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     }
   }
 
+  async function downloadVersion(version: ObjectVersion) {
+    if (!accessKey || !bucket || version.is_delete_marker) return
+    try {
+      setError('')
+      setNotice(`正在准备 ${version.key} 的指定版本`)
+      const presigned = await api.presignObject(accessKey, bucket, version.key, 'GET', 900, { versionId: version.version_id })
+      const response = await fetch(presigned.url)
+      if (!response.ok) throw new Error(`下载失败（${response.status}）`)
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = version.key.split('/').pop() || version.key
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setNotice(`已下载 ${version.key} 的版本 ${shortVersionId(version.version_id)}`)
+    } catch (reason) {
+      setError((reason as Error).message)
+      setNotice('')
+    }
+  }
+
   async function openDetail(object: ObjectSummary) {
     setDetail(object)
     setDetailUrl(null)
@@ -485,6 +518,24 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     }
   }
 
+  async function removeVersion(version: ObjectVersion) {
+    if (!accessKey || !bucket || !window.confirm(`永久删除“${version.key}”的版本 ${shortVersionId(version.version_id)}？此操作不会创建 DeleteMarker。`)) return
+    const identity = `${version.key}\u0000${version.version_id}`
+    try {
+      setDeletingVersion(identity)
+      setError('')
+      const presigned = await api.presignObject(accessKey, bucket, version.key, 'DELETE', 900, { versionId: version.version_id })
+      const response = await fetch(presigned.url, { method: 'DELETE' })
+      if (!response.ok) throw new Error(`删除版本失败（${response.status}）`)
+      setNotice(`已永久删除 ${version.key} 的版本 ${shortVersionId(version.version_id)}`)
+      await load(true)
+    } catch (reason) {
+      setError((reason as Error).message)
+    } finally {
+      setDeletingVersion('')
+    }
+  }
+
   async function copyDetailUrl() {
     if (!detailUrl) return
     await navigator.clipboard.writeText(detailUrl.url)
@@ -499,7 +550,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
           <h2>Object Browser</h2>
           <p className="page-description">浏览、上传、下载和管理 Bucket 中的对象。</p>
         </div>
-        <span className="count-badge">{objects.length}{nextToken ? '+' : ''} 个对象</span>
+        <span className="count-badge">{viewMode === 'current' ? `${objects.length}${nextToken ? '+' : ''} 个对象` : `${versions.length} 个版本`}</span>
       </header>
 
       <div className="object-location" aria-label="当前对象路径">
@@ -512,6 +563,10 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
 
       <div className="page-toolbar">
         <div className="toolbar-leading object-toolbar-leading">
+          <div className="segmented-control object-view-switch" aria-label="对象列表模式">
+            <button type="button" className={viewMode === 'current' ? 'active' : ''} onClick={() => setViewMode('current')}>当前对象</button>
+            <button type="button" className={viewMode === 'versions' ? 'active' : ''} onClick={() => setViewMode('versions')}><History className="button-icon" aria-hidden="true" />所有版本</button>
+          </div>
           <label className="search-box">
             <Search aria-hidden="true" />
             <input
@@ -609,10 +664,9 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
 
       <section className="panel table-panel">
         <div className="table-wrap">
-          <table className="object-table">
+          {viewMode === 'current' ? <table className="object-table">
             <thead><tr><th>Object</th><th>Size</th><th>Last Modified</th><th>Actions</th></tr></thead>
-            <tbody>
-              {objects.map((object) => (
+            <tbody>{objects.map((object) => (
                 <tr key={object.key}>
                   <td className="object-key"><div className="file-cell"><File className="file-symbol" aria-hidden="true" /><span>{object.key}</span></div></td>
                   <td>{formatBytes(object.size)}</td>
@@ -623,14 +677,30 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
                     <button className="danger-button" type="button" onClick={() => void removeObject(object)} disabled={!accessKey || deletingKey === object.key}><Trash2 className="button-icon" aria-hidden="true" />{deletingKey === object.key ? '删除中...' : '删除'}</button>
                   </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              ))}</tbody>
+          </table> : <table className="object-table version-table">
+            <thead><tr><th>Object</th><th>Version ID</th><th>State</th><th>Size</th><th>Last Modified</th><th>Actions</th></tr></thead>
+            <tbody>{versions.map((version) => {
+              const identity = `${version.key}\u0000${version.version_id}`
+              return <tr key={identity} className={version.is_delete_marker ? 'delete-marker-row' : ''}>
+                <td className="object-key"><div className="file-cell">{version.is_delete_marker ? <Trash2 className="file-symbol" aria-hidden="true" /> : <File className="file-symbol" aria-hidden="true" />}<span>{version.key}</span></div></td>
+                <td><code className="version-id" title={version.version_id}>{shortVersionId(version.version_id)}</code></td>
+                <td><div className="version-badges">{version.is_latest && <span className="status-badge latest">Latest</span>}{version.is_delete_marker && <span className="status-badge delete-marker">DeleteMarker</span>}{!version.is_latest && !version.is_delete_marker && <span className="status-badge">Previous</span>}</div></td>
+                <td>{version.is_delete_marker ? '-' : formatBytes(version.size)}</td>
+                <td>{new Date(version.last_modified).toLocaleString()}</td>
+                <td className="table-actions">
+                  {!version.is_delete_marker && <button className="secondary-button" type="button" onClick={() => void downloadVersion(version)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>}
+                  <button className="danger-button" type="button" onClick={() => void removeVersion(version)} disabled={!accessKey || deletingVersion === identity}><Trash2 className="button-icon" aria-hidden="true" />{deletingVersion === identity ? '删除中...' : '永久删除'}</button>
+                </td>
+              </tr>
+            })}</tbody>
+          </table>}
         </div>
-        {objects.length === 0 && !loading && <div className="empty-state empty-panel"><strong>这个 Bucket 还是空的</strong><span>上传文件后，对象会显示在这里。</span></div>}
-        {loading && <p className="loading-state">正在加载对象...</p>}
+        {viewMode === 'current' && objects.length === 0 && !loading && <div className="empty-state empty-panel"><strong>这个 Bucket 还是空的</strong><span>上传文件后，对象会显示在这里。</span></div>}
+        {viewMode === 'versions' && versions.length === 0 && !loading && <div className="empty-state empty-panel"><strong>没有对象版本</strong><span>启用 Versioning 后，新写入和删除会记录在这里。</span></div>}
+        {loading && <p className="loading-state">正在加载{viewMode === 'current' ? '对象' : '版本'}...</p>}
       </section>
-      {nextToken && <button className="load-more" type="button" onClick={() => void load(false)}>加载更多</button>}
+      {viewMode === 'current' && nextToken && <button className="load-more" type="button" onClick={() => void load(false)}>加载更多</button>}
 
       {detail && (
         <div className="drawer-backdrop" role="presentation" onClick={closeDetail}>
@@ -679,6 +749,10 @@ function fileExtension(key: string) {
   const name = key.split('/').pop() || key
   const dot = name.lastIndexOf('.')
   return dot > 0 ? name.slice(dot + 1).toUpperCase().slice(0, 8) : 'FILE'
+}
+
+function shortVersionId(versionId: string) {
+  return versionId === 'null' ? 'null' : `${versionId.slice(0, 8)}...${versionId.slice(-6)}`
 }
 
 function isImageKey(key: string) {

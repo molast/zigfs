@@ -23,6 +23,23 @@ export interface Bucket {
   name: string
   owner: string
   created_at: string
+  versioning: 'Unversioned' | 'Enabled' | 'Suspended'
+  lifecycle_enabled: boolean
+}
+
+export interface BucketConfiguration {
+  name: string
+  versioning: 'Unversioned' | 'Enabled' | 'Suspended'
+  lifecycle_configuration?: string
+}
+
+export interface ObjectVersion {
+  key: string
+  version_id: string
+  is_latest: boolean
+  is_delete_marker: boolean
+  size: number
+  last_modified: string
 }
 
 export interface ObjectSummary {
@@ -114,6 +131,7 @@ export interface Settings {
   s3_region: string
   request_time_skew_seconds: number
   multipart_expiry_seconds: number
+  lifecycle_scan_interval_seconds: number
   stream_buffer_size: number
   metrics_enabled: boolean
   metrics_address: string

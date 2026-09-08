@@ -17,7 +17,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
-import type { Bucket } from '../../types/api'
+import type { Bucket, BucketConfiguration } from '../../types/api'
 
 interface BucketDetailViewProps {
   api: ApiClient
@@ -36,6 +36,9 @@ const sections = ['Summary', 'Events', 'Replication', 'Lifecycle', 'Access', 'An
 
 export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDeleted }: BucketDetailViewProps) {
   const [bucket, setBucket] = useState<Bucket | null>(null)
+  const [configuration, setConfiguration] = useState<BucketConfiguration | null>(null)
+  const [activeSection, setActiveSection] = useState<'Summary' | 'Lifecycle'>('Summary')
+  const [lifecycleXml, setLifecycleXml] = useState('')
   const [usage, setUsage] = useState<BucketUsage>({ bytes: 0, objects: 0 })
   const [loading, setLoading] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -46,10 +49,15 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     try {
       setLoading(true)
       setError('')
-      const buckets = await api.listBuckets()
+      const [buckets, bucketConfiguration] = await Promise.all([
+        api.listBuckets(),
+        api.getBucketConfiguration(bucketName),
+      ])
       const current = buckets.find((item) => item.name === bucketName)
       if (!current) throw new Error(`Bucket “${bucketName}” 不存在`)
       setBucket(current)
+      setConfiguration(bucketConfiguration)
+      setLifecycleXml(bucketConfiguration.lifecycle_configuration ?? defaultLifecycleConfiguration)
 
       let continuationToken = ''
       let bytes = 0
@@ -88,6 +96,48 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     }
   }
 
+  async function updateVersioning(versioning: 'Enabled' | 'Suspended') {
+    try {
+      setLoading(true)
+      setError('')
+      setConfiguration(await api.updateBucketConfiguration(bucketName, { versioning }))
+      setBucket((current) => current ? { ...current, versioning } : current)
+    } catch (reason) {
+      setError((reason as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function saveLifecycle() {
+    try {
+      setLoading(true)
+      setError('')
+      const updated = await api.updateBucketConfiguration(bucketName, { lifecycle_configuration: lifecycleXml })
+      setConfiguration(updated)
+      setBucket((current) => current ? { ...current, lifecycle_enabled: true } : current)
+    } catch (reason) {
+      setError((reason as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function clearLifecycle() {
+    try {
+      setLoading(true)
+      setError('')
+      const updated = await api.updateBucketConfiguration(bucketName, { clear_lifecycle: true })
+      setConfiguration(updated)
+      setBucket((current) => current ? { ...current, lifecycle_enabled: false } : current)
+      setLifecycleXml(defaultLifecycleConfiguration)
+    } catch (reason) {
+      setError((reason as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <section className="bucket-detail-page">
       <header className="bucket-detail-header">
@@ -118,19 +168,21 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
 
       <section className="panel bucket-settings-panel">
         <nav className="bucket-settings-nav" aria-label="Bucket 配置">
-          {sections.map((section, index) => (
-            <button key={section} className={index === 0 ? 'active' : ''} type="button" disabled={index !== 0} title={index === 0 ? undefined : '后续版本开放'}>
+          {sections.map((section) => {
+            const available = section === 'Summary' || section === 'Lifecycle'
+            return <button key={section} className={activeSection === section ? 'active' : ''} type="button" disabled={!available} title={available ? undefined : '后续版本开放'} onClick={() => available && setActiveSection(section as 'Summary' | 'Lifecycle')}>
               {section}
             </button>
-          ))}
+          })}
         </nav>
 
         <div className="bucket-settings-content">
           <div className="bucket-settings-title">
-            <div><p className="eyebrow">Bucket configuration</p><h3>Summary</h3></div>
+            <div><p className="eyebrow">Bucket configuration</p><h3>{activeSection}</h3></div>
             <span>创建于 {bucket ? new Date(bucket.created_at).toLocaleString() : '-'}</span>
           </div>
 
+          {activeSection === 'Summary' ? <>
           <div className="bucket-summary-grid">
             <SettingItem icon={Shield} label="Access Policy" value="Private" />
             <SettingItem icon={LockKeyhole} label="Encryption" value="Disabled" />
@@ -148,7 +200,14 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
           </div>
 
           <SettingsSection title="Versioning">
-            <SettingItem icon={Archive} label="Versioning" value="Unversioned" status="unavailable" />
+            <div className="bucket-setting-item bucket-versioning-control">
+              <div className="bucket-setting-label"><Archive aria-hidden="true" /><span>Versioning</span></div>
+              <div className="segmented-control" aria-label="Bucket versioning">
+                <button type="button" className={configuration?.versioning === 'Enabled' ? 'active' : ''} onClick={() => void updateVersioning('Enabled')} disabled={loading}>Enabled</button>
+                <button type="button" className={configuration?.versioning === 'Suspended' ? 'active' : ''} onClick={() => void updateVersioning('Suspended')} disabled={loading || configuration?.versioning === 'Unversioned'}>Suspended</button>
+              </div>
+              <small>{configuration?.versioning === 'Unversioned' ? '启用后将为新写入生成版本 ID' : '版本历史由 ZigFS 持久化管理'}</small>
+            </div>
             <SettingItem icon={Gauge} label="Quota" value="Disabled" status="unavailable" />
           </SettingsSection>
 
@@ -156,11 +215,34 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
             <SettingItem icon={KeyRound} label="Retention" value="Disabled" status="unavailable" />
             <SettingItem icon={LockKeyhole} label="Mode" value="-" status="unavailable" />
           </SettingsSection>
+          </> : <section className="lifecycle-editor">
+            <div className="lifecycle-editor-header">
+              <div><h3>Lifecycle configuration</h3><p>配置对象、非当前版本与过期 DeleteMarker 的清理规则。</p></div>
+              <span className={`status-badge ${configuration?.lifecycle_configuration ? 'enabled' : ''}`}>{configuration?.lifecycle_configuration ? 'Enabled' : 'Not configured'}</span>
+            </div>
+            <label htmlFor="lifecycle-xml">S3 Lifecycle XML</label>
+            <textarea id="lifecycle-xml" value={lifecycleXml} onChange={(event) => setLifecycleXml(event.target.value)} spellCheck={false} />
+            <div className="lifecycle-editor-actions">
+              <button className="primary-button" type="button" onClick={() => void saveLifecycle()} disabled={loading || !lifecycleXml.trim()}>保存规则</button>
+              <button className="secondary-button" type="button" onClick={() => void clearLifecycle()} disabled={loading || !configuration?.lifecycle_configuration}>清除规则</button>
+            </div>
+          </section>}
         </div>
       </section>
     </section>
   )
 }
+
+const defaultLifecycleConfiguration = `<LifecycleConfiguration>
+  <Rule>
+    <ID>expire-noncurrent-versions</ID>
+    <Filter><Prefix></Prefix></Filter>
+    <Status>Enabled</Status>
+    <NoncurrentVersionExpiration>
+      <NoncurrentDays>30</NoncurrentDays>
+    </NoncurrentVersionExpiration>
+  </Rule>
+</LifecycleConfiguration>`
 
 function SettingsSection({ title, children }: { title: string; children: ReactNode }) {
   return (

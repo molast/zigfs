@@ -20,6 +20,7 @@ pub const Config = struct {
     s3_region: []const u8 = "us-east-1",
     s3_request_time_skew_seconds: u64 = 15 * 60,
     s3_multipart_expiry_seconds: u64 = 7 * 24 * 60 * 60,
+    s3_lifecycle_scan_interval_seconds: u64 = 5 * 60,
     admin_username: []const u8 = "admin",
     admin_password: []const u8 = "zigfs-admin",
     admin_session_secret: []const u8 = "zigfs-local-session-secret-change-before-production",
@@ -148,6 +149,10 @@ pub const Config = struct {
                         self.s3_multipart_expiry_seconds = std.fmt.parseInt(u64, value, 10) catch {
                             return error.InvalidYaml;
                         };
+                    } else if (std.mem.eql(u8, key, "lifecycle_scan_interval_seconds")) {
+                        self.s3_lifecycle_scan_interval_seconds = std.fmt.parseInt(u64, value, 10) catch {
+                            return error.InvalidYaml;
+                        };
                     } else {
                         return error.UnknownKey;
                     }
@@ -250,7 +255,9 @@ pub const Config = struct {
             self.s3_request_time_skew_seconds < 60 or
             self.s3_request_time_skew_seconds > 60 * 60 or
             self.s3_multipart_expiry_seconds < 60 or
-            self.s3_multipart_expiry_seconds > 30 * 24 * 60 * 60)
+            self.s3_multipart_expiry_seconds > 30 * 24 * 60 * 60 or
+            self.s3_lifecycle_scan_interval_seconds < 1 or
+            self.s3_lifecycle_scan_interval_seconds > 24 * 60 * 60)
         {
             return error.InvalidS3Config;
         }
@@ -325,6 +332,7 @@ test "built-in defaults are stable" {
     try std.testing.expectEqualStrings("us-east-1", config.s3_region);
     try std.testing.expectEqual(@as(u64, 900), config.s3_request_time_skew_seconds);
     try std.testing.expectEqual(@as(u64, 7 * 24 * 60 * 60), config.s3_multipart_expiry_seconds);
+    try std.testing.expectEqual(@as(u64, 300), config.s3_lifecycle_scan_interval_seconds);
     try std.testing.expectEqualStrings("admin", config.admin_username);
     try std.testing.expectEqualStrings("zigfs-admin", config.admin_password);
     try std.testing.expectEqual(@as(u64, 8 * 60 * 60), config.admin_session_ttl_seconds);
@@ -347,6 +355,7 @@ test "yaml values override defaults" {
         \\  region: "eu-central-1"
         \\  request_time_skew_seconds: 600
         \\  multipart_expiry_seconds: 86400
+        \\  lifecycle_scan_interval_seconds: 60
         \\admin:
         \\  username: "operator"
         \\  password: "local-password"
@@ -362,6 +371,7 @@ test "yaml values override defaults" {
     try std.testing.expectEqualStrings("eu-central-1", config.s3_region);
     try std.testing.expectEqual(@as(u64, 600), config.s3_request_time_skew_seconds);
     try std.testing.expectEqual(@as(u64, 86400), config.s3_multipart_expiry_seconds);
+    try std.testing.expectEqual(@as(u64, 60), config.s3_lifecycle_scan_interval_seconds);
     try std.testing.expect(!config.metrics_enabled);
     try std.testing.expectEqualStrings("127.0.0.1:19090", config.metrics_address);
     try std.testing.expectEqualStrings("operator", config.admin_username);

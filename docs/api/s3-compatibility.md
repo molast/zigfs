@@ -1,7 +1,7 @@
 # S3/Data API 兼容矩阵
 
-- **版本：** V1 Draft 1.1
-- **更新日期：** 2026-09-07
+- **版本：** V1 Draft 1.2
+- **更新日期：** 2026-09-08
 - **默认 Endpoint：** `http://127.0.0.1:9000`
 - **默认 Region：** `us-east-1`
 
@@ -18,8 +18,8 @@ Client 2025-08-13、rclone 1.75.0 和 Node 24 原生 HTTP。
 
 Runner 实际执行并校验字节内容；原生 HTTP Runner 另外覆盖 Multipart，AWS CLI、mc 和 rclone
 的多 Part 大文件基线保留在 Phase 5 历史矩阵中。客户端没有稳定入口的 POST Policy、signed streaming Trailer
-checksum，以及 AWS CLI 自动附加但 ZigFS 当前未声明的 DeleteObjects checksum 变体，会明确记为
-`Unsupported`，不计作 `Passed`；真正的协议、状态码或内容错误记为 `Failed`。独立官方 AWS SDK
+checksum 会明确记为 `Unsupported`，不计作 `Passed`；真正的协议、状态码或内容错误记为
+`Failed`。DeleteObjects 的五种 Flexible Checksum Header 已纳入声明范围。独立官方 AWS SDK
 运行时可选；当前 Ruby `aws-sdk-s3` 已由 Compatibility Runner 作为独立验证工具覆盖，
 未安装时才记为 `Skipped`。
 
@@ -51,6 +51,12 @@ checksum，以及 AWS CLI 自动附加但 ZigFS 当前未声明的 DeleteObjects
 | GetBucketLocation | `GET /{bucket}?location=` | Implemented | `200` XML | Bucket Read |
 | DeleteBucket | `DELETE /{bucket}` | Implemented | `204` | Bucket Write |
 | ListObjectsV2 | `GET /{bucket}?list-type=2` | Implemented | `200` XML | Object Read |
+| GetBucketVersioning | `GET /{bucket}?versioning=` | Implemented | `200` `VersioningConfiguration` XML | Bucket Read |
+| PutBucketVersioning | `PUT /{bucket}?versioning=` | Implemented | `200` | Bucket Write |
+| GetBucketLifecycleConfiguration | `GET /{bucket}?lifecycle=` | Implemented | `200` 原始配置 XML | Bucket Read |
+| PutBucketLifecycleConfiguration | `PUT /{bucket}?lifecycle=` | Implemented | `200` | Bucket Write |
+| DeleteBucketLifecycle | `DELETE /{bucket}?lifecycle=` | Implemented | `204` | Bucket Write |
+| ListObjectVersions | `GET /{bucket}?versions=` | Implemented | `200` `ListVersionsResult` XML | Object Read |
 
 CreateBucket 规则：
 
@@ -75,15 +81,34 @@ ListObjectsV2 已支持：
 响应包含 `Name`、`Prefix`、`KeyCount`、`MaxKeys`、`IsTruncated`、`Contents`、
 `CommonPrefixes` 和按需返回的 Continuation 字段。排序使用 Object Key byte order。
 
+### Versioning 与 Lifecycle
+
+- Bucket 初始为 `Unversioned`；首次 `Enabled` 后只能在 `Enabled` 与 `Suspended` 之间切换。
+- `Enabled` 状态下每次 Put/Copy/Multipart Complete 生成不透明 Version ID；`Suspended` 状态下
+  新写入使用并替换 `null` 版本，之前的非 null 版本继续保留。
+- 未携带 `versionId` 的 DeleteObject 在 `Enabled` 状态创建新 DeleteMarker；在 `Suspended`
+  状态移除现有 `null` 版本并创建 `null` DeleteMarker。携带 `versionId` 时永久删除指定对象版本
+  或 DeleteMarker，不再创建新标记。
+- GET/HEAD 指向当前 DeleteMarker 返回 `404` 和 `x-amz-delete-marker: true`；显式请求
+  DeleteMarker 版本返回 `405`，并返回其 Version ID 与 Last-Modified。
+- `ListObjectVersions` 支持 `prefix`、`delimiter`、`key-marker`、`version-id-marker`、
+  `max-keys=0..1000` 和 `encoding-type=url`。对象版本与 DeleteMarker 均按 Key、版本新旧顺序返回。
+- Lifecycle XML 支持最多 1000 条 Rule、Prefix Filter、当前版本 `Expiration`（Days/Date）、
+  `NoncurrentVersionExpiration`（NoncurrentDays/NewerNoncurrentVersions）和
+  `ExpiredObjectDeleteMarker`。Tag/And/ObjectSize Filter、Transition、AbortIncompleteMultipartUpload
+  返回 `NotImplemented`，不会静默忽略。
+- 后台扫描周期由 YAML `s3.lifecycle_scan_interval_seconds` 配置，默认 300 秒；规则和扫描结果
+  的事实来源均在 ZigFS，Admin 只读取或更新 Management API。
+
 ## Object
 
 | Operation | Method/Request | 状态 | 成功响应 | 权限 |
 |---|---|---|---|---|
-| PutObject | `PUT /{bucket}/{key}` | Implemented | `200` + quoted MD5 `ETag`，按需返回 checksum | Object Write |
+| PutObject | `PUT /{bucket}/{key}` | Implemented | `200` + quoted MD5 `ETag`，按需返回 checksum 与 Version ID | Object Write |
 | POST Policy Upload | `POST /{bucket}` + `multipart/form-data` | Implemented | `201` XML、`200`/`204` 空响应，按 `success_action_status` | Object Write |
-| GetObject | `GET /{bucket}/{key}` | Implemented | `200` + 流式 Body | Object Read |
-| HeadObject | `HEAD /{bucket}/{key}` | Implemented | `200`，无 Body | Object Read |
-| DeleteObject | `DELETE /{bucket}/{key}` | Implemented | `204`，幂等 | Object Write |
+| GetObject | `GET /{bucket}/{key}[?versionId=...]` | Implemented | `200` + 流式 Body，按需返回 Version ID | Object Read |
+| HeadObject | `HEAD /{bucket}/{key}[?versionId=...]` | Implemented | `200`，无 Body，按需返回 Version ID | Object Read |
+| DeleteObject | `DELETE /{bucket}/{key}[?versionId=...]` | Implemented | `204`；普通删除或永久删除指定版本 | Object Write |
 | DeleteObjects | `POST /{bucket}?delete=` | Implemented | `200` XML，逐项 `Deleted`/`Error` | Object Write |
 | Range GetObject | `Range: bytes=...` | Implemented | `206` + `Content-Range` | Object Read |
 | Presigned PutObject | `PUT /{bucket}/{key}?X-Amz-*` | Implemented | 与 PutObject 相同 | Object Write |
@@ -193,12 +218,12 @@ Presigned GET/PUT/DELETE：
 ```
 
 已映射错误码：`AccessDenied`、`InvalidAccessKeyId`、`InvalidToken`、`ExpiredToken`、`SignatureDoesNotMatch`、
-`AuthorizationHeaderMalformed`、`AuthorizationQueryParametersError`、`RequestTimeTooSkewed`、`NoSuchBucket`、`NoSuchKey`、
+`AuthorizationHeaderMalformed`、`AuthorizationQueryParametersError`、`RequestTimeTooSkewed`、`NoSuchBucket`、`NoSuchKey`、`NoSuchVersion`、`NoSuchLifecycleConfiguration`、
 `BucketAlreadyExists`、`BucketAlreadyOwnedByYou`、`BucketNotEmpty`、`InvalidBucketName`、
 `InvalidRequest`、`InvalidArgument`、`InvalidLocationConstraint`、`MalformedXML`、
 `InvalidDigest`、`BadDigest`、`XAmzContentSHA256Mismatch`、`NoSuchUpload`、
 `InvalidPart`、`InvalidPartOrder`、`EntityTooSmall`、`EntityTooLarge`、`NotImplemented`、
-`PreconditionFailed`、`ServiceUnavailable` 和 `InternalError`。
+`MethodNotAllowed`、`PreconditionFailed`、`ServiceUnavailable` 和 `InternalError`。
 
 错误响应不包含数据根目录、内部 Record 路径、Zig 类型或堆栈。HEAD 错误只返回状态与
 Request ID Header，不返回 XML Body。
@@ -208,16 +233,17 @@ Request ID Header，不返回 XML Body。
 | 能力 | 阶段/行为 |
 |---|---|
 | Multi-Range | V1 当前不支持，返回 `416 InvalidRange` |
-| DeleteObjects Flexible Checksum Header/Trailer | V1 当前只要求并验证 `Content-MD5`；客户端自动附加的 checksum 扩展返回 `501 NotImplemented` |
-| S3 Object Versioning、ACL、Tagging、Select | V1 非当前范围 |
+| DeleteObjects `VersionId` / signed streaming Trailer | V1 支持 Content-MD5 或五种 Flexible Checksum Header，但尚不解析批量条目的 `VersionId`，也不接受该 XML 操作的 streaming Trailer |
+| S3 ACL、Tagging、Select、Object Lock、MFA Delete | V1 非当前范围 |
+| Lifecycle Transition、Tag/Size Filter、AbortIncompleteMultipartUpload | V1 当前返回 `501 NotImplemented` |
 
 ## 验证矩阵
 
 | 客户端/测试 | 状态 | 覆盖 |
 |---|---|---|
-| Zig 原生环回 TCP Contract Test | Pass | 未签名、错误/过期签名、永久/临时 Credential、Session Token Header/Presigned 正反向、POST Policy（签名、条件、`${filename}`、状态码、大小限制、失败不发布）、禁用 Credential、Bucket/Object CRUD、Digest、五种 Flexible Checksum Header/Trailer、XML、List V2 分页、Conditional GET/HEAD/PUT（304/412、ETag/日期优先级、条件 PUT 不发布）、CopyObject（COPY/REPLACE、流式字节一致、标准 XML）、Virtual-hosted Header/Presigned SigV4 与 Host 拒绝、完整 Multipart 生命周期、五种 signed trailer 正向与失败不发布、Object/Part 中途断流清理、下载取消释放租约、稳定错误、Method/Query 篡改和过期拒绝 |
+| Zig 原生环回 TCP Contract Test | Pass | 未签名、错误/过期签名、永久/临时 Credential、Session Token Header/Presigned 正反向、POST Policy（签名、条件、`${filename}`、状态码、大小限制、失败不发布）、禁用 Credential、Bucket/Object CRUD、Digest、五种 Flexible Checksum Header/Trailer、XML、List V2 分页、Versioning/DeleteMarker/指定版本/ListObjectVersions、Lifecycle、Conditional GET/HEAD/PUT（304/412、ETag/日期优先级、条件 PUT 不发布）、CopyObject（COPY/REPLACE、流式字节一致、标准 XML）、Virtual-hosted Header/Presigned SigV4 与 Host 拒绝、完整 Multipart 生命周期、五种 signed trailer 正向与失败不发布、Object/Part 中途断流清理、下载取消释放租约、稳定错误、Method/Query 篡改和过期拒绝 |
 | AWS 官方 S3 SigV4 GET Object 向量 | Pass | Canonical Request、Scope、HMAC-SHA256，签名 `67fe34c...2722900` |
-| Phase 9 Compatibility Runner / AWS CLI 2.36.38 | Pass with Unsupported variant | `compatibility/run.sh --client aws` 实测 Bucket/Object CRUD、List、Head、Get、Presigned GET、CopyObject；DeleteObjects 因 AWS CLI 自动附加服务端未声明的 checksum 变体明确记为 `Unsupported` |
+| Phase 9 Compatibility Runner / AWS CLI 2.36.38 | Pass | `compatibility/run.sh --client aws` 实测 Bucket/Object CRUD、List、Head、Get、Presigned GET、CopyObject 和带 Flexible Checksum Header 的 DeleteObjects |
 | Phase 9 Compatibility Runner / MinIO Client (`mc`) 2025-08-13 | Pass with Unsupported coverage | `compatibility/run.sh --client mc` 实测 Bucket/Object CRUD、递归 List、Head/Get、签名流式 Put、DeleteObjects、Presigned GET、CopyObject；POST Policy 与 streaming checksum 变体无稳定 CLI 入口，记为 `Unsupported` |
 | Phase 9 Compatibility Runner / rclone 1.75.0 | Pass with config | `list_version=2`、`force_path_style=true` 下实测 Bucket/Object CRUD、递归 List、内容校验、CopyObject 和清理；rclone 不生成 S3 SigV4 Presigned URL、无稳定 POST Policy/Trailer checksum CLI，均记为 `Unsupported` |
 | Phase 9 Compatibility Runner / Node 24 HTTP | Pass with Unsupported coverage | 原生 SigV4 Header/Presigned、Bucket/Object/List、CopyObject、Multipart、DeleteObjects 和 SHA256 Flexible Checksum Header；Node fetch 无法构造 signed streaming Trailer，记为 `Unsupported` |

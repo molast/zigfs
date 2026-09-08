@@ -219,6 +219,84 @@ pub const BucketService = struct {
         ) catch |err| return mapStoreError(err);
         if (!self.index.removeBucket(name)) return error.CorruptMetadata;
     }
+
+    pub fn setVersioning(
+        self: BucketService,
+        name: []const u8,
+        versioning: bucket_domain.Versioning,
+    ) Error!bucket_domain.Bucket {
+        return self.updateConfiguration(name, versioning, .keep);
+    }
+
+    pub fn putLifecycle(
+        self: BucketService,
+        name: []const u8,
+        configuration: []const u8,
+    ) Error!bucket_domain.Bucket {
+        return self.updateConfiguration(name, null, .{ .replace = configuration });
+    }
+
+    pub fn deleteLifecycle(self: BucketService, name: []const u8) Error!bucket_domain.Bucket {
+        return self.updateConfiguration(name, null, .remove);
+    }
+
+    const LifecycleUpdate = union(enum) {
+        keep,
+        remove,
+        replace: []const u8,
+    };
+
+    fn updateConfiguration(
+        self: BucketService,
+        name: []const u8,
+        versioning: ?bucket_domain.Versioning,
+        lifecycle: LifecycleUpdate,
+    ) Error!bucket_domain.Bucket {
+        bucket_domain.validateName(name) catch return error.InvalidBucketName;
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const indexed_generation = self.index.bucketGeneration(name) orelse return error.BucketNotFound;
+        const record = self.store.get(self.allocator, name) catch |err| return mapStoreError(err);
+        var bucket = switch (record) {
+            .active => |active| active,
+            .tombstone => return error.CorruptMetadata,
+        };
+        errdefer bucket.deinit(self.allocator);
+        if (bucket.generation != indexed_generation) return error.CorruptMetadata;
+
+        const lifecycle_value: ?[]const u8 = switch (lifecycle) {
+            .keep => bucket.lifecycle_configuration,
+            .remove => null,
+            .replace => |value| value,
+        };
+        const owned_lifecycle = if (lifecycle == .keep)
+            null
+        else if (lifecycle_value) |value|
+            self.allocator.dupe(u8, value) catch return error.OutOfMemory
+        else
+            null;
+        errdefer if (owned_lifecycle) |value| self.allocator.free(value);
+        var prepared = self.index.prepareBucket(name) catch |err| return mapIndexError(err);
+        defer prepared.deinit(self.index.allocator);
+        const generation = self.store.put(self.allocator, .{
+            .id = bucket.id,
+            .name = bucket.name,
+            .owner = bucket.owner,
+            .status = bucket.status,
+            .versioning = versioning orelse bucket.versioning,
+            .lifecycle_configuration = lifecycle_value,
+            .created_at_unix_seconds = bucket.created_at_unix_seconds,
+        }, .{ .exact = bucket.generation }) catch |err| return mapStoreError(err);
+        self.index.publishBucket(&prepared, generation);
+
+        bucket.versioning = versioning orelse bucket.versioning;
+        if (lifecycle != .keep) {
+            if (bucket.lifecycle_configuration) |existing| self.allocator.free(existing);
+            bucket.lifecycle_configuration = owned_lifecycle;
+        }
+        bucket.generation = generation;
+        return bucket;
+    }
 };
 
 fn ownedBucket(

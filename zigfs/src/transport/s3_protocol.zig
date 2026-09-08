@@ -6,9 +6,15 @@ pub const Operation = enum {
     create_bucket,
     head_bucket,
     get_bucket_location,
+    get_bucket_versioning,
+    put_bucket_versioning,
+    get_bucket_lifecycle,
+    put_bucket_lifecycle,
+    delete_bucket_lifecycle,
     delete_bucket,
     delete_objects,
     list_objects_v2,
+    list_object_versions,
     list_multipart_uploads,
     put_object,
     get_object,
@@ -235,9 +241,21 @@ fn classify(
     if (bucket == null) return if (method == .GET) .list_buckets else .unsupported;
     if (key == null) {
         return switch (method) {
-            .PUT => .create_bucket,
+            .PUT => if (parameters.len == 0)
+                .create_bucket
+            else if (queryShape(parameters, "versioning") == .empty and parameters.len == 1)
+                .put_bucket_versioning
+            else if (queryShape(parameters, "lifecycle") == .empty and parameters.len == 1)
+                .put_bucket_lifecycle
+            else
+                .unsupported,
             .HEAD => .head_bucket,
-            .DELETE => .delete_bucket,
+            .DELETE => if (parameters.len == 0)
+                .delete_bucket
+            else if (queryShape(parameters, "lifecycle") == .empty and parameters.len == 1)
+                .delete_bucket_lifecycle
+            else
+                .unsupported,
             .POST => if (hasQueryValue(parameters, "delete", ""))
                 .delete_objects
             else if (parameters.len == 0)
@@ -246,10 +264,16 @@ fn classify(
                 .unsupported,
             .GET => if (queryShape(parameters, "uploads") == .empty)
                 .list_multipart_uploads
+            else if (queryShape(parameters, "versions") == .empty)
+                .list_object_versions
             else if (hasQueryValue(parameters, "list-type", "2"))
                 .list_objects_v2
             else if (hasQueryValue(parameters, "location", ""))
                 .get_bucket_location
+            else if (queryShape(parameters, "versioning") == .empty and parameters.len == 1)
+                .get_bucket_versioning
+            else if (queryShape(parameters, "lifecycle") == .empty and parameters.len == 1)
+                .get_bucket_lifecycle
             else
                 .unsupported,
             else => .unsupported,
@@ -390,6 +414,8 @@ pub const ErrorKind = enum {
     invalid_token,
     no_such_bucket,
     no_such_key,
+    no_such_version,
+    no_such_lifecycle_configuration,
     bucket_already_exists,
     bucket_already_owned_by_you,
     bucket_not_empty,
@@ -404,6 +430,7 @@ pub const ErrorKind = enum {
     invalid_range,
     not_modified,
     precondition_failed,
+    method_not_allowed,
     no_such_upload,
     invalid_part,
     invalid_part_order,
@@ -433,6 +460,8 @@ pub fn describe(kind: ErrorKind) ErrorDescriptor {
         .invalid_token => .{ .code = "InvalidToken", .message = "The provided token is malformed or otherwise invalid.", .status = .forbidden },
         .no_such_bucket => .{ .code = "NoSuchBucket", .message = "The specified bucket does not exist.", .status = .not_found },
         .no_such_key => .{ .code = "NoSuchKey", .message = "The specified key does not exist.", .status = .not_found },
+        .no_such_version => .{ .code = "NoSuchVersion", .message = "The specified version does not exist.", .status = .not_found },
+        .no_such_lifecycle_configuration => .{ .code = "NoSuchLifecycleConfiguration", .message = "The lifecycle configuration does not exist.", .status = .not_found },
         .bucket_already_exists => .{ .code = "BucketAlreadyExists", .message = "The requested bucket name is not available.", .status = .conflict },
         .bucket_already_owned_by_you => .{ .code = "BucketAlreadyOwnedByYou", .message = "Your previous request to create the named bucket succeeded and you already own it.", .status = .conflict },
         .bucket_not_empty => .{ .code = "BucketNotEmpty", .message = "The bucket you tried to delete is not empty.", .status = .conflict },
@@ -447,6 +476,7 @@ pub fn describe(kind: ErrorKind) ErrorDescriptor {
         .invalid_range => .{ .code = "InvalidRange", .message = "The requested range is not satisfiable.", .status = .range_not_satisfiable },
         .not_modified => .{ .code = "NotModified", .message = "Not Modified.", .status = .not_modified },
         .precondition_failed => .{ .code = "PreconditionFailed", .message = "At least one of the preconditions you specified did not hold.", .status = .precondition_failed },
+        .method_not_allowed => .{ .code = "MethodNotAllowed", .message = "The specified method is not allowed against this resource.", .status = .method_not_allowed },
         .no_such_upload => .{ .code = "NoSuchUpload", .message = "The specified multipart upload does not exist.", .status = .not_found },
         .invalid_part => .{ .code = "InvalidPart", .message = "One or more of the specified parts could not be found or did not match the provided ETag.", .status = .bad_request },
         .invalid_part_order => .{ .code = "InvalidPartOrder", .message = "The list of parts was not in ascending order.", .status = .bad_request },
@@ -522,6 +552,27 @@ test "S3 target parsing separates path-style buckets objects and List V2" {
     const location = try parseTarget(std.testing.allocator, .GET, "/project-assets?location=");
     defer location.deinit();
     try std.testing.expectEqual(.get_bucket_location, location.operation);
+
+    const get_versioning = try parseTarget(std.testing.allocator, .GET, "/project-assets?versioning=");
+    defer get_versioning.deinit();
+    try std.testing.expectEqual(.get_bucket_versioning, get_versioning.operation);
+
+    const put_versioning = try parseTarget(std.testing.allocator, .PUT, "/project-assets?versioning=");
+    defer put_versioning.deinit();
+    try std.testing.expectEqual(.put_bucket_versioning, put_versioning.operation);
+
+    const get_lifecycle = try parseTarget(std.testing.allocator, .GET, "/project-assets?lifecycle=");
+    defer get_lifecycle.deinit();
+    try std.testing.expectEqual(.get_bucket_lifecycle, get_lifecycle.operation);
+
+    const list_versions = try parseTarget(std.testing.allocator, .GET, "/project-assets?versions=&prefix=photos%2F");
+    defer list_versions.deinit();
+    try std.testing.expectEqual(.list_object_versions, list_versions.operation);
+
+    const object_version = try parseTarget(std.testing.allocator, .GET, "/project-assets/photos%2Fcover.jpg?versionId=null");
+    defer object_version.deinit();
+    try std.testing.expectEqual(.get_object, object_version.operation);
+    try std.testing.expectEqualStrings("null", (try object_version.query("versionId")).?);
 
     const delete_objects = try parseTarget(std.testing.allocator, .POST, "/project-assets?delete=");
     defer delete_objects.deinit();

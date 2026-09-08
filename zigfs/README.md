@@ -34,11 +34,17 @@ HEAD   /{bucket}
 GET    /{bucket}?location=
 DELETE /{bucket}
 GET    /{bucket}?list-type=2
+GET    /{bucket}?versions
+GET    /{bucket}?versioning
+PUT    /{bucket}?versioning
+GET    /{bucket}?lifecycle
+PUT    /{bucket}?lifecycle
+DELETE /{bucket}?lifecycle
 POST   /{bucket}?delete=
 PUT    /{bucket}/{object}
-GET    /{bucket}/{object}
-HEAD   /{bucket}/{object}
-DELETE /{bucket}/{object}
+GET    /{bucket}/{object}[?versionId=ID]
+HEAD   /{bucket}/{object}[?versionId=ID]
+DELETE /{bucket}/{object}[?versionId=ID]
 
 POST   /{bucket}/{object}?uploads
 PUT    /{bucket}/{object}?partNumber=N&uploadId=ID
@@ -54,7 +60,10 @@ lifecycle, and signed aws-chunked PutObject/UploadPart are supported, including 
 Flexible Checksum signed trailer variants. Interrupted fixed-length uploads fail without
 publishing Object/Part data, and a canceled GetObject releases its read lease. Conditional
 requests, temporary credentials, virtual-hosted-style requests, and S3 POST Policy uploads
-are supported. Management authentication and business routes are available under
+are supported. Bucket Versioning, DeleteMarker, version-specific object operations,
+ListObjectVersions, and the declared Lifecycle expiration subset are also supported.
+The Lifecycle scanner interval is configured with `s3.lifecycle_scan_interval_seconds`.
+Management authentication and business routes are available under
 `/_admin/v1`; the Admin application is only a web client and does not own storage state.
 
 Storage compatibility and release upgrade rules are documented in

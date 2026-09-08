@@ -21,6 +21,8 @@ pub const Value = struct {
     name: []const u8,
     owner: []const u8,
     status: bucket_domain.Status,
+    versioning: bucket_domain.Versioning = .unversioned,
+    lifecycle_configuration: ?[]const u8 = null,
     created_at_unix_seconds: i64,
 };
 

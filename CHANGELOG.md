@@ -15,10 +15,13 @@
 - Content-MD5、SHA-256、CRC32、CRC32C、CRC64NVME、SHA1、SHA256 校验。
 - aws-chunked 签名流和五种 Flexible Checksum signed trailer。
 - 固定长度和流式上传的断流不发布语义，下载取消后的读取租约释放。
+- Bucket Versioning、DeleteMarker、指定版本 GET/HEAD/DELETE 与 ListObjectVersions。
+- Lifecycle 配置、当前/非当前版本过期、过期 DeleteMarker 清理和后台 Scanner。
 
 ### 持久化与恢复
 
 - 自有 Metadata Repository、Transaction Journal、Object Data Generation 和可重建索引。
+- `ZFOH` V1.0 Object History 与向后兼容的 `ZFBK` V1.1 Bucket 配置 Payload。
 - `format.meta` 主版本 1；数据目录不依赖 SQLite 或其他外部数据库。
 - 启动写能力探针、实例独占锁、checksum 校验和损坏数据的 Not Ready 语义。
 - 完整 `data_root` 备份、V1 数据目录直接打开和未知格式拒绝策略。
@@ -28,6 +31,7 @@
 - ZigFS Management API 负责 Bucket、Object 视图、AK/SK、Storage、System、Health 和 Settings。
 - Go 1.27 + Gin 1.12 Admin BFF 只转发管理请求，React Admin 只负责展示和操作。
 - Admin 不保存管理员身份、Bucket、Object 或 Credential 状态。
+- Bucket 配置与对象版本历史由 ZigFS Management API 提供，Admin 只展示和转发操作。
 
 ### SDK 与验证
 

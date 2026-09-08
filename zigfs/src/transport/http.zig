@@ -60,6 +60,13 @@ pub fn serve(
     };
     std.log.info("ZigFS API listening on http://{s}", .{config.api_address});
 
+    var background: std.Io.Group = .init;
+    defer background.cancel(io);
+    background.async(io, serveLifecycleScanner, .{
+        application,
+        config.s3_lifecycle_scan_interval_seconds,
+    });
+
     if (!config.metrics_enabled) {
         std.log.info("Prometheus metrics listener disabled", .{});
         return serveLoop(&api_listener, &api_context);
@@ -81,6 +88,30 @@ pub fn serve(
     std.log.info("Prometheus metrics listening on http://{s}{s}", .{ config.metrics_address, metrics_path });
     listeners.async(io, serveLoopBackground, .{ &metrics_listener, &metrics_context });
     return serveLoop(&api_listener, &api_context);
+}
+
+fn serveLifecycleScanner(application: *Application, interval_seconds: u64) void {
+    const io = application.io orelse return;
+    const seconds: i64 = @intCast(interval_seconds);
+    const interval: std.Io.Clock.Duration = .{
+        .clock = .awake,
+        .raw = std.Io.Duration.fromSeconds(seconds),
+    };
+    while (true) {
+        interval.sleep(io) catch return;
+        const service = application.lifecycleService() orelse continue;
+        const now = std.Io.Clock.real.now(io).toSeconds();
+        const report = service.scan(now) catch |err| {
+            std.log.err("ZigFS lifecycle scan failed: {t}", .{err});
+            continue;
+        };
+        if (report.current_expired != 0 or report.noncurrent_expired != 0 or report.delete_markers_removed != 0) {
+            std.log.info(
+                "ZigFS lifecycle scan completed buckets={d} versions={d} current_expired={d} noncurrent_expired={d} delete_markers_removed={d}",
+                .{ report.buckets_scanned, report.versions_scanned, report.current_expired, report.noncurrent_expired, report.delete_markers_removed },
+            );
+        }
+    }
 }
 
 fn serveLoopBackground(listener: *std.Io.net.Server, context: *ListenerContext) void {

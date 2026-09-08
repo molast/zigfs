@@ -27,6 +27,18 @@ func (service *Management) DeleteBucket(ctx context.Context, name string) error 
 	return service.zig.DeleteBucket(ctx, name)
 }
 
+func (service *Management) GetBucketConfiguration(ctx context.Context, name string) (contract.BucketConfiguration, error) {
+	return service.zig.GetBucketConfiguration(ctx, name)
+}
+
+func (service *Management) UpdateBucketConfiguration(ctx context.Context, name string, request contract.UpdateBucketConfigurationRequest) (contract.BucketConfiguration, error) {
+	return service.zig.UpdateBucketConfiguration(ctx, name, request)
+}
+
+func (service *Management) ListObjectVersions(ctx context.Context, bucket, prefix string) (contract.ListObjectVersionsResponse, error) {
+	return service.zig.ListObjectVersions(ctx, bucket, prefix)
+}
+
 func (service *Management) ListObjects(ctx context.Context, bucket, prefix, cursor string) (contract.ListObjectsResponse, error) {
 	return service.zig.ListObjects(ctx, bucket, prefix, cursor)
 }
