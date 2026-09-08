@@ -11,7 +11,7 @@
 
 - Bucket、Object、List Objects V2、Range、Multipart 和 DeleteObjects。
 - AWS Signature V4 Header、Presigned GET/PUT/DELETE 和 Session Token。
-- Conditional Requests、CopyObject、Virtual-hosted-style（可配置）和 S3 POST Policy Upload。
+- Conditional Requests、CopyObject（含指定源 Version ID 的标准版本回溯）、Virtual-hosted-style（可配置）和 S3 POST Policy Upload。
 - Content-MD5、SHA-256、CRC32、CRC32C、CRC64NVME、SHA1、SHA256 校验。
 - aws-chunked 签名流和五种 Flexible Checksum signed trailer。
 - 固定长度和流式上传的断流不发布语义，下载取消后的读取租约释放。

@@ -13,6 +13,19 @@ pub const Integrity = struct {
     checksum_sha256: [32]u8,
 };
 
+pub const Generation = struct {
+    location: Location,
+    data_present: bool,
+};
+
+pub const ScanResult = struct {
+    generations: []Generation,
+
+    pub fn deinit(self: ScanResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.generations);
+    }
+};
+
 pub const Staged = struct {
     token: id.Uuid,
     size: u64,
@@ -44,8 +57,11 @@ pub const MultipartDataStore = struct {
         stage: *const fn (*anyopaque, id.Uuid, byte_stream.Source) Error!Staged,
         publish: *const fn (*anyopaque, Staged, Location) Error!void,
         discard: *const fn (*anyopaque, id.Uuid) void,
+        stat: *const fn (*anyopaque, Location) Error!u64,
         read_range: *const fn (*anyopaque, Location, u64, u64, byte_stream.Sink) Error!void,
         delete_upload: *const fn (*anyopaque, id.Uuid) Error!void,
+        scan_generations: *const fn (*anyopaque, std.mem.Allocator) Error!ScanResult,
+        delete_generation: *const fn (*anyopaque, Location) Error!bool,
     };
 
     pub fn cleanupStaged(self: MultipartDataStore) Error!usize {
@@ -64,11 +80,23 @@ pub const MultipartDataStore = struct {
         self.vtable.discard(self.context, token);
     }
 
+    pub fn stat(self: MultipartDataStore, location: Location) Error!u64 {
+        return self.vtable.stat(self.context, location);
+    }
+
     pub fn readRange(self: MultipartDataStore, location: Location, offset: u64, length: u64, sink: byte_stream.Sink) Error!void {
         return self.vtable.read_range(self.context, location, offset, length, sink);
     }
 
     pub fn deleteUpload(self: MultipartDataStore, upload_id: id.Uuid) Error!void {
         return self.vtable.delete_upload(self.context, upload_id);
+    }
+
+    pub fn scanGenerations(self: MultipartDataStore, allocator: std.mem.Allocator) Error!ScanResult {
+        return self.vtable.scan_generations(self.context, allocator);
+    }
+
+    pub fn deleteGeneration(self: MultipartDataStore, location: Location) Error!bool {
+        return self.vtable.delete_generation(self.context, location);
     }
 };

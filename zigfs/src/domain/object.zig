@@ -65,6 +65,31 @@ pub const OwnedUserMetadata = struct {
     }
 };
 
+pub const MultipartPart = struct {
+    number: u16,
+    size: u64,
+    checksum_sha256: [32]u8,
+    data_generation: id.Uuid,
+};
+
+pub const MultipartManifestView = struct {
+    upload_id: id.Uuid,
+    parts: []const MultipartPart,
+};
+
+pub const MultipartManifest = struct {
+    upload_id: id.Uuid,
+    parts: []MultipartPart,
+
+    pub fn deinit(self: MultipartManifest, allocator: std.mem.Allocator) void {
+        allocator.free(self.parts);
+    }
+
+    pub fn view(self: MultipartManifest) MultipartManifestView {
+        return .{ .upload_id = self.upload_id, .parts = self.parts };
+    }
+};
+
 pub const View = struct {
     id: id.Uuid,
     bucket_id: id.Uuid,
@@ -78,6 +103,7 @@ pub const View = struct {
     last_modified_unix_seconds: i64,
     user_metadata: []const UserMetadata,
     data_generation: id.Uuid,
+    multipart_manifest: ?MultipartManifestView = null,
     status: Status,
     version_id: VersionId = .null_version,
 };
@@ -95,6 +121,7 @@ pub const Object = struct {
     last_modified_unix_seconds: i64,
     user_metadata: []OwnedUserMetadata,
     data_generation: id.Uuid,
+    multipart_manifest: ?MultipartManifest = null,
     status: Status,
     metadata_generation: u64,
     version_id: VersionId = .null_version,
@@ -105,6 +132,7 @@ pub const Object = struct {
         allocator.free(self.content_type);
         for (self.user_metadata) |entry| entry.deinit(allocator);
         allocator.free(self.user_metadata);
+        if (self.multipart_manifest) |manifest| manifest.deinit(allocator);
     }
 
     pub fn view(self: *const Object) View {
@@ -121,6 +149,7 @@ pub const Object = struct {
             .last_modified_unix_seconds = self.last_modified_unix_seconds,
             .user_metadata = ownedMetadataViews(self.user_metadata),
             .data_generation = self.data_generation,
+            .multipart_manifest = if (self.multipart_manifest) |manifest| manifest.view() else null,
             .status = self.status,
             .version_id = self.version_id,
         };
@@ -151,6 +180,11 @@ pub fn cloneFromView(
         metadata[index] = .{ .name = name, .value = value };
         initialized += 1;
     }
+    const multipart_manifest: ?MultipartManifest = if (source.multipart_manifest) |manifest| value: {
+        const parts = try allocator.dupe(MultipartPart, manifest.parts);
+        break :value .{ .upload_id = manifest.upload_id, .parts = parts };
+    } else null;
+    errdefer if (multipart_manifest) |manifest| manifest.deinit(allocator);
     return .{
         .id = source.id,
         .bucket_id = source.bucket_id,
@@ -164,6 +198,7 @@ pub fn cloneFromView(
         .last_modified_unix_seconds = source.last_modified_unix_seconds,
         .user_metadata = metadata,
         .data_generation = source.data_generation,
+        .multipart_manifest = multipart_manifest,
         .status = source.status,
         .metadata_generation = metadata_generation,
         .version_id = source.version_id,

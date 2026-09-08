@@ -436,6 +436,9 @@ const PresignObjectRequest = struct {
     upload_id: ?[]const u8 = null,
     part_number: ?u16 = null,
     version_id: ?[]const u8 = null,
+    copy_source_bucket: ?[]const u8 = null,
+    copy_source_key: ?[]const u8 = null,
+    copy_source_version_id: ?[]const u8 = null,
 };
 
 const CreateMultipartUploadRequest = struct {
@@ -672,9 +675,18 @@ fn servePresignObject(
     defer parsed.deinit();
     const value = parsed.value;
     const multipart_part = value.upload_id != null or value.part_number != null;
+    const copy_source_requested = value.copy_source_bucket != null or
+        value.copy_source_key != null or value.copy_source_version_id != null;
+    const copy_source_complete = value.copy_source_bucket != null and value.copy_source_key != null;
     const requested_version = if (value.version_id) |version_id|
         object_domain.parseVersionId(version_id) catch {
             return respondError(request, request_id, .bad_request, "InvalidVersionId", "version ID is invalid");
+        }
+    else
+        null;
+    _ = if (value.copy_source_version_id) |version_id|
+        object_domain.parseVersionId(version_id) catch {
+            return respondError(request, request_id, .bad_request, "InvalidVersionId", "copy source version ID is invalid");
         }
     else
         null;
@@ -685,12 +697,17 @@ fn servePresignObject(
         (multipart_part and (value.upload_id == null or value.part_number == null or
             !std.mem.eql(u8, value.method, "PUT") or value.part_number.? == 0 or
             value.part_number.? > multipart_domain.max_parts)) or
-        (requested_version != null and (multipart_part or std.mem.eql(u8, value.method, "PUT"))))
+        (requested_version != null and (multipart_part or std.mem.eql(u8, value.method, "PUT"))) or
+        (copy_source_requested and (!copy_source_complete or multipart_part or requested_version != null or
+            !std.mem.eql(u8, value.method, "PUT"))))
     {
         return respondError(request, request_id, .bad_request, "InvalidPresignRequest", "method or expiry is invalid");
     }
     object_domain.validateKey(value.key) catch {
         return respondError(request, request_id, .bad_request, "InvalidObjectKey", "object key is invalid");
+    };
+    if (value.copy_source_key) |source_key| object_domain.validateKey(source_key) catch {
+        return respondError(request, request_id, .bad_request, "InvalidObjectKey", "copy source object key is invalid");
     };
 
     const credentials = application.credentialService() orelse return respondNotReady(request, request_id);
@@ -707,12 +724,22 @@ fn servePresignObject(
     if (!material.policy.allows(required_action)) {
         return respondError(request, request_id, .forbidden, "AccessDenied", "access key policy does not allow this operation");
     }
+    if (copy_source_requested and !material.policy.allows(.get_object)) {
+        return respondError(request, request_id, .forbidden, "AccessDenied", "access key policy does not allow reading the copy source");
+    }
 
     const buckets = application.bucketService() orelse return respondNotReady(request, request_id);
     const bucket = buckets.head(value.bucket) catch |err| return respondBucketError(request, request_id, err);
     defer bucket.deinit(application.allocator);
     if (!std.mem.eql(u8, bucket.owner, material.owner)) {
         return respondError(request, request_id, .forbidden, "AccessDenied", "access key does not own this bucket");
+    }
+    if (value.copy_source_bucket) |source_bucket_name| {
+        const source_bucket = buckets.head(source_bucket_name) catch |err| return respondBucketError(request, request_id, err);
+        defer source_bucket.deinit(application.allocator);
+        if (!std.mem.eql(u8, source_bucket.owner, material.owner)) {
+            return respondError(request, request_id, .forbidden, "AccessDenied", "access key does not own the copy source bucket");
+        }
     }
     if (multipart_part) {
         const multiparts = application.multipartService() orelse return respondNotReady(request, request_id);
@@ -746,7 +773,33 @@ fn servePresignObject(
     else
         base_target;
     defer if (multipart_part or value.version_id != null) application.allocator.free(unsigned_target);
-    const headers = [_]sigv4.Header{.{ .name = "host", .value = host }};
+    const encoded_source_key = if (value.copy_source_key) |source_key|
+        try encodePath(application.allocator, source_key)
+    else
+        null;
+    defer if (encoded_source_key) |owned| application.allocator.free(owned);
+    const copy_source = if (encoded_source_key) |source_key|
+        if (value.copy_source_version_id) |version_id|
+            try std.fmt.allocPrint(application.allocator, "/{s}/{s}?versionId={s}", .{
+                value.copy_source_bucket.?,
+                source_key,
+                version_id,
+            })
+        else
+            try std.fmt.allocPrint(application.allocator, "/{s}/{s}", .{
+                value.copy_source_bucket.?,
+                source_key,
+            })
+    else
+        null;
+    defer if (copy_source) |owned| application.allocator.free(owned);
+    var headers: [2]sigv4.Header = undefined;
+    headers[0] = .{ .name = "host", .value = host };
+    var header_count: usize = 1;
+    if (copy_source) |source| {
+        headers[header_count] = .{ .name = "x-amz-copy-source", .value = source };
+        header_count += 1;
+    }
     const now = std.Io.Clock.real.now(application.io.?).toSeconds();
     var date_buffer: [16]u8 = undefined;
     const amz_date = time.formatAmzDate(now, &date_buffer) catch {
@@ -755,12 +808,13 @@ fn servePresignObject(
     const signed_target = sigv4.presignTarget(application.allocator, .{
         .method = value.method,
         .target = unsigned_target,
-        .headers = &headers,
+        .headers = headers[0..header_count],
         .access_key = value.access_key,
         .secret_key = material.secret_key,
         .amz_date = amz_date,
         .region = application.config.s3_region,
         .expires_seconds = value.expires_seconds,
+        .signed_headers = if (copy_source != null) "host;x-amz-copy-source" else "host",
         .session_token = material.session_token,
     }) catch {
         return respondError(request, request_id, .internal_server_error, "InternalError", "could not create presigned URL");
@@ -787,7 +841,23 @@ fn servePresignObject(
     const expires_at = time.formatIso8601(now + @as(i64, @intCast(value.expires_seconds)), &expiry_buffer) catch {
         return respondError(request, request_id, .internal_server_error, "InternalError", "could not create presigned URL");
     };
-    return respondJson(request, request_id, .ok, .{ .url = url, .expires_at = expires_at });
+    var output: std.Io.Writer.Allocating = .init(application.allocator);
+    defer output.deinit();
+    var json: std.json.Stringify = .{ .writer = &output.writer };
+    try json.beginObject();
+    try json.objectField("url");
+    try json.write(url);
+    try json.objectField("expires_at");
+    try json.write(expires_at);
+    try json.objectField("required_headers");
+    try json.beginObject();
+    if (copy_source) |source| {
+        try json.objectField("x-amz-copy-source");
+        try json.write(source);
+    }
+    try json.endObject();
+    try json.endObject();
+    return respondJsonBytes(request, request_id, .ok, output.written());
 }
 
 fn serveListAccessKeys(

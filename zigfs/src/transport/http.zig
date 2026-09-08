@@ -1399,6 +1399,18 @@ test "ZigFS Management API directly serves the Phase 6 contract" {
     try std.testing.expectEqual(std.http.Status.created, create_bucket.status);
     try std.testing.expect(std.mem.indexOf(u8, create_bucket.body, "\"owner\":\"tenant-a\"") != null);
 
+    const enable_versioning = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .PATCH,
+        "/_admin/v1/buckets/project-assets/configuration",
+        token,
+        "{\"versioning\":\"Enabled\"}",
+    );
+    defer enable_versioning.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, enable_versioning.status);
+
     const create_key = try sendTestManagementRequest(
         std.testing.allocator,
         std.testing.io,
@@ -1478,6 +1490,95 @@ test "ZigFS Management API directly serves the Phase 6 contract" {
     );
     defer put_object.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.ok, put_object.status);
+    const first_management_version = put_object.header("x-amz-version-id") orelse return error.MissingVersionId;
+
+    const replace_object = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/project-assets/reports/phase-6.txt",
+            .access_key = key_json.value.access_key,
+            .secret_key = key_json.value.secret_key,
+            .body = "replacement-object",
+        },
+    );
+    defer replace_object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, replace_object.status);
+
+    const copy_presign_body = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"access_key\":\"{s}\",\"bucket\":\"project-assets\",\"key\":\"reports/phase-6.txt\",\"method\":\"PUT\",\"expires_seconds\":60,\"copy_source_bucket\":\"project-assets\",\"copy_source_key\":\"reports/phase-6.txt\",\"copy_source_version_id\":\"{s}\"}}",
+        .{ key_json.value.access_key, first_management_version },
+    );
+    defer std.testing.allocator.free(copy_presign_body);
+    const copy_presign = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .POST,
+        "/_admin/v1/objects/presign",
+        token,
+        copy_presign_body,
+    );
+    defer copy_presign.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, copy_presign.status);
+    const CopyPresignResponse = struct {
+        url: []const u8,
+        required_headers: struct { @"x-amz-copy-source": []const u8 },
+    };
+    const copy_presign_json = try std.json.parseFromSlice(
+        CopyPresignResponse,
+        std.testing.allocator,
+        copy_presign.body,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer copy_presign_json.deinit();
+    const expected_copy_source = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "/project-assets/reports/phase-6.txt?versionId={s}",
+        .{first_management_version},
+    );
+    defer std.testing.allocator.free(expected_copy_source);
+    try std.testing.expectEqualStrings(
+        expected_copy_source,
+        copy_presign_json.value.required_headers.@"x-amz-copy-source",
+    );
+    const host = try std.fmt.allocPrint(std.testing.allocator, "127.0.0.1:{d}", .{address.getPort()});
+    defer std.testing.allocator.free(host);
+    const copy_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "PUT {s} HTTP/1.1\r\nHost: {s}\r\nx-amz-copy-source: {s}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        .{
+            copy_presign_json.value.url[endpoint.len..],
+            host,
+            copy_presign_json.value.required_headers.@"x-amz-copy-source",
+        },
+    );
+    defer std.testing.allocator.free(copy_request);
+    const copied_object = try sendTestRawRequest(std.testing.allocator, std.testing.io, address, copy_request);
+    defer copied_object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, copied_object.status);
+    try std.testing.expectEqualStrings(first_management_version, copied_object.header("x-amz-copy-source-version-id").?);
+
+    const incomplete_copy_presign = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"access_key\":\"{s}\",\"bucket\":\"project-assets\",\"key\":\"reports/phase-6.txt\",\"method\":\"PUT\",\"expires_seconds\":60,\"copy_source_bucket\":\"project-assets\"}}",
+        .{key_json.value.access_key},
+    );
+    defer std.testing.allocator.free(incomplete_copy_presign);
+    const rejected_copy_presign = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .POST,
+        "/_admin/v1/objects/presign",
+        token,
+        incomplete_copy_presign,
+    );
+    defer rejected_copy_presign.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.bad_request, rejected_copy_presign.status);
 
     const objects = try sendTestManagementRequest(
         std.testing.allocator,
@@ -1725,6 +1826,17 @@ test "ZigFS Management API directly serves the Phase 6 contract" {
     );
     defer delete_object.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.no_content, delete_object.status);
+
+    const object_history = try application.objectService().?.listVersions("project-assets", "reports/phase-6.txt");
+    defer object_history.deinit(application.allocator);
+    for (object_history.entries) |entry| {
+        const deleted_version = try application.objectService().?.deleteVersion(
+            "project-assets",
+            entry.key,
+            entry.version_id,
+        );
+        try std.testing.expect(deleted_version.deleted);
+    }
 
     const delete_key = try sendTestManagementRequest(
         std.testing.allocator,
@@ -2746,6 +2858,150 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
     defer disabled_request.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.forbidden, disabled_request.status);
     try std.testing.expect(std.mem.indexOf(u8, disabled_request.body, "<Code>AccessDenied</Code>") != null);
+}
+
+test "S3 CopyObject promotes a selected source version without mutating history" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try std.fmt.allocPrint(
+        std.testing.allocator,
+        ".zig-cache/tmp/{s}/data",
+        .{tmp.sub_path},
+    );
+    defer std.testing.allocator.free(data_root);
+    const config: Config = .{ .data_root = data_root, .metrics_enabled = false };
+    var application = Application.init(config);
+    defer application.deinit(std.testing.io);
+    try application.initialize(std.testing.io);
+    var credential = try application.credentialService().?.create("tenant-a", .all);
+    defer credential.deinit(application.allocator);
+    const created_bucket = try application.bucketService().?.create("versioned-assets", "tenant-a");
+    created_bucket.deinit(application.allocator);
+    const versioned_bucket = try application.bucketService().?.setVersioning("versioned-assets", .enabled);
+    versioned_bucket.deinit(application.allocator);
+
+    const loopback: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
+    var listener = try loopback.listen(std.testing.io, .{ .reuse_address = true });
+    defer listener.deinit(std.testing.io);
+    var context: ListenerContext = .{
+        .io = std.testing.io,
+        .kind = .api,
+        .config = config,
+        .application = &application,
+    };
+    var server_tasks: std.Io.Group = .init;
+    defer server_tasks.cancel(std.testing.io);
+    server_tasks.async(std.testing.io, serveLoopBackground, .{ &listener, &context });
+    const address = listener.socket.address;
+
+    const first_put = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/versioned-assets/release.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = "first release",
+        },
+    );
+    defer first_put.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, first_put.status);
+    const first_version = first_put.header("x-amz-version-id") orelse return error.MissingVersionId;
+
+    const second_put = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/versioned-assets/release.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .body = "second release",
+        },
+    );
+    defer second_put.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, second_put.status);
+    const second_version = second_put.header("x-amz-version-id") orelse return error.MissingVersionId;
+
+    const copy_source = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "/versioned-assets/release.txt?versionId={s}",
+        .{first_version},
+    );
+    defer std.testing.allocator.free(copy_source);
+    const copy_headers = [_]std.http.Header{.{ .name = "x-amz-copy-source", .value = copy_source }};
+    const rewind = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/versioned-assets/release.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .extra_headers = &copy_headers,
+        },
+    );
+    defer rewind.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, rewind.status);
+    try std.testing.expectEqualStrings(first_version, rewind.header("x-amz-copy-source-version-id").?);
+    const rewound_version = rewind.header("x-amz-version-id") orelse return error.MissingVersionId;
+    try std.testing.expect(!std.mem.eql(u8, first_version, rewound_version));
+    try std.testing.expect(!std.mem.eql(u8, second_version, rewound_version));
+
+    const current = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/versioned-assets/release.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer current.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, current.status);
+    try std.testing.expectEqualStrings("first release", current.body);
+    try std.testing.expectEqualStrings(rewound_version, current.header("x-amz-version-id").?);
+
+    const missing_source_headers = [_]std.http.Header{.{
+        .name = "x-amz-copy-source",
+        .value = "/versioned-assets/release.txt?versionId=00112233445546778899aabbccddeeff",
+    }};
+    const missing_source = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/versioned-assets/missing-source.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+            .extra_headers = &missing_source_headers,
+        },
+    );
+    defer missing_source.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.not_found, missing_source.status);
+    try std.testing.expect(std.mem.indexOf(u8, missing_source.body, "<Code>NoSuchVersion</Code>") != null);
+
+    const versions = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .GET,
+            .target = "/versioned-assets?versions=",
+            .access_key = credential.credential.access_key,
+            .secret_key = &credential.secret_key,
+        },
+    );
+    defer versions.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, versions.status);
+    try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, versions.body, "<Version>"));
 }
 
 test "S3 HTTP verifies signed CRC64NVME trailers before publishing objects and parts" {

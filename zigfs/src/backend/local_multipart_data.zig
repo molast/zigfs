@@ -24,8 +24,11 @@ pub const LocalMultipartDataStore = struct {
             .stage = stageImpl,
             .publish = publishImpl,
             .discard = discardImpl,
+            .stat = statImpl,
             .read_range = readRangeImpl,
             .delete_upload = deleteUploadImpl,
+            .scan_generations = scanGenerationsImpl,
+            .delete_generation = deleteGenerationImpl,
         } };
     }
 
@@ -101,6 +104,19 @@ pub const LocalMultipartDataStore = struct {
         durable.syncParent(self.root, self.io, path) catch {};
     }
 
+    fn statImpl(context: *anyopaque, location: data_store_port.Location) data_store_port.Error!u64 {
+        const self: *LocalMultipartDataStore = @ptrCast(@alignCast(context));
+        if (!validLocation(location)) return error.InvalidValue;
+        var paths: PathSet = undefined;
+        paths.format(location) catch return error.InvalidValue;
+        const stat = self.root.statFile(self.io, paths.dataPath(), .{}) catch |err| switch (err) {
+            error.FileNotFound => return error.NotFound,
+            else => return error.Unavailable,
+        };
+        if (stat.kind != .file) return error.CorruptData;
+        return stat.size;
+    }
+
     fn readRangeImpl(context: *anyopaque, location: data_store_port.Location, offset: u64, length: u64, sink: byte_stream.Sink) data_store_port.Error!void {
         const self: *LocalMultipartDataStore = @ptrCast(@alignCast(context));
         if (!validLocation(location)) return error.InvalidValue;
@@ -145,6 +161,62 @@ pub const LocalMultipartDataStore = struct {
             else => return error.Unavailable,
         };
         durable.syncParent(self.root, self.io, shard) catch return error.Unavailable;
+    }
+
+    fn scanGenerationsImpl(context: *anyopaque, allocator: std.mem.Allocator) data_store_port.Error!data_store_port.ScanResult {
+        const self: *LocalMultipartDataStore = @ptrCast(@alignCast(context));
+        var generations: std.ArrayList(data_store_port.Generation) = .empty;
+        errdefer generations.deinit(allocator);
+        var root = self.root.openDir(self.io, "multipart", .{ .iterate = true }) catch return error.Unavailable;
+        defer root.close(self.io);
+        var shards = root.iterate();
+        while (shards.next(self.io) catch return error.Unavailable) |shard_entry| {
+            if (shard_entry.kind != .directory) return error.CorruptData;
+            const shard = parseShard(shard_entry.name) orelse return error.CorruptData;
+            try scanShard(self, allocator, shard_entry.name, shard, &generations);
+        }
+        return .{ .generations = generations.toOwnedSlice(allocator) catch return error.OutOfMemory };
+    }
+
+    fn deleteGenerationImpl(context: *anyopaque, location: data_store_port.Location) data_store_port.Error!bool {
+        const self: *LocalMultipartDataStore = @ptrCast(@alignCast(context));
+        if (!validLocation(location)) return error.InvalidValue;
+        var paths: PathSet = undefined;
+        paths.format(location) catch return error.InvalidValue;
+        var directory = self.root.openDir(self.io, paths.generationDirectory(), .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound => return false,
+            else => return error.Unavailable,
+        };
+        var data_present = false;
+        var iterator = directory.iterate();
+        while (iterator.next(self.io) catch {
+            directory.close(self.io);
+            return error.Unavailable;
+        }) |entry| {
+            if (entry.kind != .file or !std.mem.eql(u8, entry.name, "data") or data_present) {
+                directory.close(self.io);
+                return error.CorruptData;
+            }
+            data_present = true;
+        }
+        directory.close(self.io);
+        if (data_present) {
+            self.root.deleteFile(self.io, paths.dataPath()) catch |err| switch (err) {
+                error.FileNotFound => {},
+                else => return error.Unavailable,
+            };
+            durable.syncParent(self.root, self.io, paths.dataPath()) catch return error.Unavailable;
+        }
+        self.root.deleteDir(self.io, paths.generationDirectory()) catch |err| switch (err) {
+            error.FileNotFound => return false,
+            error.DirNotEmpty => return error.CorruptData,
+            else => return error.Unavailable,
+        };
+        durable.syncParent(self.root, self.io, paths.generationDirectory()) catch return error.Unavailable;
+        pruneEmptyDirectory(self, paths.partDirectory());
+        pruneEmptyDirectory(self, paths.uploadDirectory());
+        pruneEmptyDirectory(self, paths.shardDirectory());
+        return true;
     }
 };
 
@@ -205,6 +277,122 @@ const PathSet = struct {
         return self.data_buffer[0..self.data_length];
     }
 };
+
+fn scanShard(
+    self: *LocalMultipartDataStore,
+    allocator: std.mem.Allocator,
+    shard_name: []const u8,
+    shard: u8,
+    generations: *std.ArrayList(data_store_port.Generation),
+) data_store_port.Error!void {
+    var path_buffer: [max_path_length]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buffer, "multipart/{s}", .{shard_name}) catch return error.CorruptData;
+    var directory = self.root.openDir(self.io, path, .{ .iterate = true }) catch return error.Unavailable;
+    defer directory.close(self.io);
+    var uploads = directory.iterate();
+    while (uploads.next(self.io) catch return error.Unavailable) |entry| {
+        if (entry.kind != .directory) return error.CorruptData;
+        const upload_id = parseUuidHex(entry.name) orelse return error.CorruptData;
+        if (upload_id[0] != shard) return error.CorruptData;
+        try scanUpload(self, allocator, shard_name, entry.name, upload_id, generations);
+    }
+}
+
+fn scanUpload(
+    self: *LocalMultipartDataStore,
+    allocator: std.mem.Allocator,
+    shard_name: []const u8,
+    upload_name: []const u8,
+    upload_id: id.Uuid,
+    generations: *std.ArrayList(data_store_port.Generation),
+) data_store_port.Error!void {
+    var path_buffer: [max_path_length]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buffer, "multipart/{s}/{s}", .{ shard_name, upload_name }) catch return error.CorruptData;
+    var directory = self.root.openDir(self.io, path, .{ .iterate = true }) catch return error.Unavailable;
+    defer directory.close(self.io);
+    var parts = directory.iterate();
+    while (parts.next(self.io) catch return error.Unavailable) |entry| {
+        if (entry.kind != .directory) return error.CorruptData;
+        const part_number = parsePartNumber(entry.name) orelse return error.CorruptData;
+        try scanPart(self, allocator, shard_name, upload_name, upload_id, entry.name, part_number, generations);
+    }
+}
+
+fn scanPart(
+    self: *LocalMultipartDataStore,
+    allocator: std.mem.Allocator,
+    shard_name: []const u8,
+    upload_name: []const u8,
+    upload_id: id.Uuid,
+    part_name: []const u8,
+    part_number: u16,
+    generations: *std.ArrayList(data_store_port.Generation),
+) data_store_port.Error!void {
+    var path_buffer: [max_path_length]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buffer, "multipart/{s}/{s}/{s}", .{ shard_name, upload_name, part_name }) catch return error.CorruptData;
+    var directory = self.root.openDir(self.io, path, .{ .iterate = true }) catch return error.Unavailable;
+    defer directory.close(self.io);
+    var stored_generations = directory.iterate();
+    while (stored_generations.next(self.io) catch return error.Unavailable) |entry| {
+        if (entry.kind != .directory) return error.CorruptData;
+        const data_generation = parseUuidHex(entry.name) orelse return error.CorruptData;
+        const location: data_store_port.Location = .{
+            .upload_id = upload_id,
+            .part_number = part_number,
+            .data_generation = data_generation,
+        };
+        generations.append(allocator, .{
+            .location = location,
+            .data_present = try inspectGeneration(self, location),
+        }) catch return error.OutOfMemory;
+    }
+}
+
+fn inspectGeneration(self: *LocalMultipartDataStore, location: data_store_port.Location) data_store_port.Error!bool {
+    var paths: PathSet = undefined;
+    paths.format(location) catch return error.CorruptData;
+    var directory = self.root.openDir(self.io, paths.generationDirectory(), .{ .iterate = true }) catch return error.Unavailable;
+    defer directory.close(self.io);
+    var data_present = false;
+    var iterator = directory.iterate();
+    while (iterator.next(self.io) catch return error.Unavailable) |entry| {
+        if (entry.kind != .file or !std.mem.eql(u8, entry.name, "data") or data_present) return error.CorruptData;
+        data_present = true;
+    }
+    return data_present;
+}
+
+fn parseUuidHex(value: []const u8) ?id.Uuid {
+    if (value.len != 32) return null;
+    for (value) |character| {
+        if (!std.ascii.isDigit(character) and (character < 'a' or character > 'f')) return null;
+    }
+    var parsed: id.Uuid = undefined;
+    _ = std.fmt.hexToBytes(&parsed, value) catch return null;
+    if (!id.isValidV4(parsed)) return null;
+    return parsed;
+}
+
+fn parseShard(value: []const u8) ?u8 {
+    if (value.len != 2) return null;
+    var parsed: [1]u8 = undefined;
+    _ = std.fmt.hexToBytes(&parsed, value) catch return null;
+    return parsed[0];
+}
+
+fn parsePartNumber(value: []const u8) ?u16 {
+    const number = std.fmt.parseInt(u16, value, 10) catch return null;
+    if (number < multipart_domain.min_part_number or number > multipart_domain.max_parts) return null;
+    return number;
+}
+
+fn pruneEmptyDirectory(self: *LocalMultipartDataStore, path: []const u8) void {
+    self.root.deleteDir(self.io, path) catch |err| switch (err) {
+        error.FileNotFound, error.DirNotEmpty => return,
+        else => return,
+    };
+    durable.syncParent(self.root, self.io, path) catch {};
+}
 
 fn temporaryPath(token: id.Uuid, buffer: *[max_path_length]u8) error{NoSpaceLeft}![]const u8 {
     const token_hex = std.fmt.bytesToHex(token, .lower);

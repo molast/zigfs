@@ -23,7 +23,7 @@ Phase 5 的 S3 Bucket/Object/List V2、Multipart、单 Range、Presigned GET/PUT
 Header/Streaming 以及五种 Flexible Checksum signed trailer 已实现，并覆盖上传断流和下载取消语义。
 Phase 9 已补齐 GET/HEAD/PUT 的 Conditional Requests，包括 ETag/HTTP 日期条件、304/412
 响应和条件 PUT 的 Metadata Generation CAS，并实现 CopyObject 的流式复制、权限、元数据
-指令和条件语义。
+指令、条件和指定源 Version ID 语义；旧版本可按标准 S3 自复制为新的当前版本。
 随后完成可配置 Virtual-hosted-style Addressing：校验 `s3.public_endpoint` authority、
 提取 Bucket 子域名并将实际 Host 绑定到 SigV4；默认仍使用 Path-style。
 Temporary Credentials 也已实现：`ZFCR` V1.1 向后兼容持久化临时 AK/SK/Session Token，

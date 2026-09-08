@@ -177,7 +177,11 @@ Conditional Requests：
 CopyObject：
 
 - 使用 `PUT /{target-bucket}/{target-key}` 和 `x-amz-copy-source`（`/source-bucket/source-key` 或 `source-bucket/source-key`）；源路径严格 Percent Decode，兼容带或不带前导 `/` 的 AWS/MinIO 表示，源对象与目标对象都必须属于当前凭证 Owner。
-- CopyObject 同时要求 Object Read（源）和 Object Write（目标）权限。源对象不存在返回 `NoSuchKey`，源 Bucket 不存在返回 `NoSuchBucket`；请求携带 Body、非法源路径或重复源 Header 返回 `InvalidRequest`/`InvalidArgument`。
+- 复制指定历史版本时使用 `x-amz-copy-source: /source-bucket/source-key?versionId=ID`。源版本只读，不修改或重新排序历史；复制到同一 Key 会按目标 Bucket 的 Versioning 状态发布一个新的当前版本，用于标准 S3 版本回溯。
+- CopyObject 同时要求 Object Read（源）和 Object Write（目标）权限。当前源对象不存在返回 `NoSuchKey`，指定源版本不存在返回 `NoSuchVersion`，源 Bucket 不存在返回 `NoSuchBucket`；显式引用 DeleteMarker、请求携带 Body、非法源路径、非法源 Version ID 或重复源 Header 返回 `InvalidRequest`/`InvalidArgument`。
+- 默认 `x-amz-metadata-directive` 为 `COPY`，复制源对象的 Content-Type、用户元数据、大小、SHA-256 和 ETag（包括 multipart ETag）。`REPLACE` 使用目标请求的 Content-Type 和 `x-amz-meta-*`，对象字节和 checksum 仍由流式复制重新校验。
+- 支持 `x-amz-copy-source-if-match`、`x-amz-copy-source-if-none-match`、`x-amz-copy-source-if-modified-since` 和 `x-amz-copy-source-if-unmodified-since`；条件不满足返回 `412 PreconditionFailed`。目标可使用普通 `If-*` 条件并绑定 Metadata Generation CAS。
+- 复制使用固定缓冲区分段读取和暂存，不把完整源对象加载到内存；目标发布遵循普通 PutObject 的 fsync、Metadata Commit 和失败不发布语义。成功响应包含 `LastModified` 和带引号的 `ETag`；版本化目标返回 `x-amz-version-id`，版本化或显式指定的源返回 `x-amz-copy-source-version-id`。
 
 POST Policy Upload：
 
@@ -186,9 +190,6 @@ POST Policy Upload：
 - Policy `expiration` 使用 UTC ISO-8601；支持对象精确条件、`eq`、`starts-with` 和 `content-length-range`。Bucket 条件绑定 URL Bucket，`key` 在校验前展开 `${filename}`。
 - 支持 `Content-Type`、`Content-MD5`、`x-amz-checksum-crc64nvme`、`x-amz-meta-*` 和 `success_action_status=200|201|204`。ACL、redirect、其他 checksum 或未识别表单字段返回 `NotImplemented`。
 - 策略过期、条件/签名/Session Token/校验和失败、文件大小越界、断流或非法 multipart 均不会发布 Object；`201` 返回标准 `PostResponse` XML，默认成功状态为 `204`。
-- 默认 `x-amz-metadata-directive` 为 `COPY`，复制源对象的 Content-Type、用户元数据、大小、SHA-256 和 ETag（包括 multipart ETag）。`REPLACE` 使用目标请求的 Content-Type 和 `x-amz-meta-*`，对象字节和 checksum 仍由流式复制重新校验。
-- 支持 `x-amz-copy-source-if-match`、`x-amz-copy-source-if-none-match`、`x-amz-copy-source-if-modified-since` 和 `x-amz-copy-source-if-unmodified-since`；条件不满足返回 `412 PreconditionFailed`。目标可使用普通 `If-*` 条件并绑定 Metadata Generation CAS。
-- 复制使用固定缓冲区分段读取和暂存，不把完整源对象加载到内存；目标发布遵循普通 PutObject 的 fsync、Metadata Commit 和失败不发布语义。成功响应包含 `LastModified` 和带引号的 `ETag`。
 
 连接中断：
 
@@ -241,7 +242,7 @@ Request ID Header，不返回 XML Body。
 
 | 客户端/测试 | 状态 | 覆盖 |
 |---|---|---|
-| Zig 原生环回 TCP Contract Test | Pass | 未签名、错误/过期签名、永久/临时 Credential、Session Token Header/Presigned 正反向、POST Policy（签名、条件、`${filename}`、状态码、大小限制、失败不发布）、禁用 Credential、Bucket/Object CRUD、Digest、五种 Flexible Checksum Header/Trailer、XML、List V2 分页、Versioning/DeleteMarker/指定版本/ListObjectVersions、Lifecycle、Conditional GET/HEAD/PUT（304/412、ETag/日期优先级、条件 PUT 不发布）、CopyObject（COPY/REPLACE、流式字节一致、标准 XML）、Virtual-hosted Header/Presigned SigV4 与 Host 拒绝、完整 Multipart 生命周期、五种 signed trailer 正向与失败不发布、Object/Part 中途断流清理、下载取消释放租约、稳定错误、Method/Query 篡改和过期拒绝 |
+| Zig 原生环回 TCP Contract Test | Pass | 未签名、错误/过期签名、永久/临时 Credential、Session Token Header/Presigned 正反向、POST Policy（签名、条件、`${filename}`、状态码、大小限制、失败不发布）、禁用 Credential、Bucket/Object CRUD、Digest、五种 Flexible Checksum Header/Trailer、XML、List V2 分页、Versioning/DeleteMarker/指定版本/ListObjectVersions、Lifecycle、Conditional GET/HEAD/PUT（304/412、ETag/日期优先级、条件 PUT 不发布）、CopyObject（COPY/REPLACE、指定源版本回溯、源/目标版本响应头、流式字节一致、标准 XML）、Virtual-hosted Header/Presigned SigV4 与 Host 拒绝、完整 Multipart 生命周期、五种 signed trailer 正向与失败不发布、Object/Part 中途断流清理、下载取消释放租约、稳定错误、Method/Query 篡改和过期拒绝 |
 | AWS 官方 S3 SigV4 GET Object 向量 | Pass | Canonical Request、Scope、HMAC-SHA256，签名 `67fe34c...2722900` |
 | Phase 9 Compatibility Runner / AWS CLI 2.36.38 | Pass | `compatibility/run.sh --client aws` 实测 Bucket/Object CRUD、List、Head、Get、Presigned GET、CopyObject 和带 Flexible Checksum Header 的 DeleteObjects |
 | Phase 9 Compatibility Runner / MinIO Client (`mc`) 2025-08-13 | Pass with Unsupported coverage | `compatibility/run.sh --client mc` 实测 Bucket/Object CRUD、递归 List、Head/Get、签名流式 Put、DeleteObjects、Presigned GET、CopyObject；POST Policy 与 streaming checksum 变体无稳定 CLI 入口，记为 `Unsupported` |

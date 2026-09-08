@@ -641,9 +641,21 @@ components:
         version_id:
           type: string
           description: GET 或 DELETE 时生成指定对象版本的 Presigned URL。
+        copy_source_bucket:
+          type: string
+          description: >-
+            与 copy_source_key 同时提供时，为 PUT 生成标准 S3 CopyObject Presigned URL；
+            不能与 Multipart 或目标 version_id 同时使用。
+        copy_source_key:
+          type: string
+          description: CopyObject 源对象 Key。
+        copy_source_version_id:
+          type: string
+          description: 可选的 CopyObject 源 Version ID，用于将历史版本发布为新的当前版本。
     PresignObjectResponse:
       type: object
-      required: [url, expires_at]
+      additionalProperties: false
+      required: [url, expires_at, required_headers]
       properties:
         url:
           type: string
@@ -651,6 +663,13 @@ components:
         expires_at:
           type: string
           format: date-time
+        required_headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            使用 Presigned URL 时必须原样携带的 Header。普通对象和 Multipart 请求为空；
+            CopyObject 包含已参与签名的 x-amz-copy-source。
     MultipartUploadSummary:
       type: object
       additionalProperties: false

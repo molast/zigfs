@@ -21,7 +21,7 @@
 | GET | `/_admin/v1/multipart-uploads/{id}?bucket=&key=` | Management 凭证 | 查询 Upload 与已提交 Parts |
 | POST | `/_admin/v1/multipart-uploads/{id}/complete` | Management 凭证 | 使用 Part Number/ETag 完成上传 |
 | DELETE | `/_admin/v1/multipart-uploads/{id}?bucket=&key=` | Management 凭证 | 取消上传并清理已提交分片 |
-| POST | `/_admin/v1/objects/presign` | Management 凭证 | 生成对象或 UploadPart 的短时效直传 URL |
+| POST | `/_admin/v1/objects/presign` | Management 凭证 | 生成对象、指定版本、CopyObject 或 UploadPart 的短时效直连 URL；调用方必须携带响应中的 `required_headers` |
 
 `storage` 在 V1 报告当前可见对象的逻辑字节数；`total` 和 `available` 在没有正式容量
 Backend 时为 `null`，不能把单个平台的文件系统调用结果冒充为可移植容量契约。
@@ -56,10 +56,14 @@ Backend 时为 `null`，不能把单个平台的文件系统调用结果冒充�
 | POST | `/{bucket}?delete=` | DeleteObjects |
 | POST | `/{bucket}` | S3 POST Policy Upload（`multipart/form-data`） |
 | PUT | `/{bucket}/{object}` | PutObject |
-| PUT | `/{bucket}/{object}` + `x-amz-copy-source` | CopyObject |
+| PUT | `/{bucket}/{object}` + `x-amz-copy-source: /{source-bucket}/{source-object}[?versionId=ID]` | CopyObject（可指定源 Version ID） |
 | GET | `/{bucket}/{object}[?versionId=ID]` | GetObject / GetObjectVersion |
 | HEAD | `/{bucket}/{object}[?versionId=ID]` | HeadObject / HeadObjectVersion |
 | DELETE | `/{bucket}/{object}[?versionId=ID]` | DeleteObject / DeleteObjectVersion |
+
+Admin 中“恢复被删除对象”使用 `DELETE ?versionId=<DeleteMarker ID>` 删除最新 DeleteMarker；
+“回溯到旧版本”使用带源 `versionId` 的 CopyObject，将旧版本内容发布为新的当前版本。两项操作都
+经过 ZigFS 生成的 Presigned URL 直连 S3/Data API，不新增 Admin 私有文件协议。
 
 Multipart Upload：
 
@@ -99,7 +103,8 @@ multipart 解析失败均不会发布对象。
 - 条件请求使用 `If-Match`、`If-None-Match`、`If-Modified-Since`、`If-Unmodified-Since`；
   GET/HEAD 未变化返回 `304`，写入前置条件失败返回 `412 PreconditionFailed`。
 - 临时凭证必须携带 `x-amz-security-token`，该 Header 或 Presigned Query 参数必须参与 SigV4 签名。
-- 版本化 Bucket 的 Put/Copy/Multipart Complete 返回 `x-amz-version-id`；普通删除按状态创建
+- 版本化 Bucket 的 Put/Copy/Multipart Complete 返回 `x-amz-version-id`；CopyObject 可在
+  `x-amz-copy-source` 中指定 `versionId`，成功时返回 `x-amz-copy-source-version-id`。普通删除按状态创建
   DeleteMarker，带 `versionId` 的删除永久移除指定版本。Lifecycle Scanner 周期由
   `s3.lifecycle_scan_interval_seconds` 配置。
 

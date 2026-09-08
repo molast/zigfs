@@ -81,6 +81,7 @@ export interface ListObjectsResponse {
 export interface PresignObjectResponse {
   url: string
   expires_at: string
+  required_headers: Record<string, string>
 }
 
 export interface MultipartUploadSummary {

@@ -6,6 +6,7 @@ const index_module = @import("../metadata/index.zig");
 const bucket_store_port = @import("../ports/bucket_store.zig");
 const byte_stream = @import("../ports/byte_stream.zig");
 const data_store_port = @import("../ports/object_data_store.zig");
+const multipart_data_store_port = @import("../ports/multipart_data_store.zig");
 const object_store_port = @import("../ports/object_store.zig");
 const ObjectLockPool = @import("object_lock_pool.zig").ObjectLockPool;
 
@@ -54,6 +55,12 @@ pub const MultipartEtag = struct {
     part_count: u16,
 };
 
+pub const MultipartCommitOptions = struct {
+    content_type: []const u8 = "application/octet-stream",
+    user_metadata: []const object_domain.UserMetadata = &.{},
+    etag: MultipartEtag,
+};
+
 pub const DeleteResult = struct {
     deleted: bool,
     delete_marker: bool = false,
@@ -88,6 +95,7 @@ pub const ReadLease = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     data_store: data_store_port.ObjectDataStore,
+    multipart_data_store: ?multipart_data_store_port.MultipartDataStore,
     object_lock: *std.Io.RwLock,
     object: ?object_domain.Object,
     lock_held: bool = true,
@@ -98,6 +106,24 @@ pub const ReadLease = struct {
 
     pub fn stream(self: *ReadLease, sink: byte_stream.Sink) Error!void {
         const object = self.object orelse unreachable;
+        if (object.multipart_manifest) |manifest| {
+            const store = self.multipart_data_store orelse return error.CorruptData;
+            for (manifest.parts) |part| {
+                var verifying_sink: VerifyingPartSink = .{ .downstream = sink };
+                store.readRange(
+                    multipartLocation(manifest.upload_id, part),
+                    0,
+                    part.size,
+                    verifying_sink.interface(),
+                ) catch |err| return mapExistingMultipartDataError(err);
+                if (verifying_sink.size != part.size or
+                    !std.crypto.timing_safe.eql([32]u8, verifying_sink.digest(), part.checksum_sha256))
+                {
+                    return error.CorruptData;
+                }
+            }
+            return;
+        }
         self.data_store.read(
             locationFor(object),
             .{
@@ -116,6 +142,33 @@ pub const ReadLease = struct {
     ) Error!void {
         const object = self.object orelse unreachable;
         if (offset > object.size or length > object.size - offset) return error.InvalidRange;
+        if (object.multipart_manifest) |manifest| {
+            const store = self.multipart_data_store orelse return error.CorruptData;
+            var object_part_offset: u64 = 0;
+            var requested_offset = offset;
+            var remaining = length;
+            for (manifest.parts) |part| {
+                if (remaining == 0) break;
+                const part_end = std.math.add(u64, object_part_offset, part.size) catch return error.CorruptMetadata;
+                if (requested_offset >= part_end) {
+                    object_part_offset = part_end;
+                    continue;
+                }
+                const offset_in_part = if (requested_offset > object_part_offset) requested_offset - object_part_offset else 0;
+                const part_length = @min(remaining, part.size - offset_in_part);
+                store.readRange(
+                    multipartLocation(manifest.upload_id, part),
+                    offset_in_part,
+                    part_length,
+                    sink,
+                ) catch |err| return mapExistingMultipartDataError(err);
+                requested_offset += part_length;
+                remaining -= part_length;
+                object_part_offset = part_end;
+            }
+            if (remaining != 0) return error.CorruptData;
+            return;
+        }
         self.data_store.readRange(
             locationFor(object),
             offset,
@@ -144,6 +197,7 @@ pub const ObjectService = struct {
     bucket_store: bucket_store_port.BucketStore,
     object_store: object_store_port.ObjectStore,
     data_store: data_store_port.ObjectDataStore,
+    multipart_data_store: ?multipart_data_store_port.MultipartDataStore,
     index: *index_module.MetadataIndex,
     state_mutex: *std.Io.Mutex,
     object_locks: *ObjectLockPool,
@@ -154,6 +208,7 @@ pub const ObjectService = struct {
         bucket_store: bucket_store_port.BucketStore,
         object_store: object_store_port.ObjectStore,
         data_store: data_store_port.ObjectDataStore,
+        multipart_data_store: ?multipart_data_store_port.MultipartDataStore,
         index: *index_module.MetadataIndex,
         state_mutex: *std.Io.Mutex,
         object_locks: *ObjectLockPool,
@@ -164,6 +219,7 @@ pub const ObjectService = struct {
             .bucket_store = bucket_store,
             .object_store = object_store,
             .data_store = data_store,
+            .multipart_data_store = multipart_data_store,
             .index = index,
             .state_mutex = state_mutex,
             .object_locks = object_locks,
@@ -196,6 +252,102 @@ pub const ObjectService = struct {
         return object;
     }
 
+    pub fn commitMultipart(
+        self: ObjectService,
+        bucket_name: []const u8,
+        key: []const u8,
+        manifest: object_domain.MultipartManifestView,
+        size: u64,
+        options: MultipartCommitOptions,
+    ) Error!object_domain.Object {
+        try validateAddress(bucket_name, key);
+        object_domain.validateContentType(options.content_type) catch return error.InvalidContentType;
+        object_domain.validateUserMetadata(options.user_metadata) catch return error.InvalidUserMetadata;
+        if (options.etag.part_count == 0 or options.etag.part_count > object_domain.max_multipart_parts or
+            options.etag.part_count != manifest.parts.len or !@import("../common/id.zig").isValidV4(manifest.upload_id))
+        {
+            return error.CorruptMetadata;
+        }
+        const multipart_store = self.multipart_data_store orelse return error.Unavailable;
+        var verified_size: u64 = 0;
+        var previous_part_number: u16 = 0;
+        for (manifest.parts) |part| {
+            if (part.number == 0 or part.number <= previous_part_number or
+                !@import("../common/id.zig").isValidV4(part.data_generation)) return error.CorruptMetadata;
+            const stored_size = multipart_store.stat(multipartLocation(manifest.upload_id, part)) catch |err| {
+                return mapExistingMultipartDataError(err);
+            };
+            if (stored_size != part.size) return error.CorruptData;
+            verified_size = std.math.add(u64, verified_size, stored_size) catch return error.CorruptMetadata;
+            previous_part_number = part.number;
+        }
+        if (verified_size != size) return error.CorruptMetadata;
+
+        self.state_mutex.lockUncancelable(self.io);
+        const initial_bucket = self.loadBucketLocked(bucket_name) catch |err| {
+            self.state_mutex.unlock(self.io);
+            return err;
+        };
+        self.state_mutex.unlock(self.io);
+        defer initial_bucket.deinit(self.allocator);
+
+        const object_lock = self.object_locks.get(bucket_name, key);
+        object_lock.lockUncancelable(self.io);
+        defer object_lock.unlock(self.io);
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
+
+        const bucket = try self.loadBucketLocked(bucket_name);
+        defer bucket.deinit(self.allocator);
+        if (!std.mem.eql(u8, &initial_bucket.id, &bucket.id) or initial_bucket.generation != bucket.generation) {
+            return error.BucketNotFound;
+        }
+        const current = try self.loadHistoryLocked(bucket_name, key);
+        defer if (current) |record| record.deinit(self.allocator);
+        var expected_generation: object_store_port.ExpectedGeneration = .missing;
+        if (current) |record| switch (record) {
+            .active => |history| expected_generation = .{ .exact = history.metadata_generation },
+            .tombstone => |generation| expected_generation = .{ .exact = generation },
+        };
+        const object_id = reusableNullVersionObjectId(current, bucket.versioning) orelse
+            (@import("../common/id.zig").randomV4(self.io) catch return error.Unavailable);
+        const data_generation = @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable;
+        const value: object_store_port.Value = .{
+            .id = object_id,
+            .bucket_id = bucket.id,
+            .bucket_name = bucket_name,
+            .key = key,
+            .size = size,
+            .etag_md5 = options.etag.digest,
+            .etag_part_count = options.etag.part_count,
+            .checksum_sha256 = manifestIntegrityDigest(manifest),
+            .content_type = options.content_type,
+            .last_modified_unix_seconds = std.Io.Clock.real.now(self.io).toSeconds(),
+            .user_metadata = options.user_metadata,
+            .data_generation = data_generation,
+            .multipart_manifest = manifest,
+            .status = .active,
+            .version_id = if (bucket.versioning == .enabled)
+                .{ .uuid = @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable }
+            else
+                .null_version,
+        };
+        var owned = object_domain.cloneFromView(self.allocator, value, 0) catch return error.OutOfMemory;
+        errdefer owned.deinit(self.allocator);
+        var history = buildHistoryWithObject(self.allocator, value, current, bucket.versioning) catch return error.OutOfMemory;
+        defer history.deinit(self.allocator);
+        var prepared = self.index.prepareObject(bucket_name, key) catch |err| return mapIndexError(err);
+        defer prepared.deinit(self.index.allocator);
+        const metadata_generation = self.object_store.putHistory(
+            self.allocator,
+            &history,
+            expected_generation,
+        ) catch |err| return mapObjectStoreError(err);
+        self.index.publishObject(&prepared, metadata_generation);
+        owned.metadata_generation = metadata_generation;
+        return owned;
+    }
+
     /// Copies an existing object through the same staged publish path as PUT.
     /// The source generation is read while a shared lease is held, then the
     /// lease is released before committing the destination so self-copies do
@@ -204,6 +356,7 @@ pub const ObjectService = struct {
         self: ObjectService,
         source_bucket_name: []const u8,
         source_key: []const u8,
+        source_version_id: ?object_domain.VersionId,
         target_bucket_name: []const u8,
         target_key: []const u8,
         options: PutOptions,
@@ -212,10 +365,12 @@ pub const ObjectService = struct {
         try validateAddress(source_bucket_name, source_key);
         try validateRequest(target_bucket_name, target_key, options);
 
-        var source_lease = try self.open(source_bucket_name, source_key);
+        var source_lease = if (source_version_id) |version_id|
+            try self.openVersion(source_bucket_name, source_key, version_id)
+        else
+            try self.open(source_bucket_name, source_key);
         defer source_lease.deinit();
-        var source_object = source_lease.takeMetadata();
-        defer source_object.deinit(self.allocator);
+        const source_object = source_lease.metadata();
         const source_view = source_object.view();
         if (options.expected_source_generation) |generation| {
             if (source_object.metadata_generation != generation) return error.ConditionNotMet;
@@ -242,8 +397,7 @@ pub const ObjectService = struct {
 
         const data_generation = @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable;
         var source_stream = LeaseSource{
-            .data_store = self.data_store,
-            .location = locationFor(source_view),
+            .lease = &source_lease,
             .size = source_view.size,
             .offset = 0,
         };
@@ -252,6 +406,8 @@ pub const ObjectService = struct {
         };
         var staged_pending = true;
         defer if (staged_pending) self.data_store.discard(staged.token);
+        var source_metadata = source_lease.takeMetadata();
+        defer source_metadata.deinit(self.allocator);
         source_lease.deinit();
 
         const object = self.commitStaged(target_bucket_name, target_key, initial_bucket, staged, copy_options) catch |err| return err;
@@ -398,14 +554,12 @@ pub const ObjectService = struct {
         };
         self.state_mutex.unlock(self.io);
         errdefer object.deinit(self.allocator);
-        const size = self.data_store.stat(locationFor(object)) catch |err| {
-            return mapExistingDataError(err);
-        };
-        if (size != object.size) return error.CorruptData;
+        try self.validateObjectData(object);
         return .{
             .allocator = self.allocator,
             .io = self.io,
             .data_store = self.data_store,
+            .multipart_data_store = self.multipart_data_store,
             .object_lock = object_lock,
             .object = object,
         };
@@ -428,15 +582,33 @@ pub const ObjectService = struct {
         };
         self.state_mutex.unlock(self.io);
         errdefer object.deinit(self.allocator);
-        const size = self.data_store.stat(locationFor(object)) catch |err| return mapExistingDataError(err);
-        if (size != object.size) return error.CorruptData;
+        try self.validateObjectData(object);
         return .{
             .allocator = self.allocator,
             .io = self.io,
             .data_store = self.data_store,
+            .multipart_data_store = self.multipart_data_store,
             .object_lock = object_lock,
             .object = object,
         };
+    }
+
+    fn validateObjectData(self: ObjectService, object: object_domain.Object) Error!void {
+        if (object.multipart_manifest) |manifest| {
+            const store = self.multipart_data_store orelse return error.CorruptData;
+            var total_size: u64 = 0;
+            for (manifest.parts) |part| {
+                const size = store.stat(multipartLocation(manifest.upload_id, part)) catch |err| {
+                    return mapExistingMultipartDataError(err);
+                };
+                if (size != part.size) return error.CorruptData;
+                total_size = std.math.add(u64, total_size, size) catch return error.CorruptMetadata;
+            }
+            if (total_size != object.size) return error.CorruptMetadata;
+            return;
+        }
+        const size = self.data_store.stat(locationFor(object)) catch |err| return mapExistingDataError(err);
+        if (size != object.size) return error.CorruptData;
     }
 
     pub fn delete(
@@ -1152,6 +1324,7 @@ test "object service puts gets overwrites and tombstones objects" {
     const copied = try objects.copy(
         "project-assets",
         "../../images/cover.txt",
+        null,
         "project-assets",
         "copies/cover.txt",
         .{},
@@ -1169,6 +1342,7 @@ test "object service puts gets overwrites and tombstones objects" {
     const self_copy = try objects.copy(
         "project-assets",
         "../../images/cover.txt",
+        null,
         "project-assets",
         "../../images/cover.txt",
         .{},
@@ -1365,6 +1539,32 @@ test "object service preserves version history delete markers and suspended null
     try first_lease.stream(first_sink.interface());
     first_lease.deinit();
     try std.testing.expectEqualStrings("first", first_sink.bytes.items);
+
+    const rewound = try objects.copy(
+        "versioned-assets",
+        "release.txt",
+        first.version_id,
+        "versioned-assets",
+        "release.txt",
+        .{},
+        true,
+    );
+    defer rewound.deinit(std.testing.allocator);
+    try std.testing.expect(!object_domain.VersionId.eql(first.version_id, rewound.version_id));
+    try std.testing.expect(!object_domain.VersionId.eql(second.version_id, rewound.version_id));
+    var rewound_sink = test_streams.CollectingSink.init(std.testing.allocator);
+    defer rewound_sink.deinit();
+    const rewound_current = try objects.get("versioned-assets", "release.txt", rewound_sink.interface());
+    defer rewound_current.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("first", rewound_sink.bytes.items);
+    const rewound_versions = try objects.listVersions("versioned-assets", "release");
+    defer rewound_versions.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 3), rewound_versions.entries.len);
+    try std.testing.expect(object_domain.VersionId.eql(rewound.version_id, rewound_versions.entries[0].version_id));
+    try std.testing.expect((try objects.deleteVersion("versioned-assets", "release.txt", rewound.version_id)).deleted);
+    const after_rewind_cleanup = try objects.head("versioned-assets", "release.txt");
+    defer after_rewind_cleanup.deinit(std.testing.allocator);
+    try std.testing.expect(object_domain.VersionId.eql(second.version_id, after_rewind_cleanup.version_id));
 
     const deleted = try objects.delete("versioned-assets", "release.txt");
     try std.testing.expect(deleted.deleted and deleted.delete_marker);

@@ -96,7 +96,7 @@ ZigFS 0.1 已纳入 Versioning 和 Lifecycle 的核心子集。其余操作不�
 | `HeadObject` | `HEAD /{bucket}/{key}` | `Implemented` | 返回大小、ETag、Last-Modified、Content-Type、Metadata、checksum 和按需返回的 Version ID。 |
 | `DeleteObject` | `DELETE /{bucket}/{key}` | `Implemented` | 未版本化 Bucket 使用 Tombstone；已启用/暂停版本管理的 Bucket 按 S3 语义创建 DeleteMarker 或永久删除指定 `versionId`，物理数据由 GC 延迟回收。 |
 | `DeleteObjects` | `POST /{bucket}?delete` | `Implemented` | 最多 1000 个 Key，支持 Content-MD5 或五种 Flexible Checksum Header、Quiet 和逐项结果；批量 `VersionId` 尚未实现。 |
-| `CopyObject` | `PUT /{bucket}/{key}` + `x-amz-copy-source` | `Implemented` | 支持 COPY/REPLACE Metadata、源/目标权限、条件和流式复制。 |
+| `CopyObject` | `PUT /{bucket}/{key}` + `x-amz-copy-source` | `Implemented` | 支持 COPY/REPLACE Metadata、源/目标权限、条件、流式复制及 `x-amz-copy-source` 的 `versionId`；同 Key 复制旧版本会生成新的当前版本。 |
 | `GetObjectAttributes` | `GET /{bucket}/{key}?attributes` | `Not Implemented` | 不提供独立 Object Attributes 响应。 |
 | `GetObjectAcl` | `GET /{bucket}/{key}?acl` | `Not Implemented` | 不提供 S3 ACL。 |
 | `PutObjectAcl` | `PUT /{bucket}/{key}?acl` | `Not Implemented` | 不提供 S3 ACL。 |
@@ -137,7 +137,7 @@ Part，再上传缺失 Part。单次 PutObject 或单个 UploadPart 中断后必
 | Path-style / Virtual-hosted-style | `Implemented` | 默认 Path-style；Virtual-hosted-style 由 `s3.virtual_hosted_style` 开启。 |
 | Flexible Checksum | `Implemented` | CRC32、CRC32C、CRC64NVME、SHA1、SHA256；PutObject/UploadPart 支持 Header/签名 Trailer，XML Body 操作支持 Header。 |
 | Conditional Requests | `Implemented` | GET/HEAD/PUT 的 ETag 和 HTTP 日期条件，含 304/412 与条件写 CAS。 |
-| Object Versioning | `Implemented` | Bucket Enabled/Suspended、不可变 Version ID、DeleteMarker、指定版本 GET/HEAD/DELETE 和 ListObjectVersions。 |
+| Object Versioning | `Implemented` | Bucket Enabled/Suspended、不可变 Version ID、DeleteMarker、指定版本 GET/HEAD/DELETE、ListObjectVersions，以及通过标准 CopyObject 将旧版本发布为新当前版本。 |
 | Lifecycle Scanner | `Implemented` | YAML 可配置扫描周期；清理当前版本、非当前版本和仅剩的过期 DeleteMarker。 |
 
 ## 0.1 已知差异

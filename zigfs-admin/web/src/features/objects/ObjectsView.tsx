@@ -63,6 +63,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
   const [uploadsLoading, setUploadsLoading] = useState(false)
   const [deletingKey, setDeletingKey] = useState('')
   const [deletingVersion, setDeletingVersion] = useState('')
+  const [restoringVersion, setRestoringVersion] = useState('')
   const [detail, setDetail] = useState<ObjectSummary | null>(null)
   const [detailUrl, setDetailUrl] = useState<PresignObjectResponse | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -519,7 +520,8 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
   }
 
   async function removeVersion(version: ObjectVersion) {
-    if (!accessKey || !bucket || !window.confirm(`永久删除“${version.key}”的版本 ${shortVersionId(version.version_id)}？此操作不会创建 DeleteMarker。`)) return
+    const target = version.is_delete_marker ? 'DeleteMarker' : '对象版本'
+    if (!accessKey || !bucket || !window.confirm(`永久删除“${version.key}”的${target} ${shortVersionId(version.version_id)}？此操作不会创建新的 DeleteMarker。`)) return
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setDeletingVersion(identity)
@@ -527,12 +529,55 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       const presigned = await api.presignObject(accessKey, bucket, version.key, 'DELETE', 900, { versionId: version.version_id })
       const response = await fetch(presigned.url, { method: 'DELETE' })
       if (!response.ok) throw new Error(`删除版本失败（${response.status}）`)
-      setNotice(`已永久删除 ${version.key} 的版本 ${shortVersionId(version.version_id)}`)
+      setNotice(`已永久删除 ${version.key} 的${target} ${shortVersionId(version.version_id)}`)
       await load(true)
     } catch (reason) {
       setError((reason as Error).message)
     } finally {
       setDeletingVersion('')
+    }
+  }
+
+  async function restoreDeletedObject(version: ObjectVersion) {
+    if (!accessKey || !bucket || !version.is_delete_marker || !version.is_latest ||
+      !window.confirm(`删除最新 DeleteMarker 并恢复对象“${version.key}”？`)) return
+    const identity = `${version.key}\u0000${version.version_id}`
+    try {
+      setRestoringVersion(identity)
+      setError('')
+      const presigned = await api.presignObject(accessKey, bucket, version.key, 'DELETE', 900, { versionId: version.version_id })
+      const response = await fetch(presigned.url, { method: 'DELETE' })
+      if (!response.ok) throw new Error(`恢复对象失败（${response.status}）`)
+      setNotice(`已恢复 ${version.key}`)
+      await load(true)
+    } catch (reason) {
+      setError((reason as Error).message)
+    } finally {
+      setRestoringVersion('')
+    }
+  }
+
+  async function rewindVersion(version: ObjectVersion) {
+    if (!accessKey || !bucket || version.is_delete_marker || version.is_latest ||
+      !window.confirm(`将“${version.key}”回溯到版本 ${shortVersionId(version.version_id)}？ZigFS 会创建一个新的当前版本。`)) return
+    const identity = `${version.key}\u0000${version.version_id}`
+    try {
+      setRestoringVersion(identity)
+      setError('')
+      const presigned = await api.presignObject(accessKey, bucket, version.key, 'PUT', 900, {
+        copySource: { bucket, key: version.key, versionId: version.version_id },
+      })
+      const response = await fetch(presigned.url, {
+        method: 'PUT',
+        headers: presigned.required_headers,
+      })
+      if (!response.ok) throw new Error(`回溯版本失败（${response.status}）`)
+      setNotice(`已将 ${version.key} 回溯到版本 ${shortVersionId(version.version_id)}`)
+      await load(true)
+    } catch (reason) {
+      setError((reason as Error).message)
+    } finally {
+      setRestoringVersion('')
     }
   }
 
@@ -550,7 +595,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
           <h2>Object Browser</h2>
           <p className="page-description">浏览、上传、下载和管理 Bucket 中的对象。</p>
         </div>
-        <span className="count-badge">{viewMode === 'current' ? `${objects.length}${nextToken ? '+' : ''} 个对象` : `${versions.length} 个版本`}</span>
+        <span className="count-badge">{viewMode === 'current' ? `${objects.length}${nextToken ? '+' : ''} 个对象` : `${versions.length} 条版本记录`}</span>
       </header>
 
       <div className="object-location" aria-label="当前对象路径">
@@ -565,7 +610,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
         <div className="toolbar-leading object-toolbar-leading">
           <div className="segmented-control object-view-switch" aria-label="对象列表模式">
             <button type="button" className={viewMode === 'current' ? 'active' : ''} onClick={() => setViewMode('current')}>当前对象</button>
-            <button type="button" className={viewMode === 'versions' ? 'active' : ''} onClick={() => setViewMode('versions')}><History className="button-icon" aria-hidden="true" />所有版本</button>
+            <button type="button" className={viewMode === 'versions' ? 'active' : ''} onClick={() => setViewMode('versions')}><History className="button-icon" aria-hidden="true" />版本与已删除对象</button>
           </div>
           <label className="search-box">
             <Search aria-hidden="true" />
@@ -682,6 +727,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
             <thead><tr><th>Object</th><th>Version ID</th><th>State</th><th>Size</th><th>Last Modified</th><th>Actions</th></tr></thead>
             <tbody>{versions.map((version) => {
               const identity = `${version.key}\u0000${version.version_id}`
+              const restoring = restoringVersion === identity
               return <tr key={identity} className={version.is_delete_marker ? 'delete-marker-row' : ''}>
                 <td className="object-key"><div className="file-cell">{version.is_delete_marker ? <Trash2 className="file-symbol" aria-hidden="true" /> : <File className="file-symbol" aria-hidden="true" />}<span>{version.key}</span></div></td>
                 <td><code className="version-id" title={version.version_id}>{shortVersionId(version.version_id)}</code></td>
@@ -690,7 +736,9 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
                 <td>{new Date(version.last_modified).toLocaleString()}</td>
                 <td className="table-actions">
                   {!version.is_delete_marker && <button className="secondary-button" type="button" onClick={() => void downloadVersion(version)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>}
-                  <button className="danger-button" type="button" onClick={() => void removeVersion(version)} disabled={!accessKey || deletingVersion === identity}><Trash2 className="button-icon" aria-hidden="true" />{deletingVersion === identity ? '删除中...' : '永久删除'}</button>
+                  {version.is_delete_marker && version.is_latest && <button className="secondary-button" type="button" onClick={() => void restoreDeletedObject(version)} disabled={!accessKey || restoring}><RotateCcw className={`button-icon${restoring ? ' spinning' : ''}`} aria-hidden="true" />{restoring ? '恢复中...' : '恢复对象'}</button>}
+                  {!version.is_delete_marker && !version.is_latest && <button className="secondary-button" type="button" onClick={() => void rewindVersion(version)} disabled={!accessKey || restoring}><History className={`button-icon${restoring ? ' spinning' : ''}`} aria-hidden="true" />{restoring ? '回溯中...' : '回溯到此版本'}</button>}
+                  {(!version.is_delete_marker || !version.is_latest) && <button className="danger-button" type="button" onClick={() => void removeVersion(version)} disabled={!accessKey || deletingVersion === identity}><Trash2 className="button-icon" aria-hidden="true" />{deletingVersion === identity ? '删除中...' : version.is_delete_marker ? '删除标记' : '永久删除'}</button>}
                 </td>
               </tr>
             })}</tbody>

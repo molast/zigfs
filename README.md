@@ -50,8 +50,10 @@ Admin 只是 ZigFS Management API 的一个网页客户端。移除 Admin 后，
 - Signature V4 Header/Presigned Query 验签、Canonical URI/Query/Header、Region Scope、Payload Hash、有效期和时钟偏差校验
 - Path-style 与可配置 Virtual-hosted-style S3 Router、Host-aware SigV4、稳定 XML 错误，以及 Bucket/Object/List V2 HTTP Handler
 - S3 Put/Get 流式传输、Content-MD5/SHA-256 与 CRC32/CRC32C/CRC64NVME/SHA1/SHA256 Flexible Checksum 校验、ETag、用户元数据和分页响应
-- S3 Bucket Versioning：Enabled/Suspended、不可变 Version ID、DeleteMarker、指定版本 GET/HEAD/DELETE 和 ListObjectVersions
+- S3 Bucket Versioning：Enabled/Suspended、不可变 Version ID、DeleteMarker、指定版本 GET/HEAD/DELETE、ListObjectVersions，以及通过 CopyObject 将旧版本发布为新当前版本
 - S3 Lifecycle：持久化规则、当前/非当前版本过期、过期 DeleteMarker 清理和 YAML 可配置后台扫描周期
+- Admin 版本视图：查看 DeleteMarker、删除最新 DeleteMarker 恢复对象，以及通过标准 CopyObject 回溯任意旧版本
+- Admin Lifecycle 规则页：新增、编辑、启停和删除当前版本、非当前版本及过期 DeleteMarker 的 Expiry 规则
 - AWS SigV4 aws-chunked 签名链，以及五种 Flexible Checksum signed trailer 的签名与 checksum 校验
 - S3 Multipart Create、并发 UploadPart、ListParts、ListMultipartUploads、Complete、Abort、复合 ETag 和启动超时清理
 - Multipart 以 Part 为边界暂停/恢复；支持 Presigned 全生命周期、Upload ID 重发现和跳过已提交 Part

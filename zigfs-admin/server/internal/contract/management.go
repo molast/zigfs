@@ -57,19 +57,23 @@ type ListObjectsResponse struct {
 }
 
 type PresignObjectRequest struct {
-	AccessKey     string `json:"access_key" binding:"required"`
-	Bucket        string `json:"bucket" binding:"required"`
-	Key           string `json:"key" binding:"required"`
-	Method        string `json:"method" binding:"required"`
-	ExpiresSecond int64  `json:"expires_seconds" binding:"required"`
-	UploadID      string `json:"upload_id,omitempty"`
-	PartNumber    int    `json:"part_number,omitempty" binding:"omitempty,min=1,max=10000"`
-	VersionID     string `json:"version_id,omitempty"`
+	AccessKey           string `json:"access_key" binding:"required"`
+	Bucket              string `json:"bucket" binding:"required"`
+	Key                 string `json:"key" binding:"required"`
+	Method              string `json:"method" binding:"required"`
+	ExpiresSecond       int64  `json:"expires_seconds" binding:"required"`
+	UploadID            string `json:"upload_id,omitempty"`
+	PartNumber          int    `json:"part_number,omitempty" binding:"omitempty,min=1,max=10000"`
+	VersionID           string `json:"version_id,omitempty"`
+	CopySourceBucket    string `json:"copy_source_bucket,omitempty"`
+	CopySourceKey       string `json:"copy_source_key,omitempty"`
+	CopySourceVersionID string `json:"copy_source_version_id,omitempty"`
 }
 
 type PresignObjectResponse struct {
-	URL       string    `json:"url"`
-	ExpiresAt time.Time `json:"expires_at"`
+	URL             string            `json:"url"`
+	ExpiresAt       time.Time         `json:"expires_at"`
+	RequiredHeaders map[string]string `json:"required_headers"`
 }
 
 type MultipartUploadSummary struct {

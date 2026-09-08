@@ -2,16 +2,54 @@ package zigclient_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"zigfs-admin/server/internal/contract"
 	"zigfs-admin/server/internal/managementauth"
 	"zigfs-admin/server/internal/port"
 	"zigfs-admin/server/internal/zigclient"
 )
+
+func TestPresignObjectForwardsCopySourceContract(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/_admin/v1/objects/presign" || request.Method != http.MethodPost {
+			t.Fatalf("unexpected request %s %q", request.Method, request.URL.Path)
+		}
+		var body contract.PresignObjectRequest
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if body.CopySourceBucket != "versions" || body.CopySourceKey != "release.txt" || body.CopySourceVersionID != "version-1" {
+			t.Fatalf("copy source was not forwarded: %+v", body)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"url":"http://s3.example/versions/release.txt?signature=test","expires_at":"2026-09-08T08:00:00Z","required_headers":{"x-amz-copy-source":"/versions/release.txt?versionId=version-1"}}`))
+	}))
+	defer server.Close()
+
+	client := zigclient.New(server.URL, time.Second)
+	response, err := client.PresignObject(context.Background(), contract.PresignObjectRequest{
+		AccessKey:           "test-key",
+		Bucket:              "versions",
+		Key:                 "release.txt",
+		Method:              http.MethodPut,
+		ExpiresSecond:       60,
+		CopySourceBucket:    "versions",
+		CopySourceKey:       "release.txt",
+		CopySourceVersionID: "version-1",
+	})
+	if err != nil {
+		t.Fatalf("presign request failed: %v", err)
+	}
+	if response.RequiredHeaders["x-amz-copy-source"] != "/versions/release.txt?versionId=version-1" {
+		t.Fatalf("required headers were not preserved: %+v", response.RequiredHeaders)
+	}
+}
 
 func TestSystem(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

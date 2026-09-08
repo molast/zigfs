@@ -18,6 +18,8 @@ import {
 } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type { Bucket, BucketConfiguration } from '../../types/api'
+import { LifecycleRulesEditor } from './LifecycleRulesEditor'
+import { parseLifecycleConfiguration, serializeLifecycleConfiguration, type LifecycleRule } from './lifecycle'
 
 interface BucketDetailViewProps {
   api: ApiClient
@@ -38,7 +40,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
   const [bucket, setBucket] = useState<Bucket | null>(null)
   const [configuration, setConfiguration] = useState<BucketConfiguration | null>(null)
   const [activeSection, setActiveSection] = useState<'Summary' | 'Lifecycle'>('Summary')
-  const [lifecycleXml, setLifecycleXml] = useState('')
+  const [lifecycleRules, setLifecycleRules] = useState<LifecycleRule[]>([])
   const [usage, setUsage] = useState<BucketUsage>({ bytes: 0, objects: 0 })
   const [loading, setLoading] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -57,7 +59,9 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       if (!current) throw new Error(`Bucket “${bucketName}” 不存在`)
       setBucket(current)
       setConfiguration(bucketConfiguration)
-      setLifecycleXml(bucketConfiguration.lifecycle_configuration ?? defaultLifecycleConfiguration)
+      setLifecycleRules(bucketConfiguration.lifecycle_configuration
+        ? parseLifecycleConfiguration(bucketConfiguration.lifecycle_configuration)
+        : [])
 
       let continuationToken = ''
       let bytes = 0
@@ -109,30 +113,21 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     }
   }
 
-  async function saveLifecycle() {
+  async function saveLifecycle(rules: LifecycleRule[]) {
     try {
       setLoading(true)
       setError('')
-      const updated = await api.updateBucketConfiguration(bucketName, { lifecycle_configuration: lifecycleXml })
+      const updated = rules.length > 0
+        ? await api.updateBucketConfiguration(bucketName, {
+            lifecycle_configuration: serializeLifecycleConfiguration(rules),
+          })
+        : await api.updateBucketConfiguration(bucketName, { clear_lifecycle: true })
       setConfiguration(updated)
-      setBucket((current) => current ? { ...current, lifecycle_enabled: true } : current)
+      setLifecycleRules(rules)
+      setBucket((current) => current ? { ...current, lifecycle_enabled: rules.length > 0 } : current)
     } catch (reason) {
       setError((reason as Error).message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function clearLifecycle() {
-    try {
-      setLoading(true)
-      setError('')
-      const updated = await api.updateBucketConfiguration(bucketName, { clear_lifecycle: true })
-      setConfiguration(updated)
-      setBucket((current) => current ? { ...current, lifecycle_enabled: false } : current)
-      setLifecycleXml(defaultLifecycleConfiguration)
-    } catch (reason) {
-      setError((reason as Error).message)
+      throw reason
     } finally {
       setLoading(false)
     }
@@ -215,34 +210,17 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
             <SettingItem icon={KeyRound} label="Retention" value="Disabled" status="unavailable" />
             <SettingItem icon={LockKeyhole} label="Mode" value="-" status="unavailable" />
           </SettingsSection>
-          </> : <section className="lifecycle-editor">
-            <div className="lifecycle-editor-header">
-              <div><h3>Lifecycle configuration</h3><p>配置对象、非当前版本与过期 DeleteMarker 的清理规则。</p></div>
-              <span className={`status-badge ${configuration?.lifecycle_configuration ? 'enabled' : ''}`}>{configuration?.lifecycle_configuration ? 'Enabled' : 'Not configured'}</span>
-            </div>
-            <label htmlFor="lifecycle-xml">S3 Lifecycle XML</label>
-            <textarea id="lifecycle-xml" value={lifecycleXml} onChange={(event) => setLifecycleXml(event.target.value)} spellCheck={false} />
-            <div className="lifecycle-editor-actions">
-              <button className="primary-button" type="button" onClick={() => void saveLifecycle()} disabled={loading || !lifecycleXml.trim()}>保存规则</button>
-              <button className="secondary-button" type="button" onClick={() => void clearLifecycle()} disabled={loading || !configuration?.lifecycle_configuration}>清除规则</button>
-            </div>
-          </section>}
+          </> : <LifecycleRulesEditor
+            rules={lifecycleRules}
+            configured={Boolean(configuration?.lifecycle_configuration)}
+            loading={loading}
+            onSave={saveLifecycle}
+          />}
         </div>
       </section>
     </section>
   )
 }
-
-const defaultLifecycleConfiguration = `<LifecycleConfiguration>
-  <Rule>
-    <ID>expire-noncurrent-versions</ID>
-    <Filter><Prefix></Prefix></Filter>
-    <Status>Enabled</Status>
-    <NoncurrentVersionExpiration>
-      <NoncurrentDays>30</NoncurrentDays>
-    </NoncurrentVersionExpiration>
-  </Rule>
-</LifecycleConfiguration>`
 
 function SettingsSection({ title, children }: { title: string; children: ReactNode }) {
   return (

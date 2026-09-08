@@ -106,7 +106,12 @@ export function createApiClient() {
       key: string,
       method: 'GET' | 'PUT' | 'DELETE',
       expiresSeconds: number,
-      options?: { uploadId?: string; partNumber?: number; versionId?: string },
+      options?: {
+        uploadId?: string
+        partNumber?: number
+        versionId?: string
+        copySource?: { bucket: string; key: string; versionId?: string }
+      },
     ) => request<PresignObjectResponse>('/api/v1/objects/presign', {
       method: 'POST',
       body: JSON.stringify({
@@ -117,6 +122,11 @@ export function createApiClient() {
         expires_seconds: expiresSeconds,
         ...(options?.uploadId && options.partNumber ? { upload_id: options.uploadId, part_number: options.partNumber } : {}),
         ...(options?.versionId ? { version_id: options.versionId } : {}),
+        ...(options?.copySource ? {
+          copy_source_bucket: options.copySource.bucket,
+          copy_source_key: options.copySource.key,
+          ...(options.copySource.versionId ? { copy_source_version_id: options.copySource.versionId } : {}),
+        } : {}),
       }),
     }),
     createMultipartUpload: (bucket: string, key: string, contentType: string) =>

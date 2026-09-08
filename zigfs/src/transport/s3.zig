@@ -55,12 +55,13 @@ const ConditionalOutcome = enum {
 const MetadataDirective = enum { copy, replace };
 
 const CopySource = struct {
-    path: []u8,
+    target: protocol.ParsedTarget,
     bucket: []const u8,
     key: []const u8,
+    version_id: ?object_domain.VersionId,
 
-    fn deinit(self: *CopySource, allocator: std.mem.Allocator) void {
-        allocator.free(self.path);
+    fn deinit(self: *CopySource) void {
+        self.target.deinit();
         self.* = undefined;
     }
 };
@@ -1671,24 +1672,37 @@ fn serveCopyObject(
     const target_bucket = ensureBucketOwner(application, target_bucket_name, owner) catch |err| {
         return respondError(request, application.allocator, mapBucketError(err), request_id);
     };
+    const target_has_version_id = target_bucket.versioning != .unversioned;
     target_bucket.deinit(application.allocator);
 
     var source = (parseCopySource(application.allocator, headers) catch |err| switch (err) {
         error.OutOfMemory => return respondError(request, application.allocator, .internal_error, request_id),
         error.InvalidCopySource => return respondError(request, application.allocator, .invalid_argument, request_id),
     }) orelse return respondError(request, application.allocator, .invalid_argument, request_id);
-    defer source.deinit(application.allocator);
+    defer source.deinit();
     const source_bucket = ensureBucketOwner(application, source.bucket, owner) catch |err| {
         return respondError(request, application.allocator, mapBucketError(err), request_id);
     };
+    const source_has_version_id = source.version_id != null or source_bucket.versioning != .unversioned;
     source_bucket.deinit(application.allocator);
 
     const objects = application.objectService() orelse {
         return respondError(request, application.allocator, .service_unavailable, request_id);
     };
-    var source_object = objects.head(source.bucket, source.key) catch |err| {
-        return respondError(request, application.allocator, mapObjectError(err), request_id);
+    var source_lease = (if (source.version_id) |version_id|
+        objects.openVersion(source.bucket, source.key, version_id)
+    else
+        objects.open(source.bucket, source.key)) catch |err| {
+        const kind: protocol.ErrorKind = if (source.version_id != null and err == error.ObjectNotFound)
+            .no_such_version
+        else if (source.version_id != null and err == error.DeleteMarker)
+            .invalid_request
+        else
+            mapObjectError(err);
+        return respondError(request, application.allocator, kind, request_id);
     };
+    var source_object = source_lease.takeMetadata();
+    source_lease.deinit();
     defer source_object.deinit(application.allocator);
 
     const source_conditions = parseCopySourceConditions(headers) catch {
@@ -1742,17 +1756,24 @@ fn serveCopyObject(
     const object = objects.copy(
         source.bucket,
         source.key,
+        source.version_id,
         target_bucket_name,
         target_key,
         .{
             .content_type = content_type,
             .user_metadata = metadata,
             .expected_current = expected_current,
-            .expected_source_generation = source_object.metadata_generation,
+            .expected_source_generation = if (source.version_id == null) source_object.metadata_generation else null,
         },
         directive == .copy,
     ) catch |err| {
-        return respondError(request, application.allocator, mapObjectError(err), request_id);
+        const kind: protocol.ErrorKind = if (source.version_id != null and err == error.ObjectNotFound)
+            .no_such_version
+        else if (source.version_id != null and err == error.DeleteMarker)
+            .invalid_request
+        else
+            mapObjectError(err);
+        return respondError(request, application.allocator, kind, request_id);
     };
     defer object.deinit(application.allocator);
 
@@ -1775,7 +1796,19 @@ fn serveCopyObject(
     writer.writeAll("</ETag></CopyObjectResult>\n") catch {
         return respondError(request, application.allocator, .internal_error, request_id);
     };
-    return respondXml(request, xml.written(), .ok, request_id, &.{});
+    var target_version_buffer: [object_domain.VersionId.encoded_length]u8 = undefined;
+    var source_version_buffer: [object_domain.VersionId.encoded_length]u8 = undefined;
+    var extra: [2]std.http.Header = undefined;
+    var extra_count: usize = 0;
+    if (target_has_version_id) {
+        extra[extra_count] = .{ .name = "x-amz-version-id", .value = object.version_id.write(&target_version_buffer) };
+        extra_count += 1;
+    }
+    if (source_has_version_id) {
+        extra[extra_count] = .{ .name = "x-amz-copy-source-version-id", .value = source_object.version_id.write(&source_version_buffer) };
+        extra_count += 1;
+    }
+    return respondXml(request, xml.written(), .ok, request_id, extra[0..extra_count]);
 }
 
 fn serveGetObject(
@@ -2720,27 +2753,33 @@ fn parseCopySource(
 ) error{ OutOfMemory, InvalidCopySource }!?CopySource {
     const raw = singleHeader(headers, "x-amz-copy-source") catch return error.InvalidCopySource;
     const value = raw orelse return null;
-    if (value.len < 3 or
-        std.mem.indexOfScalar(u8, value, '?') != null or
-        std.mem.indexOfScalar(u8, value, '#') != null)
-    {
-        return error.InvalidCopySource;
-    }
-    const path = protocol.strictPercentDecode(allocator, value) catch |err| switch (err) {
+    if (value.len < 3 or std.mem.indexOfScalar(u8, value, '#') != null) return error.InvalidCopySource;
+    const normalized = if (value[0] == '/')
+        null
+    else
+        std.fmt.allocPrint(allocator, "/{s}", .{value}) catch return error.OutOfMemory;
+    defer if (normalized) |owned| allocator.free(owned);
+    var target = protocol.parseTarget(allocator, .PUT, normalized orelse value) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.InvalidTarget => return error.InvalidCopySource,
     };
-    errdefer allocator.free(path);
-    if (path.len < 3 or std.mem.indexOfScalar(u8, path, 0) != null) {
+    errdefer target.deinit();
+    const bucket = target.bucket orelse return error.InvalidCopySource;
+    const key = target.key orelse return error.InvalidCopySource;
+    if (target.parameters.len > 1) return error.InvalidCopySource;
+    if (target.parameters.len == 1 and !std.mem.eql(u8, target.parameters[0].name, "versionId")) {
         return error.InvalidCopySource;
     }
-    const start: usize = if (path[0] == '/') 1 else 0;
-    const slash = std.mem.indexOfScalarPos(u8, path, start, '/') orelse return error.InvalidCopySource;
-    if (slash == start or slash + 1 >= path.len) return error.InvalidCopySource;
+    const version_text = target.query("versionId") catch return error.InvalidCopySource;
+    const version_id = if (version_text) |encoded|
+        object_domain.parseVersionId(encoded) catch return error.InvalidCopySource
+    else
+        null;
     return .{
-        .path = path,
-        .bucket = path[start..slash],
-        .key = path[slash + 1 ..],
+        .target = target,
+        .bucket = bucket,
+        .key = key,
+        .version_id = version_id,
     };
 }
 
@@ -3346,7 +3385,7 @@ const ObjectResponseHeaders = struct {
         index += 1;
         self.headers[index] = .{ .name = "access-control-allow-origin", .value = "*" };
         index += 1;
-        self.headers[index] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id" };
+        self.headers[index] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-version-id, x-amz-delete-marker, x-amz-copy-source-version-id" };
         index += 1;
         for (object.user_metadata, 0..) |entry, metadata_index| {
             self.headers[index] = .{
@@ -3534,7 +3573,7 @@ fn respondXml(
     headers[2] = .{ .name = "x-amz-request-id", .value = request_id };
     headers[3] = .{ .name = "x-request-id", .value = request_id };
     headers[4] = .{ .name = "access-control-allow-origin", .value = "*" };
-    headers[5] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" };
+    headers[5] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-version-id, x-amz-delete-marker, x-amz-copy-source-version-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" };
     @memcpy(headers[6..][0..additional_headers.len], additional_headers);
     try request.respond(body, .{
         .status = status,
@@ -3555,7 +3594,7 @@ fn respondEmpty(
     headers[1] = .{ .name = "x-amz-request-id", .value = request_id };
     headers[2] = .{ .name = "x-request-id", .value = request_id };
     headers[3] = .{ .name = "access-control-allow-origin", .value = "*" };
-    headers[4] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" };
+    headers[4] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-version-id, x-amz-delete-marker, x-amz-copy-source-version-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" };
     @memcpy(headers[5..][0..additional_headers.len], additional_headers);
     try request.respond("", .{
         .status = status,
@@ -3574,8 +3613,8 @@ fn respondCorsPreflight(
         .{ .name = "x-request-id", .value = request_id },
         .{ .name = "access-control-allow-origin", .value = "*" },
         .{ .name = "access-control-allow-methods", .value = "GET, PUT, DELETE, HEAD, OPTIONS" },
-        .{ .name = "access-control-allow-headers", .value = "content-type, x-amz-content-sha256, x-amz-date, x-amz-security-token, authorization, x-amz-sdk-checksum-algorithm, x-amz-trailer, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" },
-        .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" },
+        .{ .name = "access-control-allow-headers", .value = "content-type, content-md5, if-match, if-none-match, if-modified-since, if-unmodified-since, x-amz-content-sha256, x-amz-date, x-amz-security-token, x-amz-copy-source, x-amz-copy-source-if-match, x-amz-copy-source-if-none-match, x-amz-copy-source-if-modified-since, x-amz-copy-source-if-unmodified-since, x-amz-metadata-directive, authorization, x-amz-sdk-checksum-algorithm, x-amz-trailer, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" },
+        .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-version-id, x-amz-delete-marker, x-amz-copy-source-version-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" },
         .{ .name = "access-control-max-age", .value = "600" },
     };
     try request.respond("", .{ .status = .no_content, .extra_headers = &headers });
@@ -3995,9 +4034,10 @@ test "S3 CopyObject parses encoded sources and metadata directives" {
         .value = "/project-assets/folder%2Fhello.txt",
     }};
     var source = (try parseCopySource(std.testing.allocator, &headers)).?;
-    defer source.deinit(std.testing.allocator);
+    defer source.deinit();
     try std.testing.expectEqualStrings("project-assets", source.bucket);
     try std.testing.expectEqualStrings("folder/hello.txt", source.key);
+    try std.testing.expect(source.version_id == null);
     try std.testing.expectEqual(MetadataDirective.copy, try parseMetadataDirective(&headers));
 
     const unprefixed_headers = [_]sigv4.Header{.{
@@ -4005,9 +4045,31 @@ test "S3 CopyObject parses encoded sources and metadata directives" {
         .value = "project-assets/folder%2Fhello.txt",
     }};
     var unprefixed = (try parseCopySource(std.testing.allocator, &unprefixed_headers)).?;
-    defer unprefixed.deinit(std.testing.allocator);
+    defer unprefixed.deinit();
     try std.testing.expectEqualStrings("project-assets", unprefixed.bucket);
     try std.testing.expectEqualStrings("folder/hello.txt", unprefixed.key);
+
+    const version_id_text = "00112233445546778899aabbccddeeff";
+    const version_headers = [_]sigv4.Header{.{
+        .name = "x-amz-copy-source",
+        .value = "/project-assets/folder%2Fhello.txt?versionId=" ++ version_id_text,
+    }};
+    var versioned = (try parseCopySource(std.testing.allocator, &version_headers)).?;
+    defer versioned.deinit();
+    try std.testing.expectEqualStrings("folder/hello.txt", versioned.key);
+    try std.testing.expect(object_domain.VersionId.eql(
+        try object_domain.parseVersionId(version_id_text),
+        versioned.version_id.?,
+    ));
+
+    const encoded_question_headers = [_]sigv4.Header{.{
+        .name = "x-amz-copy-source",
+        .value = "/project-assets/folder%3Fname.txt",
+    }};
+    var encoded_question = (try parseCopySource(std.testing.allocator, &encoded_question_headers)).?;
+    defer encoded_question.deinit();
+    try std.testing.expectEqualStrings("folder?name.txt", encoded_question.key);
+    try std.testing.expect(encoded_question.version_id == null);
 
     const replace_headers = [_]sigv4.Header{
         headers[0],
@@ -4027,6 +4089,16 @@ test "S3 CopyObject parses encoded sources and metadata directives" {
         .value = "/project-assets",
     }};
     try std.testing.expectError(error.InvalidCopySource, parseCopySource(std.testing.allocator, &missing_key));
+    const invalid_version = [_]sigv4.Header{.{
+        .name = "x-amz-copy-source",
+        .value = "/project-assets/folder/hello.txt?versionId=invalid",
+    }};
+    try std.testing.expectError(error.InvalidCopySource, parseCopySource(std.testing.allocator, &invalid_version));
+    const unsupported_query = [_]sigv4.Header{.{
+        .name = "x-amz-copy-source",
+        .value = "/project-assets/folder/hello.txt?other=value",
+    }};
+    try std.testing.expectError(error.InvalidCopySource, parseCopySource(std.testing.allocator, &unsupported_query));
 }
 
 test "S3 streaming failure mapping separates signatures checksums and framing" {
