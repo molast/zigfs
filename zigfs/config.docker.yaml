@@ -1,0 +1,26 @@
+# Container defaults. Mount a replacement at /etc/zigfs/config.yaml for deployment.
+server:
+  api_address: "0.0.0.0:9000"
+
+observability:
+  metrics_enabled: true
+  metrics_address: "0.0.0.0:9090"
+
+storage:
+  data_root: "/var/lib/zigfs"
+  stream_buffer_size: 65536
+
+s3:
+  public_endpoint: "http://127.0.0.1:9000"
+  virtual_hosted_style: false
+  region: "us-east-1"
+  request_time_skew_seconds: 900
+  multipart_expiry_seconds: 604800
+  lifecycle_scan_interval_seconds: 300
+
+# Replace these development credentials before exposing the container.
+admin:
+  username: "admin"
+  password: "zigfs-admin"
+  session_secret: "zigfs-local-session-secret-change-before-production"
+  session_ttl_seconds: 28800

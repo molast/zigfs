@@ -163,6 +163,57 @@ Management Token 签发全部由 ZigFS 负责，Go Admin 不保存管理员账�
 默认本地登录账号为 `admin`，密码为 `zigfs-admin`。请在 `zigfs/config.yaml` 的
 `admin` 段修改；对外部署前必须同时更换密码和 `session_secret`。
 
+## Docker
+
+ZigFS 与 ZigFS Admin 使用独立镜像。先构建两个项目：
+
+```bash
+docker build -t zigfs:0.1.0 ./zigfs
+docker build -t zigfs-admin:0.1.0 ./zigfs-admin
+```
+
+创建内部网络并启动 ZigFS：
+
+```bash
+docker network create zigfs-network
+docker run -d \
+  --name zigfs \
+  --network zigfs-network \
+  -p 9000:9000 \
+  -p 9090:9090 \
+  -v zigfs-data:/var/lib/zigfs \
+  zigfs:0.1.0
+```
+
+再启动只负责 Web 展示和 API 转发的 Admin：
+
+```bash
+docker run -d \
+  --name zigfs-admin \
+  --network zigfs-network \
+  -p 9001:9001 \
+  -e ZIGFS_ENDPOINT=http://zigfs:9000 \
+  zigfs-admin:0.1.0
+```
+
+ZigFS 镜像内置 [容器默认配置](zigfs/config.docker.yaml)，数据目录为
+`/var/lib/zigfs`。生产部署应修改管理员凭证、`session_secret` 和
+`s3.public_endpoint`，并将配置挂载到 `/etc/zigfs/config.yaml`：
+
+```bash
+docker run -d \
+  --name zigfs \
+  --network zigfs-network \
+  -p 9000:9000 \
+  -p 9090:9090 \
+  -v zigfs-data:/var/lib/zigfs \
+  -v "$(pwd)/zigfs/config.docker.yaml:/etc/zigfs/config.yaml:ro" \
+  zigfs:0.1.0
+```
+
+Admin 镜像不包含 ZigFS 数据与管理员账号。它仅通过 `ZIGFS_ENDPOINT` 调用
+ZigFS Management API；跨 Docker 网络、主机或 HTTPS 部署时修改该环境变量即可。
+
 ## 架构边界
 
 ```text
