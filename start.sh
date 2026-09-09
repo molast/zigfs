@@ -7,6 +7,7 @@ FS_DIR="${ROOT_DIR}/zigfs"
 ADMIN_SERVER_DIR="${ROOT_DIR}/zigfs-admin/server"
 ADMIN_WEB_DIR="${ROOT_DIR}/zigfs-admin/web"
 AUTO_STARTED_FS_PID=""
+DOCKER_IMAGE_TAG="${ZIGFS_DOCKER_TAG:-0.1.0}"
 
 fail() {
   printf '错误: %s\n' "$1" >&2
@@ -15,6 +16,11 @@ fail() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "未找到命令 '$1'，请先安装后重试。"
+}
+
+require_docker() {
+  require_command docker
+  docker info >/dev/null 2>&1 || fail "Docker 服务尚未运行，请先启动 Docker Desktop 或其他 Docker daemon。"
 }
 
 fs_is_ready() {
@@ -105,12 +111,57 @@ start_admin() {
   (cd "${ADMIN_SERVER_DIR}" && go run ./cmd/admin)
 }
 
+build_fs_image() {
+  printf '正在构建 ZigFS Docker 镜像 zigfs:%s...\n' "${DOCKER_IMAGE_TAG}"
+  docker build --tag "zigfs:${DOCKER_IMAGE_TAG}" "${FS_DIR}"
+}
+
+build_admin_image() {
+  printf '正在构建 ZigFS Admin Docker 镜像 zigfs-admin:%s...\n' "${DOCKER_IMAGE_TAG}"
+  docker build --tag "zigfs-admin:${DOCKER_IMAGE_TAG}" "${ROOT_DIR}/zigfs-admin"
+}
+
+build_docker_images() {
+  local docker_choice
+
+  require_docker
+  printf '%s\n' \
+    '请选择要构建的 Docker 镜像:' \
+    '  1) ZigFS' \
+    '  2) ZigFS Admin' \
+    '  3) 全部' \
+    '  0) 退出'
+  read -r -p '请输入选项 [0-3]: ' docker_choice
+
+  case "${docker_choice}" in
+    1 | fs | FS)
+      build_fs_image
+      ;;
+    2 | admin | Admin | ADMIN)
+      build_admin_image
+      ;;
+    3 | all | All | ALL)
+      build_fs_image
+      build_admin_image
+      ;;
+    0 | q | Q)
+      exit 0
+      ;;
+    *)
+      fail "无效的 Docker 构建选项: ${docker_choice}"
+      ;;
+  esac
+
+  printf 'Docker 镜像构建完成。\n'
+}
+
 printf '%s\n' \
-  '请选择要启动的服务:' \
-  '  1) ZigFS' \
-  '  2) ZigFS Admin' \
+  '请选择操作:' \
+  '  1) 启动 ZigFS' \
+  '  2) 启动 ZigFS Admin' \
+  '  3) 构建 Docker 镜像' \
   '  0) 退出'
-read -r -p '请输入选项 [0-2]: ' choice
+read -r -p '请输入选项 [0-3]: ' choice
 
 case "${choice}" in
   1 | fs | FS)
@@ -118,6 +169,9 @@ case "${choice}" in
     ;;
   2 | admin | Admin | ADMIN)
     start_admin
+    ;;
+  3 | docker | Docker | DOCKER)
+    build_docker_images
     ;;
   0 | q | Q)
     exit 0

@@ -141,8 +141,9 @@ AWS S3 全量操作覆盖和未实现边界见 [docs/api/s3-api-coverage.md](doc
 ./start.sh
 ```
 
-运行后可选择启动 ZigFS 或 ZigFS Admin。选择 ZigFS 时只启动文件服务；选择
-ZigFS Admin 时会启动完整依赖链，不需要再打开另一个终端。
+运行后可选择启动 ZigFS、启动 ZigFS Admin，或构建 Docker 镜像。选择 ZigFS 时只启动
+文件服务；选择 ZigFS Admin 时会启动完整依赖链，不需要再打开另一个终端。Docker 构建
+入口可继续选择 ZigFS、ZigFS Admin 或一次构建全部镜像。
 
 Admin 启动前会检查 ZigFS Management API 的
 `http://127.0.0.1:9000/health/ready`。可以通过 `ZIGFS_ENDPOINT` 修改检查和连接地址。
@@ -165,7 +166,22 @@ Management Token 签发全部由 ZigFS 负责，Go Admin 不保存管理员账�
 
 ## Docker
 
-ZigFS 与 ZigFS Admin 使用独立镜像。先构建两个项目：
+ZigFS 与 ZigFS Admin 使用独立镜像。可以运行根目录脚本并选择“构建 Docker 镜像”：
+
+```bash
+./start.sh
+```
+
+默认镜像标签为 `0.1.0`，可以通过 `ZIGFS_DOCKER_TAG` 覆盖：
+
+```bash
+ZIGFS_DOCKER_TAG=0.1.0-dev ./start.sh
+```
+
+ZigFS Dockerfile 基于 Alpine，构建阶段从 Zig 官方下载索引中选择与容器架构匹配的
+Zig 0.16.0 压缩包并校验 SHA-256，不依赖 Alpine 仓库或额外的 Zig 镜像。
+
+也可以直接执行 Docker 命令构建两个项目：
 
 ```bash
 docker build -t zigfs:0.1.0 ./zigfs
