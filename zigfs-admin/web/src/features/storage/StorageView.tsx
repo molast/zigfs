@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react'
 import type { ApiClient } from '../../api/client'
+import { useLoading } from '../../components/LoadingProvider'
 import type { StorageInfo } from '../../types/api'
 
 export function StorageView({ api }: { api: ApiClient }) {
+  const { withLoading } = useLoading()
   const [storage, setStorage] = useState<StorageInfo | null>(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    api.storage().then(setStorage).catch((reason: Error) => setError(reason.message))
-  }, [api])
+    withLoading('正在加载存储信息...', () => api.storage()).then(setStorage).catch((reason: Error) => setError(reason.message))
+  }, [api, withLoading])
 
   return (
     <section>

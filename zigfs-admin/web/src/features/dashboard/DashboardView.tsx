@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
+import { useLoading } from '../../components/LoadingProvider'
 import type { ManagementHealth, SystemInfo } from '../../types/api'
 
 interface DashboardViewProps {
@@ -8,12 +9,14 @@ interface DashboardViewProps {
 }
 
 export function DashboardView({ api }: DashboardViewProps) {
+  const { startLoading } = useLoading()
   const [system, setSystem] = useState<SystemInfo | null>(null)
   const [health, setHealth] = useState<ManagementHealth | null>(null)
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
 
   const refresh = useCallback(async () => {
+    const stopLoading = startLoading('正在加载服务信息...')
     try {
       setRefreshing(true)
       setError('')
@@ -24,8 +27,9 @@ export function DashboardView({ api }: DashboardViewProps) {
       setError((reason as Error).message)
     } finally {
       setRefreshing(false)
+      stopLoading()
     }
-  }, [api])
+  }, [api, startLoading])
 
   useEffect(() => {
     void refresh()
@@ -39,12 +43,11 @@ export function DashboardView({ api }: DashboardViewProps) {
           <h2>Server Information</h2>
           <p className="page-description">ZigFS 当前服务状态、对象规模和运行时间。</p>
         </div>
-        <button className="secondary-button" type="button" onClick={() => void refresh()} disabled={refreshing}>
-          <RefreshCw className={`button-icon${refreshing ? ' spinning' : ''}`} aria-hidden="true" />{refreshing ? '同步中...' : '同步'}
+        <button className="secondary-button refresh-action-button" type="button" onClick={() => void refresh()} disabled={refreshing} aria-busy={refreshing}>
+          <RefreshCw className={`button-icon${refreshing ? ' spinning' : ''}`} aria-hidden="true" />同步
         </button>
       </header>
       {error && <p className="error-banner">{error}</p>}
-      {!system && !error && <p className="loading-state">正在加载服务信息...</p>}
       {system && (
         <>
           <div className="metric-grid">

@@ -17,6 +17,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { ApiError, createApiClient } from './api/client'
+import { useLoading } from './components/LoadingProvider'
 import { AccessKeysView } from './features/access-keys/AccessKeysView'
 import { LoginView } from './features/auth/LoginView'
 import { BucketDetailView } from './features/buckets/BucketDetailView'
@@ -30,6 +31,16 @@ import { appRoutePath, createAppRoute, parseAppRoute, type AppRoute, type View }
 import type { AdminSession } from './types/api'
 
 type Availability = 'checking' | 'ready' | 'offline' | 'not-ready'
+
+const THEME_STORAGE_KEY = 'zigfs-admin-theme'
+
+function readDarkTheme(): boolean {
+  try {
+    return window.localStorage.getItem(THEME_STORAGE_KEY) === 'dark'
+  } catch {
+    return false
+  }
+}
 
 interface NavItem {
   view: View
@@ -63,29 +74,40 @@ const viewMeta: Record<View, { section: string; label: string }> = {
 }
 
 export default function App() {
+  const { withLoading } = useLoading()
   const [session, setSession] = useState<AdminSession | null>()
   const [route, setRoute] = useState<AppRoute>(() => parseAppRoute(window.location.pathname))
   const [availability, setAvailability] = useState<Availability>('checking')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
-  const [darkTheme, setDarkTheme] = useState(false)
+  const [darkTheme, setDarkTheme] = useState(readDarkTheme)
   const api = useMemo(() => createApiClient(), [])
 
-  async function bootstrap() {
-    setAvailability('checking')
+  useEffect(() => {
     try {
-      await api.ready()
-      setAvailability('ready')
-      try {
-        setSession(await api.session())
-      } catch (reason) {
-        if (reason instanceof ApiError && reason.status === 401) setSession(null)
-        else throw reason
-      }
-    } catch (reason) {
-      setSession(undefined)
-      setAvailability(reason instanceof ApiError && reason.body.code === 'StorageNotReady' ? 'not-ready' : 'offline')
+      window.localStorage.setItem(THEME_STORAGE_KEY, darkTheme ? 'dark' : 'light')
+    } catch {
+      // Storage may be unavailable in private or restricted browser contexts.
     }
+  }, [darkTheme])
+
+  async function bootstrap() {
+    await withLoading('正在连接 ZigFS...', async () => {
+      setAvailability('checking')
+      try {
+        await api.ready()
+        setAvailability('ready')
+        try {
+          setSession(await api.session())
+        } catch (reason) {
+          if (reason instanceof ApiError && reason.status === 401) setSession(null)
+          else throw reason
+        }
+      } catch (reason) {
+        setSession(undefined)
+        setAvailability(reason instanceof ApiError && reason.body.code === 'StorageNotReady' ? 'not-ready' : 'offline')
+      }
+    })
   }
 
   useEffect(() => {
@@ -113,11 +135,13 @@ export default function App() {
   }
 
   async function logout() {
-    try {
-      await api.logout()
-    } finally {
-      setSession(null)
-    }
+    await withLoading('正在退出登录...', async () => {
+      try {
+        await api.logout()
+      } finally {
+        setSession(null)
+      }
+    })
   }
 
   function navigate(nextView: View, bucket = '') {

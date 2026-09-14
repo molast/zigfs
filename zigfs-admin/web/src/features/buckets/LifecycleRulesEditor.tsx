@@ -6,6 +6,7 @@ import {
   type LifecycleAction,
   type LifecycleRule,
 } from './lifecycle'
+import { useConfirm } from '../../components/ConfirmProvider'
 
 interface LifecycleRulesEditorProps {
   rules: LifecycleRule[]
@@ -15,6 +16,7 @@ interface LifecycleRulesEditorProps {
 }
 
 export function LifecycleRulesEditor({ rules, configured, loading, onSave }: LifecycleRulesEditorProps) {
+  const confirm = useConfirm()
   const [draft, setDraft] = useState<LifecycleRule | null>(null)
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [formError, setFormError] = useState('')
@@ -61,7 +63,12 @@ export function LifecycleRulesEditor({ rules, configured, loading, onSave }: Lif
   }
 
   async function removeRule(index: number) {
-    if (!window.confirm(`删除 Lifecycle 规则“${rules[index].id}”？`)) return
+    if (!await confirm({
+      title: '删除 Lifecycle 规则',
+      message: `删除 Lifecycle 规则“${rules[index].id}”？此操作不可撤销。`,
+      confirmLabel: '删除',
+      danger: true,
+    })) return
     try {
       await onSave(rules.filter((_, ruleIndex) => ruleIndex !== index))
     } catch {
@@ -199,7 +206,7 @@ export function LifecycleRulesEditor({ rules, configured, loading, onSave }: Lif
             {formError && <p className="form-error lifecycle-form-error">{formError}</p>}
             <footer className="lifecycle-modal-actions">
               <button className="secondary-button" type="button" onClick={closeEditor} disabled={loading}>取消</button>
-              <button className="primary-button" type="button" onClick={() => void submitRule()} disabled={loading}>{loading ? '保存中...' : '保存'}</button>
+              <button className="primary-button" type="button" onClick={() => void submitRule()} disabled={loading}>保存</button>
             </footer>
           </section>
         </div>

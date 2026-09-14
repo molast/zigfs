@@ -17,6 +17,8 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
+import { useConfirm } from '../../components/ConfirmProvider'
+import { useLoading } from '../../components/LoadingProvider'
 import { useToast } from '../../components/ToastProvider'
 import type { Bucket, BucketConfiguration } from '../../types/api'
 import { LifecycleRulesEditor } from './LifecycleRulesEditor'
@@ -38,6 +40,8 @@ interface BucketUsage {
 const sections = ['Summary', 'Events', 'Replication', 'Lifecycle', 'Access', 'Anonymous']
 
 export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDeleted }: BucketDetailViewProps) {
+  const confirm = useConfirm()
+  const { startLoading } = useLoading()
   const showToast = useToast()
   const [bucket, setBucket] = useState<Bucket | null>(null)
   const [configuration, setConfiguration] = useState<BucketConfiguration | null>(null)
@@ -50,6 +54,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
 
   const refresh = useCallback(async () => {
     if (!bucketName) return
+    const stopLoading = startLoading('正在加载 Bucket 配置...')
     try {
       setLoading(true)
       setError('')
@@ -81,15 +86,22 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       setError((reason as Error).message)
     } finally {
       setLoading(false)
+      stopLoading()
     }
-  }, [api, bucketName])
+  }, [api, bucketName, startLoading])
 
   useEffect(() => {
     void refresh()
   }, [refresh])
 
   async function remove() {
-    if (!window.confirm(`删除 Bucket “${bucketName}”？`)) return
+    if (!await confirm({
+      title: '删除 Bucket',
+      message: `删除 Bucket “${bucketName}”？此操作不可撤销。`,
+      confirmLabel: '删除',
+      danger: true,
+    })) return
+    const stopLoading = startLoading('正在删除 Bucket...')
     try {
       setDeleting(true)
       setError('')
@@ -100,10 +112,12 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       setError((reason as Error).message)
     } finally {
       setDeleting(false)
+      stopLoading()
     }
   }
 
   async function updateVersioning(versioning: 'Enabled' | 'Suspended') {
+    const stopLoading = startLoading('正在更新 Versioning...')
     try {
       setLoading(true)
       setError('')
@@ -114,10 +128,12 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       setError((reason as Error).message)
     } finally {
       setLoading(false)
+      stopLoading()
     }
   }
 
   async function saveLifecycle(rules: LifecycleRule[]) {
+    const stopLoading = startLoading('正在保存 Lifecycle 规则...')
     try {
       setLoading(true)
       setError('')
@@ -135,6 +151,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       throw reason
     } finally {
       setLoading(false)
+      stopLoading()
     }
   }
 
@@ -156,10 +173,10 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
             <FolderOpen aria-hidden="true" />
           </button>
           <button className="danger-button" type="button" onClick={() => void remove()} disabled={deleting || !bucket}>
-            <Trash2 className="button-icon" aria-hidden="true" />{deleting ? '删除中...' : '删除 Bucket'}
+            <Trash2 className="button-icon" aria-hidden="true" />删除 Bucket
           </button>
-          <button className="secondary-button" type="button" onClick={() => void refresh()} disabled={loading}>
-            <RefreshCw className={`button-icon${loading ? ' spinning' : ''}`} aria-hidden="true" />{loading ? '刷新中...' : '刷新'}
+          <button className="secondary-button refresh-action-button" type="button" onClick={() => void refresh()} disabled={loading} aria-busy={loading}>
+            <RefreshCw className={`button-icon${loading ? ' spinning' : ''}`} aria-hidden="true" />刷新
           </button>
         </div>
       </header>

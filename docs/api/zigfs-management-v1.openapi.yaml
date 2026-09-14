@@ -69,7 +69,7 @@ paths:
               $ref: "#/components/schemas/CreateBucketRequest"
       responses:
         "200":
-          description: 已存在且属于请求中的 owner（幂等结果）
+          description: 已存在且属于当前或请求中的 owner（幂等结果）
           content:
             application/json:
               schema:
@@ -517,7 +517,10 @@ components:
     CreateBucketRequest:
       type: object
       additionalProperties: false
-      required: [name, owner]
+      description: >-
+        Owner 可选。省略 Owner 时，ZigFS 使用当前已认证的管理员用户名绑定
+        Bucket 所属租户；Admin BFF 不接受浏览器提交 Owner。
+      required: [name]
       properties:
         name:
           type: string
@@ -817,8 +820,9 @@ components:
     CreateAccessKeyRequest:
       type: object
       additionalProperties: false
-      required: [owner]
-      description: 省略 policy 时创建 Full Access Credential；省略 ttl_seconds 时创建永久凭证。
+      description: >-
+        Owner 可选。省略 Owner 时，ZigFS 使用当前已认证的管理员用户名绑定凭证租户；
+        省略 policy 时创建 Full Access Credential；省略 ttl_seconds 时创建永久凭证。
       properties:
         owner:
           type: string

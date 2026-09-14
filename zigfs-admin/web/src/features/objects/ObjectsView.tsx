@@ -19,6 +19,8 @@ import {
 } from 'lucide-react'
 import { ApiError, type ApiClient } from '../../api/client'
 import { ActionMenu } from '../../components/ActionMenu'
+import { useConfirm } from '../../components/ConfirmProvider'
+import { useLoading } from '../../components/LoadingProvider'
 import { useToast } from '../../components/ToastProvider'
 import type { AccessKey, MultipartUpload, MultipartUploadSummary, ObjectSummary, ObjectVersion, PresignObjectResponse } from '../../types/api'
 import {
@@ -45,6 +47,8 @@ interface UploadProgress {
 }
 
 export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProps) {
+  const confirm = useConfirm()
+  const { startLoading, withLoading } = useLoading()
   const [accessKeys, setAccessKeys] = useState<AccessKey[]>([])
   const bucket = initialBucket
   const [accessKey, setAccessKey] = useState('')
@@ -68,7 +72,6 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
   const [restoringVersion, setRestoringVersion] = useState('')
   const [detail, setDetail] = useState<ObjectSummary | null>(null)
   const [detailUrl, setDetailUrl] = useState<PresignObjectResponse | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
   const fileInput = useRef<HTMLInputElement>(null)
   const uploadControl = useRef<{
@@ -81,17 +84,18 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
   const uploadsHydrated = useRef(false)
 
   useEffect(() => {
-    api.listAccessKeys()
+    withLoading('正在加载 Access Keys...', () => api.listAccessKeys())
       .then((keyItems) => {
         const enabledKeys = keyItems.filter((item) => item.enabled)
         setAccessKeys(enabledKeys)
         setAccessKey((current) => current || enabledKeys[0]?.access_key || '')
       })
       .catch((reason: Error) => setError(reason.message))
-  }, [api])
+  }, [api, withLoading])
 
   async function load(reset: boolean) {
     if (!bucket) return
+    const stopLoading = startLoading(`正在加载${viewMode === 'versions' ? '对象版本' : '对象'}...`)
     try {
       setLoading(true)
       setError('')
@@ -107,6 +111,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       setError((reason as Error).message)
     } finally {
       setLoading(false)
+      stopLoading()
     }
   }
 
@@ -137,6 +142,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
 
   async function loadMultipartUploads() {
     if (!bucket) return
+    const stopLoading = startLoading('正在同步分片上传任务...')
     try {
       uploadsHydrated.current = false
       setUploadsLoading(true)
@@ -192,6 +198,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       setError((reason as Error).message)
     } finally {
       setUploadsLoading(false)
+      stopLoading()
     }
   }
 
@@ -364,7 +371,12 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
   }
 
   async function abortUpload(task: UploadTask) {
-    if (!window.confirm(`取消上传“${task.key}”并删除已上传的分片？`)) return
+    if (!await confirm({
+      title: '取消分片上传',
+      message: `取消上传“${task.key}”并删除已上传的分片？`,
+      confirmLabel: '取消上传',
+      danger: true,
+    })) return
     const control = uploadControl.current
     if (control?.uploadId === task.uploadId && control.completing) {
       showToast(`正在完成 ${task.key}`)
@@ -375,6 +387,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       control.cancelled = true
       control.request?.abort()
     }
+    const stopLoading = startLoading('正在取消分片上传...')
     try {
       await api.abortMultipartUpload(task.uploadId, task.bucket, task.key)
       setUploadTasks((current) => current.filter((item) => item.uploadId !== task.uploadId))
@@ -383,6 +396,8 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       const message = (reason as Error).message
       updateUploadTask(task.uploadId, { status: 'failed', error: message })
       setError(message)
+    } finally {
+      stopLoading()
     }
   }
 
@@ -433,9 +448,9 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
 
   async function download(object: ObjectSummary) {
     if (!accessKey || !bucket) return
+    const stopLoading = startLoading('正在下载对象...')
     try {
       setError('')
-      showToast(`正在准备 ${object.key}`)
       const presigned = await api.presignObject(accessKey, bucket, object.key, 'GET', 900)
       const response = await fetch(presigned.url)
       if (!response.ok) throw new Error(`下载失败（${response.status}）`)
@@ -451,14 +466,16 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       showToast(`已下载 ${object.key}`)
     } catch (reason) {
       setError((reason as Error).message)
+    } finally {
+      stopLoading()
     }
   }
 
   async function downloadVersion(version: ObjectVersion) {
     if (!accessKey || !bucket || version.is_delete_marker) return
+    const stopLoading = startLoading('正在下载对象版本...')
     try {
       setError('')
-      showToast(`正在准备 ${version.key} 的指定版本`)
       const presigned = await api.presignObject(accessKey, bucket, version.key, 'GET', 900, { versionId: version.version_id })
       const response = await fetch(presigned.url)
       if (!response.ok) throw new Error(`下载失败（${response.status}）`)
@@ -474,6 +491,8 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       showToast(`已下载 ${version.key} 的版本 ${shortVersionId(version.version_id)}`)
     } catch (reason) {
       setError((reason as Error).message)
+    } finally {
+      stopLoading()
     }
   }
 
@@ -482,13 +501,13 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     setDetailUrl(null)
     setDetailError('')
     if (!accessKey || !bucket) return
+    const stopLoading = startLoading('正在生成预览链接...')
     try {
-      setDetailLoading(true)
       setDetailUrl(await api.presignObject(accessKey, bucket, object.key, 'GET', 900))
     } catch (reason) {
       setDetailError((reason as Error).message)
     } finally {
-      setDetailLoading(false)
+      stopLoading()
     }
   }
 
@@ -499,7 +518,14 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
   }
 
   async function removeObject(object: ObjectSummary) {
-    if (!accessKey || !bucket || !window.confirm(`删除对象“${object.key}”？`)) return
+    if (!accessKey || !bucket) return
+    if (!await confirm({
+      title: '删除对象',
+      message: `删除对象“${object.key}”？如果 Bucket 启用了版本管理，ZigFS 会创建 DeleteMarker。`,
+      confirmLabel: '删除',
+      danger: true,
+    })) return
+    const stopLoading = startLoading('正在删除对象...')
     try {
       setDeletingKey(object.key)
       setError('')
@@ -513,12 +539,20 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       setError((reason as Error).message)
     } finally {
       setDeletingKey('')
+      stopLoading()
     }
   }
 
   async function removeVersion(version: ObjectVersion) {
     const target = version.is_delete_marker ? 'DeleteMarker' : '对象版本'
-    if (!accessKey || !bucket || !window.confirm(`永久删除“${version.key}”的${target} ${shortVersionId(version.version_id)}？此操作不会创建新的 DeleteMarker。`)) return
+    if (!accessKey || !bucket) return
+    if (!await confirm({
+      title: '永久删除版本',
+      message: `永久删除“${version.key}”的${target} ${shortVersionId(version.version_id)}？此操作不会创建新的 DeleteMarker，且无法恢复。`,
+      confirmLabel: '永久删除',
+      danger: true,
+    })) return
+    const stopLoading = startLoading('正在永久删除对象版本...')
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setDeletingVersion(identity)
@@ -532,12 +566,18 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       setError((reason as Error).message)
     } finally {
       setDeletingVersion('')
+      stopLoading()
     }
   }
 
   async function restoreDeletedObject(version: ObjectVersion) {
-    if (!accessKey || !bucket || !version.is_delete_marker || !version.is_latest ||
-      !window.confirm(`删除最新 DeleteMarker 并恢复对象“${version.key}”？`)) return
+    if (!accessKey || !bucket || !version.is_delete_marker || !version.is_latest) return
+    if (!await confirm({
+      title: '恢复已删除对象',
+      message: `删除最新 DeleteMarker 并恢复对象“${version.key}”？`,
+      confirmLabel: '恢复对象',
+    })) return
+    const stopLoading = startLoading('正在恢复对象...')
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setRestoringVersion(identity)
@@ -551,12 +591,18 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       setError((reason as Error).message)
     } finally {
       setRestoringVersion('')
+      stopLoading()
     }
   }
 
   async function rewindVersion(version: ObjectVersion) {
-    if (!accessKey || !bucket || version.is_delete_marker || version.is_latest ||
-      !window.confirm(`将“${version.key}”回溯到版本 ${shortVersionId(version.version_id)}？ZigFS 会创建一个新的当前版本。`)) return
+    if (!accessKey || !bucket || version.is_delete_marker || version.is_latest) return
+    if (!await confirm({
+      title: '回溯对象版本',
+      message: `将“${version.key}”回溯到版本 ${shortVersionId(version.version_id)}？ZigFS 会创建一个新的当前版本。`,
+      confirmLabel: '回溯版本',
+    })) return
+    const stopLoading = startLoading('正在回溯对象版本...')
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setRestoringVersion(identity)
@@ -575,6 +621,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       setError((reason as Error).message)
     } finally {
       setRestoringVersion('')
+      stopLoading()
     }
   }
 
@@ -623,8 +670,8 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
           <button className="primary-button" type="button" onClick={() => setShowUpload((current) => !current)} disabled={!bucket || !accessKey}>
             <Upload className="button-icon" aria-hidden="true" />{showUpload ? '关闭上传' : uploadTasks.length > 0 ? `上传任务 (${uploadTasks.length})` : '上传文件'}
           </button>
-          <button className="secondary-button" type="button" onClick={() => void load(true)} disabled={!bucket || loading}>
-            <RefreshCw className={`button-icon${loading ? ' spinning' : ''}`} aria-hidden="true" />{loading ? '加载中...' : '刷新'}
+          <button className="secondary-button refresh-action-button" type="button" onClick={() => void load(true)} disabled={!bucket || loading} aria-busy={loading}>
+            <RefreshCw className={`button-icon${loading ? ' spinning' : ''}`} aria-hidden="true" />刷新
           </button>
         </div>
       </div>
@@ -648,7 +695,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
           </form>
           {(uploadTasks.length > 0 || uploadsLoading) && (
             <div className="upload-task-list" aria-live="polite">
-              <div className="upload-task-list-heading"><strong>未完成上传</strong><span>{uploadsLoading ? '同步中...' : `${uploadTasks.length} 个任务`}</span></div>
+              <div className="upload-task-list-heading"><strong>未完成上传</strong><span>{uploadTasks.length} 个任务</span></div>
               {uploadTasks.map((task) => {
                 const active = task.status === 'uploading' || task.status === 'completing'
                 const taskProgress = active && uploadProgress
@@ -716,7 +763,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
                     <ActionMenu label={`管理 ${object.key}`}>
                       <button type="button" role="menuitem" onClick={() => void openDetail(object)}><Info className="button-icon" aria-hidden="true" />详情</button>
                       <button type="button" role="menuitem" onClick={() => void download(object)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>
-                      <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeObject(object)} disabled={!accessKey || deletingKey === object.key}><Trash2 className="button-icon" aria-hidden="true" />{deletingKey === object.key ? '删除中...' : '删除'}</button>
+                      <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeObject(object)} disabled={!accessKey || deletingKey === object.key}><Trash2 className="button-icon" aria-hidden="true" />删除</button>
                     </ActionMenu>
                   </td>
                 </tr>
@@ -735,9 +782,9 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
                 <td className="table-actions sticky-actions-column">
                   <ActionMenu label={`管理 ${version.key} 的版本 ${shortVersionId(version.version_id)}`}>
                     {!version.is_delete_marker && <button type="button" role="menuitem" onClick={() => void downloadVersion(version)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>}
-                    {version.is_delete_marker && version.is_latest && <button type="button" role="menuitem" onClick={() => void restoreDeletedObject(version)} disabled={!accessKey || restoring}><RotateCcw className={`button-icon${restoring ? ' spinning' : ''}`} aria-hidden="true" />{restoring ? '恢复中...' : '恢复对象'}</button>}
-                    {!version.is_delete_marker && !version.is_latest && <button type="button" role="menuitem" onClick={() => void rewindVersion(version)} disabled={!accessKey || restoring}><History className={`button-icon${restoring ? ' spinning' : ''}`} aria-hidden="true" />{restoring ? '回溯中...' : '回溯到此版本'}</button>}
-                    {(!version.is_delete_marker || !version.is_latest) && <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeVersion(version)} disabled={!accessKey || deletingVersion === identity}><Trash2 className="button-icon" aria-hidden="true" />{deletingVersion === identity ? '删除中...' : version.is_delete_marker ? '删除标记' : '永久删除'}</button>}
+                    {version.is_delete_marker && version.is_latest && <button type="button" role="menuitem" onClick={() => void restoreDeletedObject(version)} disabled={!accessKey || restoring}><RotateCcw className="button-icon" aria-hidden="true" />恢复对象</button>}
+                    {!version.is_delete_marker && !version.is_latest && <button type="button" role="menuitem" onClick={() => void rewindVersion(version)} disabled={!accessKey || restoring}><History className="button-icon" aria-hidden="true" />回溯到此版本</button>}
+                    {(!version.is_delete_marker || !version.is_latest) && <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeVersion(version)} disabled={!accessKey || deletingVersion === identity}><Trash2 className="button-icon" aria-hidden="true" />{version.is_delete_marker ? '删除标记' : '永久删除'}</button>}
                   </ActionMenu>
                 </td>
               </tr>
@@ -746,7 +793,6 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
         </div>
         {viewMode === 'current' && objects.length === 0 && !loading && <div className="empty-state empty-panel"><strong>这个 Bucket 还是空的</strong><span>上传文件后，对象会显示在这里。</span></div>}
         {viewMode === 'versions' && versions.length === 0 && !loading && <div className="empty-state empty-panel"><strong>没有对象版本</strong><span>启用 Versioning 后，新写入和删除会记录在这里。</span></div>}
-        {loading && <p className="loading-state">正在加载{viewMode === 'current' ? '对象' : '版本'}...</p>}
       </section>
       {viewMode === 'current' && nextToken && <button className="load-more" type="button" onClick={() => void load(false)}>加载更多</button>}
 
@@ -760,7 +806,6 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
             <div className="preview-frame">
               {isImageKey(detail.key) && detailUrl ? <img src={detailUrl.url} alt={detail.key} /> : <div className="format-icon" aria-label={`${fileExtension(detail.key)} 文件`}>{fileExtension(detail.key)}</div>}
               {!isImageKey(detail.key) && <span>暂不支持此格式预览</span>}
-              {detailLoading && <span>正在生成预览链接...</span>}
             </div>
             {detailError && <p className="error-banner">{detailError}</p>}
             <dl className="detail-list">

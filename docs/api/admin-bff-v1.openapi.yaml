@@ -111,7 +111,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/CreateBucketRequest"
+              $ref: "#/components/schemas/CreateAdminBucketRequest"
       responses:
         "201":
           description: 已创建
@@ -313,7 +313,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/CreateAccessKeyRequest"
+              $ref: "#/components/schemas/CreateAdminAccessKeyRequest"
       responses:
         "201":
           description: 已创建
@@ -353,3 +353,29 @@ components:
       in: cookie
       name: zigfs_admin_session
       description: ZigFS 签发、Admin 仅中转的短期 Management Token。
+  schemas:
+    CreateAdminBucketRequest:
+      type: object
+      additionalProperties: false
+      description: >-
+        Owner 不由浏览器提交。Admin 根据当前 ZigFS 管理员会话自动绑定 Bucket
+        所属租户，再转发给 ZigFS Management API。
+      required: [name]
+      properties:
+        name:
+          type: string
+    CreateAdminAccessKeyRequest:
+      type: object
+      additionalProperties: false
+      description: >-
+        Owner 不由浏览器提交。Admin 根据当前 ZigFS 管理员会话自动绑定凭证所属租户，
+        再转发给 ZigFS Management API。
+      properties:
+        policy:
+          $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/CredentialPolicyInput"
+        ttl_seconds:
+          type: integer
+          format: int64
+          minimum: 60
+          maximum: 43200
+          description: 提供时创建临时凭证，有效期为 60 秒至 12 小时。

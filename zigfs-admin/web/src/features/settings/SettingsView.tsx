@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react'
 import type { ApiClient } from '../../api/client'
+import { useLoading } from '../../components/LoadingProvider'
 import type { Settings } from '../../types/api'
 
 export function SettingsView({ api }: { api: ApiClient }) {
+  const { withLoading } = useLoading()
   const [settings, setSettings] = useState<Settings | null>(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    api.settings().then(setSettings).catch((reason: Error) => setError(reason.message))
-  }, [api])
+    withLoading('正在加载配置...', () => api.settings()).then(setSettings).catch((reason: Error) => setError(reason.message))
+  }, [api, withLoading])
 
   return (
     <section>

@@ -1,20 +1,22 @@
 import { useEffect, useState } from 'react'
 import type { ApiClient } from '../../api/client'
+import { useLoading } from '../../components/LoadingProvider'
 import type { ManagementHealth, SystemInfo } from '../../types/api'
 
 export function SystemView({ api }: { api: ApiClient }) {
+  const { withLoading } = useLoading()
   const [system, setSystem] = useState<SystemInfo | null>(null)
   const [health, setHealth] = useState<ManagementHealth | null>(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    Promise.all([api.system(), api.managementHealth()])
+    withLoading('正在加载系统信息...', () => Promise.all([api.system(), api.managementHealth()]))
       .then(([systemInfo, healthInfo]) => {
         setSystem(systemInfo)
         setHealth(healthInfo)
       })
       .catch((reason: Error) => setError(reason.message))
-  }, [api])
+  }, [api, withLoading])
 
   return (
     <section>

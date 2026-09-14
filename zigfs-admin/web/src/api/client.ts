@@ -67,10 +67,10 @@ export function createApiClient() {
     managementHealth: () => request<ManagementHealth>('/api/v1/management-health'),
     settings: () => request<Settings>('/api/v1/settings'),
     listBuckets: async () => (await request<{ items: Bucket[] }>('/api/v1/buckets')).items,
-    createBucket: (name: string, owner: string) =>
+    createBucket: (name: string) =>
       request<Bucket>('/api/v1/buckets', {
         method: 'POST',
-        body: JSON.stringify({ name, owner }),
+        body: JSON.stringify({ name }),
       }),
     deleteBucket: (name: string) =>
       request<void>(`/api/v1/buckets/${encodeURIComponent(name)}`, { method: 'DELETE' }),
@@ -168,10 +168,10 @@ export function createApiClient() {
     },
     listAccessKeys: async () =>
       (await request<{ items: AccessKey[] }>('/api/v1/access-keys')).items,
-    createAccessKey: (owner: string, policy: CredentialPolicy, ttlSeconds?: number) =>
+    createAccessKey: (policy: CredentialPolicy, ttlSeconds?: number) =>
       request<CreatedAccessKey>('/api/v1/access-keys', {
         method: 'POST',
-        body: JSON.stringify({ owner, policy, ...(ttlSeconds ? { ttl_seconds: ttlSeconds } : {}) }),
+        body: JSON.stringify({ policy, ...(ttlSeconds ? { ttl_seconds: ttlSeconds } : {}) }),
       }),
     setAccessKeyEnabled: (id: string, enabled: boolean) =>
       request<AccessKey>(`/api/v1/access-keys/${encodeURIComponent(id)}`, {

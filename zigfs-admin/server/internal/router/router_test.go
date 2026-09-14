@@ -230,3 +230,22 @@ func TestManagementSummaryRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateBucketAcceptsNameWithoutOwner(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := testEngine(true)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/buckets",
+		strings.NewReader(`{"name":"project-assets"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(&http.Cookie{Name: middleware.AdminSessionCookie, Value: "zigfs-issued-token"})
+
+	engine.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, recorder.Code, recorder.Body.String())
+	}
+}

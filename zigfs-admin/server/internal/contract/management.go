@@ -41,7 +41,7 @@ type ListBucketsResponse struct {
 
 type CreateBucketRequest struct {
 	Name  string `json:"name" binding:"required"`
-	Owner string `json:"owner" binding:"required"`
+	Owner string `json:"owner,omitempty"`
 }
 
 type Object struct {
@@ -146,7 +146,7 @@ type ListAccessKeysResponse struct {
 }
 
 type CreateAccessKeyRequest struct {
-	Owner      string            `json:"owner" binding:"required"`
+	Owner      string            `json:"owner,omitempty"`
 	Policy     *CredentialPolicy `json:"policy,omitempty"`
 	TTLSeconds *int64            `json:"ttl_seconds,omitempty" binding:"omitempty,min=60,max=43200"`
 }

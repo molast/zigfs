@@ -1,10 +1,12 @@
 import { type FormEvent, useState } from 'react'
+import { useLoading } from '../../components/LoadingProvider'
 
 interface LoginViewProps {
   onLogin: (username: string, password: string) => Promise<void>
 }
 
 export function LoginView({ onLogin }: LoginViewProps) {
+  const { withLoading } = useLoading()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -17,7 +19,7 @@ export function LoginView({ onLogin }: LoginViewProps) {
     setSubmitting(true)
     setError('')
     try {
-      await onLogin(username.trim(), password)
+      await withLoading('正在登录...', () => onLogin(username.trim(), password))
     } catch {
       setError('账号或密码错误，或 ZigFS 当前不可用')
     } finally {
@@ -63,8 +65,8 @@ export function LoginView({ onLogin }: LoginViewProps) {
             required
           />
           {error && <p className="form-error" role="alert">{error}</p>}
-          <button className="primary-button" type="submit" disabled={submitting}>
-            {submitting ? '登录中...' : '登录'}
+          <button className="primary-button" type="submit" disabled={submitting} aria-busy={submitting}>
+            登录
           </button>
         </form>
       </div>

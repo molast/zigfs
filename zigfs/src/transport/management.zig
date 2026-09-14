@@ -204,7 +204,7 @@ fn serveListBuckets(
 
 const CreateBucketRequest = struct {
     name: []const u8,
-    owner: []const u8,
+    owner: ?[]const u8 = null,
 };
 
 fn serveCreateBucket(
@@ -217,7 +217,8 @@ fn serveCreateBucket(
     };
     defer parsed.deinit();
     const service = application.bucketService() orelse return respondNotReady(request, request_id);
-    const result = service.create(parsed.value.name, parsed.value.owner) catch |err| {
+    const owner = parsed.value.owner orelse application.config.admin_username;
+    const result = service.create(parsed.value.name, owner) catch |err| {
         audit(application, request_id, "create_bucket", parsed.value.name, @errorName(err));
         return respondBucketError(request, request_id, err);
     };
@@ -905,7 +906,7 @@ const PolicyRequest = struct {
 };
 
 const CreateAccessKeyRequest = struct {
-    owner: []const u8,
+    owner: ?[]const u8 = null,
     policy: PolicyRequest = .{},
     ttl_seconds: ?u64 = null,
 };
@@ -920,12 +921,13 @@ fn serveCreateAccessKey(
     };
     defer parsed.deinit();
     const service = application.credentialService() orelse return respondNotReady(request, request_id);
+    const owner = parsed.value.owner orelse application.config.admin_username;
     var result = service.createWithTTL(
-        parsed.value.owner,
+        owner,
         parsed.value.policy.domain(),
         parsed.value.ttl_seconds,
     ) catch |err| {
-        audit(application, request_id, "create_access_key", parsed.value.owner, @errorName(err));
+        audit(application, request_id, "create_access_key", owner, @errorName(err));
         return respondCredentialError(request, request_id, err);
     };
     defer result.deinit(application.allocator);

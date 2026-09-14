@@ -1454,12 +1454,13 @@ test "ZigFS Management API directly serves the Phase 6 contract" {
         .POST,
         "/_admin/v1/access-keys",
         token,
-        "{\"owner\":\"tenant-a\",\"ttl_seconds\":3600}",
+        "{\"ttl_seconds\":3600}",
     );
     defer temporary_key_request.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.created, temporary_key_request.status);
     const TemporaryKey = struct {
         kind: []const u8,
+        owner: []const u8,
         secret_key: []const u8,
         session_token: []const u8,
         expires_at: []const u8,
@@ -1472,6 +1473,7 @@ test "ZigFS Management API directly serves the Phase 6 contract" {
     );
     defer temporary_key_json.deinit();
     try std.testing.expectEqualStrings("temporary", temporary_key_json.value.kind);
+    try std.testing.expectEqualStrings("admin", temporary_key_json.value.owner);
     try std.testing.expect(temporary_key_json.value.secret_key.len > 0);
     try std.testing.expect(temporary_key_json.value.session_token.len > 0);
     try std.testing.expect(temporary_key_json.value.expires_at.len > 0);

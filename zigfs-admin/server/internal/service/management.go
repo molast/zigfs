@@ -20,6 +20,9 @@ func (service *Management) ListBuckets(ctx context.Context) (contract.ListBucket
 }
 
 func (service *Management) CreateBucket(ctx context.Context, request contract.CreateBucketRequest) (contract.Bucket, error) {
+	// Bucket ownership is derived by ZigFS from the authenticated management
+	// session. Do not allow the browser to switch tenants.
+	request.Owner = ""
 	return service.zig.CreateBucket(ctx, request)
 }
 
@@ -72,6 +75,9 @@ func (service *Management) ListAccessKeys(ctx context.Context) (contract.ListAcc
 }
 
 func (service *Management) CreateAccessKey(ctx context.Context, request contract.CreateAccessKeyRequest) (contract.CreateAccessKeyResponse, error) {
+	// Owner is assigned by ZigFS from the authenticated Management session.
+	// Discard any browser-supplied value so the BFF cannot be used to switch tenants.
+	request.Owner = ""
 	return service.zig.CreateAccessKey(ctx, request)
 }
 
