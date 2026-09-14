@@ -2,20 +2,47 @@
 
 FROM node:24-bookworm-slim AS web-builder
 
+ARG PNPM_VERSION=11.10.0
+ARG PNPM_REGISTRY=https://registry.npmjs.org
+
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:${PATH} \
+    COREPACK_NPM_REGISTRY=${PNPM_REGISTRY}
+
 WORKDIR /src/web
-RUN corepack enable
-COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile
 COPY web/ ./
-RUN pnpm run build
+RUN --mount=type=cache,id=zigfs-admin-pnpm,target=/pnpm/store \
+    if [ -f dist/index.html ]; then \
+      echo "Using locally built Admin Web assets"; \
+    else \
+      corepack enable \
+      && corepack prepare "pnpm@${PNPM_VERSION}" --activate \
+      && pnpm config set registry "${PNPM_REGISTRY}" \
+      && pnpm config set store-dir /pnpm/store \
+      && pnpm install --frozen-lockfile \
+      && pnpm run build; \
+    fi \
+    && mkdir -p /out \
+    && cp -R dist/. /out/
 
 FROM golang:1.27-bookworm AS server-builder
 
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
+
 WORKDIR /src/server
-COPY server/go.mod server/go.sum ./
-RUN go mod download
 COPY server/ ./
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN --mount=type=cache,id=zigfs-admin-go-mod,target=/go/pkg/mod \
+    if [ -f vendor/modules.txt ]; then \
+      echo "Using vendored Go modules"; \
+    else \
+      go mod download; \
+    fi
+RUN --mount=type=cache,id=zigfs-admin-go-build,target=/root/.cache/go-build \
+    if [ -f vendor/modules.txt ]; then \
+      export GOFLAGS="-mod=vendor"; \
+    fi \
+    && CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -ldflags="-s -w" \
     -o /out/zigfs-admin \
@@ -27,14 +54,12 @@ LABEL org.opencontainers.image.title="ZigFS Admin" \
       org.opencontainers.image.version="0.1.0" \
       org.opencontainers.image.licenses="Apache-2.0"
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /app/web \
+RUN mkdir -p /app/web \
     && chown -R 10001:10001 /app
 
 COPY --from=server-builder /out/zigfs-admin /usr/local/bin/zigfs-admin
-COPY --from=web-builder /src/web/dist /app/web
+COPY --from=server-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=web-builder /out /app/web
 
 ENV ZIGFS_ADMIN_LISTEN=":9001" \
     ZIGFS_ENDPOINT="http://zigfs:9000" \

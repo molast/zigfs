@@ -21,6 +21,6 @@ s3:
 # Replace these development credentials before exposing the container.
 admin:
   username: "admin"
-  password: "zigfs-admin"
+  password: "admin"
   session_secret: "zigfs-local-session-secret-change-before-production"
   session_ttl_seconds: 28800

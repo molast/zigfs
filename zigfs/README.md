@@ -5,6 +5,33 @@
 ZigFS data-plane service. This project owns the S3 API, object data, metadata,
 transaction journal, indexes, recovery, and storage backends.
 
+## Docker build
+
+The image uses Alpine for both the build and runtime stages. The builder downloads
+the pinned Zig `0.16.0` toolchain and verifies its SHA-256 checksum. If network
+access to `ziglang.org` is unavailable, place a Linux archive matching the
+container architecture in this directory as `zig-toolchain.tar.xz`, or in the
+nested `zigfs/` directory using its original name or `zig-toolchain.tar.xz`.
+Any Zig version is accepted for a local archive; the Dockerfile will use it
+automatically:
+
+```sh
+cp zig-aarch64-linux-0.16.0.tar.xz zig-toolchain.tar.xz
+docker build -t zigfs:0.1.0 .
+```
+
+Local archives are checked with `ZIG_TOOLCHAIN_SHA256` when that build argument
+is provided; otherwise their SHA-256 is printed during the build. Remote
+downloads remain pinned to `ZIG_VERSION` and their fixed checksum.
+
+For an internal mirror, pass its `/download`-style base URL:
+
+```sh
+docker build \
+  --build-arg ZIG_DOWNLOAD_BASE_URL=https://mirror.example/zig/download \
+  -t zigfs:0.1.0 .
+```
+
 ## Commands
 
 ```bash

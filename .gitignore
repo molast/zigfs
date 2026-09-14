@@ -12,6 +12,7 @@ bin/
 *.test
 *.out
 coverage/
+/zigfs-admin/server/vendor/
 
 # Node.js / Vite
 node_modules/
@@ -21,6 +22,7 @@ dist/
 
 # Runtime storage and temporary files
 data/
+dev-data/
 tmp/
 *.log
 *.pid
@@ -32,6 +34,9 @@ compatibility/reports/
 .env.*
 !.env.example
 /zigfs/config.yaml
+# Local Linux Zig toolchains (all versions and architectures)
+/zigfs/zig-*.tar.xz
+/zigfs/zigfs/zig-*.tar.xz
 *.key
 *.pem
 

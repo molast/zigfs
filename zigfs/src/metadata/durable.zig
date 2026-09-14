@@ -16,7 +16,8 @@ pub fn syncParent(
     sub_path: []const u8,
 ) SyncParentError!void {
     const parent_path = std.fs.path.dirname(sub_path) orelse ".";
-    var parent = try root.openDir(io, parent_path, .{});
+    // Linux opens non-iterating directories with O_PATH, which cannot be fsynced.
+    var parent = try root.openDir(io, parent_path, .{ .iterate = true });
     defer parent.close(io);
     try syncDirectory(parent, io);
 }

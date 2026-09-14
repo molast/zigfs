@@ -178,8 +178,11 @@ ZigFS 与 ZigFS Admin 使用独立镜像。可以运行根目录脚本并选择�
 ZIGFS_DOCKER_TAG=0.1.0-dev ./start.sh
 ```
 
-ZigFS Dockerfile 基于 Alpine，构建阶段从 Zig 官方下载索引中选择与容器架构匹配的
-Zig 0.16.0 压缩包并校验 SHA-256，不依赖 Alpine 仓库或额外的 Zig 镜像。
+ZigFS Dockerfile 基于 Alpine，构建阶段使用 `wget` 从 Zig 官方地址下载与容器架构匹配的
+Zig 0.16.0 压缩包并校验 SHA-256，不依赖 Alpine 软件仓库或额外的 Zig 镜像。网络受限时，
+可将任意版本、但与容器架构匹配的 Linux 压缩包保存为 `zigfs/zig-toolchain.tar.xz` 或
+`zigfs/zigfs/zig-toolchain.tar.xz`，构建会自动切换为离线模式；也可以通过
+`ZIG_DOWNLOAD_BASE_URL` 指定内网镜像地址。
 
 也可以直接执行 Docker 命令构建两个项目：
 
@@ -187,6 +190,36 @@ Zig 0.16.0 压缩包并校验 SHA-256，不依赖 Alpine 仓库或额外的 Zig 
 docker build -t zigfs:0.1.0 ./zigfs
 docker build -t zigfs-admin:0.1.0 ./zigfs-admin
 ```
+
+根目录脚本构建 Admin 镜像时，会先用宿主机已安装的 pnpm 生成 `zigfs-admin/web/dist`，
+Dockerfile 检测到本地产物后会直接复制，不再在构建容器中下载 pnpm 或前端依赖。如果没有
+本地 `dist`，Dockerfile 才会执行联网构建，并可通过 `PNPM_REGISTRY` 构建参数指定 npm 镜像。
+Admin Server 优先使用本地 Go `vendor` 依赖离线编译；缺少 `vendor` 时才通过默认的
+`GOPROXY=https://goproxy.cn,direct` 下载模块，也可使用同名构建参数覆盖代理地址。
+
+开发阶段可使用根目录的 `docker-compose.dev.yml` 同时启动 ZigFS 和 Admin。Admin 会等待
+ZigFS 健康检查通过后再启动，并通过 Compose 内部地址 `http://zigfs:9000` 调用管理 API。
+两个服务默认使用本地镜像，不会从镜像仓库拉取：
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --build
+docker compose -f docker-compose.dev.yml ps
+docker compose -f docker-compose.dev.yml logs -f zigfs admin
+```
+
+Admin 默认映射到主机 `9001`，可通过 `ZIGFS_ADMIN_PORT` 修改；ZigFS 仍默认映射
+`9000`（S3、Management、Health）和 `9090`（Metrics）。镜像名可分别通过
+`ZIGFS_IMAGE` 和 `ZIGFS_ADMIN_IMAGE` 覆盖。
+
+停止开发服务：
+
+```bash
+docker compose -f docker-compose.dev.yml down
+```
+
+开发 Compose 默认映射 `9000`（S3、Management、Health）、`9001`（Admin Web）和
+`9090`（Metrics），可通过 `ZIGFS_API_PORT`、`ZIGFS_ADMIN_PORT`、
+`ZIGFS_METRICS_PORT` 修改主机端口。数据保存在名为 `zigfs-dev-data` 的 Docker volume 中。
 
 创建内部网络并启动 ZigFS：
 

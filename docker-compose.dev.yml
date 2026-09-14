@@ -1,0 +1,57 @@
+name: zigfs-dev
+
+services:
+  zigfs:
+    image: ${ZIGFS_IMAGE:-zigfs:0.1.0}
+    pull_policy: never
+    build:
+      context: ./zigfs
+      dockerfile: Dockerfile
+      args:
+        ZIG_VERSION: ${ZIG_VERSION:-0.16.0}
+        ZIG_DOWNLOAD_BASE_URL: ${ZIG_DOWNLOAD_BASE_URL:-https://ziglang.org/download}
+        ZIG_TOOLCHAIN_SHA256: ${ZIG_TOOLCHAIN_SHA256:-}
+    container_name: zigfs-dev
+    ports:
+      - "${ZIGFS_API_PORT:-9000}:9000"
+      - "${ZIGFS_METRICS_PORT:-9090}:9090"
+    volumes:
+      - zigfs-dev-data:/var/lib/zigfs
+      - ./zigfs/config.docker.yaml:/etc/zigfs/config.yaml:ro
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://127.0.0.1:9000/health/ready
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  admin:
+    image: ${ZIGFS_ADMIN_IMAGE:-zigfs-admin:0.1.0}
+    pull_policy: never
+    build:
+      context: ./zigfs-admin
+      dockerfile: Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+        PNPM_VERSION: ${PNPM_VERSION:-11.10.0}
+        PNPM_REGISTRY: ${PNPM_REGISTRY:-https://registry.npmjs.org}
+    container_name: zigfs-admin-dev
+    depends_on:
+      zigfs:
+        condition: service_healthy
+    ports:
+      - "${ZIGFS_ADMIN_PORT:-9001}:9001"
+    environment:
+      ZIGFS_ADMIN_LISTEN: ":9001"
+      ZIGFS_ENDPOINT: http://zigfs:9000
+      ZIGFS_WEB_ROOT: /app/web
+      ZIGFS_UPSTREAM_TIMEOUT: ${ZIGFS_UPSTREAM_TIMEOUT:-15m}
+
+volumes:
+  zigfs-dev-data:

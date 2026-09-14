@@ -83,13 +83,7 @@ start_fs() {
   exec zig build run
 }
 
-start_admin() {
-  local endpoint="${ZIGFS_ENDPOINT:-http://127.0.0.1:9000}"
-  endpoint="${endpoint%/}"
-
-  require_command curl
-  require_command go
-
+build_admin_web_assets() {
   if [[ -d "${ADMIN_WEB_DIR}/node_modules" ]]; then
     require_command pnpm
     printf '正在构建 Admin Web...\n'
@@ -97,6 +91,15 @@ start_admin() {
   elif [[ ! -f "${ADMIN_WEB_DIR}/dist/index.html" ]]; then
     fail "Admin Web 依赖尚未安装，请先在 zigfs-admin/web 目录执行 pnpm install。"
   fi
+}
+
+start_admin() {
+  local endpoint="${ZIGFS_ENDPOINT:-http://127.0.0.1:9000}"
+  endpoint="${endpoint%/}"
+
+  require_command curl
+  require_command go
+  build_admin_web_assets
 
   export ZIGFS_ENDPOINT="${endpoint}"
   export ZIGFS_WEB_ROOT="${ADMIN_WEB_DIR}/dist"
@@ -111,12 +114,45 @@ start_admin() {
   (cd "${ADMIN_SERVER_DIR}" && go run ./cmd/admin)
 }
 
+has_local_zig_toolchain() {
+  local candidate
+
+  for candidate in \
+    "${FS_DIR}/zig/zig-toolchain.tar.xz" \
+    "${FS_DIR}/zig/zig-"*-linux-*.tar.xz \
+    "${FS_DIR}/zig-toolchain.tar.xz" \
+    "${FS_DIR}/zig-"*-linux-*.tar.xz; do
+    if [[ -f "${candidate}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 build_fs_image() {
+  local -a build_args=()
+
   printf '正在构建 ZigFS Docker 镜像 zigfs:%s...\n' "${DOCKER_IMAGE_TAG}"
-  docker build --tag "zigfs:${DOCKER_IMAGE_TAG}" "${FS_DIR}"
+  if has_local_zig_toolchain; then
+    printf '检测到本地 Zig Linux 工具链，将使用离线构建。\n'
+  else
+    printf '未检测到本地 Zig Linux 工具链，将从官方地址下载。可通过 ZIG_DOWNLOAD_BASE_URL 指定镜像地址。\n'
+  fi
+  if [[ -n "${ZIG_DOWNLOAD_BASE_URL:-}" ]]; then
+    build_args+=(--build-arg "ZIG_DOWNLOAD_BASE_URL=${ZIG_DOWNLOAD_BASE_URL}")
+  fi
+  if [[ -n "${ZIG_TOOLCHAIN_SHA256:-}" ]]; then
+    build_args+=(--build-arg "ZIG_TOOLCHAIN_SHA256=${ZIG_TOOLCHAIN_SHA256}")
+  fi
+  if [[ ${#build_args[@]} -gt 0 ]]; then
+    docker build "${build_args[@]}" --tag "zigfs:${DOCKER_IMAGE_TAG}" "${FS_DIR}"
+  else
+    docker build --tag "zigfs:${DOCKER_IMAGE_TAG}" "${FS_DIR}"
+  fi
 }
 
 build_admin_image() {
+  build_admin_web_assets
   printf '正在构建 ZigFS Admin Docker 镜像 zigfs-admin:%s...\n' "${DOCKER_IMAGE_TAG}"
   docker build --tag "zigfs-admin:${DOCKER_IMAGE_TAG}" "${ROOT_DIR}/zigfs-admin"
 }
