@@ -31,6 +31,23 @@ pub const management_service = @import("management_service.zig");
 pub const object_service = @import("object_service.zig");
 pub const lifecycle_service = @import("lifecycle_service.zig");
 
+pub const StorageScanReport = struct {
+    partition: ?u8,
+    partitions: u8,
+    scanned_generations: usize,
+    retained_generations: usize,
+    removed_generations: usize,
+    scanned_bytes: u64,
+    retained_bytes: u64,
+    removed_bytes: u64,
+    expired_multipart_uploads: usize,
+};
+
+pub const StorageScannerSnapshot = struct {
+    next_partition: u8,
+    last_scan: ?StorageScanReport,
+};
+
 pub const Application = struct {
     allocator: std.mem.Allocator,
     config: Config,
@@ -55,6 +72,10 @@ pub const Application = struct {
     recovery_report: ?recovery.Report = null,
     started_at_unix_seconds: i64 = 0,
     fault_injector: fault_injection.Injector = .disabled,
+    scanner_mutex: std.Io.Mutex = .init,
+    scanner_state_mutex: std.Io.Mutex = .init,
+    scanner_partition: u8 = 0,
+    last_scanner_report: ?StorageScanReport = null,
 
     pub fn init(config: Config) Application {
         return initWithAllocator(config, std.heap.smp_allocator);
@@ -180,6 +201,75 @@ pub const Application = struct {
             });
             if (!builtin.is_test) std.log.err("ZigFS object data reachability scan failed: {t}", .{err});
             return;
+        };
+    }
+
+    pub fn runStorageScanner(self: *Application) object_gc.Error!StorageScanReport {
+        const io = self.io orelse return error.Unavailable;
+        self.scanner_mutex.lockUncancelable(io);
+        defer self.scanner_mutex.unlock(io);
+
+        self.scanner_state_mutex.lockUncancelable(io);
+        const partition = self.scanner_partition;
+        self.scanner_state_mutex.unlock(io);
+        const gc_report = (self.objectGc() orelse return error.Unavailable).collectPartition(partition) catch |err| return err;
+        const now = std.Io.Clock.real.now(io).toSeconds();
+        const expired = (self.multipartService() orelse return error.Unavailable).cleanupExpired(
+            now,
+            self.config.s3_multipart_expiry_seconds,
+        ) catch |err| return mapScannerMultipartError(err);
+        const report = StorageScanReport{
+            .partition = partition,
+            .partitions = object_gc.partition_count,
+            .scanned_generations = gc_report.scanned_generations,
+            .retained_generations = gc_report.retained_generations,
+            .removed_generations = gc_report.removed_generations,
+            .scanned_bytes = gc_report.scanned_bytes,
+            .retained_bytes = gc_report.retained_bytes,
+            .removed_bytes = gc_report.removed_bytes,
+            .expired_multipart_uploads = expired,
+        };
+        self.scanner_state_mutex.lockUncancelable(io);
+        defer self.scanner_state_mutex.unlock(io);
+        self.scanner_partition = (partition + 1) % object_gc.partition_count;
+        self.last_scanner_report = report;
+        return report;
+    }
+
+    pub fn runStorageGc(self: *Application) object_gc.Error!StorageScanReport {
+        const io = self.io orelse return error.Unavailable;
+        self.scanner_mutex.lockUncancelable(io);
+        defer self.scanner_mutex.unlock(io);
+        const now = std.Io.Clock.real.now(io).toSeconds();
+        const expired = (self.multipartService() orelse return error.Unavailable).cleanupExpired(
+            now,
+            self.config.s3_multipart_expiry_seconds,
+        ) catch |err| return mapScannerMultipartError(err);
+        const gc_report = (self.objectGc() orelse return error.Unavailable).collect() catch |err| return err;
+        const report = StorageScanReport{
+            .partition = null,
+            .partitions = 1,
+            .scanned_generations = gc_report.scanned_generations,
+            .retained_generations = gc_report.retained_generations,
+            .removed_generations = gc_report.removed_generations,
+            .scanned_bytes = gc_report.scanned_bytes,
+            .retained_bytes = gc_report.retained_bytes,
+            .removed_bytes = gc_report.removed_bytes,
+            .expired_multipart_uploads = expired,
+        };
+        self.scanner_state_mutex.lockUncancelable(io);
+        defer self.scanner_state_mutex.unlock(io);
+        self.last_scanner_report = report;
+        return report;
+    }
+
+    pub fn storageScannerSnapshot(self: *Application) ?StorageScannerSnapshot {
+        const io = self.io orelse return null;
+        self.scanner_state_mutex.lockUncancelable(io);
+        defer self.scanner_state_mutex.unlock(io);
+        return .{
+            .next_partition = self.scanner_partition,
+            .last_scan = self.last_scanner_report,
         };
     }
 
@@ -396,6 +486,7 @@ pub const Application = struct {
             index,
             &self.state_mutex,
             &self.object_locks,
+            &self.multipart_locks,
         );
     }
 
@@ -418,6 +509,15 @@ pub const Application = struct {
         return &self.recovery_state;
     }
 };
+
+fn mapScannerMultipartError(err: multipart_service.Error) object_gc.Error {
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.CorruptMetadata => error.CorruptMetadata,
+        error.CorruptData => error.CorruptData,
+        else => error.Unavailable,
+    };
+}
 
 fn testDataRootPath(
     allocator: std.mem.Allocator,
@@ -1446,6 +1546,94 @@ test "object gc reports referenced data loss" {
     };
     try std.testing.expect(try app.local_object_data.?.interface().deleteGeneration(location));
     try std.testing.expectError(error.CorruptData, app.objectGc().?.collect());
+}
+
+test "object gc validates multipart reachability before deleting object orphans" {
+    const id = @import("../common/id.zig");
+    const object_data_port = @import("../ports/object_data_store.zig");
+    const multipart_data_port = @import("../ports/multipart_data_store.zig");
+    const test_streams = @import("../testing/streams.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(data_root);
+    var app = Application.initWithAllocator(.{
+        .data_root = data_root,
+        .metrics_enabled = false,
+    }, std.testing.allocator);
+    defer app.deinit(std.testing.io);
+    try app.initialize(std.testing.io);
+
+    const bucket = try app.bucketService().?.create("project-assets", "owner-a");
+    defer bucket.deinit(std.testing.allocator);
+    const upload = try app.multipartService().?.create("project-assets", "pending.bin", .{});
+    defer upload.deinit(std.testing.allocator);
+    var upload_id_buffer: [32]u8 = undefined;
+    const upload_id = multipart_domain.formatUploadId(upload.id, &upload_id_buffer);
+    var part_source = test_streams.SliceSource.init("part-body");
+    const part = try app.multipartService().?.uploadPart(
+        "project-assets",
+        "pending.bin",
+        upload_id,
+        1,
+        part_source.interface(),
+        .{},
+    );
+    const part_location: multipart_data_port.Location = .{
+        .upload_id = upload.id,
+        .part_number = part.number,
+        .data_generation = part.data_generation,
+    };
+
+    const orphan_location: object_data_port.Location = .{
+        .bucket_id = bucket.bucket.id,
+        .object_id = try id.randomV4(std.testing.io),
+        .data_generation = try id.randomV4(std.testing.io),
+    };
+    var orphan_source = test_streams.SliceSource.init("orphan-body");
+    const staged = try app.local_object_data.?.interface().stage(
+        orphan_location.data_generation,
+        orphan_source.interface(),
+    );
+    try app.local_object_data.?.interface().publish(staged, orphan_location);
+
+    try std.testing.expect(try app.local_multipart_data.?.interface().deleteGeneration(part_location));
+    try std.testing.expectError(error.CorruptData, app.objectGc().?.collect());
+    try std.testing.expectEqual(
+        @as(u64, "orphan-body".len),
+        try app.local_object_data.?.interface().stat(orphan_location),
+    );
+}
+
+test "storage scanner advances one partition per successful cycle" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(data_root);
+    var app = Application.initWithAllocator(.{
+        .data_root = data_root,
+        .metrics_enabled = false,
+    }, std.testing.allocator);
+    defer app.deinit(std.testing.io);
+    try app.initialize(std.testing.io);
+
+    const initial = app.storageScannerSnapshot().?;
+    try std.testing.expectEqual(@as(u8, 0), initial.next_partition);
+    try std.testing.expect(initial.last_scan == null);
+
+    for (0..object_gc.partition_count) |partition| {
+        const report = try app.runStorageScanner();
+        try std.testing.expectEqual(@as(?u8, @intCast(partition)), report.partition);
+        try std.testing.expectEqual(object_gc.partition_count, report.partitions);
+        const snapshot = app.storageScannerSnapshot().?;
+        try std.testing.expectEqual(
+            @as(u8, @intCast((partition + 1) % object_gc.partition_count)),
+            snapshot.next_partition,
+        );
+        try std.testing.expectEqual(report.partition, snapshot.last_scan.?.partition);
+    }
+
+    try std.testing.expectEqual(@as(u8, 0), app.storageScannerSnapshot().?.next_partition);
 }
 
 test "phase 8 crash checkpoints recover only complete object generations" {

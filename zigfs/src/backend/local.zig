@@ -67,6 +67,9 @@ pub const LocalStorageBackend = struct {
         try root.createDirPath(io, ".zigfs/journal");
         try root.createDirPath(io, ".zigfs/indexes");
         try root.createDirPath(io, ".zigfs/tmp");
+        root.deleteTree(io, ".zigfs/trash") catch return error.StorageNotWritable;
+        try root.createDirPath(io, ".zigfs/trash/objects");
+        try root.createDirPath(io, ".zigfs/trash/multipart");
         try root.createDirPath(io, "metadata/buckets");
         try root.createDirPath(io, "metadata/objects");
         try root.createDirPath(io, "metadata/multipart");
@@ -137,6 +140,8 @@ test "local backend creates phase 2b metadata layout" {
         "data/.zigfs/system/credentials",
         "data/.zigfs/journal",
         "data/.zigfs/tmp",
+        "data/.zigfs/trash/objects",
+        "data/.zigfs/trash/multipart",
         "data/metadata/buckets",
         "data/metadata/objects",
         "data/metadata/multipart",
@@ -146,6 +151,26 @@ test "local backend creates phase 2b metadata layout" {
         var directory = try tmp.dir.openDir(std.testing.io, path, .{});
         directory.close(std.testing.io);
     }
+}
+
+test "local backend purges interrupted trash during startup" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "data/.zigfs/trash/objects/interrupted");
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "data/.zigfs/trash/objects/interrupted/data",
+        .data = "already unreachable",
+    });
+
+    var backend = LocalStorageBackend.init("data");
+    try backend.ensureReadyIn(std.testing.io, tmp.dir);
+    defer backend.deinit(std.testing.io);
+    try std.testing.expectError(
+        error.FileNotFound,
+        tmp.dir.statFile(std.testing.io, "data/.zigfs/trash/objects/interrupted/data", .{}),
+    );
+    var trash = try tmp.dir.openDir(std.testing.io, "data/.zigfs/trash/objects", .{});
+    trash.close(std.testing.io);
 }
 
 test "local backend rejects an unwritable probe path and releases its lock" {

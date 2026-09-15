@@ -56,6 +56,18 @@ func (client *Client) Storage(ctx context.Context) (contract.StorageResponse, er
 	return response, err
 }
 
+func (client *Client) StorageScanner(ctx context.Context) (contract.StorageScannerStatus, error) {
+	var response contract.StorageScannerStatus
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/storage/scanner", nil, &response)
+	return response, err
+}
+
+func (client *Client) RunStorageGC(ctx context.Context) (contract.StorageScanReport, error) {
+	var response contract.StorageScanReport
+	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/storage/gc", nil, &response)
+	return response, err
+}
+
 func (client *Client) ManagementHealth(ctx context.Context) (contract.ManagementHealthResponse, error) {
 	var response contract.ManagementHealthResponse
 	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/health", nil, &response)

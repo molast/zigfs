@@ -289,6 +289,7 @@ node benchmarks/run.mjs
 ## 📚 进一步阅读
 
 - [运维手册](docs/operations.md)
+- [存储扫描与文件清理架构](docs/storage-reclamation.md)
 - [备份与恢复](docs/backup-and-recovery.md)
 - [配置参考](docs/configuration.md)
 - [SDK 设计](docs/sdk/design.md)

@@ -24,6 +24,8 @@ type ZigClient interface {
 	Session(ctx context.Context) (contract.SessionResponse, error)
 	System(ctx context.Context) (contract.SystemResponse, error)
 	Storage(ctx context.Context) (contract.StorageResponse, error)
+	StorageScanner(ctx context.Context) (contract.StorageScannerStatus, error)
+	RunStorageGC(ctx context.Context) (contract.StorageScanReport, error)
 	ManagementHealth(ctx context.Context) (contract.ManagementHealthResponse, error)
 	Settings(ctx context.Context) (contract.SettingsResponse, error)
 	ListBuckets(ctx context.Context) (contract.ListBucketsResponse, error)

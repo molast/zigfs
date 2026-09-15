@@ -12,6 +12,8 @@
 | GET | `/_admin/v1/health` | Management 凭证 | 详细健康和恢复状态 |
 | GET | `/_admin/v1/system` | Management 凭证 | 版本、运行时间和对象统计 |
 | GET | `/_admin/v1/storage` | Management 凭证 | 容量与磁盘状态 |
+| GET | `/_admin/v1/storage/scanner` | Management 凭证 | 16 分片 Scanner 进度与最近结果 |
+| POST | `/_admin/v1/storage/gc` | Management 凭证 | 完整扫描并清理过期 MPU 和不可达数据 |
 | GET | `/_admin/v1/settings` | Management 凭证 | 脱敏后的只读生效配置 |
 | GET | `/_admin/v1/buckets/{name}/configuration` | Management 凭证 | 获取 Bucket Versioning/Lifecycle 配置 |
 | PATCH | `/_admin/v1/buckets/{name}/configuration` | Management 凭证 | 更新 Bucket Versioning/Lifecycle 配置 |
@@ -25,6 +27,7 @@
 
 `storage` 在 V1 报告当前可见对象的逻辑字节数；`total` 和 `available` 在没有正式容量
 Backend 时为 `null`，不能把单个平台的文件系统调用结果冒充为可移植容量契约。
+文件清理和分片扫描语义见[存储扫描与文件清理架构](../storage-reclamation.md)。
 
 ## S3/Data API
 

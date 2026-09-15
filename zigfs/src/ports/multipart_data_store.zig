@@ -16,6 +16,7 @@ pub const Integrity = struct {
 pub const Generation = struct {
     location: Location,
     data_present: bool,
+    data_size: u64,
 };
 
 pub const ScanResult = struct {
@@ -60,7 +61,7 @@ pub const MultipartDataStore = struct {
         stat: *const fn (*anyopaque, Location) Error!u64,
         read_range: *const fn (*anyopaque, Location, u64, u64, byte_stream.Sink) Error!void,
         delete_upload: *const fn (*anyopaque, id.Uuid) Error!void,
-        scan_generations: *const fn (*anyopaque, std.mem.Allocator) Error!ScanResult,
+        scan_generations: *const fn (*anyopaque, std.mem.Allocator, ?u8) Error!ScanResult,
         delete_generation: *const fn (*anyopaque, Location) Error!bool,
     };
 
@@ -93,7 +94,12 @@ pub const MultipartDataStore = struct {
     }
 
     pub fn scanGenerations(self: MultipartDataStore, allocator: std.mem.Allocator) Error!ScanResult {
-        return self.vtable.scan_generations(self.context, allocator);
+        return self.vtable.scan_generations(self.context, allocator, null);
+    }
+
+    pub fn scanGenerationPartition(self: MultipartDataStore, allocator: std.mem.Allocator, partition: u8) Error!ScanResult {
+        if (partition >= 16) return error.InvalidValue;
+        return self.vtable.scan_generations(self.context, allocator, partition);
     }
 
     pub fn deleteGeneration(self: MultipartDataStore, location: Location) Error!bool {

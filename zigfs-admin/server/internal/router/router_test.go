@@ -112,6 +112,14 @@ func (managementService) Storage(context.Context) (contract.StorageResponse, err
 	return contract.StorageResponse{Measurement: "logical_object_bytes", Used: 20}, nil
 }
 
+func (managementService) StorageScanner(context.Context) (contract.StorageScannerStatus, error) {
+	return contract.StorageScannerStatus{Partitions: 16, NextPartition: 3}, nil
+}
+
+func (managementService) RunStorageGC(context.Context) (contract.StorageScanReport, error) {
+	return contract.StorageScanReport{Partitions: 1, RemovedGenerations: 2, RemovedBytes: 42}, nil
+}
+
 func (managementService) Health(context.Context) (contract.ManagementHealthResponse, error) {
 	return contract.ManagementHealthResponse{Status: "ready", Recovery: "ready", Reason: "none", Actions: []string{}}, nil
 }
@@ -264,7 +272,7 @@ func TestSystem(t *testing.T) {
 func TestManagementSummaryRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := testEngine(true)
-	for _, path := range []string{"/api/v1/storage", "/api/v1/management-health", "/api/v1/settings"} {
+	for _, path := range []string{"/api/v1/storage", "/api/v1/storage/scanner", "/api/v1/management-health", "/api/v1/settings"} {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.AddCookie(&http.Cookie{Name: middleware.AdminSessionCookie, Value: "zigfs-issued-token"})
@@ -273,6 +281,27 @@ func TestManagementSummaryRoutes(t *testing.T) {
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("expected %s status %d, got %d", path, http.StatusOK, recorder.Code)
 		}
+	}
+}
+
+func TestRunStorageGC(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := testEngine(true)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/storage/gc", nil)
+	request.AddCookie(&http.Cookie{Name: middleware.AdminSessionCookie, Value: "zigfs-issued-token"})
+
+	engine.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	var response contract.StorageScanReport
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.RemovedGenerations != 2 || response.RemovedBytes != 42 {
+		t.Fatalf("unexpected response: %+v", response)
 	}
 }
 

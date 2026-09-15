@@ -45,6 +45,8 @@ pub const routes = [_]Route{
     .{ .method = .patch, .path = "/_admin/v1/access-keys/:id" },
     .{ .method = .delete, .path = "/_admin/v1/access-keys/:id" },
     .{ .method = .get, .path = "/_admin/v1/storage" },
+    .{ .method = .get, .path = "/_admin/v1/storage/scanner" },
+    .{ .method = .post, .path = "/_admin/v1/storage/gc" },
     .{ .method = .get, .path = "/_admin/v1/system" },
     .{ .method = .get, .path = "/_admin/v1/health" },
     .{ .method = .get, .path = "/_admin/v1/settings" },
@@ -160,6 +162,14 @@ pub fn serveRequest(
             .DELETE => serveDeleteAccessKey(request, application, request_id, raw_access_key),
             else => respondMethodNotAllowed(request, request_id, "PATCH, DELETE"),
         };
+    }
+    if (std.mem.eql(u8, path, api_prefix ++ "/storage/scanner")) {
+        if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
+        return serveStorageScannerStatus(request, application, request_id);
+    }
+    if (std.mem.eql(u8, path, api_prefix ++ "/storage/gc")) {
+        if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
+        return serveStorageGc(request, application, request_id);
     }
     if (std.mem.eql(u8, path, api_prefix ++ "/storage")) {
         if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
@@ -1007,6 +1017,28 @@ fn serveStorage(
     });
 }
 
+fn serveStorageScannerStatus(
+    request: *std.http.Server.Request,
+    application: *Application,
+    request_id: []const u8,
+) !std.http.Status {
+    const snapshot = application.storageScannerSnapshot() orelse return respondNotReady(request, request_id);
+    return respondJson(request, request_id, .ok, .{
+        .partitions = @import("../application/object_gc.zig").partition_count,
+        .next_partition = snapshot.next_partition,
+        .last_scan = snapshot.last_scan,
+    });
+}
+
+fn serveStorageGc(
+    request: *std.http.Server.Request,
+    application: *Application,
+    request_id: []const u8,
+) !std.http.Status {
+    const report = application.runStorageGc() catch |err| return respondStorageGcError(request, request_id, err);
+    return respondJson(request, request_id, .ok, report);
+}
+
 fn serveSystem(
     request: *std.http.Server.Request,
     application: *Application,
@@ -1446,6 +1478,18 @@ fn respondManagementError(
     return switch (err) {
         error.CorruptMetadata => respondError(request, request_id, .service_unavailable, "CorruptMetadata", "metadata requires recovery"),
         error.OutOfMemory, error.Unavailable => respondError(request, request_id, .service_unavailable, "StorageUnavailable", "storage service is unavailable"),
+    };
+}
+
+fn respondStorageGcError(
+    request: *std.http.Server.Request,
+    request_id: []const u8,
+    err: @import("../application/object_gc.zig").Error,
+) !std.http.Status {
+    return switch (err) {
+        error.CorruptMetadata => respondError(request, request_id, .service_unavailable, "CorruptMetadata", "metadata requires recovery before storage cleanup"),
+        error.CorruptData => respondError(request, request_id, .service_unavailable, "CorruptData", "referenced object data is missing or malformed"),
+        error.OutOfMemory, error.Unavailable => respondError(request, request_id, .service_unavailable, "StorageUnavailable", "storage cleanup is unavailable"),
     };
 }
 

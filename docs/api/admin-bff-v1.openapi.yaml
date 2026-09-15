@@ -74,6 +74,26 @@ paths:
             application/json:
               schema:
                 $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/StorageInfo"
+  /api/v1/storage/scanner:
+    get:
+      operationId: getStorageScanner
+      responses:
+        "200":
+          description: ZigFS 分片 Scanner 状态
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/StorageScannerStatus"
+  /api/v1/storage/gc:
+    post:
+      operationId: runStorageGC
+      responses:
+        "200":
+          description: ZigFS 完整 namespace 扫描与清理结果
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/StorageScanReport"
   /api/v1/management-health:
     get:
       operationId: getManagementHealth

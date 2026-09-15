@@ -163,7 +163,7 @@ pub const LocalMultipartDataStore = struct {
         durable.syncParent(self.root, self.io, shard) catch return error.Unavailable;
     }
 
-    fn scanGenerationsImpl(context: *anyopaque, allocator: std.mem.Allocator) data_store_port.Error!data_store_port.ScanResult {
+    fn scanGenerationsImpl(context: *anyopaque, allocator: std.mem.Allocator, partition: ?u8) data_store_port.Error!data_store_port.ScanResult {
         const self: *LocalMultipartDataStore = @ptrCast(@alignCast(context));
         var generations: std.ArrayList(data_store_port.Generation) = .empty;
         errdefer generations.deinit(allocator);
@@ -174,6 +174,7 @@ pub const LocalMultipartDataStore = struct {
             if (isIgnoredSystemEntry(shard_entry.name)) continue;
             if (shard_entry.kind != .directory) return error.CorruptData;
             const shard = parseShard(shard_entry.name) orelse return error.CorruptData;
+            if (partition) |value| if (shard >> 4 != value) continue;
             try scanShard(self, allocator, shard_entry.name, shard, &generations);
         }
         return .{ .generations = generations.toOwnedSlice(allocator) catch return error.OutOfMemory };
@@ -201,19 +202,17 @@ pub const LocalMultipartDataStore = struct {
             data_present = true;
         }
         directory.close(self.io);
-        if (data_present) {
-            self.root.deleteFile(self.io, paths.dataPath()) catch |err| switch (err) {
-                error.FileNotFound => {},
-                else => return error.Unavailable,
-            };
-            durable.syncParent(self.root, self.io, paths.dataPath()) catch return error.Unavailable;
-        }
-        self.root.deleteDir(self.io, paths.generationDirectory()) catch |err| switch (err) {
+        var trash_buffer: [max_path_length]u8 = undefined;
+        const trash_path = trashPath(location, &trash_buffer) catch return error.InvalidValue;
+        self.root.createDirPath(self.io, ".zigfs/trash/multipart") catch return error.Unavailable;
+        self.root.rename(paths.generationDirectory(), self.root, trash_path, self.io) catch |err| switch (err) {
             error.FileNotFound => return false,
-            error.DirNotEmpty => return error.CorruptData,
             else => return error.Unavailable,
         };
         durable.syncParent(self.root, self.io, paths.generationDirectory()) catch return error.Unavailable;
+        durable.syncParent(self.root, self.io, trash_path) catch return error.Unavailable;
+        self.root.deleteTree(self.io, trash_path) catch return error.Unavailable;
+        durable.syncParent(self.root, self.io, trash_path) catch return error.Unavailable;
         pruneEmptyDirectory(self, paths.partDirectory());
         pruneEmptyDirectory(self, paths.uploadDirectory());
         pruneEmptyDirectory(self, paths.shardDirectory());
@@ -345,14 +344,16 @@ fn scanPart(
             .part_number = part_number,
             .data_generation = data_generation,
         };
+        const data_size = try inspectGeneration(self, location);
         generations.append(allocator, .{
             .location = location,
-            .data_present = try inspectGeneration(self, location),
+            .data_present = data_size != null,
+            .data_size = data_size orelse 0,
         }) catch return error.OutOfMemory;
     }
 }
 
-fn inspectGeneration(self: *LocalMultipartDataStore, location: data_store_port.Location) data_store_port.Error!bool {
+fn inspectGeneration(self: *LocalMultipartDataStore, location: data_store_port.Location) data_store_port.Error!?u64 {
     var paths: PathSet = undefined;
     paths.format(location) catch return error.CorruptData;
     var directory = self.root.openDir(self.io, paths.generationDirectory(), .{ .iterate = true }) catch return error.Unavailable;
@@ -364,7 +365,10 @@ fn inspectGeneration(self: *LocalMultipartDataStore, location: data_store_port.L
         if (entry.kind != .file or !std.mem.eql(u8, entry.name, "data") or data_present) return error.CorruptData;
         data_present = true;
     }
-    return data_present;
+    if (!data_present) return null;
+    const stat = self.root.statFile(self.io, paths.dataPath(), .{}) catch return error.Unavailable;
+    if (stat.kind != .file) return error.CorruptData;
+    return stat.size;
 }
 
 fn isIgnoredSystemEntry(name: []const u8) bool {
@@ -411,6 +415,12 @@ fn temporaryPath(token: id.Uuid, buffer: *[max_path_length]u8) error{NoSpaceLeft
     return std.fmt.bufPrint(buffer, ".zigfs/tmp/multipart-{s}.data", .{&token_hex});
 }
 
+fn trashPath(location: data_store_port.Location, buffer: *[max_path_length]u8) error{NoSpaceLeft}![]const u8 {
+    const upload_hex = std.fmt.bytesToHex(location.upload_id, .lower);
+    const generation_hex = std.fmt.bytesToHex(location.data_generation, .lower);
+    return std.fmt.bufPrint(buffer, ".zigfs/trash/multipart/{s}-{d}-{s}", .{ &upload_hex, location.part_number, &generation_hex });
+}
+
 fn validLocation(location: data_store_port.Location) bool {
     return id.isValidV4(location.upload_id) and
         location.part_number >= multipart_domain.min_part_number and
@@ -453,6 +463,18 @@ test "local multipart data paths are opaque and stream ranges" {
     defer sink.deinit();
     try store.readRange(location, 2, 4, sink.interface());
     try std.testing.expectEqualStrings("rt-b", sink.bytes.items);
+
+    const matching_partition = try store.scanGenerationPartition(std.testing.allocator, upload_id[0] >> 4);
+    defer matching_partition.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), matching_partition.generations.len);
+    try std.testing.expectEqual(@as(u64, "part-body".len), matching_partition.generations[0].data_size);
+    const other_partition = try store.scanGenerationPartition(
+        std.testing.allocator,
+        (upload_id[0] >> 4) + 1,
+    );
+    defer other_partition.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), other_partition.generations.len);
+
     try store.deleteUpload(upload_id);
     try std.testing.expectError(error.NotFound, store.readRange(location, 0, 1, sink.interface()));
 }

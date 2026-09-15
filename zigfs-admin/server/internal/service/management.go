@@ -93,6 +93,14 @@ func (service *Management) Storage(ctx context.Context) (contract.StorageRespons
 	return service.zig.Storage(ctx)
 }
 
+func (service *Management) StorageScanner(ctx context.Context) (contract.StorageScannerStatus, error) {
+	return service.zig.StorageScanner(ctx)
+}
+
+func (service *Management) RunStorageGC(ctx context.Context) (contract.StorageScanReport, error) {
+	return service.zig.RunStorageGC(ctx)
+}
+
 func (service *Management) Health(ctx context.Context) (contract.ManagementHealthResponse, error) {
 	return service.zig.ManagementHealth(ctx)
 }

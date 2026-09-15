@@ -28,6 +28,8 @@ type ManagementService interface {
 	UpdateAccessKey(ctx context.Context, id string, request contract.UpdateAccessKeyRequest) (contract.AccessKey, error)
 	DeleteAccessKey(ctx context.Context, id string) error
 	Storage(ctx context.Context) (contract.StorageResponse, error)
+	StorageScanner(ctx context.Context) (contract.StorageScannerStatus, error)
+	RunStorageGC(ctx context.Context) (contract.StorageScanReport, error)
 	Health(ctx context.Context) (contract.ManagementHealthResponse, error)
 	Settings(ctx context.Context) (contract.SettingsResponse, error)
 }
@@ -247,6 +249,24 @@ func (handler *Management) DeleteAccessKey(ctx *gin.Context) {
 
 func (handler *Management) Storage(ctx *gin.Context) {
 	response, err := handler.service.Storage(ctx.Request.Context())
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) StorageScanner(ctx *gin.Context) {
+	response, err := handler.service.StorageScanner(ctx.Request.Context())
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) RunStorageGC(ctx *gin.Context) {
+	response, err := handler.service.RunStorageGC(ctx.Request.Context())
 	if err != nil {
 		writeStorageError(ctx, err)
 		return

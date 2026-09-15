@@ -118,6 +118,24 @@ export interface StorageInfo {
   available: number | null
 }
 
+export interface StorageScanReport {
+  partition: number | null
+  partitions: number
+  scanned_generations: number
+  retained_generations: number
+  removed_generations: number
+  scanned_bytes: number
+  retained_bytes: number
+  removed_bytes: number
+  expired_multipart_uploads: number
+}
+
+export interface StorageScannerStatus {
+  partitions: number
+  next_partition: number
+  last_scan: StorageScanReport | null
+}
+
 export interface ManagementHealth {
   status: 'ready' | 'degraded' | 'recovery'
   recovery: 'initializing' | 'recovering' | 'ready' | 'recovery_required'

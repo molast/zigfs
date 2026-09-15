@@ -310,7 +310,7 @@ pub const ObjectService = struct {
             .tombstone => |generation| expected_generation = .{ .exact = generation },
         };
         const object_id = reusableNullVersionObjectId(current, bucket.versioning) orelse
-            (@import("../common/id.zig").randomV4(self.io) catch return error.Unavailable);
+            (namespaceObjectId(self.io, bucket_name, key) catch return error.Unavailable);
         const data_generation = @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable;
         const value: object_store_port.Value = .{
             .id = object_id,
@@ -471,7 +471,7 @@ pub const ObjectService = struct {
             },
         };
         const object_id = reusableNullVersionObjectId(current, bucket.versioning) orelse
-            (@import("../common/id.zig").randomV4(self.io) catch return error.Unavailable);
+            (namespaceObjectId(self.io, bucket_name, key) catch return error.Unavailable);
         const data_generation = staged.token;
         const modified_at = std.Io.Clock.real.now(self.io).toSeconds();
         const value: object_store_port.Value = .{
@@ -966,6 +966,24 @@ fn reusableNullVersionObjectId(
         .delete_marker => {},
     };
     return null;
+}
+
+fn namespaceObjectId(io: std.Io, bucket_name: []const u8, key: []const u8) !@import("../common/id.zig").Uuid {
+    var object_id = try @import("../common/id.zig").randomV4(io);
+    var hash = std.hash.Wyhash.init(0);
+    hash.update(bucket_name);
+    hash.update(&.{0});
+    hash.update(key);
+    const partition: u8 = @intCast(hash.final() % 16);
+    object_id[0] = (partition << 4) | (object_id[0] & 0x0f);
+    return object_id;
+}
+
+test "object namespace id uses bucket and object name partition" {
+    const first = try namespaceObjectId(std.testing.io, "photos", "2026/cover.jpg");
+    const second = try namespaceObjectId(std.testing.io, "photos", "2026/cover.jpg");
+    try std.testing.expectEqual(first[0] >> 4, second[0] >> 4);
+    try std.testing.expect(!std.mem.eql(u8, &first, &second));
 }
 
 const NewHistoryEntry = union(enum) {

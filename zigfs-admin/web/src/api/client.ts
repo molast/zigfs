@@ -15,6 +15,8 @@ import type {
   PresignObjectResponse,
   Settings,
   StorageInfo,
+  StorageScanReport,
+  StorageScannerStatus,
   SystemInfo,
 } from '../types/api'
 
@@ -64,6 +66,8 @@ export function createApiClient() {
     logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
     system: () => request<SystemInfo>('/api/v1/system'),
     storage: () => request<StorageInfo>('/api/v1/storage'),
+    storageScanner: () => request<StorageScannerStatus>('/api/v1/storage/scanner'),
+    runStorageGC: () => request<StorageScanReport>('/api/v1/storage/gc', { method: 'POST' }),
     managementHealth: () => request<ManagementHealth>('/api/v1/management-health'),
     settings: () => request<Settings>('/api/v1/settings'),
     listBuckets: async () => (await request<{ items: Bucket[] }>('/api/v1/buckets')).items,

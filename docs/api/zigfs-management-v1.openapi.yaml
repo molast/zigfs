@@ -365,6 +365,35 @@ paths:
                 $ref: "#/components/schemas/StorageInfo"
         default:
           $ref: "#/components/responses/Error"
+  /_admin/v1/storage/scanner:
+    get:
+      operationId: getStorageScanner
+      summary: 获取分片 Scanner 状态
+      responses:
+        "200":
+          description: 下一个分片和最近一次扫描结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageScannerStatus"
+        default:
+          $ref: "#/components/responses/Error"
+  /_admin/v1/storage/gc:
+    post:
+      operationId: runStorageGC
+      summary: 扫描完整 namespace 并清理不可达数据
+      description: >-
+        清理过期 Multipart Upload，并将所有未被 Object Version、Multipart
+        Manifest 或活跃 Upload 引用的数据经 Trash 后物理删除。
+      responses:
+        "200":
+          description: 本次完整扫描和回收结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageScanReport"
+        default:
+          $ref: "#/components/responses/Error"
   /_admin/v1/system:
     get:
       operationId: getSystem
@@ -914,6 +943,68 @@ components:
           type: [integer, "null"]
           format: int64
           minimum: 0
+    StorageScanReport:
+      type: object
+      additionalProperties: false
+      required:
+        - partition
+        - partitions
+        - scanned_generations
+        - retained_generations
+        - removed_generations
+        - scanned_bytes
+        - retained_bytes
+        - removed_bytes
+        - expired_multipart_uploads
+      properties:
+        partition:
+          type: [integer, "null"]
+          minimum: 0
+          maximum: 15
+          description: 分片扫描时为 0 至 15；完整 GC 时为 null。
+        partitions:
+          type: integer
+          minimum: 1
+        scanned_generations:
+          type: integer
+          minimum: 0
+        retained_generations:
+          type: integer
+          minimum: 0
+        removed_generations:
+          type: integer
+          minimum: 0
+        scanned_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        retained_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        removed_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        expired_multipart_uploads:
+          type: integer
+          minimum: 0
+    StorageScannerStatus:
+      type: object
+      additionalProperties: false
+      required: [partitions, next_partition, last_scan]
+      properties:
+        partitions:
+          type: integer
+          const: 16
+        next_partition:
+          type: integer
+          minimum: 0
+          maximum: 15
+        last_scan:
+          oneOf:
+            - $ref: "#/components/schemas/StorageScanReport"
+            - type: "null"
     SystemInfo:
       type: object
       required: [version, uptime, storage_used, objects, buckets]
@@ -1026,6 +1117,7 @@ components:
             - InvalidCredentialTTL
             - Conflict
             - CorruptMetadata
+            - CorruptData
             - StorageUnavailable
             - StorageNotReady
             - MethodNotAllowed

@@ -166,6 +166,24 @@ type StorageResponse struct {
 	Available   *int64 `json:"available"`
 }
 
+type StorageScanReport struct {
+	Partition               *int  `json:"partition"`
+	Partitions              int   `json:"partitions"`
+	ScannedGenerations      int   `json:"scanned_generations"`
+	RetainedGenerations     int   `json:"retained_generations"`
+	RemovedGenerations      int   `json:"removed_generations"`
+	ScannedBytes            int64 `json:"scanned_bytes"`
+	RetainedBytes           int64 `json:"retained_bytes"`
+	RemovedBytes            int64 `json:"removed_bytes"`
+	ExpiredMultipartUploads int   `json:"expired_multipart_uploads"`
+}
+
+type StorageScannerStatus struct {
+	Partitions    int                `json:"partitions"`
+	NextPartition int                `json:"next_partition"`
+	LastScan      *StorageScanReport `json:"last_scan"`
+}
+
 type ManagementHealthResponse struct {
 	Status   string   `json:"status"`
 	Recovery string   `json:"recovery"`

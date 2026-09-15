@@ -26,9 +26,15 @@ Journal 回放、Metadata 扫描、索引重建和密钥可用时才返回成功
 - `objects/` 保存按 Data Generation 分代的数据文件。
 - `.zigfs/system/` 保存格式、实例身份和 Credential Master Key。
 - `.zigfs/indexes/` 在 V1 是可丢弃的加速层，启动始终从 Metadata Repository 重建。
+- `.zigfs/trash/` 保存 GC 已从 namespace 原子移出、等待最终物理删除的数据；启动时
+  会继续清理未完成的 Trash。
 
 不要手工编辑或删除 `metadata/`、`.zigfs/journal/`、`.zigfs/system/` 或 `objects/`。
 第二个 ZigFS 进程不能共享同一个数据根目录。
+
+对象删除、悬垂数据、过期 Multipart 和 16 分片 Scanner 的完整语义见
+[存储扫描与文件清理架构](storage-reclamation.md)。Admin Storage 页面可查看最近扫描
+结果并触发一次完整 GC；不要手工删除物理数据文件。
 
 ## 监控与告警
 

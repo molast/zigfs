@@ -66,6 +66,10 @@ pub fn serve(
         application,
         config.s3_lifecycle_scan_interval_seconds,
     });
+    background.async(io, serveStorageScanner, .{
+        application,
+        config.s3_lifecycle_scan_interval_seconds,
+    });
 
     if (!config.metrics_enabled) {
         std.log.info("Prometheus metrics listener disabled", .{});
@@ -109,6 +113,27 @@ fn serveLifecycleScanner(application: *Application, interval_seconds: u64) void 
             std.log.info(
                 "ZigFS lifecycle scan completed buckets={d} versions={d} current_expired={d} noncurrent_expired={d} delete_markers_removed={d}",
                 .{ report.buckets_scanned, report.versions_scanned, report.current_expired, report.noncurrent_expired, report.delete_markers_removed },
+            );
+        }
+    }
+}
+
+fn serveStorageScanner(application: *Application, interval_seconds: u64) void {
+    const io = application.io orelse return;
+    const interval: std.Io.Clock.Duration = .{
+        .clock = .awake,
+        .raw = std.Io.Duration.fromSeconds(@intCast(interval_seconds)),
+    };
+    while (true) {
+        interval.sleep(io) catch return;
+        const report = application.runStorageScanner() catch |err| {
+            std.log.err("ZigFS storage scanner failed: {t}", .{err});
+            continue;
+        };
+        if (report.removed_generations != 0 or report.expired_multipart_uploads != 0) {
+            std.log.info(
+                "ZigFS storage scanner partition={d}/{d} scanned={d} retained={d} purged={d} expired_mpu={d}",
+                .{ report.partition orelse 0, report.partitions, report.scanned_generations, report.retained_generations, report.removed_generations, report.expired_multipart_uploads },
             );
         }
     }
