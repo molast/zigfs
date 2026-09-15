@@ -89,6 +89,7 @@ export default function App() {
     } catch {
       // Storage may be unavailable in private or restricted browser contexts.
     }
+    document.documentElement.dataset.theme = darkTheme ? 'dark' : 'light'
   }, [darkTheme])
 
   async function bootstrap() {
@@ -125,7 +126,7 @@ export default function App() {
   }
 
   if (session === undefined) {
-    return <main className="session-loading" aria-label="正在验证登录状态" />
+    return <main className="session-loading" aria-label="正在验证登录状态"><img className="session-logo" src="/zigfs-logo.svg" alt="ZigFS" /></main>
   }
 
   if (!session) {
@@ -161,7 +162,7 @@ export default function App() {
       <button className="sidebar-backdrop" type="button" aria-label="关闭导航" onClick={() => setMobileSidebarOpen(false)} />
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <span className="brand-mark" aria-hidden="true">ZF</span>
+          <img className="brand-logo" src="/zigfs-logo.svg" alt="" aria-hidden="true" />
           <div className="brand-copy"><strong>ZigFS</strong><span>Object Storage</span></div>
           <button className="mobile-close" type="button" aria-label="关闭导航" onClick={() => setMobileSidebarOpen(false)}><X aria-hidden="true" /></button>
         </div>
@@ -251,6 +252,7 @@ export default function App() {
 function ServiceUnavailable({ state, retry }: { state: 'offline' | 'not-ready'; retry: () => void }) {
   return (
     <main className="service-state">
+      <img className="service-logo" src="/zigfs-logo.svg" alt="ZigFS" />
       <span className={`service-state-dot ${state}`} />
       <h1>{state === 'offline' ? 'ZigFS Offline' : 'ZigFS Not Ready'}</h1>
       <p>{state === 'offline' ? '无法连接 ZigFS。' : 'ZigFS 正在恢复存储与元数据。'}</p>

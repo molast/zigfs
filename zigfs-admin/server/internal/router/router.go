@@ -52,6 +52,17 @@ func New(auth *handler.Auth, system *handler.System, management *handler.Managem
 	private.PATCH("/access-keys/:id", management.UpdateAccessKey)
 	private.DELETE("/access-keys/:id", management.DeleteAccessKey)
 
+	// Vite copies files from web/public to the web root. Serve the brand assets
+	// explicitly before the SPA fallback, otherwise NoRoute returns index.html
+	// for image requests and browsers render a broken image or default favicon.
+	for _, asset := range []string{
+		"zigfs-logo.svg",
+		"favicon-32x32.png",
+		"icon-192x192.png",
+		"apple-touch-icon.png",
+	} {
+		engine.StaticFile("/"+asset, filepath.Join(webRoot, asset))
+	}
 	engine.StaticFS("/assets", http.Dir(filepath.Join(webRoot, "assets")))
 	engine.NoRoute(func(ctx *gin.Context) {
 		if ctx.Request.Method != http.MethodGet || strings.HasPrefix(ctx.Request.URL.Path, "/api/") {

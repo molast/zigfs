@@ -30,7 +30,7 @@ export function LoginView({ onLogin }: LoginViewProps) {
   return (
     <main className="login-shell">
       <section className="login-branding">
-        <div className="login-logo"><span className="brand-mark">ZF</span><strong>ZigFS</strong></div>
+        <div className="login-logo"><img className="brand-logo" src="/zigfs-logo.svg" alt="" aria-hidden="true" /><strong>ZigFS</strong></div>
         <div className="login-copy">
           <h1>对象存储管理中心</h1>
           <p>查看服务状态，管理 Bucket、对象和访问凭证。所有管理数据均由 ZigFS API 提供。</p>

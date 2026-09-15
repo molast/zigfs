@@ -1,6 +1,10 @@
-# ZigFS
+<div align="center">
+  <img src="assets/brand/zigfs-logo.svg" alt="ZigFS Logo" width="128" />
 
-轻量级、单机、S3 兼容对象存储，使用 Zig 构建。
+  <h1>ZigFS</h1>
+
+  <p>轻量级、单机、S3 兼容对象存储，使用 Zig 构建。</p>
+</div>
 
 ZigFS 面向需要自托管对象存储的开发团队和业务系统，提供标准 S3 文件操作、版本管理、生命周期规则、可恢复分片上传，以及独立的管理 API。当前版本为 `0.1.0` Release Candidate，仍属于开发版本。
 

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -148,6 +150,49 @@ func TestLive(t *testing.T) {
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, recorder.Code)
+	}
+}
+
+func TestWebBrandAssetsAreServedBeforeSPAFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	webRoot := t.TempDir()
+	for _, asset := range []string{
+		"zigfs-logo.svg",
+		"favicon-32x32.png",
+		"icon-192x192.png",
+		"apple-touch-icon.png",
+	} {
+		if err := os.WriteFile(filepath.Join(webRoot, asset), []byte(asset), 0o644); err != nil {
+			t.Fatalf("write %s: %v", asset, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(webRoot, "index.html"), []byte("<!doctype html>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	engine := router.New(
+		handler.NewAuth(authService{}),
+		handler.NewSystem(systemService{ready: true}),
+		handler.NewManagement(managementService{}),
+		webRoot,
+	)
+	for _, asset := range []string{
+		"zigfs-logo.svg",
+		"favicon-32x32.png",
+		"icon-192x192.png",
+		"apple-touch-icon.png",
+	} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/"+asset, nil)
+
+		engine.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected %s status %d, got %d", asset, http.StatusOK, recorder.Code)
+		}
+		if body := recorder.Body.String(); body != asset {
+			t.Fatalf("expected %s body, got %q", asset, body)
+		}
 	}
 }
 

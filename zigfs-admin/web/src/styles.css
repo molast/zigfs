@@ -23,8 +23,22 @@
 }
 
 * { box-sizing: border-box; }
-html, body, #root { min-width: 320px; min-height: 100%; }
-body { margin: 0; min-height: 100vh; }
+html, body, #root {
+  min-width: 320px;
+  min-height: 100%;
+  background: #f7f8fa;
+}
+html, body {
+  overscroll-behavior-y: none;
+}
+body {
+  margin: 0;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+html[data-theme="dark"], html[data-theme="dark"] body, html[data-theme="dark"] #root {
+  background: #11171d;
+}
 button, input, select, textarea { font: inherit; letter-spacing: 0; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .5; }
@@ -98,17 +112,12 @@ code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
   border-bottom: 1px solid var(--border);
 }
 
-.brand-mark {
-  width: 34px;
-  height: 34px;
-  display: inline-grid;
-  place-items: center;
+.brand-logo {
+  width: 36px;
+  height: 36px;
+  display: block;
   flex: 0 0 auto;
-  border-radius: 5px;
-  color: #ffffff;
-  background: var(--accent);
-  font-size: 12px;
-  font-weight: 800;
+  object-fit: contain;
 }
 
 .brand-copy { min-width: 0; display: grid; gap: 1px; white-space: nowrap; }
@@ -661,7 +670,7 @@ td small { display: block; margin-top: 3px; color: var(--text-muted); font-size:
 .login-shell { min-height: 100vh; display: grid; grid-template-columns: minmax(320px, .9fr) minmax(420px, 1.1fr); background: #f4f7f9; }
 .login-branding { padding: 64px clamp(36px, 8vw, 110px); display: flex; flex-direction: column; justify-content: space-between; color: #ffffff; background: #122b3b; }
 .login-logo { display: flex; align-items: center; gap: 12px; }
-.login-logo .brand-mark { background: #20a0d7; }
+.login-logo .brand-logo { width: 48px; height: 48px; }
 .login-logo strong { font-size: 21px; }
 .login-copy { max-width: 430px; }
 .login-copy h1 { margin: 0 0 14px; font-size: 32px; line-height: 1.25; }
@@ -675,8 +684,10 @@ td small { display: block; margin-top: 3px; color: var(--text-muted); font-size:
 .login-panel input { width: 100%; color: #1c2733; background: #ffffff; }
 .login-panel .primary-button { width: 100%; margin-top: 10px; min-height: 40px; }
 .form-error { margin: 3px 0 0; color: #b42318; font-size: 11px; }
-.session-loading { min-height: 100vh; background: #f4f7f9; }
+.session-loading { min-height: 100vh; display: grid; place-items: center; background: #f4f7f9; }
+.session-logo { width: 72px; height: 72px; object-fit: contain; }
 .service-state { min-height: 100vh; padding: 24px; display: grid; place-content: center; justify-items: center; gap: 12px; text-align: center; background: #f4f7f9; }
+.service-logo { width: 72px; height: 72px; margin-bottom: 4px; object-fit: contain; }
 .service-state h1, .service-state p { margin: 0; }
 .service-state p { color: #66717d; }
 .service-state-dot { width: 12px; height: 12px; border-radius: 50%; background: #c0393d; }

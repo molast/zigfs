@@ -268,6 +268,7 @@ pub const LocalObjectDataStore = struct {
         defer objects.close(self.io);
         var iterator = objects.iterate();
         while (iterator.next(self.io) catch return error.Unavailable) |entry| {
+            if (isIgnoredSystemEntry(entry.name)) continue;
             if (entry.kind != .directory) return error.CorruptData;
             const bucket_id = parseUuidHex(entry.name) orelse return error.CorruptData;
             try scanBucket(self, allocator, entry.name, bucket_id, &generations);
@@ -352,6 +353,7 @@ fn scanBucket(
     defer bucket.close(self.io);
     var iterator = bucket.iterate();
     while (iterator.next(self.io) catch return error.Unavailable) |entry| {
+        if (isIgnoredSystemEntry(entry.name)) continue;
         if (entry.kind != .directory) return error.CorruptData;
         const shard = parseShard(entry.name) orelse return error.CorruptData;
         try scanShard(
@@ -387,6 +389,7 @@ fn scanShard(
     defer directory.close(self.io);
     var iterator = directory.iterate();
     while (iterator.next(self.io) catch return error.Unavailable) |entry| {
+        if (isIgnoredSystemEntry(entry.name)) continue;
         if (entry.kind != .directory) return error.CorruptData;
         const object_id = parseUuidHex(entry.name) orelse return error.CorruptData;
         if (object_id[0] != shard) return error.CorruptData;
@@ -425,6 +428,7 @@ fn scanObject(
     defer directory.close(self.io);
     var iterator = directory.iterate();
     while (iterator.next(self.io) catch return error.Unavailable) |entry| {
+        if (isIgnoredSystemEntry(entry.name)) continue;
         if (entry.kind != .directory) return error.CorruptData;
         const data_generation = parseUuidHex(entry.name) orelse return error.CorruptData;
         const location: data_store_port.Location = .{
@@ -455,6 +459,7 @@ fn inspectGeneration(
     var data_present = false;
     var iterator = directory.iterate();
     while (iterator.next(self.io) catch return error.Unavailable) |entry| {
+        if (isIgnoredSystemEntry(entry.name)) continue;
         if (entry.kind != .file or
             !std.mem.eql(u8, entry.name, "data") or
             data_present)
@@ -464,6 +469,13 @@ fn inspectGeneration(
         data_present = true;
     }
     return data_present;
+}
+
+fn isIgnoredSystemEntry(name: []const u8) bool {
+    // Finder and other desktop tools may leave hidden files in a data root.
+    // They are not ZigFS-managed entries and must not make a healthy store
+    // fail its reachability scan.
+    return std.mem.startsWith(u8, name, ".");
 }
 
 fn parseUuidHex(value: []const u8) ?id.Uuid {
@@ -782,6 +794,8 @@ test "local object data store scans and idempotently deletes generations" {
     var empty_paths: PathSet = undefined;
     try empty_paths.format(empty_location);
     try tmp.dir.createDirPath(std.testing.io, empty_paths.generationDirectory());
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "objects/.DS_Store", .data = "desktop metadata" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "objects/.hidden", .data = "desktop metadata" });
 
     const scan = try store.scanGenerations(std.testing.allocator);
     defer scan.deinit(std.testing.allocator);

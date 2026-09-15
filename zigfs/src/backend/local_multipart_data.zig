@@ -171,6 +171,7 @@ pub const LocalMultipartDataStore = struct {
         defer root.close(self.io);
         var shards = root.iterate();
         while (shards.next(self.io) catch return error.Unavailable) |shard_entry| {
+            if (isIgnoredSystemEntry(shard_entry.name)) continue;
             if (shard_entry.kind != .directory) return error.CorruptData;
             const shard = parseShard(shard_entry.name) orelse return error.CorruptData;
             try scanShard(self, allocator, shard_entry.name, shard, &generations);
@@ -291,6 +292,7 @@ fn scanShard(
     defer directory.close(self.io);
     var uploads = directory.iterate();
     while (uploads.next(self.io) catch return error.Unavailable) |entry| {
+        if (isIgnoredSystemEntry(entry.name)) continue;
         if (entry.kind != .directory) return error.CorruptData;
         const upload_id = parseUuidHex(entry.name) orelse return error.CorruptData;
         if (upload_id[0] != shard) return error.CorruptData;
@@ -312,6 +314,7 @@ fn scanUpload(
     defer directory.close(self.io);
     var parts = directory.iterate();
     while (parts.next(self.io) catch return error.Unavailable) |entry| {
+        if (isIgnoredSystemEntry(entry.name)) continue;
         if (entry.kind != .directory) return error.CorruptData;
         const part_number = parsePartNumber(entry.name) orelse return error.CorruptData;
         try scanPart(self, allocator, shard_name, upload_name, upload_id, entry.name, part_number, generations);
@@ -334,6 +337,7 @@ fn scanPart(
     defer directory.close(self.io);
     var stored_generations = directory.iterate();
     while (stored_generations.next(self.io) catch return error.Unavailable) |entry| {
+        if (isIgnoredSystemEntry(entry.name)) continue;
         if (entry.kind != .directory) return error.CorruptData;
         const data_generation = parseUuidHex(entry.name) orelse return error.CorruptData;
         const location: data_store_port.Location = .{
@@ -356,10 +360,18 @@ fn inspectGeneration(self: *LocalMultipartDataStore, location: data_store_port.L
     var data_present = false;
     var iterator = directory.iterate();
     while (iterator.next(self.io) catch return error.Unavailable) |entry| {
+        if (isIgnoredSystemEntry(entry.name)) continue;
         if (entry.kind != .file or !std.mem.eql(u8, entry.name, "data") or data_present) return error.CorruptData;
         data_present = true;
     }
     return data_present;
+}
+
+fn isIgnoredSystemEntry(name: []const u8) bool {
+    // Finder and other desktop tools may leave hidden files in a data root.
+    // They are not ZigFS-managed entries and must not make a healthy store
+    // fail its reachability scan.
+    return std.mem.startsWith(u8, name, ".");
 }
 
 fn parseUuidHex(value: []const u8) ?id.Uuid {
@@ -435,6 +447,8 @@ test "local multipart data paths are opaque and stream ranges" {
     const staged = try store.stage(generation, source.interface());
     const location: data_store_port.Location = .{ .upload_id = upload_id, .part_number = 7, .data_generation = generation };
     try store.publish(staged, location);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "multipart/.DS_Store", .data = "desktop metadata" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "multipart/.hidden", .data = "desktop metadata" });
     var sink = test_streams.CollectingSink.init(std.testing.allocator);
     defer sink.deinit();
     try store.readRange(location, 2, 4, sink.interface());
