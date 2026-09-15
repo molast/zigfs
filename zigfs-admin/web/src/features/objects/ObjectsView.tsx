@@ -1,19 +1,25 @@
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft,
+  Archive,
+  CheckCircle2,
   Copy,
   Download,
   ExternalLink,
   File,
   FolderOpen,
+  FolderInput,
+  FolderPlus,
   History,
-  Info,
+  List,
   Pause,
+  PanelRight,
   Play,
   RefreshCw,
   RotateCcw,
   Search,
   Trash2,
+  Undo2,
   Upload,
   X,
 } from 'lucide-react'
@@ -22,7 +28,7 @@ import { ActionMenu } from '../../components/ActionMenu'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
 import { useToast } from '../../components/ToastProvider'
-import type { AccessKey, MultipartUpload, MultipartUploadSummary, ObjectSummary, ObjectVersion, PresignObjectResponse } from '../../types/api'
+import type { AccessKey, Bucket, MultipartUpload, MultipartUploadSummary, ObjectSummary, ObjectVersion, PresignObjectResponse } from '../../types/api'
 import {
   choosePartSize,
   formatBytes,
@@ -46,30 +52,66 @@ interface UploadProgress {
   percent: number
 }
 
+interface CompletedUpload {
+  uploadId: string
+  key: string
+  fileName: string
+  fileSize: number
+  completedAt: string
+}
+
+type SelectedObject = {
+  kind: 'current'
+  object: ObjectSummary
+} | {
+  kind: 'version'
+  version: ObjectVersion
+}
+
+interface TransferDialogState {
+  mode: 'copy' | 'move'
+  items: SelectedObject[]
+}
+
 export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProps) {
   const confirm = useConfirm()
   const { startLoading, withLoading } = useLoading()
   const [accessKeys, setAccessKeys] = useState<AccessKey[]>([])
+  const [buckets, setBuckets] = useState<Bucket[]>([])
+  const [bucketInfo, setBucketInfo] = useState<Bucket | null>(null)
   const bucket = initialBucket
   const [accessKey, setAccessKey] = useState('')
   const [prefix, setPrefix] = useState('')
   const [viewMode, setViewMode] = useState<'current' | 'versions'>('current')
+  const [showDeleted, setShowDeleted] = useState(false)
+  const [showDeletedVersions, setShowDeletedVersions] = useState(false)
   const [objects, setObjects] = useState<ObjectSummary[]>([])
+  const [deletedObjects, setDeletedObjects] = useState<ObjectVersion[]>([])
   const [versions, setVersions] = useState<ObjectVersion[]>([])
   const [nextToken, setNextToken] = useState('')
-  const [putKey, setPutKey] = useState('')
-  const [file, setFile] = useState<File | null>(null)
-  const [showUpload, setShowUpload] = useState(false)
   const [error, setError] = useState('')
   const showToast = useToast()
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null)
   const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([])
+  const [completedUploads, setCompletedUploads] = useState<CompletedUpload[]>([])
   const [uploadsLoading, setUploadsLoading] = useState(false)
+  const [uploadsPanelOpen, setUploadsPanelOpen] = useState(false)
+  const [showCreatePath, setShowCreatePath] = useState(false)
+  const [pathName, setPathName] = useState('')
+  const [pathError, setPathError] = useState('')
   const [deletingKey, setDeletingKey] = useState('')
   const [deletingVersion, setDeletingVersion] = useState('')
   const [restoringVersion, setRestoringVersion] = useState('')
+  const [selectedObjectKeys, setSelectedObjectKeys] = useState<Set<string>>(new Set())
+  const [selectedDeletedIds, setSelectedDeletedIds] = useState<Set<string>>(new Set())
+  const [selectedVersionIds, setSelectedVersionIds] = useState<Set<string>>(new Set())
+  const [transferDialog, setTransferDialog] = useState<TransferDialogState | null>(null)
+  const [transferBucket, setTransferBucket] = useState(bucket)
+  const [transferPath, setTransferPath] = useState('')
+  const [transferError, setTransferError] = useState('')
+  const [transferring, setTransferring] = useState(false)
   const [detail, setDetail] = useState<ObjectSummary | null>(null)
   const [detailUrl, setDetailUrl] = useState<PresignObjectResponse | null>(null)
   const [detailError, setDetailError] = useState('')
@@ -82,6 +124,9 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     request: XMLHttpRequest | null
   } | null>(null)
   const uploadsHydrated = useRef(false)
+  const visibleVersions = showDeletedVersions
+    ? versions.filter((version) => version.is_delete_marker && version.is_latest)
+    : versions.filter((version) => !version.is_delete_marker)
 
   useEffect(() => {
     withLoading('正在加载 Access Keys...', () => api.listAccessKeys())
@@ -93,19 +138,42 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       .catch((reason: Error) => setError(reason.message))
   }, [api, withLoading])
 
-  async function load(reset: boolean) {
+  useEffect(() => {
+    if (!bucket) return
+    withLoading('正在加载 Bucket 信息...', () => api.listBuckets())
+      .then((items) => {
+        setBuckets(items)
+        setBucketInfo(items.find((item) => item.name === bucket) ?? null)
+      })
+      .catch((reason: Error) => setError(reason.message))
+  }, [api, bucket, withLoading])
+
+  async function load(reset: boolean, requestedPrefix = prefix) {
     if (!bucket) return
     const stopLoading = startLoading(`正在加载${viewMode === 'versions' ? '对象版本' : '对象'}...`)
     try {
+      if (reset) {
+        setSelectedObjectKeys(new Set())
+        setSelectedDeletedIds(new Set())
+        setSelectedVersionIds(new Set())
+      }
       setLoading(true)
       setError('')
+      const currentPrefix = requestedPrefix.trim()
       if (viewMode === 'versions') {
-        setVersions(await api.listObjectVersions(bucket, prefix.trim()))
+        setVersions(await api.listObjectVersions(bucket, currentPrefix))
+        setDeletedObjects([])
         setNextToken('')
+      } else if (showDeleted) {
+        const history = await api.listObjectVersions(bucket, currentPrefix)
+        setObjects([])
+        setNextToken('')
+        setDeletedObjects(history.filter((item) => item.is_delete_marker && item.is_latest))
       } else {
-        const result = await api.listObjects(bucket, prefix.trim(), reset ? '' : nextToken)
+        const result = await api.listObjects(bucket, currentPrefix, reset ? '' : nextToken)
         setObjects((current) => reset ? result.items : [...current, ...result.items])
         setNextToken(result.continuation_token ?? '')
+        setDeletedObjects([])
       }
     } catch (reason) {
       setError((reason as Error).message)
@@ -117,7 +185,14 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
 
   useEffect(() => {
     if (bucket) void load(true)
-  }, [bucket, viewMode])
+  }, [bucket, viewMode, showDeleted, showDeletedVersions])
+
+  useEffect(() => {
+    // A deleted-object filter belongs to the active object view. Reset it
+    // whenever rewind changes the view so its checkbox cannot carry over.
+    setShowDeleted(false)
+    setShowDeletedVersions(false)
+  }, [viewMode])
 
   useEffect(() => () => {
     if (uploadControl.current) {
@@ -135,9 +210,108 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
   }, [bucket])
 
   function selectFile(event: ChangeEvent<HTMLInputElement>) {
-    const selected = event.target.files?.[0] ?? null
-    setFile(selected)
-    if (selected && !putKey) setPutKey(selected.name)
+    const selected = [...(event.target.files ?? [])]
+    event.target.value = ''
+    if (selected.length > 0) void beginUploads(selected)
+  }
+
+  function openRewind() {
+    setSelectedObjectKeys(new Set())
+    setSelectedDeletedIds(new Set())
+    setSelectedVersionIds(new Set())
+    setShowDeleted(false)
+    if (viewMode === 'versions') {
+      setViewMode('current')
+      return
+    }
+    setViewMode('versions')
+  }
+
+  function toggleObjectSelection(key: string, checked: boolean) {
+    setSelectedObjectKeys((current) => {
+      const next = new Set(current)
+      if (checked) next.add(key)
+      else next.delete(key)
+      return next
+    })
+  }
+
+  function toggleDeletedSelection(version: ObjectVersion, checked: boolean) {
+    const identity = versionIdentity(version)
+    setSelectedDeletedIds((current) => {
+      const next = new Set(current)
+      if (checked) next.add(identity)
+      else next.delete(identity)
+      return next
+    })
+  }
+
+  function toggleVersionSelection(version: ObjectVersion, checked: boolean) {
+    const identity = versionIdentity(version)
+    setSelectedVersionIds((current) => {
+      const next = new Set(current)
+      if (checked) next.add(identity)
+      else next.delete(identity)
+      return next
+    })
+  }
+
+  function toggleAllCurrent(checked: boolean) {
+    if (showDeleted) {
+      setSelectedDeletedIds(checked ? new Set(deletedObjects.map(versionIdentity)) : new Set())
+      return
+    }
+    setSelectedObjectKeys(checked ? new Set(objects.map((object) => object.key)) : new Set())
+  }
+
+  function toggleAllVersions(checked: boolean) {
+    setSelectedVersionIds(checked
+      ? new Set(visibleVersions.map(versionIdentity))
+      : new Set())
+  }
+
+  function selectedItems(): SelectedObject[] {
+    if (viewMode === 'versions') {
+      return visibleVersions
+        .filter((version) => selectedVersionIds.has(versionIdentity(version)))
+        .map((version) => ({ kind: 'version' as const, version }))
+    }
+    if (showDeleted) {
+      return deletedObjects
+        .filter((version) => selectedDeletedIds.has(versionIdentity(version)))
+        .map((version) => ({ kind: 'version' as const, version }))
+    }
+    return objects
+      .filter((object) => selectedObjectKeys.has(object.key))
+      .map((object) => ({ kind: 'current' as const, object }))
+  }
+
+  function openTransfer(mode: 'copy' | 'move', item?: SelectedObject) {
+    const items = (item ? [item] : selectedItems()).filter((selected) => selected.kind === 'current' || !selected.version.is_delete_marker)
+    if (items.length === 0) return
+    setTransferBucket(bucket)
+    setTransferPath(prefix.trim())
+    setTransferError('')
+    setTransferDialog({ mode, items })
+  }
+
+  function goToParentPath() {
+    const parent = parentObjectPath(prefix)
+    if (parent === prefix.trim()) return
+    setPrefix(parent)
+    void load(true, parent)
+  }
+
+  async function copyCurrentPath() {
+    if (!bucket) return
+    const currentPrefix = prefix.trim().replace(/^\/+|\/+$/g, '')
+    const path = currentPrefix ? `${currentPrefix}/` : ''
+    try {
+      await navigator.clipboard.writeText(`${bucket}/${path}`)
+      showToast('当前路径已复制')
+    } catch (reason) {
+      setError((reason as Error).message)
+    }
   }
 
   async function loadMultipartUploads() {
@@ -202,35 +376,69 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     }
   }
 
-  async function upload(event: FormEvent) {
-    event.preventDefault()
-    const key = putKey.trim()
-    if (!file || !key || !bucket || !accessKey) return
-    try {
-      setError('')
-      const created = await api.createMultipartUpload(bucket, key, file.type || 'application/octet-stream')
-      const task: UploadTask = {
-        uploadId: created.upload_id,
-        bucket,
-        key,
-        fileName: file.name,
-        fileSize: file.size,
-        lastModified: file.lastModified,
-        contentType: file.type || 'application/octet-stream',
-        partSize: choosePartSize(file.size),
-        initiatedAt: created.initiated_at,
-        uploadedBytes: 0,
-        completedParts: 0,
-        status: 'paused',
-        file,
+  async function beginUploads(files: File[]) {
+    if (!bucket || !accessKey || files.length === 0) return
+    setError('')
+    setUploadsPanelOpen(true)
+    const tasks: UploadTask[] = []
+    const failures: string[] = []
+    for (const file of files) {
+      const key = joinObjectPath(prefix, file.name)
+      try {
+        const created = await api.createMultipartUpload(bucket, key, file.type || 'application/octet-stream')
+        tasks.push({
+          uploadId: created.upload_id,
+          bucket,
+          key,
+          fileName: file.name,
+          fileSize: file.size,
+          lastModified: file.lastModified,
+          contentType: file.type || 'application/octet-stream',
+          partSize: choosePartSize(file.size),
+          initiatedAt: created.initiated_at,
+          uploadedBytes: 0,
+          completedParts: 0,
+          status: 'paused',
+          file,
+        })
+      } catch (reason) {
+        failures.push(`${file.name}: ${(reason as Error).message}`)
       }
-      setUploadTasks((current) => [task, ...current])
-      setFile(null)
-      setPutKey('')
-      if (fileInput.current) fileInput.current.value = ''
-      await runUpload(task, file)
+    }
+    if (tasks.length > 0) setUploadTasks((current) => [...tasks, ...current])
+    if (failures.length > 0) setError(`以下文件未能创建上传任务：${failures.join('；')}`)
+    for (const task of tasks) {
+      if (task.file) await runUpload(task, task.file)
+    }
+  }
+
+  async function createPath(event: FormEvent) {
+    event.preventDefault()
+    const name = pathName.trim().replace(/^\/+|\/+$/g, '')
+    if (!name || !bucket || !accessKey) return
+    if (name.includes('/')) {
+      setPathError('目录名称只能创建一级目录，不能包含“/”。')
+      return
+    }
+    const key = `${joinObjectPath(prefix, name)}/`
+    const stopLoading = startLoading('正在创建路径...')
+    try {
+      setPathError('')
+      const presigned = await api.presignObject(accessKey, bucket, key, 'PUT', 900)
+      const response = await fetch(presigned.url, {
+        method: 'PUT',
+        headers: presigned.required_headers,
+        body: '',
+      })
+      if (!response.ok) throw new Error(`创建路径失败（${response.status}）`)
+      setShowCreatePath(false)
+      setPathName('')
+      showToast(`已创建路径 ${key}`)
+      await load(true)
     } catch (reason) {
-      setError((reason as Error).message)
+      setPathError((reason as Error).message)
+    } finally {
+      stopLoading()
     }
   }
 
@@ -336,6 +544,16 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
         // not leave a false failed task when the UploadId is already gone.
         if (!(await completionPublished(task))) throw reason
       }
+      setCompletedUploads((current) => [
+        {
+          uploadId: task.uploadId,
+          key: task.key,
+          fileName: task.fileName,
+          fileSize: selectedFile.size,
+          completedAt: new Date().toISOString(),
+        },
+        ...current,
+      ].slice(0, 20))
       setUploadTasks((current) => current.filter((item) => item.uploadId !== task.uploadId))
       showToast(`已上传 ${task.key}`)
       await load(true)
@@ -447,7 +665,7 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
   }
 
   async function download(object: ObjectSummary) {
-    if (!accessKey || !bucket) return
+    if (!accessKey || !bucket) return false
     const stopLoading = startLoading('正在下载对象...')
     try {
       setError('')
@@ -464,15 +682,17 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       link.remove()
       window.setTimeout(() => URL.revokeObjectURL(url), 1000)
       showToast(`已下载 ${object.key}`)
+      return true
     } catch (reason) {
       setError((reason as Error).message)
+      return false
     } finally {
       stopLoading()
     }
   }
 
   async function downloadVersion(version: ObjectVersion) {
-    if (!accessKey || !bucket || version.is_delete_marker) return
+    if (!accessKey || !bucket || version.is_delete_marker) return false
     const stopLoading = startLoading('正在下载对象版本...')
     try {
       setError('')
@@ -489,9 +709,184 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
       link.remove()
       window.setTimeout(() => URL.revokeObjectURL(url), 1000)
       showToast(`已下载 ${version.key} 的版本 ${shortVersionId(version.version_id)}`)
+      return true
+    } catch (reason) {
+      setError((reason as Error).message)
+      return false
+    } finally {
+      stopLoading()
+    }
+  }
+
+  async function copyItem(item: SelectedObject, destinationBucket: string, destinationPath: string) {
+    if (!accessKey || !bucket) return
+    const sourceKey = item.kind === 'current' ? item.object.key : item.version.key
+    const fileName = sourceKey.split('/').pop() || sourceKey
+    const destinationKey = joinObjectPath(destinationPath, fileName)
+    if (destinationBucket === bucket && destinationKey === sourceKey) {
+      throw new Error(`目标路径与源对象相同：${sourceKey}`)
+    }
+    const versionId = item.kind === 'version' ? item.version.version_id : undefined
+    const presigned = await api.presignObject(accessKey, destinationBucket, destinationKey, 'PUT', 900, {
+      copySource: { bucket, key: sourceKey, ...(versionId ? { versionId } : {}) },
+    })
+    const response = await fetch(presigned.url, {
+      method: 'PUT',
+      headers: presigned.required_headers,
+    })
+    if (!response.ok) throw new Error(`复制 ${sourceKey} 失败（${response.status}）`)
+  }
+
+  async function deleteItem(item: SelectedObject) {
+    if (!accessKey || !bucket) return
+    if (item.kind === 'current') {
+      const presigned = await api.presignObject(accessKey, bucket, item.object.key, 'DELETE', 900)
+      const response = await fetch(presigned.url, { method: 'DELETE' })
+      if (!response.ok) throw new Error(`删除 ${item.object.key} 失败（${response.status}）`)
+      return
+    }
+    const presigned = await api.presignObject(accessKey, bucket, item.version.key, 'DELETE', 900, { versionId: item.version.version_id })
+    const response = await fetch(presigned.url, { method: 'DELETE' })
+    if (!response.ok) throw new Error(`删除版本 ${shortVersionId(item.version.version_id)} 失败（${response.status}）`)
+  }
+
+  async function purgeObject(key: string) {
+    if (!accessKey || !bucket) return
+    const history = await api.listObjectVersions(bucket, key)
+    const exactVersions = history
+      .filter((version) => version.key === key)
+      .sort((left, right) => Number(left.is_delete_marker) - Number(right.is_delete_marker))
+    for (const version of exactVersions) {
+      await deleteItem({ kind: 'version', version })
+    }
+  }
+
+  async function removeDeletedObject(version: ObjectVersion) {
+    if (!accessKey || !bucket || !version.is_delete_marker) return
+    if (!await confirm({
+      title: '永久删除对象',
+      message: `永久删除对象“${version.key}”？该对象的全部版本和 DeleteMarker 都会被清除，且无法恢复。`,
+      confirmLabel: '永久删除',
+      danger: true,
+    })) return
+    const identity = versionIdentity(version)
+    const stopLoading = startLoading('正在永久删除对象...')
+    try {
+      setDeletingVersion(identity)
+      setError('')
+      await purgeObject(version.key)
+      showToast(`已永久删除 ${version.key}`)
+      await load(true)
     } catch (reason) {
       setError((reason as Error).message)
     } finally {
+      setDeletingVersion('')
+      stopLoading()
+    }
+  }
+
+  async function downloadSelected() {
+    const items = selectedItems().filter((item) => item.kind === 'current' || !item.version.is_delete_marker)
+    if (items.length === 0) return
+    let failed = false
+    for (const item of items) {
+      const completed = item.kind === 'current' ? await download(item.object) : await downloadVersion(item.version)
+      if (!completed) failed = true
+    }
+    if (!failed) {
+      setSelectedObjectKeys(new Set())
+      setSelectedDeletedIds(new Set())
+      setSelectedVersionIds(new Set())
+    } else {
+      setError('部分对象下载失败，请重试。')
+    }
+  }
+
+  async function removeSelected() {
+    const items = selectedItems()
+    if (items.length === 0) return
+    const deleteMarkers = items.filter((item): item is Extract<SelectedObject, { kind: 'version' }> => item.kind === 'version' && item.version.is_delete_marker)
+    const purgingDeletedObjects = deleteMarkers.length === items.length
+    const permanent = viewMode === 'versions' || items.some((item) => item.kind === 'version')
+    const label = permanent ? '永久删除选中的对象版本' : '删除选中的对象'
+    if (!await confirm({
+      title: purgingDeletedObjects ? '永久删除对象' : label,
+      message: purgingDeletedObjects
+        ? `确定永久删除 ${new Set(deleteMarkers.map((item) => item.version.key)).size} 个对象？对象的全部版本和 DeleteMarker 都会被清除，且无法恢复。`
+        : permanent
+        ? `确定永久删除 ${items.length} 个对象版本？此操作无法恢复。`
+        : `确定删除 ${items.length} 个对象？启用版本管理时会创建 DeleteMarker。`,
+      confirmLabel: permanent ? '永久删除' : '删除',
+      danger: true,
+    })) return
+    const stopLoading = startLoading(permanent ? '正在永久删除对象版本...' : '正在删除对象...')
+    try {
+      setError('')
+      if (purgingDeletedObjects) {
+        for (const key of new Set(deleteMarkers.map((item) => item.version.key))) await purgeObject(key)
+      } else {
+        for (const item of items) await deleteItem(item)
+      }
+      setSelectedObjectKeys(new Set())
+      setSelectedDeletedIds(new Set())
+      setSelectedVersionIds(new Set())
+      showToast(`已处理 ${items.length} 个对象`)
+      await load(true)
+    } catch (reason) {
+      setError((reason as Error).message)
+    } finally {
+      stopLoading()
+    }
+  }
+
+  async function restoreSelected() {
+    const items = selectedItems().filter((item): item is Extract<SelectedObject, { kind: 'version' }> => item.kind === 'version' && item.version.is_delete_marker && item.version.is_latest)
+    if (items.length === 0) return
+    if (!await confirm({
+      title: '恢复已删除对象',
+      message: `确定恢复 ${items.length} 个已删除对象？将删除对应的最新 DeleteMarker。`,
+      confirmLabel: '恢复对象',
+    })) return
+    const stopLoading = startLoading('正在恢复对象...')
+    try {
+      setError('')
+      for (const item of items) await deleteItem(item)
+      setSelectedObjectKeys(new Set())
+      setSelectedDeletedIds(new Set())
+      setSelectedVersionIds(new Set())
+      showToast(`已恢复 ${items.length} 个对象`)
+      await load(true)
+    } catch (reason) {
+      setError((reason as Error).message)
+    } finally {
+      stopLoading()
+    }
+  }
+
+  async function submitTransfer(event: FormEvent) {
+    event.preventDefault()
+    if (!transferDialog || !transferBucket || transferring) return
+    const destinationPath = transferPath.trim().replace(/^\/+|\/+$/g, '')
+    const { mode, items } = transferDialog
+    setTransferring(true)
+    setTransferError('')
+    const stopLoading = startLoading(mode === 'copy' ? '正在复制对象...' : '正在移动对象...')
+    try {
+      setError('')
+      for (const item of items) await copyItem(item, transferBucket, destinationPath)
+      if (mode === 'move') {
+        for (const item of items) await deleteItem(item)
+      }
+      setTransferDialog(null)
+      setSelectedObjectKeys(new Set())
+      setSelectedDeletedIds(new Set())
+      setSelectedVersionIds(new Set())
+      showToast(`${mode === 'copy' ? '已复制' : '已移动'} ${items.length} 个对象`)
+      await load(true)
+    } catch (reason) {
+      setTransferError((reason as Error).message)
+    } finally {
+      setTransferring(false)
       stopLoading()
     }
   }
@@ -631,6 +1026,22 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
     showToast('预览链接已复制')
   }
 
+  const visibleObjectCount = viewMode === 'current' ? (showDeleted ? deletedObjects.length : objects.length) : visibleVersions.length
+  const selected = selectedItems()
+  const selectedDeleted = selected.filter((item): item is Extract<SelectedObject, { kind: 'version' }> => item.kind === 'version' && item.version.is_delete_marker)
+  const selectedData = selected.filter((item) => item.kind === 'current' || !item.version.is_delete_marker)
+  const selectedCount = selected.length
+  const selectableCurrentCount = showDeleted ? deletedObjects.length : objects.length
+  const selectableVersionCount = visibleVersions.length
+  const allCurrentSelected = selectableCurrentCount > 0 && (showDeleted
+    ? deletedObjects.every((version) => selectedDeletedIds.has(versionIdentity(version)))
+    : objects.every((object) => selectedObjectKeys.has(object.key)))
+  const allVersionsSelected = selectableVersionCount > 0 && visibleVersions.every((version) => selectedVersionIds.has(versionIdentity(version)))
+  const hasDeleteMarkerSelection = selectedDeleted.length > 0
+  const permanentDeleteOnly = viewMode === 'versions' || hasDeleteMarkerSelection
+  const TransferIcon = transferDialog?.mode === 'copy' ? Copy : FolderInput
+  const activeShowDeleted = viewMode === 'versions' ? showDeletedVersions : showDeleted
+
   return (
     <section>
       <header className="page-header">
@@ -639,21 +1050,18 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
           <h2>Object Browser</h2>
           <p className="page-description">浏览、上传、下载和管理 Bucket 中的对象。</p>
         </div>
-        <span className="count-badge">{viewMode === 'current' ? `${objects.length}${nextToken ? '+' : ''} 个对象` : `${versions.length} 条版本记录`}</span>
+        <span className="count-badge">{viewMode === 'current' ? `${visibleObjectCount}${!showDeleted && nextToken ? '+' : ''} 个对象` : `${visibleObjectCount} 条版本记录`}</span>
       </header>
-
-      <div className="object-location" aria-label="当前对象路径">
-        <FolderOpen className="object-location-icon" aria-hidden="true" />
-        <button className="object-location-link" type="button" onClick={onBack} disabled={!bucket}>{bucket || '未选择 Bucket'}</button>
-        <b>/</b><span>{prefix.trim() || 'root'}</span>
-      </div>
-      {error && <p className="error-banner">{error}</p>}
 
       <div className="page-toolbar">
         <div className="toolbar-leading object-toolbar-leading">
-          <div className="segmented-control object-view-switch" aria-label="对象列表模式">
-            <button type="button" className={viewMode === 'current' ? 'active' : ''} onClick={() => setViewMode('current')}>当前对象</button>
-            <button type="button" className={viewMode === 'versions' ? 'active' : ''} onClick={() => setViewMode('versions')}><History className="button-icon" aria-hidden="true" />版本与已删除对象</button>
+          <div className="object-bucket-summary">
+            <span className="object-bucket-summary-icon" aria-hidden="true"><Archive /></span>
+            <div className="object-bucket-summary-copy">
+              <strong>{bucketInfo?.name ?? (bucket || '未选择 Bucket')}</strong>
+              <span>Created on: {bucketInfo ? new Date(bucketInfo.created_at).toLocaleString() : '-'}</span>
+              <span>Access: <b>PRIVATE</b></span>
+            </div>
           </div>
           <label className="search-box">
             <Search aria-hidden="true" />
@@ -664,116 +1072,115 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
               onChange={(event) => setPrefix(event.target.value)}
               onKeyDown={(event) => { if (event.key === 'Enter') void load(true) }}
             />
-          </label>
+        </label>
         </div>
-        <div className="toolbar-actions">
-          <button className="primary-button" type="button" onClick={() => setShowUpload((current) => !current)} disabled={!bucket || !accessKey}>
-            <Upload className="button-icon" aria-hidden="true" />{showUpload ? '关闭上传' : uploadTasks.length > 0 ? `上传任务 (${uploadTasks.length})` : '上传文件'}
+        <div className="toolbar-actions object-toolbar-actions">
+          <button className={`secondary-button rewind-button${viewMode === 'versions' ? ' active' : ''}`} type="button" onClick={openRewind} disabled={!bucket} title={viewMode === 'versions' ? '返回当前对象' : '打开版本回溯'} aria-label={viewMode === 'versions' ? '返回当前对象' : '打开版本回溯'} aria-pressed={viewMode === 'versions'}>
+            <Undo2 className="button-icon" aria-hidden="true" />rewind
           </button>
+          <input ref={fileInput} className="hidden-file-input" type="file" multiple onChange={selectFile} aria-label="选择要上传的文件" disabled={uploading} />
+          <button className="primary-button" type="button" onClick={() => fileInput.current?.click()} disabled={!bucket || !accessKey || uploading}>
+            <Upload className="button-icon" aria-hidden="true" />上传文件
+          </button>
+          {(uploadTasks.length > 0 || completedUploads.length > 0 || uploadsLoading) && <button className="secondary-button uploads-toggle-button" type="button" onClick={() => setUploadsPanelOpen(true)} aria-haspopup="dialog" aria-expanded={uploadsPanelOpen}>
+            <PanelRight className="button-icon" aria-hidden="true" />上传任务{uploadTasks.length + completedUploads.length > 0 ? ` (${uploadTasks.length + completedUploads.length})` : ''}
+          </button>
+          }
           <button className="secondary-button refresh-action-button" type="button" onClick={() => void load(true)} disabled={!bucket || loading} aria-busy={loading}>
             <RefreshCw className={`button-icon${loading ? ' spinning' : ''}`} aria-hidden="true" />刷新
           </button>
         </div>
       </div>
 
-      <div className="signing-bar">
-        <span>Signing credential</span>
-        {accessKeys.length > 0 ? (
-          <select value={accessKey} onChange={(event) => setAccessKey(event.target.value)} aria-label="Signing credential" disabled={uploading}>
-            {accessKeys.map((item) => <option key={item.id} value={item.access_key}>{item.owner} · {item.access_key}</option>)}
-          </select>
-        ) : <strong>没有可用的 Access Key</strong>}
+      <div className="object-location" aria-label="当前对象路径">
+        <button className="icon-button path-back-button" type="button" onClick={goToParentPath} disabled={!bucket || !prefix.trim()} title="返回上一级路径" aria-label="返回上一级路径">
+          <ArrowLeft aria-hidden="true" />
+        </button>
+        <FolderOpen className="object-location-icon" aria-hidden="true" />
+        <div className="object-location-path">
+          <button className="object-location-link" type="button" onClick={onBack} disabled={!bucket}>{bucket || '未选择 Bucket'}</button>
+          <b>/</b><span>{prefix.trim() || '/'}</span>
+        </div>
+        <div className="object-location-actions">
+          <button className="icon-button copy-path-button" type="button" onClick={() => void copyCurrentPath()} disabled={!bucket} title="复制当前路径" aria-label="复制当前路径">
+            <Copy aria-hidden="true" />
+          </button>
+          <label className="deleted-toggle">
+            <input key={viewMode} type="checkbox" checked={activeShowDeleted} onChange={(event) => {
+              setSelectedObjectKeys(new Set())
+              setSelectedDeletedIds(new Set())
+              setSelectedVersionIds(new Set())
+              if (viewMode === 'versions') setShowDeletedVersions(event.target.checked)
+              else setShowDeleted(event.target.checked)
+            }} disabled={!bucket} />
+            <span>显示已删除对象</span>
+          </label>
+          <button className="secondary-button create-path-button" type="button" onClick={() => { setPathError(''); setPathName(''); setShowCreatePath(true) }} disabled={!bucket || !accessKey || viewMode !== 'current'}>
+            <FolderPlus className="button-icon" aria-hidden="true" />Create new path
+          </button>
+        </div>
       </div>
+      {error && <p className="error-banner">{error}</p>}
 
-      {showUpload && (
-        <section className="panel create-panel upload-panel">
-          <div className="section-heading"><div><h3>上传对象</h3><p>Multipart 分片通过 Presigned URL 直接传输到 ZigFS。</p></div></div>
-          <form className="upload-form" onSubmit={upload}>
-            <input ref={fileInput} type="file" onChange={selectFile} aria-label="选择文件" disabled={uploading} />
-            <input aria-label="Object key" placeholder="对象 Key，例如 images/logo.png" value={putKey} onChange={(event) => setPutKey(event.target.value)} disabled={uploading} required />
-            <button className="primary-button" type="submit" disabled={!file || !putKey.trim() || !bucket || !accessKey || uploading}><Upload className="button-icon" aria-hidden="true" />{uploading ? '上传中...' : '开始上传'}</button>
-          </form>
-          {(uploadTasks.length > 0 || uploadsLoading) && (
-            <div className="upload-task-list" aria-live="polite">
-              <div className="upload-task-list-heading"><strong>未完成上传</strong><span>{uploadTasks.length} 个任务</span></div>
-              {uploadTasks.map((task) => {
-                const active = task.status === 'uploading' || task.status === 'completing'
-                const taskProgress = active && uploadProgress
-                  ? uploadProgress
-                  : {
-                      loaded: task.uploadedBytes,
-                      total: task.fileSize,
-                      percent: task.fileSize > 0 ? Math.min(100, Math.round((task.uploadedBytes / task.fileSize) * 100)) : 0,
-                    }
-                return (
-                  <article className="upload-task" key={task.uploadId}>
-                    <div className="upload-task-main">
-                      <div className="upload-task-title"><strong>{task.key}</strong><span className={`upload-status ${task.status}`}>{task.status === 'uploading' ? '上传中' : task.status === 'completing' ? '完成中' : task.status === 'failed' ? '失败' : '已暂停'}</span></div>
-                      <span>{task.fileName} · {task.fileSize > 0 ? `${formatBytes(taskProgress.loaded)} / ${formatBytes(task.fileSize)}` : formatBytes(task.uploadedBytes)} · {task.completedParts} 个分片</span>
-                      {task.status === 'completing' && <span>ZigFS 正在完成对象</span>}
-                      {task.error && <span className="upload-task-error">{task.error}</span>}
-                      {!task.file && task.status !== 'uploading' && <span>需要重新选择本地文件</span>}
-                    </div>
-                    <div className="upload-task-actions">
-                      {task.status === 'uploading' ? (
-                        <button className="secondary-button" type="button" onClick={() => pauseUpload(task)}><Pause className="button-icon" aria-hidden="true" />暂停</button>
-                      ) : task.status === 'completing' ? (
-                        <button className="secondary-button" type="button" disabled><RefreshCw className="button-icon spinning" aria-hidden="true" />完成中</button>
-                      ) : task.file ? (
-                        <button className="secondary-button" type="button" disabled={uploading || !accessKey} onClick={() => void runUpload(task, task.file!)}>
-                          {task.status === 'failed' ? <RotateCcw className="button-icon" aria-hidden="true" /> : <Play className="button-icon" aria-hidden="true" />}
-                          {task.status === 'failed' ? '重试' : '继续'}
-                        </button>
-                      ) : (
-                        <label className={`secondary-button file-picker-button${uploading ? ' disabled' : ''}`}>
-                          <Upload className="button-icon" aria-hidden="true" />选择原文件
-                          <input type="file" disabled={uploading} onChange={(event) => attachResumeFile(task, event)} />
-                        </label>
-                      )}
-                      <button className="danger-button" type="button" disabled={task.status === 'completing' || (uploading && !active)} onClick={() => void abortUpload(task)}><Trash2 className="button-icon" aria-hidden="true" />取消</button>
-                    </div>
-                    <div
-                      className="upload-progress-track"
-                      role="progressbar"
-                      aria-label={`${task.fileName}上传进度`}
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={taskProgress.percent}
-                    >
-                      <span style={{ width: `${taskProgress.percent}%` }} />
-                    </div>
-                  </article>
-                )
-              })}
-            </div>
-          )}
-        </section>
+      {selectedCount > 0 && (
+        <div className="selection-toolbar" role="toolbar" aria-label="批量对象操作">
+          <strong>已选择 {selectedCount} 个对象</strong>
+          <div className="selection-toolbar-actions">
+            {selectedData.length > 0 && <>
+              <button className="secondary-button" type="button" onClick={() => void downloadSelected()} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>
+              <button className="secondary-button" type="button" onClick={() => openTransfer('copy')} disabled={!accessKey}><Copy className="button-icon" aria-hidden="true" />复制</button>
+              <button className="secondary-button" type="button" onClick={() => openTransfer('move')} disabled={!accessKey}><FolderInput className="button-icon" aria-hidden="true" />移动</button>
+            </>}
+            {selectedDeleted.length > 0 && <button className="secondary-button" type="button" onClick={() => void restoreSelected()} disabled={!accessKey}><RotateCcw className="button-icon" aria-hidden="true" />恢复</button>}
+            <button className="danger-button" type="button" onClick={() => void removeSelected()} disabled={!accessKey}><Trash2 className="button-icon" aria-hidden="true" />{permanentDeleteOnly ? '永久删除' : '删除'}</button>
+            <button className="icon-button" type="button" onClick={() => { setSelectedObjectKeys(new Set()); setSelectedDeletedIds(new Set()); setSelectedVersionIds(new Set()) }} title="清除选择" aria-label="清除选择"><X aria-hidden="true" /></button>
+          </div>
+        </div>
       )}
 
       <section className="panel table-panel">
         <div className="table-wrap">
           {viewMode === 'current' ? <table className="object-table">
-            <thead><tr><th>Object</th><th>Size</th><th>Last Modified</th><th className="sticky-actions-column">Actions</th></tr></thead>
-            <tbody>{objects.map((object) => (
+            <thead><tr><th className="selection-column"><input type="checkbox" checked={allCurrentSelected} onChange={(event) => toggleAllCurrent(event.target.checked)} aria-label="选择全部对象" /></th><th>Object</th><th>Size</th><th>Last Modified</th><th className="sticky-actions-column">Actions</th></tr></thead>
+            <tbody>{!showDeleted && objects.map((object) => (
                 <tr key={object.key}>
-                  <td className="object-key"><div className="file-cell"><File className="file-symbol" aria-hidden="true" /><span>{object.key}</span></div></td>
+                  <td className="selection-column"><input type="checkbox" checked={selectedObjectKeys.has(object.key)} onChange={(event) => toggleObjectSelection(object.key, event.target.checked)} aria-label={`选择 ${object.key}`} /></td>
+                  <td className="object-key"><div className="file-cell object-key-trigger" role="button" tabIndex={0} onClick={() => void openDetail(object)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void openDetail(object) } }}><File className="file-symbol" aria-hidden="true" /><span>{object.key}</span></div></td>
                   <td>{formatBytes(object.size)}</td>
                   <td>{new Date(object.last_modified).toLocaleString()}</td>
                   <td className="table-actions sticky-actions-column">
                     <ActionMenu label={`管理 ${object.key}`}>
-                      <button type="button" role="menuitem" onClick={() => void openDetail(object)}><Info className="button-icon" aria-hidden="true" />详情</button>
                       <button type="button" role="menuitem" onClick={() => void download(object)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>
+                      <button type="button" role="menuitem" onClick={() => openTransfer('copy', { kind: 'current', object })} disabled={!accessKey}><Copy className="button-icon" aria-hidden="true" />复制</button>
+                      <button type="button" role="menuitem" onClick={() => openTransfer('move', { kind: 'current', object })} disabled={!accessKey}><FolderInput className="button-icon" aria-hidden="true" />移动</button>
                       <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeObject(object)} disabled={!accessKey || deletingKey === object.key}><Trash2 className="button-icon" aria-hidden="true" />删除</button>
                     </ActionMenu>
                   </td>
                 </tr>
-              ))}</tbody>
+              ))}
+              {showDeleted && deletedObjects.map((version) => {
+                const identity = `${version.key}\u0000${version.version_id}`
+                const restoring = restoringVersion === identity
+                return <tr key={identity} className="delete-marker-row">
+                  <td className="selection-column"><input type="checkbox" checked={selectedDeletedIds.has(identity)} onChange={(event) => toggleDeletedSelection(version, event.target.checked)} aria-label={`选择已删除对象 ${version.key}`} /></td>
+                  <td className="object-key"><div className="file-cell"><Trash2 className="file-symbol" aria-hidden="true" /><span>{version.key}</span><span className="status-badge delete-marker">已删除</span></div></td>
+                  <td>-</td>
+                  <td>{new Date(version.last_modified).toLocaleString()}</td>
+                  <td className="table-actions sticky-actions-column">
+                    <ActionMenu label={`管理已删除对象 ${version.key}`}>
+                      <button type="button" role="menuitem" onClick={() => void restoreDeletedObject(version)} disabled={!accessKey || restoring}><RotateCcw className="button-icon" aria-hidden="true" />恢复对象</button>
+                      <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeDeletedObject(version)} disabled={!accessKey || deletingVersion === identity}><Trash2 className="button-icon" aria-hidden="true" />永久删除</button>
+                    </ActionMenu>
+                  </td>
+                </tr>
+              })}</tbody>
           </table> : <table className="object-table version-table">
-            <thead><tr><th>Object</th><th>Version ID</th><th>State</th><th>Size</th><th>Last Modified</th><th className="sticky-actions-column">Actions</th></tr></thead>
-            <tbody>{versions.map((version) => {
+            <thead><tr><th className="selection-column"><input type="checkbox" checked={allVersionsSelected} onChange={(event) => toggleAllVersions(event.target.checked)} aria-label="选择全部对象版本" /></th><th>Object</th><th>Version ID</th><th>State</th><th>Size</th><th>Last Modified</th><th className="sticky-actions-column">Actions</th></tr></thead>
+            <tbody>{visibleVersions.map((version) => {
               const identity = `${version.key}\u0000${version.version_id}`
               const restoring = restoringVersion === identity
               return <tr key={identity} className={version.is_delete_marker ? 'delete-marker-row' : ''}>
+                <td className="selection-column"><input type="checkbox" checked={selectedVersionIds.has(identity)} onChange={(event) => toggleVersionSelection(version, event.target.checked)} aria-label={`选择 ${version.key} 的版本`} /></td>
                 <td className="object-key"><div className="file-cell">{version.is_delete_marker ? <Trash2 className="file-symbol" aria-hidden="true" /> : <File className="file-symbol" aria-hidden="true" />}<span>{version.key}</span></div></td>
                 <td><code className="version-id" title={version.version_id}>{shortVersionId(version.version_id)}</code></td>
                 <td><div className="version-badges">{version.is_latest && <span className="status-badge latest">Latest</span>}{version.is_delete_marker && <span className="status-badge delete-marker">DeleteMarker</span>}{!version.is_latest && !version.is_delete_marker && <span className="status-badge">Previous</span>}</div></td>
@@ -782,19 +1189,147 @@ export function ObjectsView({ api, initialBucket = '', onBack }: ObjectsViewProp
                 <td className="table-actions sticky-actions-column">
                   <ActionMenu label={`管理 ${version.key} 的版本 ${shortVersionId(version.version_id)}`}>
                     {!version.is_delete_marker && <button type="button" role="menuitem" onClick={() => void downloadVersion(version)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>}
+                    {!version.is_delete_marker && <button type="button" role="menuitem" onClick={() => openTransfer('copy', { kind: 'version', version })} disabled={!accessKey}><Copy className="button-icon" aria-hidden="true" />复制</button>}
+                    {!version.is_delete_marker && <button type="button" role="menuitem" onClick={() => openTransfer('move', { kind: 'version', version })} disabled={!accessKey}><FolderInput className="button-icon" aria-hidden="true" />移动</button>}
                     {version.is_delete_marker && version.is_latest && <button type="button" role="menuitem" onClick={() => void restoreDeletedObject(version)} disabled={!accessKey || restoring}><RotateCcw className="button-icon" aria-hidden="true" />恢复对象</button>}
                     {!version.is_delete_marker && !version.is_latest && <button type="button" role="menuitem" onClick={() => void rewindVersion(version)} disabled={!accessKey || restoring}><History className="button-icon" aria-hidden="true" />回溯到此版本</button>}
-                    {(!version.is_delete_marker || !version.is_latest) && <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeVersion(version)} disabled={!accessKey || deletingVersion === identity}><Trash2 className="button-icon" aria-hidden="true" />{version.is_delete_marker ? '删除标记' : '永久删除'}</button>}
+                    {version.is_delete_marker
+                      ? <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeDeletedObject(version)} disabled={!accessKey || deletingVersion === identity}><Trash2 className="button-icon" aria-hidden="true" />永久删除</button>
+                      : <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeVersion(version)} disabled={!accessKey || deletingVersion === identity}><Trash2 className="button-icon" aria-hidden="true" />永久删除</button>}
                   </ActionMenu>
                 </td>
               </tr>
             })}</tbody>
           </table>}
         </div>
-        {viewMode === 'current' && objects.length === 0 && !loading && <div className="empty-state empty-panel"><strong>这个 Bucket 还是空的</strong><span>上传文件后，对象会显示在这里。</span></div>}
-        {viewMode === 'versions' && versions.length === 0 && !loading && <div className="empty-state empty-panel"><strong>没有对象版本</strong><span>启用 Versioning 后，新写入和删除会记录在这里。</span></div>}
+        {viewMode === 'current' && (showDeleted ? deletedObjects.length === 0 : objects.length === 0) && !loading && <div className="empty-state empty-panel"><strong>{showDeleted ? '没有已删除对象' : '这个 Bucket 还是空的'}</strong><span>{showDeleted ? '当前路径下没有 DeleteMarker。' : '上传文件后，对象会显示在这里。'}</span></div>}
+        {viewMode === 'versions' && visibleVersions.length === 0 && !loading && <div className="empty-state empty-panel"><strong>{showDeleted ? '没有删除标记' : '没有对象版本'}</strong><span>{showDeleted ? '当前没有可查看的 DeleteMarker。' : '启用 Versioning 后，新写入和删除会记录在这里。'}</span></div>}
       </section>
-      {viewMode === 'current' && nextToken && <button className="load-more" type="button" onClick={() => void load(false)}>加载更多</button>}
+      {viewMode === 'current' && !showDeleted && nextToken && <button className="load-more" type="button" onClick={() => void load(false)}>加载更多</button>}
+
+      {uploadsPanelOpen && (
+        <aside className="uploads-drawer" role="dialog" aria-modal="false" aria-labelledby="uploads-drawer-title">
+          <header className="uploads-drawer-header">
+            <div className="uploads-drawer-title"><List aria-hidden="true" /><div><p className="eyebrow">Transfers</p><h3 id="uploads-drawer-title">Downloads / Uploads</h3></div></div>
+            <button className="icon-button" type="button" aria-label="关闭上传面板" title="关闭" onClick={() => setUploadsPanelOpen(false)}><X aria-hidden="true" /></button>
+          </header>
+          <div className="uploads-drawer-body" aria-live="polite">
+            {uploadsLoading && <p className="uploads-drawer-status">正在同步分片上传任务...</p>}
+            {!uploadsLoading && uploadTasks.length === 0 && completedUploads.length === 0 && <p className="uploads-drawer-status">当前没有上传任务。</p>}
+            {uploadTasks.map((task) => {
+              const active = task.status === 'uploading' || task.status === 'completing'
+              const taskProgress = active && uploadProgress
+                ? uploadProgress
+                : {
+                    loaded: task.uploadedBytes,
+                    total: task.fileSize,
+                    percent: task.fileSize > 0 ? Math.min(100, Math.round((task.uploadedBytes / task.fileSize) * 100)) : 0,
+                  }
+              return (
+                <article className="upload-task" key={task.uploadId}>
+                  <div className="upload-task-main">
+                    <div className="upload-task-title"><strong>{task.key}</strong><span className={`upload-status ${task.status}`}>{task.status === 'uploading' ? '上传中' : task.status === 'completing' ? '完成中' : task.status === 'failed' ? '失败' : '已暂停'}</span></div>
+                    <span>{task.fileName} · {task.fileSize > 0 ? `${formatBytes(taskProgress.loaded)} / ${formatBytes(task.fileSize)}` : formatBytes(task.uploadedBytes)} · {task.completedParts} 个分片</span>
+                    {task.status === 'completing' && <span>ZigFS 正在完成对象</span>}
+                    {task.error && <span className="upload-task-error">{task.error}</span>}
+                    {!task.file && task.status !== 'uploading' && <span>需要重新选择本地文件</span>}
+                  </div>
+                  <div className="upload-task-actions">
+                    {task.status === 'uploading' ? (
+                      <button className="secondary-button" type="button" onClick={() => pauseUpload(task)}><Pause className="button-icon" aria-hidden="true" />暂停</button>
+                    ) : task.status === 'completing' ? (
+                      <button className="secondary-button" type="button" disabled><RefreshCw className="button-icon spinning" aria-hidden="true" />完成中</button>
+                    ) : task.file ? (
+                      <button className="secondary-button" type="button" disabled={uploading || !accessKey} onClick={() => void runUpload(task, task.file!)}>
+                        {task.status === 'failed' ? <RotateCcw className="button-icon" aria-hidden="true" /> : <Play className="button-icon" aria-hidden="true" />}
+                        {task.status === 'failed' ? '重试' : '继续'}
+                      </button>
+                    ) : (
+                      <label className={`secondary-button file-picker-button${uploading ? ' disabled' : ''}`}>
+                        <Upload className="button-icon" aria-hidden="true" />选择原文件
+                        <input type="file" disabled={uploading} onChange={(event) => attachResumeFile(task, event)} />
+                      </label>
+                    )}
+                    <button className="danger-button" type="button" disabled={task.status === 'completing' || (uploading && !active)} onClick={() => void abortUpload(task)}><Trash2 className="button-icon" aria-hidden="true" />取消</button>
+                  </div>
+                  <div
+                    className="upload-progress-track"
+                    role="progressbar"
+                    aria-label={`${task.fileName}上传进度`}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={taskProgress.percent}
+                  >
+                    <span style={{ width: `${taskProgress.percent}%` }} />
+                  </div>
+                </article>
+              )
+            })}
+            {completedUploads.map((item) => (
+              <article className="upload-task upload-task-completed" key={item.uploadId}>
+                <div className="upload-task-main">
+                  <div className="upload-task-title"><CheckCircle2 className="upload-complete-icon" aria-hidden="true" /><strong>{item.key}</strong><span className="upload-status completed">已完成</span></div>
+                  <span>{item.fileName} · {formatBytes(item.fileSize)} · {new Date(item.completedAt).toLocaleTimeString()}</span>
+                </div>
+                <strong className="upload-complete-percent">100%</strong>
+                <div className="upload-progress-track" role="progressbar" aria-label={`${item.fileName}上传进度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={100}><span style={{ width: '100%' }} /></div>
+              </article>
+            ))}
+          </div>
+        </aside>
+      )}
+
+      {showCreatePath && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowCreatePath(false)}>
+          <section className="lifecycle-modal credential-modal create-path-modal" role="dialog" aria-modal="true" aria-labelledby="create-path-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="lifecycle-modal-header">
+              <div className="lifecycle-modal-title"><FolderPlus aria-hidden="true" /><h3 id="create-path-dialog-title">Create new path</h3></div>
+              <button className="icon-button" type="button" aria-label="关闭" onClick={() => setShowCreatePath(false)}><X aria-hidden="true" /></button>
+            </header>
+            <form className="credential-modal-form" onSubmit={createPath}>
+              <p className="credential-modal-description">将在当前路径下创建一级目录。当前路径：<strong>{prefix.trim() || '/'}</strong></p>
+              <div className="credential-modal-fields create-path-fields">
+                <label>目录名称<input aria-label="目录名称" placeholder="例如 images" value={pathName} onChange={(event) => setPathName(event.target.value)} required autoFocus /></label>
+              </div>
+              {pathError && <p className="form-error credential-form-error" role="alert">{pathError}</p>}
+              <footer className="lifecycle-modal-actions">
+                <button className="secondary-button" type="button" onClick={() => setShowCreatePath(false)}>取消</button>
+                <button className="primary-button" type="submit">创建路径</button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {transferDialog && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => { if (!transferring) setTransferDialog(null) }}>
+          <section className="lifecycle-modal credential-modal transfer-modal" role="dialog" aria-modal="true" aria-labelledby="transfer-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="lifecycle-modal-header">
+              <div className="lifecycle-modal-title"><TransferIcon aria-hidden="true" /><h3 id="transfer-dialog-title">{transferDialog.mode === 'copy' ? '复制对象' : '移动对象'}</h3></div>
+              <button className="icon-button" type="button" aria-label="关闭" onClick={() => { if (!transferring) setTransferDialog(null) }}><X aria-hidden="true" /></button>
+            </header>
+            <form className="credential-modal-form" onSubmit={submitTransfer}>
+              <p className="credential-modal-description">已选择 {transferDialog.items.length} 个对象。目标路径填写目录，文件名将保持不变。</p>
+              <div className="credential-modal-fields transfer-fields">
+                <label>目标 Bucket
+                  <select value={transferBucket} onChange={(event) => setTransferBucket(event.target.value)} required disabled={transferring}>
+                    <option value="" disabled>选择 Bucket</option>
+                    {buckets.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+                  </select>
+                </label>
+                <label>目标路径
+                  <input value={transferPath} onChange={(event) => setTransferPath(event.target.value)} placeholder="例如 archive/2026" disabled={transferring} />
+                </label>
+              </div>
+              {transferError && <p className="form-error credential-form-error" role="alert">{transferError}</p>}
+              <footer className="lifecycle-modal-actions">
+                <button className="secondary-button" type="button" onClick={() => setTransferDialog(null)} disabled={transferring}>取消</button>
+                <button className="primary-button" type="submit" disabled={transferring || !transferBucket}>{transferring ? '处理中...' : transferDialog.mode === 'copy' ? '开始复制' : '开始移动'}</button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      )}
 
       {detail && (
         <div className="drawer-backdrop" role="presentation" onClick={closeDetail}>
@@ -838,6 +1373,18 @@ function delay(milliseconds: number) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 }
 
+function joinObjectPath(path: string, name: string) {
+  const base = path.trim().replace(/^\/+|\/+$/g, '')
+  return base ? `${base}/${name}` : name
+}
+
+function parentObjectPath(path: string) {
+  const normalized = path.trim().replace(/^\/+|\/+$/g, '')
+  if (!normalized) return ''
+  const separator = normalized.lastIndexOf('/')
+  return separator >= 0 ? `${normalized.slice(0, separator + 1)}` : ''
+}
+
 function fileExtension(key: string) {
   const name = key.split('/').pop() || key
   const dot = name.lastIndexOf('.')
@@ -846,6 +1393,10 @@ function fileExtension(key: string) {
 
 function shortVersionId(versionId: string) {
   return versionId === 'null' ? 'null' : `${versionId.slice(0, 8)}...${versionId.slice(-6)}`
+}
+
+function versionIdentity(version: ObjectVersion) {
+  return `${version.key}\u0000${version.version_id}`
 }
 
 function isImageKey(key: string) {

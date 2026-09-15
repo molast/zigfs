@@ -4,9 +4,8 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 FS_DIR="${ROOT_DIR}/zigfs"
-ADMIN_SERVER_DIR="${ROOT_DIR}/zigfs-admin/server"
 ADMIN_WEB_DIR="${ROOT_DIR}/zigfs-admin/web"
-AUTO_STARTED_FS_PID=""
+COMPOSE_FILE="${ROOT_DIR}/docker-compose.dev.yml"
 DOCKER_IMAGE_TAG="${ZIGFS_DOCKER_TAG:-0.1.0}"
 
 fail() {
@@ -23,64 +22,9 @@ require_docker() {
   docker info >/dev/null 2>&1 || fail "Docker 服务尚未运行，请先启动 Docker Desktop 或其他 Docker daemon。"
 }
 
-fs_is_ready() {
-  local endpoint="$1"
-  curl --fail --silent --show-error --max-time 2 \
-    "${endpoint}/health/ready" >/dev/null 2>&1
-}
-
-stop_auto_started_fs() {
-  local pid="${AUTO_STARTED_FS_PID}"
-  [[ -n "${pid}" ]] || return 0
-  AUTO_STARTED_FS_PID=""
-
-  if kill -0 "${pid}" >/dev/null 2>&1; then
-    printf '\n正在停止由本脚本启动的 ZigFS...\n'
-    kill "${pid}" >/dev/null 2>&1 || true
-  fi
-  wait "${pid}" >/dev/null 2>&1 || true
-}
-
-ensure_fs_for_admin() {
-  local endpoint="$1"
-  local attempt
-  local fs_status
-
-  if fs_is_ready "${endpoint}"; then
-    printf 'ZigFS 已就绪，复用现有服务。\n'
-    return 0
-  fi
-
-  require_command zig
-  printf 'ZigFS 尚未运行，正在构建并自动启动...\n'
-  (cd "${FS_DIR}" && zig build)
-  (cd "${FS_DIR}" && exec ./zig-out/bin/zigfs) &
-  AUTO_STARTED_FS_PID=$!
-
-  for attempt in {1..60}; do
-    if fs_is_ready "${endpoint}"; then
-      printf 'ZigFS 已就绪（%s）。\n' "${endpoint}"
-      return 0
-    fi
-
-    if ! kill -0 "${AUTO_STARTED_FS_PID}" >/dev/null 2>&1; then
-      fs_status=0
-      wait "${AUTO_STARTED_FS_PID}" || fs_status=$?
-      AUTO_STARTED_FS_PID=""
-      fail "ZigFS 启动失败（退出码: ${fs_status}），请检查上方日志和配置。"
-    fi
-    sleep 0.25
-  done
-
-  fail "ZigFS 启动后未在规定时间内就绪（检查地址: ${endpoint}/health/ready）。"
-}
-
-start_fs() {
-  require_command zig
-
-  printf '正在启动 ZigFS...\n'
-  cd "${FS_DIR}"
-  exec zig build run
+require_compose() {
+  require_docker
+  docker compose version >/dev/null 2>&1 || fail "未找到 Docker Compose，请确认 Docker Compose 插件已安装。"
 }
 
 build_admin_web_assets() {
@@ -93,25 +37,26 @@ build_admin_web_assets() {
   fi
 }
 
+start_fs() {
+  require_command zig
+
+  printf '正在启动本地 ZigFS...\n'
+  cd "${FS_DIR}"
+  exec zig build run
+}
+
 start_admin() {
   local endpoint="${ZIGFS_ENDPOINT:-http://127.0.0.1:9000}"
   endpoint="${endpoint%/}"
 
-  require_command curl
   require_command go
   build_admin_web_assets
 
   export ZIGFS_ENDPOINT="${endpoint}"
   export ZIGFS_WEB_ROOT="${ADMIN_WEB_DIR}/dist"
 
-  trap stop_auto_started_fs EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
-
-  ensure_fs_for_admin "${endpoint}"
-
-  printf '正在启动 ZigFS Admin...\n'
-  (cd "${ADMIN_SERVER_DIR}" && go run ./cmd/admin)
+  printf '正在启动本地 Admin（不会自动启动 ZigFS）...\n'
+  (cd "${ROOT_DIR}/zigfs-admin/server" && go run ./cmd/admin)
 }
 
 has_local_zig_toolchain() {
@@ -157,45 +102,96 @@ build_admin_image() {
   docker build --tag "zigfs-admin:${DOCKER_IMAGE_TAG}" "${ROOT_DIR}/zigfs-admin"
 }
 
-build_docker_images() {
+compose() {
+  docker compose -f "${COMPOSE_FILE}" "$@"
+}
+
+start_compose_service() {
+  local service="$1"
+
+  require_compose
+  if [[ ! -f "${COMPOSE_FILE}" ]]; then
+    fail "未找到 Compose 文件: ${COMPOSE_FILE}"
+  fi
+
+  case "${service}" in
+    zigfs)
+      printf '正在通过 Compose 启动 ZigFS...\n'
+      compose up -d --no-build zigfs
+      printf 'ZigFS 已启动。\n'
+      ;;
+    admin)
+      printf '正在通过 Compose 启动 Admin（自动带起 ZigFS）...\n'
+      compose up -d --no-build admin
+      printf 'Admin 已启动。\n'
+      ;;
+    *)
+      fail "无效的 Compose 服务: ${service}"
+      ;;
+  esac
+}
+
+stop_compose_services() {
+  require_compose
+  printf '正在停止开发服务...\n'
+  compose down
+  printf '开发服务已停止。\n'
+}
+
+docker_menu() {
   local docker_choice
 
   require_docker
-  printf '%s\n' \
-    '请选择要构建的 Docker 镜像:' \
-    '  1) ZigFS' \
-    '  2) ZigFS Admin' \
-    '  3) 全部' \
-    '  0) 退出'
-  read -r -p '请输入选项 [0-3]: ' docker_choice
+  while true; do
+    printf '%s\n' \
+      '请选择 Docker 操作:' \
+      '  1) 构建 ZigFS 镜像' \
+      '  2) 构建 Admin 镜像' \
+      '  3) 构建全部镜像' \
+      '  4) 启动 ZigFS' \
+      '  5) 启动 Admin（自动带起 FS）' \
+      '  6) 停止开发服务' \
+      '  0) 返回上一级'
+    read -r -p '请输入选项 [0-6]: ' docker_choice
 
-  case "${docker_choice}" in
-    1 | fs | FS)
-      build_fs_image
-      ;;
-    2 | admin | Admin | ADMIN)
-      build_admin_image
-      ;;
-    3 | all | All | ALL)
-      build_fs_image
-      build_admin_image
-      ;;
-    0 | q | Q)
-      exit 0
-      ;;
-    *)
-      fail "无效的 Docker 构建选项: ${docker_choice}"
-      ;;
-  esac
-
-  printf 'Docker 镜像构建完成。\n'
+    case "${docker_choice}" in
+      1 | fs | FS)
+        build_fs_image
+        printf 'Docker 镜像构建完成。\n'
+        ;;
+      2 | admin | Admin | ADMIN)
+        build_admin_image
+        printf 'Docker 镜像构建完成。\n'
+        ;;
+      3 | all | All | ALL)
+        build_fs_image
+        build_admin_image
+        printf 'Docker 镜像构建完成。\n'
+        ;;
+      4 | start-fs)
+        start_compose_service zigfs
+        ;;
+      5 | start-admin)
+        start_compose_service admin
+        ;;
+      6 | stop | down)
+        stop_compose_services
+        ;;
+      0 | q | Q)
+        return 0
+        ;;
+      *)
+        fail "无效的 Docker 操作选项: ${docker_choice}"
+        ;;
+    esac
+  done
 }
 
 printf '%s\n' \
   '请选择操作:' \
-  '  1) 启动 ZigFS' \
-  '  2) 启动 ZigFS Admin' \
-  '  3) 构建 Docker 镜像' \
+  '  1) 启动本地 ZigFS' \
+  '  2) 启动本地 Admin' \
+  '  3) Docker 服务' \
   '  0) 退出'
 read -r -p '请输入选项 [0-3]: ' choice
 
@@ -207,7 +203,7 @@ case "${choice}" in
     start_admin
     ;;
   3 | docker | Docker | DOCKER)
-    build_docker_images
+    docker_menu
     ;;
   0 | q | Q)
     exit 0

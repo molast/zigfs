@@ -141,15 +141,14 @@ AWS S3 全量操作覆盖和未实现边界见 [docs/api/s3-api-coverage.md](doc
 ./start.sh
 ```
 
-运行后可选择启动 ZigFS、启动 ZigFS Admin，或构建 Docker 镜像。选择 ZigFS 时只启动
-文件服务；选择 ZigFS Admin 时会启动完整依赖链，不需要再打开另一个终端。Docker 构建
-入口可继续选择 ZigFS、ZigFS Admin 或一次构建全部镜像。
+运行后可选择启动本地 ZigFS、启动本地 Admin，或进入“Docker 服务”菜单。
+本地 Admin 只启动本地 Admin 进程，不会自动启动 ZigFS；使用本地 Admin 前请先启动
+本地 ZigFS。Docker 菜单中的服务启动则全部通过 `docker-compose.dev.yml` 执行。
 
-Admin 启动前会检查 ZigFS Management API 的
-`http://127.0.0.1:9000/health/ready`。可以通过 `ZIGFS_ENDPOINT` 修改检查和连接地址。
-如果 ZigFS 尚未运行，脚本会先构建并启动 ZigFS，等待 Ready 后再启动 Admin。
-如果 ZigFS 已经运行，脚本直接复用现有实例。按 `Ctrl+C` 或 Admin 退出时，脚本只会
-停止本次自动启动的 ZigFS，不会停止启动脚本前已经存在的 ZigFS 进程。
+Docker 菜单可分别构建 ZigFS、构建 Admin、一次构建全部镜像，或通过开发 Compose 启动
+ZigFS、启动 Admin（自动带起 ZigFS），以及停止开发服务。Compose 会
+等待 ZigFS 健康检查通过后再启动 Admin。Admin 通过 `ZIGFS_ENDPOINT` 连接 ZigFS，默认
+地址为 `http://127.0.0.1:9000`。
 
 首次启动 Admin 前，需要安装并锁定前端依赖：
 
@@ -166,7 +165,7 @@ Management Token 签发全部由 ZigFS 负责，Go Admin 不保存管理员账�
 
 ## Docker
 
-ZigFS 与 ZigFS Admin 使用独立镜像。可以运行根目录脚本并选择“构建 Docker 镜像”：
+ZigFS 与 ZigFS Admin 使用独立镜像。可以运行根目录脚本并选择“Docker 服务”：
 
 ```bash
 ./start.sh
