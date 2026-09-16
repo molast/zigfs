@@ -9,6 +9,7 @@ const data_store_port = @import("../ports/object_data_store.zig");
 const multipart_data_store_port = @import("../ports/multipart_data_store.zig");
 const object_store_port = @import("../ports/object_store.zig");
 const ObjectLockPool = @import("object_lock_pool.zig").ObjectLockPool;
+const directory_service = @import("directory_service.zig");
 
 pub const Error = error{
     OutOfMemory,
@@ -22,6 +23,7 @@ pub const Error = error{
     InputReadFailed,
     OutputWriteFailed,
     Conflict,
+    DirectoryNotEmpty,
     CorruptMetadata,
     CorruptData,
     InvalidRange,
@@ -201,6 +203,7 @@ pub const ObjectService = struct {
     index: *index_module.MetadataIndex,
     state_mutex: *std.Io.Mutex,
     object_locks: *ObjectLockPool,
+    directories: ?directory_service.DirectoryService,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -212,6 +215,7 @@ pub const ObjectService = struct {
         index: *index_module.MetadataIndex,
         state_mutex: *std.Io.Mutex,
         object_locks: *ObjectLockPool,
+        directories: ?directory_service.DirectoryService,
     ) ObjectService {
         return .{
             .allocator = allocator,
@@ -223,6 +227,7 @@ pub const ObjectService = struct {
             .index = index,
             .state_mutex = state_mutex,
             .object_locks = object_locks,
+            .directories = directories,
         };
     }
 
@@ -344,6 +349,10 @@ pub const ObjectService = struct {
             expected_generation,
         ) catch |err| return mapObjectStoreError(err);
         self.index.publishObject(&prepared, metadata_generation);
+        if (self.directories) |directories| {
+            const modified_at = value.last_modified_unix_seconds;
+            directories.ensureParentsLocked(bucket_name, key, modified_at) catch |err| return mapDirectoryError(err);
+        }
         owned.metadata_generation = metadata_generation;
         return owned;
     }
@@ -511,6 +520,9 @@ pub const ObjectService = struct {
             expected_generation,
         ) catch |err| return mapObjectStoreError(err);
         self.index.publishObject(&prepared, metadata_generation);
+        if (self.directories) |directories| {
+            directories.ensureParentsLocked(bucket_name, key, modified_at) catch |err| return mapDirectoryError(err);
+        }
         owned.metadata_generation = metadata_generation;
         return owned;
     }
@@ -627,6 +639,27 @@ pub const ObjectService = struct {
         defer bucket.deinit(self.allocator);
         const current = try self.loadHistoryLocked(bucket_name, key);
         defer if (current) |record| record.deinit(self.allocator);
+
+        // Directory markers are an Admin/UI convenience, not versioned
+        // objects. An empty directory is removed permanently, regardless of
+        // the bucket's Versioning setting.
+        if (isDirectoryKey(key)) {
+            if (try self.hasDirectoryChildren(bucket_name, key)) return error.DirectoryNotEmpty;
+            const record = current orelse return .{ .deleted = false };
+            const generation = switch (record) {
+                .active => |history| history.metadata_generation,
+                .tombstone => return .{ .deleted = false },
+            };
+            _ = self.object_store.tombstone(
+                self.allocator,
+                bucket_name,
+                key,
+                generation,
+            ) catch |err| return mapObjectStoreError(err);
+            if (!self.index.removeObject(bucket_name, key)) return error.CorruptMetadata;
+            return .{ .deleted = true };
+        }
+
         if (bucket.versioning == .unversioned) {
             const record = current orelse return .{ .deleted = false };
             const generation = switch (record) {
@@ -687,6 +720,25 @@ pub const ObjectService = struct {
             return .{ .deleted = false, .version_id = version_id };
         };
         defer current.deinit(self.allocator);
+
+        // Directory markers are never versioned. Clean up the complete
+        // metadata record even when an older directory version was selected.
+        if (isDirectoryKey(key)) {
+            if (try self.hasDirectoryChildren(bucket_name, key)) return error.DirectoryNotEmpty;
+            const generation = switch (current) {
+                .active => |history| history.metadata_generation,
+                .tombstone => return .{ .deleted = false, .version_id = version_id },
+            };
+            _ = self.object_store.tombstone(
+                self.allocator,
+                bucket_name,
+                key,
+                generation,
+            ) catch |err| return mapObjectStoreError(err);
+            if (!self.index.removeObject(bucket_name, key)) return error.CorruptMetadata;
+            return .{ .deleted = true, .version_id = version_id };
+        }
+
         const existing = switch (current) {
             .active => |history| history,
             .tombstone => return .{ .deleted = false, .version_id = version_id },
@@ -715,6 +767,21 @@ pub const ObjectService = struct {
             self.index.publishObject(&prepared, generation);
         }
         return .{ .deleted = true, .delete_marker = was_delete_marker, .version_id = version_id };
+    }
+
+    fn hasDirectoryChildren(self: ObjectService, bucket_name: []const u8, key: []const u8) Error!bool {
+        for (self.index.objectEntries()) |entry| {
+            if (!std.mem.eql(u8, entry.bucket, bucket_name) or
+                entry.key.len <= key.len or
+                !std.mem.startsWith(u8, entry.key, key)) continue;
+            const child = self.object_store.get(self.allocator, bucket_name, entry.key) catch |err| return mapObjectStoreError(err);
+            defer child.deinit(self.allocator);
+            switch (child) {
+                .active => return true,
+                .delete_marker, .tombstone => {},
+            }
+        }
+        return false;
     }
 
     fn loadBucketLocked(
@@ -873,6 +940,7 @@ pub const ObjectService = struct {
             entries.deinit(self.allocator);
         }
         for (self.index.objectEntries()) |indexed| {
+            if (isDirectoryKey(indexed.key)) continue;
             if (!std.mem.eql(u8, indexed.bucket, bucket_name) or !std.mem.startsWith(u8, indexed.key, prefix)) continue;
             const record = self.object_store.getHistory(self.allocator, bucket_name, indexed.key) catch |err| return mapObjectStoreError(err);
             defer record.deinit(self.allocator);
@@ -977,6 +1045,22 @@ fn namespaceObjectId(io: std.Io, bucket_name: []const u8, key: []const u8) !@imp
     const partition: u8 = @intCast(hash.final() % 16);
     object_id[0] = (partition << 4) | (object_id[0] & 0x0f);
     return object_id;
+}
+
+fn isDirectoryKey(key: []const u8) bool {
+    return key.len > 0 and key[key.len - 1] == '/';
+}
+
+fn mapDirectoryError(err: @import("directory_service.zig").Error) Error {
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.InvalidBucketName => error.InvalidBucketName,
+        error.InvalidDirectoryKey => error.InvalidObjectKey,
+        error.BucketNotFound => error.BucketNotFound,
+        error.DirectoryNotFound, error.Conflict, error.DirectoryNotEmpty => error.Conflict,
+        error.CorruptMetadata => error.CorruptMetadata,
+        error.Unavailable => error.Unavailable,
+    };
 }
 
 test "object namespace id uses bucket and object name partition" {
@@ -1363,6 +1447,7 @@ test "object service puts gets overwrites and tombstones objects" {
         &index,
         &state_mutex,
         &object_locks,
+        null,
     );
 
     const body = "first object body";
@@ -1513,6 +1598,7 @@ test "object service rejects missing buckets bad checksums and failed sources" {
         &index,
         &state_mutex,
         &object_locks,
+        null,
     );
     var missing_source = test_streams.SliceSource.init("body");
     try std.testing.expectError(
@@ -1591,7 +1677,28 @@ test "object service preserves version history delete markers and suspended null
         &index,
         &state_mutex,
         &object_locks,
+        null,
     );
+
+    var directory_source = test_streams.SliceSource.init("");
+    const directory = try objects.put("versioned-assets", "empty/", directory_source.interface(), .{});
+    defer directory.deinit(std.testing.allocator);
+    const deleted_directory = try objects.delete("versioned-assets", "empty/");
+    try std.testing.expect(deleted_directory.deleted and !deleted_directory.delete_marker);
+    try std.testing.expectError(error.ObjectNotFound, objects.head("versioned-assets", "empty/"));
+    const directory_versions = try objects.listVersions("versioned-assets", "empty/");
+    defer directory_versions.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), directory_versions.entries.len);
+
+    var non_empty_directory_source = test_streams.SliceSource.init("");
+    const non_empty_directory = try objects.put("versioned-assets", "non-empty/", non_empty_directory_source.interface(), .{});
+    defer non_empty_directory.deinit(std.testing.allocator);
+    var child_source = test_streams.SliceSource.init("child");
+    const child = try objects.put("versioned-assets", "non-empty/file.txt", child_source.interface(), .{});
+    defer child.deinit(std.testing.allocator);
+    try std.testing.expectError(error.DirectoryNotEmpty, objects.delete("versioned-assets", "non-empty/"));
+    try std.testing.expect((try objects.delete("versioned-assets", "non-empty/file.txt")).deleted);
+    try std.testing.expect((try objects.delete("versioned-assets", "non-empty/")).deleted);
 
     var first_source = test_streams.SliceSource.init("first");
     const first = try objects.put("versioned-assets", "release.txt", first_source.interface(), .{});

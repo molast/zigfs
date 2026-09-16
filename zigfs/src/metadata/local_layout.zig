@@ -11,6 +11,7 @@ pub fn typeDirectory(record_type: metadata_record.Type) []const u8 {
         .object => "metadata/objects",
         .multipart => "metadata/multipart",
         .credential => ".zigfs/system/credentials",
+        .directory => "metadata/directories",
     };
 }
 

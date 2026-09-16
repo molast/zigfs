@@ -8,6 +8,7 @@ export interface ConfirmOptions {
   confirmLabel?: string
   cancelLabel?: string
   danger?: boolean
+  hideConfirm?: boolean
 }
 
 type ConfirmRequest = {
@@ -83,9 +84,9 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
               <button className="secondary-button" type="button" onClick={() => close(false)}>
                 {request.options.cancelLabel ?? '取消'}
               </button>
-              <button ref={confirmButtonRef} className={request.options.danger ? 'danger-button' : 'primary-button'} type="button" onClick={() => close(true)}>
+              {!request.options.hideConfirm && <button ref={confirmButtonRef} className={request.options.danger ? 'danger-button' : 'primary-button'} type="button" onClick={() => close(true)}>
                 {request.options.confirmLabel ?? '确认'}
-              </button>
+              </button>}
             </footer>
           </section>
         </div>,

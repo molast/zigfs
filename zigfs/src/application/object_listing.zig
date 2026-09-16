@@ -20,6 +20,7 @@ pub const Error = error{
 
 pub const Options = struct {
     prefix: []const u8 = "",
+    search: []const u8 = "",
     delimiter: ?[]const u8 = null,
     max_keys: usize = max_keys,
     start_after: ?[]const u8 = null,
@@ -38,9 +39,19 @@ pub const Entry = struct {
     }
 };
 
+pub const DirectoryEntry = struct {
+    key: []u8,
+    last_modified_unix_seconds: i64,
+
+    pub fn deinit(self: DirectoryEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.key);
+    }
+};
+
 pub const Result = struct {
     objects: []Entry,
     common_prefixes: [][]u8,
+    directories: []DirectoryEntry,
     key_count: usize,
     is_truncated: bool,
     next_continuation_token: ?[]u8,
@@ -50,6 +61,8 @@ pub const Result = struct {
         allocator.free(self.objects);
         for (self.common_prefixes) |prefix| allocator.free(prefix);
         allocator.free(self.common_prefixes);
+        for (self.directories) |directory| directory.deinit(allocator);
+        allocator.free(self.directories);
         if (self.next_continuation_token) |token| allocator.free(token);
     }
 };
@@ -92,6 +105,7 @@ pub const ObjectListingService = struct {
             .bucket = bucket_name,
             .prefix = options.prefix,
             .delimiter = delimiter,
+            .search = options.search,
         };
         const decoded_token: ?token_codec.Decoded = if (options.continuation_token) |token|
             token_codec.decode(self.allocator, token_context, token) catch |err| switch (err) {
@@ -111,7 +125,8 @@ pub const ObjectListingService = struct {
         try self.verifyBucketLocked(bucket_name);
         const indexed = self.index.listObjects(self.allocator, bucket_name, .{
             .prefix = options.prefix,
-            .delimiter = delimiter,
+            .search = options.search,
+            .delimiter = if (options.search.len == 0) delimiter else null,
             .start_after = cursor,
             .max_keys = options.max_keys,
         }) catch |err| return switch (err) {
@@ -173,6 +188,21 @@ pub const ObjectListingService = struct {
             initialized_prefixes += 1;
         }
 
+        const directories = self.allocator.alloc(DirectoryEntry, indexed.common_prefixes.len) catch return error.OutOfMemory;
+        var initialized_directories: usize = 0;
+        errdefer {
+            for (directories[0..initialized_directories]) |directory| directory.deinit(self.allocator);
+            self.allocator.free(directories);
+        }
+        for (indexed.common_prefixes, 0..) |prefix, directory_index| {
+            const indexed_directory = self.index.directoryEntry(bucket_name, prefix) orelse return error.CorruptMetadata;
+            directories[directory_index] = .{
+                .key = self.allocator.dupe(u8, prefix) catch return error.OutOfMemory,
+                .last_modified_unix_seconds = indexed_directory.last_modified_unix_seconds,
+            };
+            initialized_directories += 1;
+        }
+
         const next_token = if (indexed.next_start_after) |next_cursor|
             token_codec.encode(self.allocator, token_context, next_cursor) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -183,6 +213,7 @@ pub const ObjectListingService = struct {
         return .{
             .objects = objects,
             .common_prefixes = common_prefixes,
+            .directories = directories,
             .key_count = objects.len + common_prefixes.len,
             .is_truncated = next_token != null,
             .next_continuation_token = next_token,
@@ -216,6 +247,7 @@ fn normalizedDelimiter(delimiter: ?[]const u8) ?[]const u8 {
 fn validateOptions(options: Options, delimiter: ?[]const u8) Error!void {
     if (options.max_keys > max_keys or
         !validOptionalKey(options.prefix, true) or
+        !validOptionalKey(options.search, true) or
         (options.start_after != null and !validOptionalKey(options.start_after.?, true)) or
         (delimiter != null and !validOptionalKey(delimiter.?, false)) or
         (options.continuation_token != null and options.continuation_token.?.len == 0))

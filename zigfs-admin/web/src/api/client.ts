@@ -20,6 +20,8 @@ import type {
   SystemInfo,
 } from '../types/api'
 
+const REQUEST_TIMEOUT_MS = 15000
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -35,11 +37,26 @@ export function createApiClient() {
     headers.set('Accept', 'application/json')
     if (init.body) headers.set('Content-Type', 'application/json')
 
-    const response = await fetch(path, {
-      ...init,
-      headers,
-      credentials: 'same-origin',
-    })
+    const controller = new AbortController()
+    let timedOut = false
+    const timeout = window.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, REQUEST_TIMEOUT_MS)
+    let response: Response
+    try {
+      response = await fetch(path, {
+        ...init,
+        headers,
+        credentials: 'same-origin',
+        signal: init.signal ?? controller.signal,
+      })
+    } catch (reason) {
+      if (timedOut) throw new Error('请求超时，请检查 ZigFS 服务是否正常运行。')
+      throw reason
+    } finally {
+      window.clearTimeout(timeout)
+    }
 
     if (!response.ok) {
       const fallback: ApiErrorBody = {
@@ -95,15 +112,27 @@ export function createApiClient() {
         `/api/v1/buckets/${encodeURIComponent(bucket)}/versions${suffix}`,
       )).items
     },
-    listObjects: (bucket: string, prefix = '', continuationToken = '') => {
+    listObjects: (bucket: string, prefix = '', continuationToken = '', search = '', maxKeys = 10, delimiter = '') => {
       const query = new URLSearchParams()
       if (prefix) query.set('prefix', prefix)
+      if (search) query.set('search', search)
+      query.set('max_keys', String(maxKeys))
       if (continuationToken) query.set('continuation_token', continuationToken)
+      if (delimiter) query.set('delimiter', delimiter)
       const suffix = query.size ? `?${query.toString()}` : ''
       return request<ListObjectsResponse>(
         `/api/v1/buckets/${encodeURIComponent(bucket)}/objects${suffix}`,
       )
     },
+    createDirectory: (bucket: string, key: string) =>
+      request<{ type: 'directory'; key: string; last_modified: string }>(`/api/v1/buckets/${encodeURIComponent(bucket)}/directories`, {
+        method: 'POST',
+        body: JSON.stringify({ key }),
+      }),
+    deleteDirectory: (bucket: string, key: string) =>
+      request<void>(`/api/v1/buckets/${encodeURIComponent(bucket)}/directories?key=${encodeURIComponent(key)}`, {
+        method: 'DELETE',
+      }),
     presignObject: (
       accessKey: string,
       bucket: string,

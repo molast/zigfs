@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub const magic = [4]u8{ 'Z', 'F', 'C', 'T' };
 pub const major_version: u16 = 1;
-pub const minor_version: u16 = 0;
+pub const minor_version: u16 = 1;
 pub const max_cursor_length: usize = 1024;
 
 const header_length: usize = 46;
@@ -14,6 +14,7 @@ pub const Context = struct {
     bucket: []const u8,
     prefix: []const u8,
     delimiter: ?[]const u8,
+    search: []const u8 = "",
 };
 
 pub const Decoded = struct {
@@ -113,7 +114,8 @@ pub fn decode(
 
 fn validateContext(context: Context) Error!void {
     if (context.bucket.len == 0 or context.bucket.len > 63 or
-        !validBoundedField(context.prefix, true))
+        !validBoundedField(context.prefix, true) or
+        !validBoundedField(context.search, true))
     {
         return error.InvalidContext;
     }
@@ -138,6 +140,7 @@ fn hashContext(context: Context) [32]u8 {
     } else {
         hash.update(&.{0});
     }
+    updateHashField(&hash, context.search);
     var result: [32]u8 = undefined;
     hash.final(&result);
     return result;
@@ -166,6 +169,12 @@ test "continuation token round trips and binds the listing context" {
         .bucket = "project-assets",
         .prefix = "videos/",
         .delimiter = "/",
+    }, token));
+    try std.testing.expectError(error.InvalidToken, decode(std.testing.allocator, .{
+        .bucket = "project-assets",
+        .prefix = "images/",
+        .delimiter = "/",
+        .search = "cover",
     }, token));
 }
 

@@ -72,6 +72,7 @@ pub const LocalStorageBackend = struct {
         try root.createDirPath(io, ".zigfs/trash/multipart");
         try root.createDirPath(io, "metadata/buckets");
         try root.createDirPath(io, "metadata/objects");
+        try root.createDirPath(io, "metadata/directories");
         try root.createDirPath(io, "metadata/multipart");
         try root.createDirPath(io, "multipart");
         try root.createDirPath(io, "objects");

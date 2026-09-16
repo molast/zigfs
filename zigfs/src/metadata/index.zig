@@ -7,6 +7,7 @@ const multipart_payload = @import("multipart_payload.zig");
 const object_key = @import("object_key.zig");
 const object_payload = @import("object_payload.zig");
 const object_history_payload = @import("object_history_payload.zig");
+const directory_payload = @import("directory_payload.zig");
 const repository_port = @import("../ports/metadata_repository.zig");
 
 pub const Error = error{
@@ -24,6 +25,13 @@ pub const ObjectEntry = struct {
     bucket: []u8,
     key: []u8,
     generation: u64,
+};
+
+pub const DirectoryEntry = struct {
+    bucket: []u8,
+    key: []u8,
+    generation: u64,
+    last_modified_unix_seconds: i64,
 };
 
 pub const PreparedBucket = struct {
@@ -67,6 +75,7 @@ pub const PreparedObject = struct {
 
 pub const ListOptions = struct {
     prefix: []const u8 = "",
+    search: []const u8 = "",
     delimiter: ?[]const u8 = null,
     start_after: ?[]const u8 = null,
     max_keys: usize = 1000,
@@ -90,6 +99,7 @@ pub const MetadataIndex = struct {
     allocator: std.mem.Allocator,
     buckets: std.ArrayList(NamedEntry) = .empty,
     objects: std.ArrayList(ObjectEntry) = .empty,
+    directories: std.ArrayList(DirectoryEntry) = .empty,
     uploads: std.ArrayList(NamedEntry) = .empty,
     access_keys: std.ArrayList(NamedEntry) = .empty,
 
@@ -105,6 +115,11 @@ pub const MetadataIndex = struct {
             self.allocator.free(entry.key);
         }
         self.objects.deinit(self.allocator);
+        for (self.directories.items) |entry| {
+            self.allocator.free(entry.bucket);
+            self.allocator.free(entry.key);
+        }
+        self.directories.deinit(self.allocator);
         for (self.uploads.items) |entry| self.allocator.free(entry.name);
         self.uploads.deinit(self.allocator);
         for (self.access_keys.items) |entry| self.allocator.free(entry.name);
@@ -122,6 +137,7 @@ pub const MetadataIndex = struct {
         const indexed_types = [_]metadata_record.Type{
             .bucket,
             .object,
+            .directory,
             .multipart,
             .credential,
         };
@@ -138,10 +154,12 @@ pub const MetadataIndex = struct {
 
         std.mem.sort(NamedEntry, rebuilt.buckets.items, {}, lessThanNamed);
         std.mem.sort(ObjectEntry, rebuilt.objects.items, {}, lessThanObject);
+        std.mem.sort(DirectoryEntry, rebuilt.directories.items, {}, lessThanDirectory);
         std.mem.sort(NamedEntry, rebuilt.uploads.items, {}, lessThanNamed);
         std.mem.sort(NamedEntry, rebuilt.access_keys.items, {}, lessThanNamed);
         if (hasNamedDuplicate(rebuilt.buckets.items) or
             hasObjectDuplicate(rebuilt.objects.items) or
+            hasDirectoryDuplicate(rebuilt.directories.items) or
             hasNamedDuplicate(rebuilt.uploads.items) or
             hasNamedDuplicate(rebuilt.access_keys.items))
         {
@@ -339,6 +357,71 @@ pub const MetadataIndex = struct {
         return self.objects.items;
     }
 
+    pub fn directoryEntries(self: *const MetadataIndex) []const DirectoryEntry {
+        return self.directories.items;
+    }
+
+    pub fn directoryGeneration(self: *const MetadataIndex, bucket: []const u8, key: []const u8) ?u64 {
+        const position = lowerBoundDirectory(self.directories.items, bucket, key);
+        if (position >= self.directories.items.len) return null;
+        const entry = self.directories.items[position];
+        if (!std.mem.eql(u8, entry.bucket, bucket) or !std.mem.eql(u8, entry.key, key)) return null;
+        return entry.generation;
+    }
+
+    pub fn directoryEntry(self: *const MetadataIndex, bucket: []const u8, key: []const u8) ?DirectoryEntry {
+        const position = lowerBoundDirectory(self.directories.items, bucket, key);
+        if (position >= self.directories.items.len) return null;
+        const entry = self.directories.items[position];
+        if (!std.mem.eql(u8, entry.bucket, bucket) or !std.mem.eql(u8, entry.key, key)) return null;
+        return entry;
+    }
+
+    pub fn prepareDirectory(self: *MetadataIndex, bucket: []const u8, key: []const u8) Error!PreparedObject {
+        self.directories.ensureUnusedCapacity(self.allocator, 1) catch return error.OutOfMemory;
+        const owned_bucket = self.allocator.dupe(u8, bucket) catch return error.OutOfMemory;
+        errdefer self.allocator.free(owned_bucket);
+        return .{
+            .bucket = owned_bucket,
+            .key = self.allocator.dupe(u8, key) catch return error.OutOfMemory,
+        };
+    }
+
+    pub fn publishDirectory(self: *MetadataIndex, prepared: *PreparedObject, generation: u64, last_modified_unix_seconds: i64) void {
+        const bucket = prepared.bucket orelse unreachable;
+        const key = prepared.key orelse unreachable;
+        const position = lowerBoundDirectory(self.directories.items, bucket, key);
+        if (position < self.directories.items.len and
+            std.mem.eql(u8, self.directories.items[position].bucket, bucket) and
+            std.mem.eql(u8, self.directories.items[position].key, key))
+        {
+            self.directories.items[position].generation = generation;
+            self.directories.items[position].last_modified_unix_seconds = last_modified_unix_seconds;
+            self.allocator.free(bucket);
+            self.allocator.free(key);
+        } else {
+            self.directories.insertAssumeCapacity(position, .{
+                .bucket = bucket,
+                .key = key,
+                .generation = generation,
+                .last_modified_unix_seconds = last_modified_unix_seconds,
+            });
+        }
+        prepared.bucket = null;
+        prepared.key = null;
+    }
+
+    pub fn removeDirectory(self: *MetadataIndex, bucket: []const u8, key: []const u8) bool {
+        const position = lowerBoundDirectory(self.directories.items, bucket, key);
+        if (position >= self.directories.items.len) return false;
+        const entry = self.directories.items[position];
+        if (!std.mem.eql(u8, entry.bucket, bucket) or !std.mem.eql(u8, entry.key, key)) return false;
+        const removed = self.directories.orderedRemove(position);
+        self.allocator.free(removed.bucket);
+        self.allocator.free(removed.key);
+        return true;
+    }
+
     pub fn prepareObject(
         self: *MetadataIndex,
         bucket: []const u8,
@@ -423,78 +506,65 @@ pub const MetadataIndex = struct {
             return finishList(allocator, &objects, &common_prefixes, null);
         }
 
-        const delimiter = if (options.delimiter) |value|
-            if (value.len == 0) null else value
-        else
-            null;
-        var position = lowerBoundObject(
-            self.objects.items,
-            bucket,
-            options.start_after orelse "",
-        );
-        if (options.start_after) |start_after| {
-            while (position < self.objects.items.len and
-                std.mem.eql(u8, self.objects.items[position].bucket, bucket) and
-                std.mem.order(u8, self.objects.items[position].key, start_after) != .gt)
-            {
-                position += 1;
+        const delimiter = if (options.delimiter) |value| if (value.len == 0) null else value else null;
+        const Candidate = struct { key: []const u8, directory: bool };
+        var candidates: std.ArrayList(Candidate) = .empty;
+        defer candidates.deinit(allocator);
+
+        if (delimiter) |separator| {
+            var directory_position = lowerBoundDirectory(self.directories.items, bucket, options.prefix);
+            while (directory_position < self.directories.items.len) : (directory_position += 1) {
+                const entry = self.directories.items[directory_position];
+                if (!std.mem.eql(u8, entry.bucket, bucket) or !std.mem.startsWith(u8, entry.key, options.prefix)) break;
+                if (!containsSearch(entry.key, options.search)) continue;
+                const remainder = entry.key[options.prefix.len..];
+                const separator_index = std.mem.indexOf(u8, remainder, separator) orelse continue;
+                if (separator_index + separator.len != remainder.len) continue;
+                candidates.append(allocator, .{ .key = entry.key, .directory = true }) catch return error.OutOfMemory;
             }
         }
 
-        var emitted: usize = 0;
-        var last_scanned: ?[]const u8 = null;
-        while (position < self.objects.items.len) {
-            const entry = self.objects.items[position];
-            if (!std.mem.eql(u8, entry.bucket, bucket)) break;
-            position += 1;
-            if (!std.mem.startsWith(u8, entry.key, options.prefix)) continue;
-
+        var object_position = lowerBoundObject(self.objects.items, bucket, options.prefix);
+        while (object_position < self.objects.items.len) {
+            const entry = self.objects.items[object_position];
+            if (!std.mem.eql(u8, entry.bucket, bucket) or !std.mem.startsWith(u8, entry.key, options.prefix)) break;
+            object_position += 1;
+            if (!containsSearch(entry.key, options.search)) continue;
             if (delimiter) |separator| {
                 const remainder = entry.key[options.prefix.len..];
                 if (std.mem.indexOf(u8, remainder, separator)) |separator_index| {
-                    const common_prefix_length = options.prefix.len +
-                        separator_index + separator.len;
-                    const common_prefix = entry.key[0..common_prefix_length];
-                    last_scanned = entry.key;
-                    while (position < self.objects.items.len) : (position += 1) {
-                        const grouped = self.objects.items[position];
-                        if (!std.mem.eql(u8, grouped.bucket, bucket) or
-                            !std.mem.startsWith(u8, grouped.key, common_prefix))
-                        {
-                            break;
-                        }
-                        last_scanned = grouped.key;
-                    }
-                    if (options.start_after) |start_after| {
-                        if (std.mem.order(u8, common_prefix, start_after) != .gt) continue;
-                    }
-                    const owned_prefix = allocator.dupe(u8, common_prefix) catch {
-                        return error.OutOfMemory;
-                    };
-                    common_prefixes.append(allocator, owned_prefix) catch {
-                        allocator.free(owned_prefix);
-                        return error.OutOfMemory;
-                    };
-                    emitted += 1;
-                } else {
-                    try appendObjectKey(allocator, &objects, entry.key);
-                    last_scanned = entry.key;
-                    emitted += 1;
+                    const child_prefix = entry.key[0 .. options.prefix.len + separator_index + separator.len];
+                    object_position = firstAfterObjectPrefix(self.objects.items, object_position, bucket, child_prefix);
+                    continue;
                 }
-            } else {
-                try appendObjectKey(allocator, &objects, entry.key);
-                last_scanned = entry.key;
-                emitted += 1;
             }
+            candidates.append(allocator, .{ .key = entry.key, .directory = false }) catch return error.OutOfMemory;
+        }
 
-            if (emitted == options.max_keys) {
-                if (hasMatchingObject(self.objects.items, position, bucket, options.prefix)) {
-                    next_start_after = allocator.dupe(u8, last_scanned.?) catch {
-                        return error.OutOfMemory;
-                    };
-                }
-                break;
+        std.mem.sort(Candidate, candidates.items, {}, struct {
+            fn lessThan(_: void, left: Candidate, right: Candidate) bool {
+                return std.mem.order(u8, left.key, right.key) == .lt;
             }
+        }.lessThan);
+
+        var cursor: usize = 0;
+        if (options.start_after) |start_after| {
+            while (cursor < candidates.items.len and std.mem.order(u8, candidates.items[cursor].key, start_after) != .gt) : (cursor += 1) {}
+        }
+        const end = @min(candidates.items.len, cursor + options.max_keys);
+        for (candidates.items[cursor..end]) |candidate| {
+            if (candidate.directory) {
+                const owned = allocator.dupe(u8, candidate.key) catch return error.OutOfMemory;
+                common_prefixes.append(allocator, owned) catch {
+                    allocator.free(owned);
+                    return error.OutOfMemory;
+                };
+            } else {
+                try appendObjectKey(allocator, &objects, candidate.key);
+            }
+        }
+        if (end < candidates.items.len and end > cursor) {
+            next_start_after = allocator.dupe(u8, candidates.items[end - 1].key) catch return error.OutOfMemory;
         }
 
         return finishList(
@@ -554,6 +624,24 @@ pub const MetadataIndex = struct {
                     .bucket = bucket,
                     .key = key,
                     .generation = record.generation,
+                }) catch {
+                    self.allocator.free(key);
+                    return error.OutOfMemory;
+                };
+            },
+            .directory => {
+                const parsed = object_key.parse(record.key) orelse return error.CorruptRecord;
+                const decoded = directory_payload.decode(record.payload) catch return error.CorruptRecord;
+                if (!std.mem.eql(u8, decoded.bucket_name, parsed.bucket) or
+                    !std.mem.eql(u8, decoded.key, parsed.key)) return error.CorruptRecord;
+                const bucket = self.allocator.dupe(u8, parsed.bucket) catch return error.OutOfMemory;
+                errdefer self.allocator.free(bucket);
+                const key = self.allocator.dupe(u8, parsed.key) catch return error.OutOfMemory;
+                self.directories.append(self.allocator, .{
+                    .bucket = bucket,
+                    .key = key,
+                    .generation = record.generation,
+                    .last_modified_unix_seconds = decoded.last_modified_unix_seconds,
                 }) catch {
                     self.allocator.free(key);
                     return error.OutOfMemory;
@@ -665,6 +753,22 @@ fn hasObjectDuplicate(entries: []const ObjectEntry) bool {
     return false;
 }
 
+fn hasDirectoryDuplicate(entries: []const DirectoryEntry) bool {
+    if (entries.len < 2) return false;
+    for (entries[1..], 1..) |entry, index| {
+        const previous = entries[index - 1];
+        if (std.mem.eql(u8, previous.bucket, entry.bucket) and
+            std.mem.eql(u8, previous.key, entry.key)) return true;
+    }
+    return false;
+}
+
+fn lessThanDirectory(_: void, left: DirectoryEntry, right: DirectoryEntry) bool {
+    const bucket_order = std.mem.order(u8, left.bucket, right.bucket);
+    if (bucket_order != .eq) return bucket_order == .lt;
+    return std.mem.order(u8, left.key, right.key) == .lt;
+}
+
 fn findNamed(entries: []const NamedEntry, name: []const u8) ?usize {
     const position = lowerBoundNamed(entries, name);
     if (position < entries.len and std.mem.eql(u8, entries[position].name, name)) {
@@ -709,16 +813,66 @@ fn lowerBoundObject(
     return low;
 }
 
+fn lowerBoundDirectory(
+    entries: []const DirectoryEntry,
+    bucket: []const u8,
+    key: []const u8,
+) usize {
+    var low: usize = 0;
+    var high = entries.len;
+    while (low < high) {
+        const middle = low + (high - low) / 2;
+        const entry = entries[middle];
+        const bucket_order = std.mem.order(u8, entry.bucket, bucket);
+        if (bucket_order == .lt or
+            (bucket_order == .eq and std.mem.order(u8, entry.key, key) == .lt))
+        {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    return low;
+}
+
 fn hasMatchingObject(
     entries: []const ObjectEntry,
     start: usize,
     bucket: []const u8,
     prefix: []const u8,
+    search: []const u8,
 ) bool {
     for (entries[start..]) |entry| {
         const bucket_order = std.mem.order(u8, entry.bucket, bucket);
         if (bucket_order == .gt) return false;
-        if (bucket_order == .eq and std.mem.startsWith(u8, entry.key, prefix)) return true;
+        if (bucket_order == .eq and std.mem.startsWith(u8, entry.key, prefix) and
+            containsSearch(entry.key, search)) return true;
+    }
+    return false;
+}
+
+fn firstAfterObjectPrefix(entries: []const ObjectEntry, start: usize, bucket: []const u8, prefix: []const u8) usize {
+    var low = start;
+    var high = entries.len;
+    while (low < high) {
+        const middle = low + (high - low) / 2;
+        const entry = entries[middle];
+        const bucket_order = std.mem.order(u8, entry.bucket, bucket);
+        if (bucket_order == .lt or (bucket_order == .eq and (std.mem.order(u8, entry.key, prefix) == .lt or std.mem.startsWith(u8, entry.key, prefix)))) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    return low;
+}
+
+fn containsSearch(key: []const u8, search: []const u8) bool {
+    if (search.len == 0) return true;
+    if (search.len > key.len) return false;
+    var offset: usize = 0;
+    while (offset + search.len <= key.len) : (offset += 1) {
+        if (std.ascii.eqlIgnoreCase(key[offset .. offset + search.len], search)) return true;
     }
     return false;
 }
@@ -756,6 +910,7 @@ fn createTestLayout(root: std.Io.Dir) !void {
     try root.createDirPath(std.testing.io, ".zigfs/tmp");
     try root.createDirPath(std.testing.io, "metadata/buckets");
     try root.createDirPath(std.testing.io, "metadata/objects");
+    try root.createDirPath(std.testing.io, "metadata/directories");
     try root.createDirPath(std.testing.io, "metadata/multipart");
 }
 
@@ -933,6 +1088,25 @@ test "index rebuild skips tombstones and list objects is stable" {
     defer prefixed_page.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("dir/a.jpg", prefixed_page.objects[0]);
     try std.testing.expectEqualStrings("dir/a.jpg", prefixed_page.next_start_after.?);
+
+    const search_page = try index.listObjects(std.testing.allocator, "photos", .{
+        .search = "DIR/",
+        .max_keys = 1,
+    });
+    defer search_page.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), search_page.objects.len);
+    try std.testing.expectEqualStrings("dir/a.jpg", search_page.objects[0]);
+    try std.testing.expectEqualStrings("dir/a.jpg", search_page.next_start_after.?);
+
+    const search_page_two = try index.listObjects(std.testing.allocator, "photos", .{
+        .search = "DIR/",
+        .start_after = search_page.next_start_after,
+        .max_keys = 1,
+    });
+    defer search_page_two.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), search_page_two.objects.len);
+    try std.testing.expectEqualStrings("dir/b.jpg", search_page_two.objects[0]);
+    try std.testing.expect(search_page_two.next_start_after == null);
 
     try tmp.dir.deleteFile(std.testing.io, ".zigfs/indexes/snapshot.index");
     try index.rebuild(repository);

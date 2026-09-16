@@ -43,6 +43,8 @@ func New(auth *handler.Auth, system *handler.System, management *handler.Managem
 	private.PATCH("/buckets/:name/configuration", management.UpdateBucketConfiguration)
 	private.GET("/buckets/:name/versions", management.ListObjectVersions)
 	private.GET("/buckets/:name/objects", management.ListObjects)
+	private.POST("/buckets/:name/directories", management.CreateDirectory)
+	private.DELETE("/buckets/:name/directories", management.DeleteDirectory)
 	private.GET("/buckets/:name/multipart-uploads", management.ListMultipartUploads)
 	private.POST("/objects/presign", management.PresignObject)
 	private.POST("/multipart-uploads", management.CreateMultipartUpload)

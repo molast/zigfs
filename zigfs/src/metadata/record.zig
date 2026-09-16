@@ -18,6 +18,7 @@ pub const Type = enum(u8) {
     object = 3,
     multipart = 4,
     credential = 5,
+    directory = 6,
 };
 
 pub const Decoded = struct {
@@ -89,6 +90,7 @@ pub fn decode(bytes: []const u8) DecodeError!Decoded {
         3 => .object,
         4 => .multipart,
         5 => .credential,
+        6 => .directory,
         else => return error.InvalidRecordType,
     };
 

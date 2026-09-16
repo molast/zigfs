@@ -3,6 +3,7 @@ export type View = 'dashboard' | 'buckets' | 'bucket-detail' | 'objects' | 'acce
 export interface AppRoute {
   view: View
   bucket: string
+  prefix: string
 }
 
 const staticRoutes: Record<string, View> = {
@@ -12,37 +13,53 @@ const staticRoutes: Record<string, View> = {
   settings: 'settings',
 }
 
-export function parseAppRoute(pathname: string): AppRoute {
+export function parseAppRoute(pathname: string, search = ''): AppRoute {
   const segments = pathname.split('/').filter(Boolean)
-  if (segments.length === 0) return { view: 'dashboard', bucket: '' }
+  const hasTrailingSlash = pathname.length > 1 && pathname.endsWith('/')
+  const query = new URLSearchParams(search)
+  if (segments.length === 0) return { view: 'dashboard', bucket: '', prefix: '' }
 
   if (segments[0] === 'buckets') {
-    if (segments.length === 1) return { view: 'buckets', bucket: '' }
+    if (segments.length === 1) return { view: 'buckets', bucket: '', prefix: '' }
 
     const bucket = decodePathSegment(segments[1])
-    if (!bucket) return { view: 'buckets', bucket: '' }
-    if (segments.length === 2) return { view: 'bucket-detail', bucket }
-    if (segments.length === 3 && segments[2] === 'objects') return { view: 'objects', bucket }
-    return { view: 'buckets', bucket: '' }
+    if (!bucket) return { view: 'buckets', bucket: '', prefix: '' }
+    // The bucket path is also its object root. Bucket configuration lives at
+    // a separate sub-route so filesystem-style object paths remain natural.
+    if (segments.length === 2 && query.get('view') === 'configuration') {
+      return { view: 'bucket-detail', bucket, prefix: '' }
+    }
+    if (segments.length === 2) return { view: 'objects', bucket, prefix: '' }
+
+    const objectSegments = segments.slice(2).map(decodePathSegment)
+    const prefix = `${objectSegments.join('/')}${hasTrailingSlash ? '/' : ''}`
+    return { view: 'objects', bucket, prefix }
   }
 
   const view = segments.length === 1 ? staticRoutes[segments[0]] : undefined
-  return { view: view ?? 'dashboard', bucket: '' }
+  return { view: view ?? 'dashboard', bucket: '', prefix: '' }
 }
 
-export function createAppRoute(view: View, bucket = ''): AppRoute {
+export function createAppRoute(view: View, bucket = '', prefix = ''): AppRoute {
   if (view === 'bucket-detail' || view === 'objects') {
-    return bucket ? { view, bucket } : { view: 'buckets', bucket: '' }
+    return bucket ? { view, bucket, prefix: view === 'objects' ? prefix : '' } : { view: 'buckets', bucket: '', prefix: '' }
   }
-  return { view, bucket: '' }
+  return { view, bucket: '', prefix: '' }
 }
 
 export function appRoutePath(route: AppRoute): string {
   switch (route.view) {
     case 'dashboard': return '/'
     case 'buckets': return '/buckets'
-    case 'bucket-detail': return route.bucket ? `/buckets/${encodeURIComponent(route.bucket)}` : '/buckets'
-    case 'objects': return route.bucket ? `/buckets/${encodeURIComponent(route.bucket)}/objects` : '/buckets'
+    case 'bucket-detail': return route.bucket ? `/buckets/${encodeURIComponent(route.bucket)}?view=configuration` : '/buckets'
+    case 'objects': {
+      if (!route.bucket) return '/buckets'
+      const normalizedPrefix = route.prefix.trim().replace(/^\/+/, '')
+      const bucketPath = `/buckets/${encodeURIComponent(route.bucket)}`
+      if (!normalizedPrefix) return bucketPath
+      const prefixPath = normalizedPrefix.split('/').filter(Boolean).map(encodeURIComponent).join('/')
+      return `${bucketPath}/${prefixPath}${normalizedPrefix.endsWith('/') ? '/' : ''}`
+    }
     case 'access-keys': return '/access-keys'
     case 'storage': return '/storage'
     case 'system': return '/system'

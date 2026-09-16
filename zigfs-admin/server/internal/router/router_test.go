@@ -66,9 +66,15 @@ func (managementService) ListObjectVersions(context.Context, string, string) (co
 	return contract.ListObjectVersionsResponse{}, nil
 }
 
-func (managementService) ListObjects(context.Context, string, string, string) (contract.ListObjectsResponse, error) {
+func (managementService) ListObjects(context.Context, string, string, string, string, string, string) (contract.ListObjectsResponse, error) {
 	return contract.ListObjectsResponse{}, nil
 }
+
+func (managementService) CreateDirectory(context.Context, string, contract.CreateDirectoryRequest) (contract.Directory, error) {
+	return contract.Directory{}, nil
+}
+
+func (managementService) DeleteDirectory(context.Context, string, contract.CreateDirectoryRequest) error { return nil }
 
 func (managementService) PresignObject(context.Context, contract.PresignObjectRequest) (contract.PresignObjectResponse, error) {
 	return contract.PresignObjectResponse{}, nil

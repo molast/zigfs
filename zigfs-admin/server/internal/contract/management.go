@@ -45,6 +45,7 @@ type CreateBucketRequest struct {
 }
 
 type Object struct {
+	Type         string    `json:"type,omitempty"`
 	Key          string    `json:"key"`
 	Size         int64     `json:"size"`
 	ETag         string    `json:"etag"`
@@ -53,7 +54,20 @@ type Object struct {
 
 type ListObjectsResponse struct {
 	Items             []Object `json:"items"`
+	CommonPrefixes    []string `json:"common_prefixes,omitempty"`
+	Directories       []Directory `json:"directories,omitempty"`
+	IsTruncated       bool     `json:"is_truncated"`
 	ContinuationToken string   `json:"continuation_token,omitempty"`
+}
+
+type Directory struct {
+	Type         string    `json:"type"`
+	Key          string    `json:"key"`
+	LastModified time.Time `json:"last_modified"`
+}
+
+type CreateDirectoryRequest struct {
+	Key string `json:"key" binding:"required"`
 }
 
 type PresignObjectRequest struct {

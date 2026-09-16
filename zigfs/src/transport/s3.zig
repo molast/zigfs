@@ -3753,6 +3753,7 @@ fn mapObjectError(err: object_service.Error) protocol.ErrorKind {
         error.InvalidRange,
         => .invalid_request,
         error.BucketNotFound => .no_such_bucket,
+        error.DirectoryNotEmpty => .directory_not_empty,
         error.ObjectNotFound => .no_such_key,
         error.DeleteMarker => .no_such_key,
         error.ChecksumMismatch => .bad_digest,

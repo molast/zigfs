@@ -76,6 +76,7 @@ pub fn decode(bytes: []const u8) DecodeError!journal_port.Entry {
         3 => .object,
         4 => .multipart,
         5 => .credential,
+        6 => .directory,
         else => return error.InvalidRecordType,
     };
     const generation = std.mem.readInt(u64, bytes[generation_offset..20], .little);

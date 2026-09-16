@@ -122,13 +122,22 @@ func (client *Client) ListObjectVersions(ctx context.Context, bucket, prefix str
 	return response, err
 }
 
-func (client *Client) ListObjects(ctx context.Context, bucket, prefix, cursor string) (contract.ListObjectsResponse, error) {
+func (client *Client) ListObjects(ctx context.Context, bucket, prefix, search, cursor, maxKeys, delimiter string) (contract.ListObjectsResponse, error) {
 	query := url.Values{}
 	if prefix != "" {
 		query.Set("prefix", prefix)
 	}
+	if search != "" {
+		query.Set("search", search)
+	}
 	if cursor != "" {
 		query.Set("continuation_token", cursor)
+	}
+	if maxKeys != "" {
+		query.Set("max_keys", maxKeys)
+	}
+	if delimiter != "" {
+		query.Set("delimiter", delimiter)
 	}
 	path := "/_admin/v1/buckets/" + url.PathEscape(bucket) + "/objects"
 	if encoded := query.Encode(); encoded != "" {
@@ -138,6 +147,17 @@ func (client *Client) ListObjects(ctx context.Context, bucket, prefix, cursor st
 	var response contract.ListObjectsResponse
 	err := client.requestJSON(ctx, http.MethodGet, path, nil, &response)
 	return response, err
+}
+
+func (client *Client) CreateDirectory(ctx context.Context, bucket string, request contract.CreateDirectoryRequest) (contract.Directory, error) {
+	var response contract.Directory
+	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/buckets/"+url.PathEscape(bucket)+"/directories", request, &response)
+	return response, err
+}
+
+func (client *Client) DeleteDirectory(ctx context.Context, bucket string, request contract.CreateDirectoryRequest) error {
+	query := url.Values{"key": {request.Key}}
+	return client.requestJSON(ctx, http.MethodDelete, "/_admin/v1/buckets/"+url.PathEscape(bucket)+"/directories?"+query.Encode(), nil, nil)
 }
 
 func (client *Client) PresignObject(ctx context.Context, request contract.PresignObjectRequest) (contract.PresignObjectResponse, error) {

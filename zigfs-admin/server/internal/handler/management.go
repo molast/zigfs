@@ -16,7 +16,9 @@ type ManagementService interface {
 	GetBucketConfiguration(ctx context.Context, name string) (contract.BucketConfiguration, error)
 	UpdateBucketConfiguration(ctx context.Context, name string, request contract.UpdateBucketConfigurationRequest) (contract.BucketConfiguration, error)
 	ListObjectVersions(ctx context.Context, bucket, prefix string) (contract.ListObjectVersionsResponse, error)
-	ListObjects(ctx context.Context, bucket, prefix, cursor string) (contract.ListObjectsResponse, error)
+	ListObjects(ctx context.Context, bucket, prefix, search, cursor, maxKeys, delimiter string) (contract.ListObjectsResponse, error)
+	CreateDirectory(ctx context.Context, bucket string, request contract.CreateDirectoryRequest) (contract.Directory, error)
+	DeleteDirectory(ctx context.Context, bucket string, request contract.CreateDirectoryRequest) error
 	PresignObject(ctx context.Context, request contract.PresignObjectRequest) (contract.PresignObjectResponse, error)
 	CreateMultipartUpload(ctx context.Context, request contract.CreateMultipartUploadRequest) (contract.MultipartUpload, error)
 	ListMultipartUploads(ctx context.Context, bucket, prefix, keyMarker, uploadIDMarker string) (contract.ListMultipartUploadsResponse, error)
@@ -110,13 +112,49 @@ func (handler *Management) ListObjects(ctx *gin.Context) {
 		ctx.Request.Context(),
 		ctx.Param("name"),
 		ctx.Query("prefix"),
+		ctx.Query("search"),
 		ctx.Query("continuation_token"),
+		ctx.Query("max_keys"),
+		ctx.Query("delimiter"),
 	)
 	if err != nil {
 		writeStorageError(ctx, err)
 		return
 	}
 	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) CreateDirectory(ctx *gin.Context) {
+	var request contract.CreateDirectoryRequest
+	if err := ctx.ShouldBindJSON(&request); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "request body is invalid")
+		return
+	}
+	response, err := handler.service.CreateDirectory(ctx.Request.Context(), ctx.Param("name"), request)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusCreated, response)
+}
+
+func (handler *Management) DeleteDirectory(ctx *gin.Context) {
+	request := contract.CreateDirectoryRequest{Key: ctx.Query("key")}
+	if request.Key == "" {
+		if err := ctx.ShouldBindJSON(&request); err != nil {
+			writeError(ctx, http.StatusBadRequest, "InvalidRequest", "directory key is required")
+			return
+		}
+	}
+	if request.Key == "" {
+		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "directory key is required")
+		return
+	}
+	if err := handler.service.DeleteDirectory(ctx.Request.Context(), ctx.Param("name"), request); err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.Status(http.StatusNoContent)
 }
 
 func (handler *Management) PresignObject(ctx *gin.Context) {

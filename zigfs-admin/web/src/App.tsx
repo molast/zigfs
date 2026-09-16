@@ -76,7 +76,7 @@ const viewMeta: Record<View, { section: string; label: string }> = {
 export default function App() {
   const { withLoading } = useLoading()
   const [session, setSession] = useState<AdminSession | null>()
-  const [route, setRoute] = useState<AppRoute>(() => parseAppRoute(window.location.pathname))
+  const [route, setRoute] = useState<AppRoute>(() => parseAppRoute(window.location.pathname, window.location.search))
   const [availability, setAvailability] = useState<Availability>('checking')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
@@ -116,7 +116,7 @@ export default function App() {
   }, [api])
 
   useEffect(() => {
-    const syncRoute = () => setRoute(parseAppRoute(window.location.pathname))
+    const syncRoute = () => setRoute(parseAppRoute(window.location.pathname, window.location.search))
     window.addEventListener('popstate', syncRoute)
     return () => window.removeEventListener('popstate', syncRoute)
   }, [])
@@ -145,15 +145,16 @@ export default function App() {
     })
   }
 
-  function navigate(nextView: View, bucket = '') {
-    const nextRoute = createAppRoute(nextView, bucket)
+  function navigate(nextView: View, bucket = '', prefix = '') {
+    const nextRoute = createAppRoute(nextView, bucket, prefix)
     const path = appRoutePath(nextRoute)
-    if (window.location.pathname !== path) window.history.pushState(null, '', path)
+    const currentPath = `${window.location.pathname}${window.location.search}`
+    if (currentPath !== path) window.history.pushState(null, '', path)
     setRoute(nextRoute)
     setMobileSidebarOpen(false)
   }
 
-  const { view, bucket: selectedBucket } = route
+  const { view, bucket: selectedBucket, prefix: selectedPrefix } = route
   const meta = viewMeta[view]
   const isBucketsActive = view === 'buckets' || view === 'bucket-detail' || view === 'objects'
 
@@ -205,9 +206,11 @@ export default function App() {
             </button>
             <button className="topbar-icon mobile-sidebar-toggle" type="button" aria-label="打开导航" onClick={() => setMobileSidebarOpen(true)}><Menu aria-hidden="true" /></button>
             <div className="breadcrumbs" aria-label="Breadcrumb">
-              <span>{meta.section}</span><b>/</b>
-              {(view === 'bucket-detail' || view === 'objects') && selectedBucket ? <><span>{selectedBucket}</span><b>/</b></> : null}
-              <strong>{meta.label}</strong>
+              {view === 'objects' && selectedBucket ? <><span>Buckets</span><b>/</b><strong>{selectedBucket}</strong></> : <>
+                <span>{meta.section}</span><b>/</b>
+                {(view === 'bucket-detail' || view === 'objects') && selectedBucket ? <><span>{selectedBucket}</span><b>/</b></> : null}
+                <strong>{meta.label}</strong>
+              </>}
             </div>
           </div>
           <div className="topbar-actions">
@@ -238,7 +241,7 @@ export default function App() {
             onOpenObjects={() => navigate('objects', selectedBucket)}
             onDeleted={() => navigate('buckets')}
           />}
-          {view === 'objects' && <ObjectsView api={api} initialBucket={selectedBucket} onBack={() => navigate('bucket-detail', selectedBucket)} />}
+          {view === 'objects' && <ObjectsView api={api} initialBucket={selectedBucket} initialPrefix={selectedPrefix} onNavigatePath={(prefix) => navigate('objects', selectedBucket, prefix)} onBack={() => navigate('bucket-detail', selectedBucket)} />}
           {view === 'access-keys' && <AccessKeysView api={api} />}
           {view === 'storage' && <StorageView api={api} />}
           {view === 'system' && <SystemView api={api} />}

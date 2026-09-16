@@ -376,6 +376,7 @@ fn createTestLayout(root: std.Io.Dir, io: std.Io) !void {
     try root.createDirPath(io, ".zigfs/tmp");
     try root.createDirPath(io, "metadata/buckets");
     try root.createDirPath(io, "metadata/objects");
+    try root.createDirPath(io, "metadata/directories");
     try root.createDirPath(io, "metadata/multipart");
 }
 

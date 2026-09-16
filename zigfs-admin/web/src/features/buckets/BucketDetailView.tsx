@@ -16,7 +16,7 @@ import {
   Trash2,
   type LucideIcon,
 } from 'lucide-react'
-import type { ApiClient } from '../../api/client'
+import { ApiError, type ApiClient } from '../../api/client'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
 import { useToast } from '../../components/ToastProvider'
@@ -48,6 +48,8 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
   const [activeSection, setActiveSection] = useState<'Summary' | 'Lifecycle'>('Summary')
   const [lifecycleRules, setLifecycleRules] = useState<LifecycleRule[]>([])
   const [usage, setUsage] = useState<BucketUsage>({ bytes: 0, objects: 0 })
+  const [bucketContentKnown, setBucketContentKnown] = useState(false)
+  const [bucketHasContent, setBucketHasContent] = useState(false)
   const [loading, setLoading] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState('')
@@ -57,6 +59,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     const stopLoading = startLoading('正在加载 Bucket 配置...')
     try {
       setLoading(true)
+      setBucketContentKnown(false)
       setError('')
       const [buckets, bucketConfiguration] = await Promise.all([
         api.listBuckets(),
@@ -73,16 +76,22 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       let continuationToken = ''
       let bytes = 0
       let objects = 0
+      let hasContent = false
       do {
-        const page = await api.listObjects(bucketName, '', continuationToken)
+        const page = await api.listObjects(bucketName, '', continuationToken, '', 1000, '/')
         objects += page.items.length
         bytes += page.items.reduce((total, item) => total + item.size, 0)
-        const nextToken = page.continuation_token ?? ''
+        hasContent = hasContent || page.items.length > 0 || (page.common_prefixes?.length ?? 0) > 0 || (page.directories?.length ?? 0) > 0
+        const nextToken = page.is_truncated ? (page.continuation_token ?? '') : ''
         if (!nextToken || nextToken === continuationToken) break
         continuationToken = nextToken
       } while (continuationToken)
       setUsage({ bytes, objects })
+      if (!hasContent) hasContent = (await api.listObjectVersions(bucketName)).length > 0
+      setBucketHasContent(hasContent)
+      setBucketContentKnown(true)
     } catch (reason) {
+      setBucketContentKnown(false)
       setError((reason as Error).message)
     } finally {
       setLoading(false)
@@ -95,6 +104,17 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
   }, [refresh])
 
   async function remove() {
+    if (!bucketContentKnown) return
+    if (bucketHasContent) {
+      await confirm({
+        title: '删除 Bucket',
+        message: `Bucket “${bucketName}”必须为空才能删除。请先删除其中的所有对象和目录，Bucket 内的数据不会被自动删除。`,
+        cancelLabel: '知道了',
+        danger: true,
+        hideConfirm: true,
+      })
+      return
+    }
     if (!await confirm({
       title: '删除 Bucket',
       message: `删除 Bucket “${bucketName}”？此操作不可撤销。`,
@@ -109,7 +129,17 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       showToast(`已删除 Bucket ${bucketName}`)
       onDeleted()
     } catch (reason) {
-      setError((reason as Error).message)
+      if (reason instanceof ApiError && reason.body.code === 'BucketNotEmpty') {
+        stopLoading()
+        await confirm({
+          title: '无法删除 Bucket',
+          message: `Bucket “${bucketName}”必须为空才能删除。请先删除其中的所有对象和目录，Bucket 内的数据不会被自动删除。`,
+          cancelLabel: '知道了',
+          hideConfirm: true,
+        })
+      } else {
+        setError((reason as Error).message)
+      }
     } finally {
       setDeleting(false)
       stopLoading()
@@ -172,7 +202,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
           <button className="icon-button bucket-objects-button" type="button" title="浏览 Bucket 对象" aria-label="浏览 Bucket 对象" onClick={onOpenObjects} disabled={!bucket}>
             <FolderOpen aria-hidden="true" />
           </button>
-          <button className="danger-button" type="button" onClick={() => void remove()} disabled={deleting || !bucket}>
+          <button className="danger-button" type="button" onClick={() => void remove()} disabled={deleting || !bucket || !bucketContentKnown}>
             <Trash2 className="button-icon" aria-hidden="true" />删除 Bucket
           </button>
           <button className="secondary-button refresh-action-button" type="button" onClick={() => void refresh()} disabled={loading} aria-busy={loading}>

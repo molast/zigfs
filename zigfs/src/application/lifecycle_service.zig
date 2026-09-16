@@ -312,6 +312,7 @@ test "lifecycle scanner expires noncurrent versions and sole delete markers" {
         &index,
         &state_mutex,
         &object_locks,
+        null,
     );
     const scanner: LifecycleService = .{ .allocator = std.testing.allocator, .buckets = buckets, .objects = objects };
 

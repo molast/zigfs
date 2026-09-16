@@ -42,8 +42,16 @@ func (service *Management) ListObjectVersions(ctx context.Context, bucket, prefi
 	return service.zig.ListObjectVersions(ctx, bucket, prefix)
 }
 
-func (service *Management) ListObjects(ctx context.Context, bucket, prefix, cursor string) (contract.ListObjectsResponse, error) {
-	return service.zig.ListObjects(ctx, bucket, prefix, cursor)
+func (service *Management) ListObjects(ctx context.Context, bucket, prefix, search, cursor, maxKeys, delimiter string) (contract.ListObjectsResponse, error) {
+	return service.zig.ListObjects(ctx, bucket, prefix, search, cursor, maxKeys, delimiter)
+}
+
+func (service *Management) CreateDirectory(ctx context.Context, bucket string, request contract.CreateDirectoryRequest) (contract.Directory, error) {
+	return service.zig.CreateDirectory(ctx, bucket, request)
+}
+
+func (service *Management) DeleteDirectory(ctx context.Context, bucket string, request contract.CreateDirectoryRequest) error {
+	return service.zig.DeleteDirectory(ctx, bucket, request)
 }
 
 func (service *Management) PresignObject(ctx context.Context, request contract.PresignObjectRequest) (contract.PresignObjectResponse, error) {

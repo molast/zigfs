@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowRight, Folder, FolderPlus, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
-import type { ApiClient } from '../../api/client'
+import { ApiError, type ApiClient } from '../../api/client'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
 import { useToast } from '../../components/ToastProvider'
@@ -88,7 +88,17 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
       await refresh()
       showToast(`已删除 Bucket ${bucket}`)
     } catch (reason) {
-      setError((reason as Error).message)
+      if (reason instanceof ApiError && reason.body.code === 'BucketNotEmpty') {
+        stopLoading()
+        await confirm({
+          title: '无法删除 Bucket',
+          message: `Bucket “${bucket}”必须为空才能删除。请先删除其中的所有对象和目录，Bucket 内的数据不会被自动删除。`,
+          cancelLabel: '知道了',
+          hideConfirm: true,
+        })
+      } else {
+        setError((reason as Error).message)
+      }
     } finally {
       stopLoading()
     }

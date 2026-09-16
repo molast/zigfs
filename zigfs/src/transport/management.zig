@@ -6,6 +6,7 @@ const management_service = @import("../application/management_service.zig");
 const multipart_service = @import("../application/multipart_service.zig");
 const object_listing = @import("../application/object_listing.zig");
 const lifecycle_service = @import("../application/lifecycle_service.zig");
+const directory_service = @import("../application/directory_service.zig");
 const credential_domain = @import("../domain/credential.zig");
 const object_domain = @import("../domain/object.zig");
 const multipart_domain = @import("../domain/multipart.zig");
@@ -34,6 +35,8 @@ pub const routes = [_]Route{
     .{ .method = .patch, .path = "/_admin/v1/buckets/:name/configuration" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/versions" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/objects" },
+    .{ .method = .post, .path = "/_admin/v1/buckets/:name/directories" },
+    .{ .method = .delete, .path = "/_admin/v1/buckets/:name/directories" },
     .{ .method = .post, .path = "/_admin/v1/objects/presign" },
     .{ .method = .post, .path = "/_admin/v1/multipart-uploads" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/multipart-uploads" },
@@ -107,6 +110,17 @@ pub fn serveRequest(
                 return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
             }
             return serveListObjects(request, application, request_id, raw_name, target);
+        }
+        if (std.mem.endsWith(u8, resource, "/directories")) {
+            const raw_name = resource[0 .. resource.len - "/directories".len];
+            if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '/') != null) {
+                return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+            }
+            return switch (request.head.method) {
+                .POST => serveCreateDirectory(request, application, request_id, raw_name),
+                .DELETE => serveDeleteDirectory(request, application, request_id, raw_name),
+                else => respondMethodNotAllowed(request, request_id, "POST, DELETE"),
+            };
         }
         if (request.head.method != .DELETE) {
             return respondMethodNotAllowed(request, request_id, "DELETE");
@@ -372,7 +386,8 @@ fn serveListObjectVersions(
     defer query.deinit(application.allocator);
     if (query.continuation_token != null) return respondError(request, request_id, .bad_request, "InvalidQuery", "continuation_token is not supported for version browsing");
     const service = application.objectService() orelse return respondNotReady(request, request_id);
-    const result = service.listVersions(bucket, query.prefix orelse "") catch |err| {
+    const prefix = query.prefix orelse "";
+    const result = service.listVersions(bucket, prefix) catch |err| {
         return respondError(request, request_id, .internal_server_error, "ListVersionsFailed", @errorName(err));
     };
     defer result.deinit(application.allocator);
@@ -383,6 +398,7 @@ fn serveListObjectVersions(
     try json.objectField("items");
     try json.beginArray();
     for (result.entries) |entry| {
+        if (!isDirectVersionKey(entry.key, prefix)) continue;
         var version_buffer: [object_domain.VersionId.encoded_length]u8 = undefined;
         var modified_buffer: [20]u8 = undefined;
         try json.write(.{
@@ -397,6 +413,12 @@ fn serveListObjectVersions(
     try json.endArray();
     try json.endObject();
     return respondJsonBytes(request, request_id, .ok, output.written());
+}
+
+fn isDirectVersionKey(key: []const u8, prefix: []const u8) bool {
+    if (!std.mem.startsWith(u8, key, prefix)) return false;
+    const relative_key = key[prefix.len..];
+    return relative_key.len > 0 and std.mem.indexOfScalar(u8, relative_key, '/') == null;
 }
 
 fn serveListObjects(
@@ -418,6 +440,9 @@ fn serveListObjects(
     const service = application.objectListing() orelse return respondNotReady(request, request_id);
     const result = service.list(bucket, .{
         .prefix = query.prefix orelse "",
+        .search = query.search orelse "",
+        .delimiter = query.delimiter,
+        .max_keys = query.max_keys,
         .continuation_token = query.continuation_token,
     }) catch |err| return respondListingError(request, request_id, err);
     defer result.deinit(application.allocator);
@@ -430,12 +455,65 @@ fn serveListObjects(
     try json.beginArray();
     for (result.objects) |object| try writeObject(&json, object);
     try json.endArray();
+    try json.objectField("common_prefixes");
+    try json.beginArray();
+    for (result.common_prefixes) |common_prefix| try json.write(common_prefix);
+    try json.endArray();
+    try json.objectField("directories");
+    try json.beginArray();
+    for (result.directories) |directory| try writeDirectory(&json, directory);
+    try json.endArray();
+    try json.objectField("is_truncated");
+    try json.write(result.is_truncated);
     if (result.next_continuation_token) |token| {
         try json.objectField("continuation_token");
         try json.write(token);
     }
     try json.endObject();
     return respondJsonBytes(request, request_id, .ok, output.written());
+}
+
+const DirectoryRequest = struct { key: []const u8 };
+
+fn serveCreateDirectory(
+    request: *std.http.Server.Request,
+    application: *Application,
+    request_id: []const u8,
+    raw_name: []const u8,
+) !std.http.Status {
+    const bucket = decodeComponent(application.allocator, raw_name, false) catch return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+    defer application.allocator.free(bucket);
+    const parsed = try parseJsonBody(DirectoryRequest, request, application.allocator, request_id) orelse return .bad_request;
+    defer parsed.deinit();
+    const service = application.directoryService() orelse return respondNotReady(request, request_id);
+    const directory = service.create(bucket, parsed.value.key) catch |err| return respondDirectoryError(request, request_id, err);
+    defer directory.deinit(application.allocator);
+    var modified_buffer: [20]u8 = undefined;
+    const modified = time.formatIso8601(directory.last_modified_unix_seconds, &modified_buffer) catch return error.WriteFailed;
+    return respondJson(request, request_id, .created, .{ .type = "directory", .key = directory.key, .last_modified = modified });
+}
+
+fn serveDeleteDirectory(
+    request: *std.http.Server.Request,
+    application: *Application,
+    request_id: []const u8,
+    raw_name: []const u8,
+) !std.http.Status {
+    const bucket = decodeComponent(application.allocator, raw_name, false) catch return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+    defer application.allocator.free(bucket);
+    const service = application.directoryService() orelse return respondNotReady(request, request_id);
+    const query_key = parseDirectoryKeyQuery(application.allocator, request.head.target) catch {
+        return respondError(request, request_id, .bad_request, "InvalidQuery", "directory key query is invalid");
+    };
+    if (query_key) |key| {
+        defer application.allocator.free(key);
+        _ = service.delete(bucket, key) catch |err| return respondDirectoryError(request, request_id, err);
+    } else {
+        const parsed = try parseJsonBody(DirectoryRequest, request, application.allocator, request_id) orelse return .bad_request;
+        defer parsed.deinit();
+        _ = service.delete(bucket, parsed.value.key) catch |err| return respondDirectoryError(request, request_id, err);
+    }
+    return respondNoContent(request, request_id);
 }
 
 const PresignObjectRequest = struct {
@@ -1134,6 +1212,12 @@ fn writeObject(json: *std.json.Stringify, object: anytype) !void {
     });
 }
 
+fn writeDirectory(json: *std.json.Stringify, directory: anytype) !void {
+    var modified_buffer: [20]u8 = undefined;
+    const modified = try time.formatIso8601(directory.last_modified_unix_seconds, &modified_buffer);
+    try json.write(.{ .type = "directory", .key = directory.key, .last_modified = modified });
+}
+
 fn writeCredential(
     json: *std.json.Stringify,
     credential: anytype,
@@ -1198,14 +1282,37 @@ fn parseJsonBody(
 
 const ListQuery = struct {
     prefix: ?[]u8 = null,
+    search: ?[]u8 = null,
+    delimiter: ?[]u8 = null,
+    max_keys: usize = object_listing.max_keys,
+    max_keys_set: bool = false,
     continuation_token: ?[]u8 = null,
 
     fn deinit(self: *ListQuery, allocator: std.mem.Allocator) void {
         if (self.prefix) |value| allocator.free(value);
+        if (self.search) |value| allocator.free(value);
+        if (self.delimiter) |value| allocator.free(value);
         if (self.continuation_token) |value| allocator.free(value);
         self.* = .{};
     }
 };
+
+fn parseDirectoryKeyQuery(allocator: std.mem.Allocator, target: []const u8) !?[]u8 {
+    const query_start = std.mem.indexOfScalar(u8, target, '?') orelse return null;
+    const raw_query = target[query_start + 1 ..];
+    if (raw_query.len == 0) return null;
+    var key: ?[]u8 = null;
+    errdefer if (key) |value| allocator.free(value);
+    var parameters = std.mem.splitScalar(u8, raw_query, '&');
+    while (parameters.next()) |parameter| {
+        if (parameter.len == 0) return error.InvalidQuery;
+        const equals = std.mem.indexOfScalar(u8, parameter, '=') orelse return error.InvalidQuery;
+        const name = parameter[0..equals];
+        if (!std.mem.eql(u8, name, "key") or key != null) return error.InvalidQuery;
+        key = try decodeComponent(allocator, parameter[equals + 1 ..], true);
+    }
+    return key;
+}
 
 const MultipartListQuery = struct {
     prefix: ?[]u8 = null,
@@ -1251,6 +1358,30 @@ fn parseListQuery(allocator: std.mem.Allocator, target: []const u8) !ListQuery {
                 return error.InvalidQuery;
             }
             result.prefix = value;
+        } else if (std.mem.eql(u8, name, "search")) {
+            if (result.search != null) {
+                allocator.free(value);
+                return error.InvalidQuery;
+            }
+            result.search = value;
+        } else if (std.mem.eql(u8, name, "delimiter")) {
+            if (result.delimiter != null) {
+                allocator.free(value);
+                return error.InvalidQuery;
+            }
+            result.delimiter = value;
+        } else if (std.mem.eql(u8, name, "max_keys")) {
+            if (result.max_keys_set) {
+                allocator.free(value);
+                return error.InvalidQuery;
+            }
+            result.max_keys_set = true;
+            result.max_keys = std.fmt.parseInt(usize, value, 10) catch {
+                allocator.free(value);
+                return error.InvalidQuery;
+            };
+            allocator.free(value);
+            if (result.max_keys == 0 or result.max_keys > object_listing.max_keys) return error.InvalidQuery;
         } else if (std.mem.eql(u8, name, "continuation_token")) {
             if (result.continuation_token != null) {
                 allocator.free(value);
@@ -1426,6 +1557,18 @@ fn respondListingError(
         error.InvalidContinuationToken => respondError(request, request_id, .bad_request, "InvalidContinuationToken", "continuation token is invalid"),
         error.BucketNotFound => respondError(request, request_id, .not_found, "BucketNotFound", "bucket does not exist"),
         error.CorruptMetadata => respondError(request, request_id, .service_unavailable, "CorruptMetadata", "object metadata requires recovery"),
+        error.OutOfMemory, error.Unavailable => respondError(request, request_id, .service_unavailable, "StorageUnavailable", "storage service is unavailable"),
+    };
+}
+
+fn respondDirectoryError(request: *std.http.Server.Request, request_id: []const u8, err: directory_service.Error) !std.http.Status {
+    return switch (err) {
+        error.InvalidBucketName => respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid"),
+        error.InvalidDirectoryKey => respondError(request, request_id, .bad_request, "InvalidDirectoryKey", "directory key is invalid"),
+        error.BucketNotFound, error.DirectoryNotFound => respondError(request, request_id, .not_found, "NotFound", "directory does not exist"),
+        error.DirectoryNotEmpty => respondError(request, request_id, .conflict, "DirectoryNotEmpty", "directory must be empty before deletion"),
+        error.Conflict => respondError(request, request_id, .conflict, "Conflict", "directory changed concurrently"),
+        error.CorruptMetadata => respondError(request, request_id, .service_unavailable, "CorruptMetadata", "directory metadata requires recovery"),
         error.OutOfMemory, error.Unavailable => respondError(request, request_id, .service_unavailable, "StorageUnavailable", "storage service is unavailable"),
     };
 }
@@ -1616,4 +1759,37 @@ test "management URL components are decoded strictly and object paths are encode
     const encoded = try encodePath(std.testing.allocator, "folder/a b.txt");
     defer std.testing.allocator.free(encoded);
     try std.testing.expectEqualStrings("folder/a%20b.txt", encoded);
+}
+
+test "management object listing query supports bounded search pagination" {
+    var query = try parseListQuery(
+        std.testing.allocator,
+        "/_admin/v1/buckets/photos/objects?search=dir%2F&max_keys=10&continuation_token=token",
+    );
+    defer query.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("dir/", query.search.?);
+    try std.testing.expectEqual(@as(usize, 10), query.max_keys);
+    try std.testing.expectEqualStrings("token", query.continuation_token.?);
+    try std.testing.expectError(
+        error.InvalidQuery,
+        parseListQuery(std.testing.allocator, "/objects?max_keys=1001"),
+    );
+}
+
+test "management version listing only returns files at the current path" {
+    try std.testing.expect(isDirectVersionKey("root.txt", ""));
+    try std.testing.expect(!isDirectVersionKey("images/", ""));
+    try std.testing.expect(!isDirectVersionKey("images/boat.png", ""));
+    try std.testing.expect(isDirectVersionKey("images/boat.png", "images/"));
+    try std.testing.expect(!isDirectVersionKey("images/archive/boat.png", "images/"));
+    try std.testing.expect(!isDirectVersionKey("documents/readme.txt", "images/"));
+}
+
+test "management directory delete query decodes a trailing slash key" {
+    const key = (try parseDirectoryKeyQuery(
+        std.testing.allocator,
+        "/_admin/v1/buckets/test/directories?key=images%2F",
+    )).?;
+    defer std.testing.allocator.free(key);
+    try std.testing.expectEqualStrings("images/", key);
 }

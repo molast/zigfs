@@ -75,7 +75,16 @@ export interface CreatedAccessKey extends AccessKey {
 
 export interface ListObjectsResponse {
   items: ObjectSummary[]
+  common_prefixes?: string[]
+  directories?: DirectorySummary[]
+  is_truncated: boolean
   continuation_token?: string
+}
+
+export interface DirectorySummary {
+  type: 'directory'
+  key: string
+  last_modified: string
 }
 
 export interface PresignObjectResponse {

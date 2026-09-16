@@ -3,6 +3,7 @@ const std = @import("std");
 pub const bucket_store = @import("bucket_store.zig");
 pub const byte_stream = @import("byte_stream.zig");
 pub const credential_store = @import("credential_store.zig");
+pub const directory_store = @import("directory_store.zig");
 pub const metadata_repository = @import("metadata_repository.zig");
 pub const metadata_repository_contract = @import("metadata_repository_contract.zig");
 pub const multipart_data_store = @import("multipart_data_store.zig");

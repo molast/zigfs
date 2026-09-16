@@ -1436,6 +1436,46 @@ test "ZigFS Management API directly serves the Phase 6 contract" {
     defer enable_versioning.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.ok, enable_versioning.status);
 
+    for (0..3) |_| {
+        const create_directory = try sendTestManagementRequest(
+            std.testing.allocator,
+            std.testing.io,
+            address,
+            .POST,
+            "/_admin/v1/buckets/project-assets/directories",
+            token,
+            "{\"key\":\"images/\"}",
+        );
+        defer create_directory.deinit(std.testing.allocator);
+        try std.testing.expectEqual(std.http.Status.created, create_directory.status);
+
+        const delete_directory = try sendTestManagementRequest(
+            std.testing.allocator,
+            std.testing.io,
+            address,
+            .DELETE,
+            "/_admin/v1/buckets/project-assets/directories?key=images%2F",
+            token,
+            "",
+        );
+        defer delete_directory.deinit(std.testing.allocator);
+        try std.testing.expectEqual(std.http.Status.no_content, delete_directory.status);
+
+        const listing = try sendTestManagementRequest(
+            std.testing.allocator,
+            std.testing.io,
+            address,
+            .GET,
+            "/_admin/v1/buckets/project-assets/objects?delimiter=%2F",
+            token,
+            "",
+        );
+        defer listing.deinit(std.testing.allocator);
+        try std.testing.expectEqual(std.http.Status.ok, listing.status);
+        try std.testing.expect(std.mem.indexOf(u8, listing.body, "\"directories\":[]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, listing.body, "\"common_prefixes\":[]") != null);
+    }
+
     const create_key = try sendTestManagementRequest(
         std.testing.allocator,
         std.testing.io,

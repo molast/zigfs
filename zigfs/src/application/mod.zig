@@ -13,6 +13,7 @@ const LocalMetadataRepository = @import("../metadata/local_repository.zig").Loca
 const MetadataBucketStore = @import("../metadata/bucket_store.zig").MetadataBucketStore;
 const MetadataCredentialStore = @import("../metadata/credential_store.zig").MetadataCredentialStore;
 const MetadataObjectStore = @import("../metadata/object_store.zig").MetadataObjectStore;
+const MetadataDirectoryStore = @import("../metadata/directory_store.zig").MetadataDirectoryStore;
 const MetadataMultipartStore = @import("../metadata/multipart_store.zig").MetadataMultipartStore;
 const index_module = @import("../metadata/index.zig");
 const recovery = @import("../metadata/recovery.zig");
@@ -30,6 +31,7 @@ pub const multipart_service = @import("multipart_service.zig");
 pub const management_service = @import("management_service.zig");
 pub const object_service = @import("object_service.zig");
 pub const lifecycle_service = @import("lifecycle_service.zig");
+pub const directory_service = @import("directory_service.zig");
 
 pub const StorageScanReport = struct {
     partition: ?u8,
@@ -59,6 +61,7 @@ pub const Application = struct {
     bucket_store: ?MetadataBucketStore = null,
     credential_store: ?MetadataCredentialStore = null,
     object_store: ?MetadataObjectStore = null,
+    directory_store: ?MetadataDirectoryStore = null,
     multipart_store: ?MetadataMultipartStore = null,
     master_key: ?CredentialMasterKey = null,
     local_object_data: ?LocalObjectDataStore = null,
@@ -109,6 +112,7 @@ pub const Application = struct {
         self.bucket_store = MetadataBucketStore.init(self.local_repository.?.interface());
         self.credential_store = MetadataCredentialStore.init(self.local_repository.?.interface());
         self.object_store = MetadataObjectStore.init(self.local_repository.?.interface());
+        self.directory_store = MetadataDirectoryStore.init(self.local_repository.?.interface());
         self.multipart_store = MetadataMultipartStore.init(self.local_repository.?.interface());
         self.local_object_data = LocalObjectDataStore.init(
             self.allocator,
@@ -281,6 +285,7 @@ pub const Application = struct {
         self.bucket_store = null;
         self.credential_store = null;
         self.object_store = null;
+        self.directory_store = null;
         self.multipart_store = null;
         self.local_object_data = null;
         self.local_multipart_data = null;
@@ -349,6 +354,7 @@ pub const Application = struct {
             store.interface()
         else
             return null;
+        const directories = self.directoryService() orelse return null;
         const data_store = if (self.local_object_data) |*store|
             store.interface()
         else
@@ -371,7 +377,18 @@ pub const Application = struct {
             index,
             &self.state_mutex,
             &self.object_locks,
+            directories,
         );
+    }
+
+    pub fn directoryService(self: *Application) ?directory_service.DirectoryService {
+        if (!self.recovery_state.isReady()) return null;
+        const io = self.io orelse return null;
+        const bucket_store = if (self.bucket_store) |*store| store.interface() else return null;
+        const directory_store = if (self.directory_store) |*store| store.interface() else return null;
+        const object_store = if (self.object_store) |*store| store.interface() else return null;
+        const index = if (self.metadata_index) |*value| value else return null;
+        return directory_service.DirectoryService.init(self.allocator, io, bucket_store, directory_store, object_store, index, &self.state_mutex);
     }
 
     pub fn lifecycleService(self: *Application) ?lifecycle_service.LifecycleService {
@@ -1407,6 +1424,111 @@ test "object listing paginates metadata with a restart-stable bound token" {
     try std.testing.expectEqualStrings("dir2/", second.common_prefixes[0]);
     try std.testing.expect(!second.is_truncated);
     try std.testing.expect(second.next_continuation_token == null);
+}
+
+test "directories can be recreated after deletion and restart" {
+    const test_streams = @import("../testing/streams.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(data_root);
+    const config: Config = .{ .data_root = data_root, .metrics_enabled = false };
+
+    {
+        var app = Application.initWithAllocator(config, std.testing.allocator);
+        defer app.deinit(std.testing.io);
+        try app.initialize(std.testing.io);
+        const bucket = try app.bucketService().?.create("project-assets", "owner-a");
+        bucket.deinit(std.testing.allocator);
+        const directories = app.directoryService().?;
+        var previous_generation: u64 = 0;
+        for (0..3) |_| {
+            const created = try directories.create("project-assets", "images/");
+            defer created.deinit(std.testing.allocator);
+            try std.testing.expect(created.generation > previous_generation);
+            previous_generation = created.generation;
+            const repeated = try directories.create("project-assets", "images/");
+            defer repeated.deinit(std.testing.allocator);
+            try std.testing.expectEqual(created.generation, repeated.generation);
+            try std.testing.expect((try directories.delete("project-assets", "images/")).deleted);
+            try std.testing.expect(!(try directories.delete("project-assets", "images/")).deleted);
+
+            const listed = try app.objectListing().?.list("project-assets", .{ .delimiter = "/" });
+            defer listed.deinit(std.testing.allocator);
+            try std.testing.expectEqual(@as(usize, 0), listed.objects.len);
+            try std.testing.expectEqual(@as(usize, 0), listed.directories.len);
+            try std.testing.expectEqual(@as(usize, 0), listed.common_prefixes.len);
+        }
+
+        const nested = try directories.create("project-assets", "images/nested/");
+        nested.deinit(std.testing.allocator);
+        try std.testing.expectError(error.DirectoryNotEmpty, directories.delete("project-assets", "images/"));
+        try std.testing.expect((try directories.delete("project-assets", "images/nested/")).deleted);
+        try std.testing.expect((try directories.delete("project-assets", "images/")).deleted);
+    }
+
+    var restarted = Application.initWithAllocator(config, std.testing.allocator);
+    defer restarted.deinit(std.testing.io);
+    try restarted.initialize(std.testing.io);
+    try std.testing.expect(restarted.recoveryState().isReady());
+    const directories = restarted.directoryService().?;
+    const nested = try directories.create("project-assets", "images/nested/");
+    nested.deinit(std.testing.allocator);
+    try std.testing.expect((try directories.delete("project-assets", "images/nested/")).deleted);
+    try std.testing.expect((try directories.delete("project-assets", "images/")).deleted);
+
+    // Upload commits must also be able to recreate deleted parent directories.
+    var source = test_streams.SliceSource.init("body");
+    const object = try restarted.objectService().?.put("project-assets", "images/nested/file.txt", source.interface(), .{});
+    object.deinit(std.testing.allocator);
+    try std.testing.expect(restarted.metadata_index.?.directoryGeneration("project-assets", "images/") != null);
+    try std.testing.expect(restarted.metadata_index.?.directoryGeneration("project-assets", "images/nested/") != null);
+    try std.testing.expectError(error.DirectoryNotEmpty, directories.delete("project-assets", "images/nested/"));
+}
+
+test "directory deletion removes a same-key object marker from listings" {
+    const test_streams = @import("../testing/streams.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(data_root);
+    const config: Config = .{ .data_root = data_root, .metrics_enabled = false };
+
+    var app = Application.initWithAllocator(config, std.testing.allocator);
+    defer app.deinit(std.testing.io);
+    try app.initialize(std.testing.io);
+    const bucket = try app.bucketService().?.create("project-assets", "owner-a");
+    defer bucket.deinit(std.testing.allocator);
+    const directory = try app.directoryService().?.create("project-assets", "images/");
+    directory.deinit(std.testing.allocator);
+
+    // A trailing-slash PUT can leave both the typed directory and an object
+    // marker at the same key. Directory deletion must clear both namespaces.
+    var source = test_streams.SliceSource.init("");
+    const marker = try app.objectService().?.put(
+        "project-assets",
+        "images/",
+        source.interface(),
+        .{},
+    );
+    marker.deinit(std.testing.allocator);
+
+    const before = try app.objectListing().?.list("project-assets", .{ .delimiter = "/" });
+    defer before.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), before.common_prefixes.len);
+    try std.testing.expectEqualStrings("images/", before.common_prefixes[0]);
+
+    const deleted = try app.directoryService().?.delete("project-assets", "images/");
+    try std.testing.expect(deleted.deleted);
+
+    const after = try app.objectListing().?.list("project-assets", .{ .delimiter = "/" });
+    defer after.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), after.objects.len);
+    try std.testing.expectEqual(@as(usize, 0), after.common_prefixes.len);
+    try std.testing.expectError(
+        error.ObjectNotFound,
+        app.objectService().?.head("project-assets", "images/"),
+    );
 }
 
 test "object gc retains current data and reclaims old deleted and orphan generations" {
