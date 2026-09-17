@@ -69,7 +69,7 @@ Admin 不直接访问数据目录，也不保存 Bucket、Object、版本、AK/S
 
 ### 本地启动
 
-根目录脚本提供统一菜单：
+根目录脚本提供本地服务菜单：
 
 ```bash
 ./start.sh
@@ -79,7 +79,6 @@ Admin 不直接访问数据目录，也不保存 Bucket、Object、版本、AK/S
 
 1. 启动本地 ZigFS
 2. 启动本地 Admin
-3. Docker 服务
 0. 退出
 
 本地 Admin 只启动本地 Go Admin Server，不会自动启动 ZigFS；使用本地 Admin 前，请先在另一个终端启动 ZigFS。首次启动 Admin 前先安装前端依赖：
@@ -91,7 +90,13 @@ pnpm install
 
 ### Docker Compose 启动
 
-进入 `Docker 服务` 后，可执行：
+Docker 操作已经拆分到独立脚本：
+
+```bash
+./docker.sh
+```
+
+脚本可执行：
 
 - 构建 ZigFS 镜像
 - 构建 Admin 镜像
@@ -99,9 +104,18 @@ pnpm install
 - 通过 Compose 启动 ZigFS
 - 通过 Compose 启动 Admin（自动带起 ZigFS）
 - 停止开发服务
-- 返回上一级
+- 登录 Docker Hub
+- 将 ZigFS、Admin 镜像单独或批量推送到 Docker Hub
 
 Docker 菜单中的启动操作使用 `docker-compose.dev.yml`。启动 Admin 时，Compose 通过 `depends_on` 自动启动 ZigFS，并等待 ZigFS 健康检查通过。启动命令使用 `--no-build`，因此镜像构建和容器启动是两个明确步骤；镜像重新构建后再次启动服务，Compose 会使用新镜像重新创建容器。数据保存在 `zigfs-dev-data` Docker volume 中，容器重建不会删除数据。
+
+推送前先使用菜单登录 Docker Hub。推送时脚本会询问 Docker Hub 用户名或组织名，也可通过环境变量直接指定；远程仓库名分别为 `zigfs` 和 `zigfs-admin`：
+
+```bash
+DOCKERHUB_NAMESPACE=your-name DOCKERHUB_TAG=0.1.0 ./docker.sh
+```
+
+本地构建标签由 `ZIGFS_DOCKER_TAG` 控制，默认是 `0.1.0`；`DOCKERHUB_TAG` 未设置时使用相同版本。推送只会增加 Docker Hub 标签，不会修改 Compose 使用的本地镜像标签。
 
 也可以直接运行 Compose：
 
@@ -282,7 +296,8 @@ node benchmarks/run.mjs
 ├── conformance/            # TypeScript/Web、Swift/iOS 一致性验证
 ├── benchmarks/             # 可复现基准工具
 ├── docker-compose.dev.yml  # 开发 Compose
-├── start.sh                # 本地与 Docker 交互式菜单
+├── start.sh                # 本地服务交互式菜单
+├── docker.sh               # Docker 构建、Compose 与镜像推送菜单
 └── LICENSE                 # Apache License 2.0
 ```
 
