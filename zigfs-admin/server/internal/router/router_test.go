@@ -58,6 +58,17 @@ func (managementService) GetBucketConfiguration(context.Context, string) (contra
 	return contract.BucketConfiguration{Name: "bucket", Versioning: "Unversioned"}, nil
 }
 
+func (managementService) GetBucketUsage(context.Context, string) (contract.BucketUsage, error) {
+	return contract.BucketUsage{}, nil
+}
+func (managementService) GetBucketTags(context.Context, string) (contract.BucketTags, error) {
+	return contract.BucketTags{}, nil
+}
+func (managementService) PutBucketTags(context.Context, string, contract.BucketTags) (contract.BucketTags, error) {
+	return contract.BucketTags{}, nil
+}
+func (managementService) DeleteBucketTags(context.Context, string) error { return nil }
+
 func (managementService) UpdateBucketConfiguration(context.Context, string, contract.UpdateBucketConfigurationRequest) (contract.BucketConfiguration, error) {
 	return contract.BucketConfiguration{Name: "bucket", Versioning: "Enabled"}, nil
 }
@@ -74,7 +85,9 @@ func (managementService) CreateDirectory(context.Context, string, contract.Creat
 	return contract.Directory{}, nil
 }
 
-func (managementService) DeleteDirectory(context.Context, string, contract.CreateDirectoryRequest) error { return nil }
+func (managementService) DeleteDirectory(context.Context, string, contract.CreateDirectoryRequest) error {
+	return nil
+}
 
 func (managementService) PresignObject(context.Context, contract.PresignObjectRequest) (contract.PresignObjectResponse, error) {
 	return contract.PresignObjectResponse{}, nil

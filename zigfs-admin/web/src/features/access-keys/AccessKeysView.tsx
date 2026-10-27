@@ -11,6 +11,7 @@ const fullAccess: CredentialPolicy = {
   bucket_write: true,
   object_read: true,
   object_write: true,
+  bypass_governance_retention: false,
 }
 
 const readOnly: CredentialPolicy = {
@@ -18,6 +19,7 @@ const readOnly: CredentialPolicy = {
   bucket_write: false,
   object_read: true,
   object_write: false,
+  bypass_governance_retention: false,
 }
 
 export function AccessKeysView({ api }: { api: ApiClient }) {
@@ -26,6 +28,7 @@ export function AccessKeysView({ api }: { api: ApiClient }) {
   const showToast = useToast()
   const [keys, setKeys] = useState<AccessKey[]>([])
   const [policy, setPolicy] = useState<'full' | 'read-only'>('full')
+  const [bypassGovernanceRetention, setBypassGovernanceRetention] = useState(false)
   const [kind, setKind] = useState<'permanent' | 'temporary'>('permanent')
   const [ttlSeconds, setTtlSeconds] = useState(3600)
   const [query, setQuery] = useState('')
@@ -77,7 +80,7 @@ export function AccessKeysView({ api }: { api: ApiClient }) {
       setError('')
       setCreateError('')
       const result = await api.createAccessKey(
-        policy === 'full' ? fullAccess : readOnly,
+        { ...(policy === 'full' ? fullAccess : readOnly), bypass_governance_retention: bypassGovernanceRetention },
         kind === 'temporary' ? ttlSeconds : undefined,
       )
       setCreated(result)
@@ -198,6 +201,7 @@ export function AccessKeysView({ api }: { api: ApiClient }) {
               <p className="credential-modal-description">凭证将自动绑定到当前管理员账号，开发阶段会直接显示 AK、SK 和临时 Session Token。</p>
               <div className="credential-modal-fields">
                 <label>Policy<select aria-label="Credential policy" value={policy} onChange={(event) => setPolicy(event.target.value as 'full' | 'read-only')}><option value="full">Full access</option><option value="read-only">Read only</option></select></label>
+                <label className="credential-policy-checkbox"><input type="checkbox" checked={bypassGovernanceRetention} onChange={(event) => setBypassGovernanceRetention(event.target.checked)} disabled={policy !== 'full'} />允许绕过 GOVERNANCE 保留期</label>
                 <label>类型<select aria-label="Credential kind" value={kind} onChange={(event) => setKind(event.target.value as 'permanent' | 'temporary')}><option value="permanent">永久凭证</option><option value="temporary">临时凭证</option></select></label>
                 {kind === 'temporary' && <label>有效期（秒）<input aria-label="Credential TTL" type="number" min={60} max={43200} value={ttlSeconds} onChange={(event) => setTtlSeconds(Number(event.target.value))} required /></label>}
               </div>

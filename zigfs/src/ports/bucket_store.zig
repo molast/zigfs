@@ -22,6 +22,12 @@ pub const Value = struct {
     owner: []const u8,
     status: bucket_domain.Status,
     versioning: bucket_domain.Versioning = .unversioned,
+    access_policy: bucket_domain.AccessPolicy = .private,
+    tags_json: ?[]const u8 = null,
+    encryption: bucket_domain.Encryption = .disabled,
+    quota: bucket_domain.Quota = .{},
+    retention: bucket_domain.Retention = .{},
+    object_locking: bool = false,
     lifecycle_configuration: ?[]const u8 = null,
     created_at_unix_seconds: i64,
 };

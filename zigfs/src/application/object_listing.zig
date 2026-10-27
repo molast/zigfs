@@ -33,6 +33,9 @@ pub const Entry = struct {
     etag_md5: [16]u8,
     etag_part_count: u16,
     last_modified_unix_seconds: i64,
+    retention_until_unix_seconds: ?i64 = null,
+    retention_mode: ?bucket_domain.RetentionMode = null,
+    legal_hold: bool = false,
 
     pub fn deinit(self: Entry, allocator: std.mem.Allocator) void {
         allocator.free(self.key);
@@ -166,6 +169,9 @@ pub const ObjectListingService = struct {
                 .etag_md5 = object.etag_md5,
                 .etag_part_count = object.etag_part_count,
                 .last_modified_unix_seconds = object.last_modified_unix_seconds,
+                .retention_until_unix_seconds = object.retention_until_unix_seconds,
+                .retention_mode = object.retention_mode,
+                .legal_hold = object.legal_hold,
             };
             initialized_objects += 1;
         }

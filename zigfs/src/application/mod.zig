@@ -30,6 +30,9 @@ pub const object_listing = @import("object_listing.zig");
 pub const multipart_service = @import("multipart_service.zig");
 pub const management_service = @import("management_service.zig");
 pub const object_service = @import("object_service.zig");
+pub const object_encryption = @import("object_encryption.zig");
+pub const object_encryption_frames = @import("object_encryption_frames.zig");
+pub const object_encrypted_stream = @import("object_encrypted_stream.zig");
 pub const lifecycle_service = @import("lifecycle_service.zig");
 pub const directory_service = @import("directory_service.zig");
 
@@ -374,6 +377,7 @@ pub const Application = struct {
             object_store,
             data_store,
             multipart_data_store,
+            if (self.master_key) |*master_key| &master_key.bytes else null,
             index,
             &self.state_mutex,
             &self.object_locks,

@@ -5,6 +5,9 @@ const fault_injection = @import("../common/fault_injection.zig");
 const id = @import("../common/id.zig");
 const byte_stream = @import("../ports/byte_stream.zig");
 const data_store_port = @import("../ports/object_data_store.zig");
+const secret_box = @import("../auth/secret_box.zig");
+const encrypted_stream = @import("../application/object_encrypted_stream.zig");
+const encryption_frames = @import("../application/object_encryption_frames.zig");
 
 pub const max_path_length: usize = 192;
 
@@ -40,10 +43,13 @@ pub const LocalObjectDataStore = struct {
         return .{ .context = self, .vtable = &.{
             .cleanup_staged = cleanupStagedImpl,
             .stage = stageImpl,
+            .stage_encrypted = stageEncryptedImpl,
             .publish = publishImpl,
             .discard = discardImpl,
             .stat = statImpl,
             .read = readImpl,
+            .read_encrypted = readEncryptedImpl,
+            .read_encrypted_range = readEncryptedRangeImpl,
             .read_range = readRangeImpl,
             .scan_generations = scanGenerationsImpl,
             .delete_generation = deleteGenerationImpl,
@@ -124,6 +130,47 @@ pub const LocalObjectDataStore = struct {
             .checksum_sha256 = copied.checksum_sha256,
             .checksum_sha1 = copied.checksum_sha1,
             .checksum_crc64nvme = copied.checksum_crc64nvme,
+        };
+    }
+
+    fn stageEncryptedImpl(
+        context: *anyopaque,
+        token: id.Uuid,
+        key: secret_box.Key,
+        associated_data: []const u8,
+        source: byte_stream.Source,
+    ) data_store_port.Error!data_store_port.Staged {
+        const self: *LocalObjectDataStore = @ptrCast(@alignCast(context));
+        if (!id.isValidV4(token)) return error.InvalidValue;
+        var path_buffer: [max_path_length]u8 = undefined;
+        const path = temporaryPath(token, &path_buffer) catch return error.InvalidValue;
+        var file = self.root.createFile(self.io, path, .{ .read = true, .truncate = false, .exclusive = true }) catch |err| switch (err) {
+            error.PathAlreadyExists => return error.Conflict,
+            else => return error.Unavailable,
+        };
+        var keep_file = false;
+        errdefer if (!keep_file) self.root.deleteFile(self.io, path) catch {};
+        defer file.close(self.io);
+        var file_sink: FileSink = .{ .file = file, .io = self.io, .fault_injector = self.fault_injector };
+        const result = encrypted_stream.sealSource(self.allocator, self.io, key, associated_data, source, file_sink.interface()) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.SourceReadFailed => error.SourceReadFailed,
+            error.SinkWriteFailed => error.SinkWriteFailed,
+            error.SizeOverflow => error.InvalidValue,
+            else => error.Unavailable,
+        };
+        file.sync(self.io) catch return error.Unavailable;
+        durable.syncParent(self.root, self.io, path) catch return error.Unavailable;
+        keep_file = true;
+        return .{
+            .token = token,
+            .size = result.plaintext_size,
+            .etag_md5 = result.etag_md5,
+            .checksum_crc32 = result.checksum_crc32,
+            .checksum_crc32c = result.checksum_crc32c,
+            .checksum_sha256 = result.checksum_sha256,
+            .checksum_sha1 = result.checksum_sha1,
+            .checksum_crc64nvme = result.checksum_crc64nvme,
         };
     }
 
@@ -216,6 +263,103 @@ pub const LocalObjectDataStore = struct {
         {
             return error.CorruptData;
         }
+    }
+
+    fn readEncryptedImpl(
+        context: *anyopaque,
+        location: data_store_port.Location,
+        key: secret_box.Key,
+        associated_data: []const u8,
+        plaintext_size: u64,
+        sink: byte_stream.Sink,
+    ) data_store_port.Error!void {
+        const self: *LocalObjectDataStore = @ptrCast(@alignCast(context));
+        if (!validLocation(location)) return error.InvalidValue;
+        var paths: PathSet = undefined;
+        paths.format(location) catch return error.InvalidValue;
+        const file = self.root.openFile(self.io, paths.dataPath(), .{}) catch |err| switch (err) {
+            error.FileNotFound => return error.NotFound,
+            else => return error.Unavailable,
+        };
+        defer file.close(self.io);
+        var source: FileSource = .{ .file = file, .io = self.io };
+        var header: [encryption_frames.header_length]u8 = undefined;
+        var frame_index: u64 = 0;
+        var total: u64 = 0;
+        while (total < plaintext_size or (plaintext_size == 0 and frame_index == 0)) {
+            readExact(source.interface(), &header) catch return error.CorruptData;
+            const decoded = encryption_frames.decodeHeader(&header) catch return error.CorruptData;
+            if (decoded.index != frame_index) return error.CorruptData;
+            const ciphertext = self.allocator.alloc(u8, decoded.ciphertext_length) catch return error.OutOfMemory;
+            defer self.allocator.free(ciphertext);
+            readExact(source.interface(), ciphertext) catch return error.CorruptData;
+            const plaintext = encryption_frames.open(self.allocator, key, associated_data, .{
+                .index = decoded.index,
+                .plaintext_length = decoded.plaintext_length,
+                .nonce = decoded.nonce,
+                .tag = decoded.tag,
+                .ciphertext = ciphertext,
+            }) catch return error.CorruptData;
+            defer {
+                std.crypto.secureZero(u8, plaintext);
+                self.allocator.free(plaintext);
+            }
+            sink.writeAll(plaintext) catch return error.SinkWriteFailed;
+            total = std.math.add(u64, total, decoded.plaintext_length) catch return error.CorruptData;
+            frame_index += 1;
+            if (decoded.plaintext_length < encryption_frames.plaintext_frame_size) break;
+        }
+        if (total != plaintext_size) return error.CorruptData;
+    }
+
+    fn readEncryptedRangeImpl(
+        context: *anyopaque,
+        location: data_store_port.Location,
+        key: secret_box.Key,
+        associated_data: []const u8,
+        plaintext_size: u64,
+        offset: u64,
+        length: u64,
+        sink: byte_stream.Sink,
+    ) data_store_port.Error!void {
+        if (offset > plaintext_size or length > plaintext_size - offset) return error.InvalidValue;
+        const self: *LocalObjectDataStore = @ptrCast(@alignCast(context));
+        if (!validLocation(location)) return error.InvalidValue;
+        var paths: PathSet = undefined;
+        paths.format(location) catch return error.InvalidValue;
+        const file = self.root.openFile(self.io, paths.dataPath(), .{}) catch |err| switch (err) {
+            error.FileNotFound => return error.NotFound,
+            else => return error.Unavailable,
+        };
+        defer file.close(self.io);
+        var source: FileSource = .{ .file = file, .io = self.io };
+        var header: [encryption_frames.header_length]u8 = undefined;
+        var frame_index: u64 = 0;
+        var total: u64 = 0;
+        var remaining = length;
+        while (total < plaintext_size or (plaintext_size == 0 and frame_index == 0)) {
+            readExact(source.interface(), &header) catch return error.CorruptData;
+            const decoded = encryption_frames.decodeHeader(&header) catch return error.CorruptData;
+            if (decoded.index != frame_index) return error.CorruptData;
+            const frame_start = total;
+            const frame_end = total + decoded.plaintext_length;
+            const overlaps = offset < frame_end and offset + length > frame_start;
+            const ciphertext = self.allocator.alloc(u8, decoded.ciphertext_length) catch return error.OutOfMemory;
+            defer self.allocator.free(ciphertext);
+            readExact(source.interface(), ciphertext) catch return error.CorruptData;
+            if (overlaps and remaining != 0) {
+                const plaintext = encryption_frames.open(self.allocator, key, associated_data, .{ .index = decoded.index, .plaintext_length = decoded.plaintext_length, .nonce = decoded.nonce, .tag = decoded.tag, .ciphertext = ciphertext }) catch return error.CorruptData;
+                defer { std.crypto.secureZero(u8, plaintext); self.allocator.free(plaintext); }
+                const from = @max(offset, frame_start) - frame_start;
+                const take = @min(@as(u64, decoded.plaintext_length) - from, remaining);
+                sink.writeAll(plaintext[@intCast(from) .. @intCast(from + take)]) catch return error.SinkWriteFailed;
+                remaining -= take;
+            }
+            total += decoded.plaintext_length;
+            frame_index += 1;
+            if (decoded.plaintext_length < encryption_frames.plaintext_frame_size) break;
+        }
+        if (total != plaintext_size or remaining != 0) return error.CorruptData;
     }
 
     fn readRangeImpl(
@@ -629,6 +773,15 @@ fn mapStageError(err: streaming.Error) data_store_port.Error {
         error.SourceReadFailed => error.SourceReadFailed,
         error.InvalidBufferSize, error.SinkWriteFailed, error.SizeOverflow => error.Unavailable,
     };
+}
+
+fn readExact(source: byte_stream.Source, buffer: []u8) byte_stream.Source.Error!void {
+    var offset: usize = 0;
+    while (offset < buffer.len) {
+        const count = try source.read(buffer[offset..]);
+        if (count == 0 or count > buffer.len - offset) return error.ReadFailed;
+        offset += count;
+    }
 }
 
 fn mapReadError(err: streaming.Error) data_store_port.Error {

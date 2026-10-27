@@ -115,7 +115,7 @@ Docker 菜单中的启动操作使用 `docker-compose.dev.yml`。启动 Admin �
 DOCKERHUB_NAMESPACE=your-name DOCKERHUB_TAG=0.1.0 ./docker.sh
 ```
 
-本地构建标签由 `ZIGFS_DOCKER_TAG` 控制，默认是 `0.1.0`；`DOCKERHUB_TAG` 未设置时使用相同版本。推送只会增加 Docker Hub 标签，不会修改 Compose 使用的本地镜像标签。
+本地构建标签由 `ZIGFS_DOCKER_TAG` 控制，默认是 `0.1.0`；`DOCKERHUB_TAG` 未设置时使用相同版本。推送指定版本标签时，脚本会同时将同一个镜像推送为 `latest`；当 `DOCKERHUB_TAG=latest` 时只推送一次。推送不会修改 Compose 使用的本地镜像标签。
 
 也可以直接运行 Compose：
 

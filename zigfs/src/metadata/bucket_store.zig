@@ -45,12 +45,22 @@ pub const MetadataBucketStore = struct {
             allocator.dupe(u8, configuration) catch return error.OutOfMemory
         else
             null;
+        const owned_tags = if (decoded.tags_json) |tags|
+            allocator.dupe(u8, tags) catch return error.OutOfMemory
+        else
+            null;
         return .{ .active = .{
             .id = decoded.id,
             .name = owned_name,
             .owner = owned_owner,
             .status = decoded.status,
             .versioning = decoded.versioning,
+            .access_policy = decoded.access_policy,
+            .tags_json = owned_tags,
+            .encryption = decoded.encryption,
+            .quota = decoded.quota,
+            .retention = decoded.retention,
+            .object_locking = decoded.object_locking,
             .lifecycle_configuration = owned_lifecycle,
             .created_at_unix_seconds = decoded.created_at_unix_seconds,
             .generation = record.generation,
@@ -70,6 +80,12 @@ pub const MetadataBucketStore = struct {
             .owner = value.owner,
             .status = value.status,
             .versioning = value.versioning,
+            .access_policy = value.access_policy,
+            .tags_json = value.tags_json,
+            .encryption = value.encryption,
+            .quota = value.quota,
+            .retention = value.retention,
+            .object_locking = value.object_locking,
             .lifecycle_configuration = value.lifecycle_configuration,
             .created_at_unix_seconds = value.created_at_unix_seconds,
         }) catch |err| switch (err) {

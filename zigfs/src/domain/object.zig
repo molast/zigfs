@@ -1,5 +1,6 @@
 const std = @import("std");
 const id = @import("../common/id.zig");
+const bucket_domain = @import("bucket.zig");
 
 pub const max_key_length: usize = 1024;
 pub const max_content_type_length: usize = 1024;
@@ -11,6 +12,19 @@ pub const max_multipart_parts: u16 = 10_000;
 
 pub const Status = enum(u8) {
     active = 1,
+};
+
+pub const Encryption = enum(u8) {
+    unencrypted = 0,
+    encrypted = 1,
+};
+
+pub const EncryptionMetadata = struct {
+    wrapped_key_nonce: [12]u8,
+    wrapped_key_tag: [16]u8,
+    wrapped_key: [32]u8,
+    data_nonce: [12]u8,
+    data_tag: [16]u8,
 };
 
 pub const VersionId = union(enum) {
@@ -106,6 +120,11 @@ pub const View = struct {
     multipart_manifest: ?MultipartManifestView = null,
     status: Status,
     version_id: VersionId = .null_version,
+    encryption: Encryption = .unencrypted,
+    encryption_metadata: ?EncryptionMetadata = null,
+    retention_until_unix_seconds: ?i64 = null,
+    retention_mode: ?bucket_domain.RetentionMode = null,
+    legal_hold: bool = false,
 };
 
 pub const Object = struct {
@@ -125,6 +144,11 @@ pub const Object = struct {
     status: Status,
     metadata_generation: u64,
     version_id: VersionId = .null_version,
+    encryption: Encryption = .unencrypted,
+    encryption_metadata: ?EncryptionMetadata = null,
+    retention_until_unix_seconds: ?i64 = null,
+    retention_mode: ?bucket_domain.RetentionMode = null,
+    legal_hold: bool = false,
 
     pub fn deinit(self: Object, allocator: std.mem.Allocator) void {
         allocator.free(self.bucket_name);
@@ -152,6 +176,11 @@ pub const Object = struct {
             .multipart_manifest = if (self.multipart_manifest) |manifest| manifest.view() else null,
             .status = self.status,
             .version_id = self.version_id,
+            .encryption = self.encryption,
+            .encryption_metadata = self.encryption_metadata,
+            .retention_until_unix_seconds = self.retention_until_unix_seconds,
+            .retention_mode = self.retention_mode,
+            .legal_hold = self.legal_hold,
         };
     }
 };
@@ -202,6 +231,11 @@ pub fn cloneFromView(
         .status = source.status,
         .metadata_generation = metadata_generation,
         .version_id = source.version_id,
+        .encryption = source.encryption,
+        .encryption_metadata = source.encryption_metadata,
+        .retention_until_unix_seconds = source.retention_until_unix_seconds,
+        .retention_mode = source.retention_mode,
+        .legal_hold = source.legal_hold,
     };
 }
 

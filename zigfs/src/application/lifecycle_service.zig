@@ -309,6 +309,7 @@ test "lifecycle scanner expires noncurrent versions and sole delete markers" {
         object_store.interface(),
         data_store.interface(),
         null,
+        null,
         &index,
         &state_mutex,
         &object_locks,

@@ -118,6 +118,9 @@ pub fn serveRequest(
         return respondError(request, allocator, .authorization_header_malformed, request_id);
     };
     const uses_presigned_auth = sigv4.hasPresignedParameters(raw_target);
+    if (authorization_header == null and !uses_presigned_auth) {
+        return serveAnonymousRead(request, application, parsed, headers.items, request_id);
+    }
     if (uses_presigned_auth and authorization_header != null) {
         return respondError(request, allocator, .invalid_request, request_id);
     }
@@ -249,6 +252,7 @@ pub fn serveRequest(
             parsed,
             auth_material.owner,
             headers.items,
+            auth_material.policy.bypass_governance_retention,
             request_id,
         ),
         .list_objects_v2 => serveListObjects(
@@ -302,6 +306,8 @@ pub fn serveRequest(
             application,
             parsed,
             auth_material.owner,
+            headers.items,
+            auth_material.policy.bypass_governance_retention,
             payload_hash,
             request_id,
         ),
@@ -351,6 +357,34 @@ pub fn serveRequest(
         ),
         .post_policy_upload => respondError(request, allocator, .invalid_request, request_id),
         .unsupported => respondError(request, allocator, .not_implemented, request_id),
+    };
+}
+
+fn serveAnonymousRead(
+    request: *std.http.Server.Request,
+    application: *Application,
+    parsed: protocol.ParsedTarget,
+    headers: []const sigv4.Header,
+    request_id: []const u8,
+) !std.http.Status {
+    const bucket_name = parsed.bucket orelse return respondError(request, application.allocator, .access_denied, request_id);
+    const bucket_service_instance = application.bucketService() orelse return respondError(request, application.allocator, .service_unavailable, request_id);
+    const bucket = bucket_service_instance.head(bucket_name) catch |err| return respondError(request, application.allocator, mapBucketError(err), request_id);
+    const allows_object_read = bucket.access_policy == .readonly or bucket.access_policy == .public;
+    const allows_listing = bucket.access_policy == .public;
+    const operation = parsed.operation;
+    const allowed = switch (operation) {
+        .get_object, .head_object => allows_object_read,
+        .list_objects_v2 => allows_listing,
+        else => false,
+    };
+    bucket.deinit(application.allocator);
+    if (!allowed) return respondError(request, application.allocator, .access_denied, request_id);
+    return switch (operation) {
+        .get_object => serveGetObject(request, application, parsed, "", headers, .unsigned, request_id),
+        .head_object => serveHeadObject(request, application, parsed, "", headers, request_id),
+        .list_objects_v2 => serveListObjects(request, application, parsed, "", headers, request_id),
+        else => unreachable,
     };
 }
 
@@ -1949,11 +1983,18 @@ fn serveHeadObject(
     return .ok;
 }
 
+fn governanceBypassRequestedFromHeaders(headers: []const sigv4.Header) bool {
+    const value = singleHeader(headers, "x-amz-bypass-governance-retention") catch null;
+    return if (value) |header| std.ascii.eqlIgnoreCase(header, "true") else false;
+}
+
 fn serveDeleteObject(
     request: *std.http.Server.Request,
     application: *Application,
     parsed: protocol.ParsedTarget,
     owner: []const u8,
+    headers: []const sigv4.Header,
+    bypass_governance_retention: bool,
     payload_hash: sigv4.PayloadHash,
     request_id: []const u8,
 ) !std.http.Status {
@@ -1972,10 +2013,11 @@ fn serveDeleteObject(
     const requested_version = parseRequestedVersion(parsed) catch {
         return respondError(request, application.allocator, .invalid_argument, request_id);
     };
+    const bypass_requested = governanceBypassRequestedFromHeaders(headers) and bypass_governance_retention;
     const result = (if (requested_version) |version|
-        objects.deleteVersion(bucket_name, key, version)
+        objects.deleteVersionWithGovernanceBypass(bucket_name, key, version, bypass_requested)
     else
-        objects.delete(bucket_name, key)) catch |err| {
+        objects.deleteWithGovernanceBypass(bucket_name, key, bypass_requested)) catch |err| {
         return respondError(request, application.allocator, mapObjectError(err), request_id);
     };
     var version_buffer: [object_domain.VersionId.encoded_length]u8 = undefined;
@@ -2341,6 +2383,7 @@ fn serveDeleteObjects(
     parsed: protocol.ParsedTarget,
     owner: []const u8,
     headers: []const sigv4.Header,
+    bypass_governance_retention: bool,
     request_id: []const u8,
 ) !std.http.Status {
     const delete_query = parsed.query("delete") catch {
@@ -2434,8 +2477,9 @@ fn serveDeleteObjects(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" ++
             "<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">",
     ) catch return respondError(request, application.allocator, .internal_error, request_id);
+    const bypass_requested = governanceBypassRequestedFromHeaders(headers) and bypass_governance_retention;
     for (delete_request.keys) |key| {
-        _ = objects.delete(parsed.bucket.?, key) catch |err| {
+        _ = objects.deleteWithGovernanceBypass(parsed.bucket.?, key, bypass_requested) catch |err| {
             const descriptor = protocol.describe(mapObjectError(err));
             writer.writeAll("<Error><Key>") catch {
                 return respondError(request, application.allocator, .internal_error, request_id);
@@ -2475,7 +2519,12 @@ fn ensureBucketOwner(
 ) bucket_service.Error!@import("../domain/bucket.zig").Bucket {
     const buckets = application.bucketService() orelse return error.Unavailable;
     const bucket = try buckets.head(bucket_name);
-    if (!std.mem.eql(u8, bucket.owner, owner)) {
+    if (owner.len == 0) {
+        if (bucket.access_policy == .private) {
+            bucket.deinit(application.allocator);
+            return error.InvalidOwner;
+        }
+    } else if (!std.mem.eql(u8, bucket.owner, owner)) {
         bucket.deinit(application.allocator);
         return error.InvalidOwner;
     }
@@ -3734,6 +3783,8 @@ fn mapBucketError(err: bucket_service.Error) protocol.ErrorKind {
         error.BucketNotFound => .no_such_bucket,
         error.BucketAlreadyExists => .bucket_already_exists,
         error.BucketNotEmpty => .bucket_not_empty,
+        error.RetentionChangeRejected => .invalid_argument,
+        error.ObjectLockingRequiresVersioning, error.ObjectLockingCannotDisable => .invalid_argument,
         error.Unavailable => .service_unavailable,
         error.OutOfMemory,
         error.Conflict,
@@ -3757,6 +3808,9 @@ fn mapObjectError(err: object_service.Error) protocol.ErrorKind {
         error.ObjectNotFound => .no_such_key,
         error.DeleteMarker => .no_such_key,
         error.ChecksumMismatch => .bad_digest,
+        error.QuotaExceeded => .quota_exceeded,
+        error.RetentionActive => .retention_active,
+        error.ObjectLocked => .retention_active,
         error.ConditionNotMet => .precondition_failed,
         error.Unavailable => .service_unavailable,
         error.OutOfMemory,

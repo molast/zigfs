@@ -34,6 +34,19 @@ func (service *Management) GetBucketConfiguration(ctx context.Context, name stri
 	return service.zig.GetBucketConfiguration(ctx, name)
 }
 
+func (service *Management) GetBucketUsage(ctx context.Context, name string) (contract.BucketUsage, error) {
+	return service.zig.GetBucketUsage(ctx, name)
+}
+func (service *Management) GetBucketTags(ctx context.Context, name string) (contract.BucketTags, error) {
+	return service.zig.GetBucketTags(ctx, name)
+}
+func (service *Management) PutBucketTags(ctx context.Context, name string, tags contract.BucketTags) (contract.BucketTags, error) {
+	return service.zig.PutBucketTags(ctx, name, tags)
+}
+func (service *Management) DeleteBucketTags(ctx context.Context, name string) error {
+	return service.zig.DeleteBucketTags(ctx, name)
+}
+
 func (service *Management) UpdateBucketConfiguration(ctx context.Context, name string, request contract.UpdateBucketConfigurationRequest) (contract.BucketConfiguration, error) {
 	return service.zig.UpdateBucketConfiguration(ctx, name, request)
 }

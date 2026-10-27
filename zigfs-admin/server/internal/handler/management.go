@@ -14,6 +14,10 @@ type ManagementService interface {
 	CreateBucket(ctx context.Context, request contract.CreateBucketRequest) (contract.Bucket, error)
 	DeleteBucket(ctx context.Context, name string) error
 	GetBucketConfiguration(ctx context.Context, name string) (contract.BucketConfiguration, error)
+	GetBucketUsage(ctx context.Context, name string) (contract.BucketUsage, error)
+	GetBucketTags(ctx context.Context, name string) (contract.BucketTags, error)
+	PutBucketTags(ctx context.Context, name string, tags contract.BucketTags) (contract.BucketTags, error)
+	DeleteBucketTags(ctx context.Context, name string) error
 	UpdateBucketConfiguration(ctx context.Context, name string, request contract.UpdateBucketConfigurationRequest) (contract.BucketConfiguration, error)
 	ListObjectVersions(ctx context.Context, bucket, prefix string) (contract.ListObjectVersionsResponse, error)
 	ListObjects(ctx context.Context, bucket, prefix, search, cursor, maxKeys, delimiter string) (contract.ListObjectsResponse, error)
@@ -82,6 +86,43 @@ func (handler *Management) GetBucketConfiguration(ctx *gin.Context) {
 		return
 	}
 	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) GetBucketUsage(ctx *gin.Context) {
+	response, err := handler.service.GetBucketUsage(ctx.Request.Context(), ctx.Param("name"))
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+func (handler *Management) GetBucketTags(ctx *gin.Context) {
+	response, err := handler.service.GetBucketTags(ctx.Request.Context(), ctx.Param("name"))
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+func (handler *Management) PutBucketTags(ctx *gin.Context) {
+	var request contract.BucketTags
+	if err := ctx.ShouldBindJSON(&request); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "request body is invalid")
+		return
+	}
+	response, err := handler.service.PutBucketTags(ctx.Request.Context(), ctx.Param("name"), request)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+func (handler *Management) DeleteBucketTags(ctx *gin.Context) {
+	if err := handler.service.DeleteBucketTags(ctx.Request.Context(), ctx.Param("name")); err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.Status(http.StatusNoContent)
 }
 
 func (handler *Management) UpdateBucketConfiguration(ctx *gin.Context) {

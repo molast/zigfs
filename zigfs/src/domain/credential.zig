@@ -38,6 +38,7 @@ pub const Policy = struct {
     bucket_write: bool = true,
     object_read: bool = true,
     object_write: bool = true,
+    bypass_governance_retention: bool = false,
 
     pub const all: Policy = .{};
     pub const read_only: Policy = .{
@@ -58,16 +59,18 @@ pub const Policy = struct {
         return @as(u16, @intFromBool(self.bucket_read)) |
             (@as(u16, @intFromBool(self.bucket_write)) << 1) |
             (@as(u16, @intFromBool(self.object_read)) << 2) |
-            (@as(u16, @intFromBool(self.object_write)) << 3);
+            (@as(u16, @intFromBool(self.object_write)) << 3) |
+            (@as(u16, @intFromBool(self.bypass_governance_retention)) << 4);
     }
 
     pub fn fromBits(bits: u16) error{InvalidPolicy}!Policy {
-        if (bits & ~@as(u16, 0x0f) != 0) return error.InvalidPolicy;
+        if (bits & ~@as(u16, 0x1f) != 0) return error.InvalidPolicy;
         return .{
             .bucket_read = bits & 0x01 != 0,
             .bucket_write = bits & 0x02 != 0,
             .object_read = bits & 0x04 != 0,
             .object_write = bits & 0x08 != 0,
+            .bypass_governance_retention = bits & 0x10 != 0,
         };
     }
 };
@@ -201,7 +204,7 @@ test "credential policy maps bucket and object permissions" {
     try std.testing.expect(Policy.read_only.allows(.get_object));
     try std.testing.expect(!Policy.read_only.allows(.delete_object));
     try std.testing.expectEqual(Policy.all, try Policy.fromBits(Policy.all.toBits()));
-    try std.testing.expectError(error.InvalidPolicy, Policy.fromBits(0x10));
+    try std.testing.expect((try Policy.fromBits(0x10)).bypass_governance_retention);
 }
 
 test "credential validation rejects unsafe identifiers" {

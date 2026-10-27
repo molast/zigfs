@@ -1,5 +1,7 @@
 const id = @import("../common/id.zig");
 const byte_stream = @import("byte_stream.zig");
+const secret_box = @import("../auth/secret_box.zig");
+const object_domain = @import("../domain/object.zig");
 
 pub const Location = struct {
     bucket_id: id.Uuid,
@@ -16,6 +18,7 @@ pub const Staged = struct {
     checksum_sha256: [32]u8,
     checksum_sha1: [20]u8,
     checksum_crc64nvme: u64,
+    encryption_metadata: ?object_domain.EncryptionMetadata = null,
 };
 
 pub const Integrity = struct {
@@ -59,6 +62,13 @@ pub const ObjectDataStore = struct {
             token: id.Uuid,
             source: byte_stream.Source,
         ) Error!Staged,
+        stage_encrypted: *const fn (
+            context: *anyopaque,
+            token: id.Uuid,
+            key: secret_box.Key,
+            associated_data: []const u8,
+            source: byte_stream.Source,
+        ) Error!Staged,
         publish: *const fn (
             context: *anyopaque,
             staged: Staged,
@@ -70,6 +80,24 @@ pub const ObjectDataStore = struct {
             context: *anyopaque,
             location: Location,
             integrity: Integrity,
+            sink: byte_stream.Sink,
+        ) Error!void,
+        read_encrypted: *const fn (
+            context: *anyopaque,
+            location: Location,
+            key: secret_box.Key,
+            associated_data: []const u8,
+            plaintext_size: u64,
+            sink: byte_stream.Sink,
+        ) Error!void,
+        read_encrypted_range: *const fn (
+            context: *anyopaque,
+            location: Location,
+            key: secret_box.Key,
+            associated_data: []const u8,
+            plaintext_size: u64,
+            offset: u64,
+            length: u64,
             sink: byte_stream.Sink,
         ) Error!void,
         read_range: *const fn (
@@ -102,6 +130,16 @@ pub const ObjectDataStore = struct {
         return self.vtable.stage(self.context, token, source);
     }
 
+    pub fn stageEncrypted(
+        self: ObjectDataStore,
+        token: id.Uuid,
+        key: secret_box.Key,
+        associated_data: []const u8,
+        source: byte_stream.Source,
+    ) Error!Staged {
+        return self.vtable.stage_encrypted(self.context, token, key, associated_data, source);
+    }
+
     pub fn publish(
         self: ObjectDataStore,
         staged: Staged,
@@ -125,6 +163,21 @@ pub const ObjectDataStore = struct {
         sink: byte_stream.Sink,
     ) Error!void {
         return self.vtable.read(self.context, location, integrity, sink);
+    }
+
+    pub fn readEncrypted(
+        self: ObjectDataStore,
+        location: Location,
+        key: secret_box.Key,
+        associated_data: []const u8,
+        plaintext_size: u64,
+        sink: byte_stream.Sink,
+    ) Error!void {
+        return self.vtable.read_encrypted(self.context, location, key, associated_data, plaintext_size, sink);
+    }
+
+    pub fn readEncryptedRange(self: ObjectDataStore, location: Location, key: secret_box.Key, associated_data: []const u8, plaintext_size: u64, offset: u64, length: u64, sink: byte_stream.Sink) Error!void {
+        return self.vtable.read_encrypted_range(self.context, location, key, associated_data, plaintext_size, offset, length, sink);
     }
 
     pub fn readRange(

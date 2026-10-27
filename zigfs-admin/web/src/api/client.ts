@@ -4,6 +4,7 @@ import type {
   ApiErrorBody,
   Bucket,
   BucketConfiguration,
+  BucketUsage,
   CreatedAccessKey,
   CredentialPolicy,
   ListObjectsResponse,
@@ -97,9 +98,11 @@ export function createApiClient() {
       request<void>(`/api/v1/buckets/${encodeURIComponent(name)}`, { method: 'DELETE' }),
     getBucketConfiguration: (name: string) =>
       request<BucketConfiguration>(`/api/v1/buckets/${encodeURIComponent(name)}/configuration`),
+    getBucketUsage: (name: string) =>
+      request<BucketUsage>(`/api/v1/buckets/${encodeURIComponent(name)}/usage`),
     updateBucketConfiguration: (
       name: string,
-      update: { versioning?: 'Enabled' | 'Suspended'; lifecycle_configuration?: string; clear_lifecycle?: boolean },
+      update: { versioning?: 'Enabled' | 'Suspended'; access_policy?: 'Private' | 'Readonly' | 'Public'; tags_json?: string; clear_tags?: boolean; encryption?: 'Disabled' | 'Enabled'; max_bytes?: number; max_objects?: number; retention_enabled?: boolean; retention_duration_seconds?: number; retention_mode?: 'GOVERNANCE' | 'COMPLIANCE'; object_locking?: boolean; replication_enabled?: boolean; lifecycle_configuration?: string; clear_lifecycle?: boolean },
     ) => request<BucketConfiguration>(`/api/v1/buckets/${encodeURIComponent(name)}/configuration`, {
       method: 'PATCH',
       body: JSON.stringify(update),

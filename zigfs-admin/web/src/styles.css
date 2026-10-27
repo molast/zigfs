@@ -338,29 +338,29 @@ td small { display: block; margin-top: 3px; color: var(--text-muted); font-size:
 .bucket-link { font-size: 12px; }
 .bucket-cell { display: flex; align-items: center; gap: 10px; }
 .bucket-symbol { width: 16px; height: 16px; flex: 0 0 auto; color: var(--text-muted); stroke-width: 1.8; }
-.bucket-detail-header { min-height: 104px; margin-bottom: 22px; padding-bottom: 22px; display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; border-bottom: 1px solid var(--border); }
+.bucket-detail-header { min-height: 78px; margin-bottom: 16px; padding-bottom: 16px; display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; border-bottom: 1px solid var(--border); }
 .bucket-detail-header > div:first-child, .bucket-identity > div { min-width: 0; }
-.bucket-identity { display: flex; align-items: center; gap: 15px; }
-.bucket-identity-icon { width: 54px; height: 54px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid var(--border-strong); border-radius: 5px; color: var(--accent-strong); background: var(--accent-soft); }
-.bucket-identity-icon svg { width: 27px; height: 27px; stroke-width: 1.7; }
-.bucket-identity h2 { margin: 0; font-size: 24px; line-height: 1.2; overflow-wrap: anywhere; }
-.bucket-identity p { margin: 7px 0 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 18px; color: var(--text-muted); font-size: 12px; }
+.bucket-identity { display: flex; align-items: center; gap: 11px; }
+.bucket-identity-icon { width: 42px; height: 42px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid var(--border-strong); border-radius: 5px; color: var(--accent-strong); background: var(--accent-soft); }
+.bucket-identity-icon svg { width: 22px; height: 22px; stroke-width: 1.7; }
+.bucket-identity h2 { margin: 0; font-size: 20px; line-height: 1.2; overflow-wrap: anywhere; }
+.bucket-identity p { margin: 4px 0 0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; color: var(--text-muted); font-size: 11px; }
 .bucket-identity p strong { color: var(--text); }
-.bucket-detail-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
-.bucket-detail-actions .bucket-objects-button { width: 38px; height: 38px; color: var(--accent-strong); border-color: var(--accent); background: var(--accent-soft); }
+.bucket-detail-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+.bucket-detail-actions .bucket-objects-button { width: 34px; height: 34px; color: var(--accent-strong); border-color: var(--accent); background: var(--accent-soft); }
 .bucket-detail-actions .bucket-objects-button:hover { color: #ffffff; background: var(--accent); }
-.bucket-settings-panel { min-height: 560px; display: grid; grid-template-columns: 220px minmax(0, 1fr); overflow: hidden; }
+.bucket-settings-panel { min-height: 480px; display: grid; grid-template-columns: 220px minmax(0, 1fr); overflow: hidden; }
 .bucket-settings-nav { display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--surface-subtle); }
 .bucket-settings-nav button { min-height: 54px; padding: 0 20px; border: 0; border-bottom: 1px solid var(--border); color: var(--text-muted); background: transparent; text-align: left; font-size: 12px; font-weight: 600; }
 .bucket-settings-nav button.active { color: var(--text); background: var(--surface); box-shadow: inset 3px 0 0 var(--accent); }
 .bucket-settings-nav button:disabled:not(.active) { cursor: not-allowed; opacity: .58; }
-.bucket-settings-content { min-width: 0; padding: 26px 30px 32px; }
-.bucket-settings-title { min-height: 50px; padding-bottom: 18px; display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--border); }
-.bucket-settings-title h3 { margin: 0; font-size: 17px; }
+.bucket-settings-content { min-width: 0; padding: 18px 22px 24px; }
+.bucket-settings-title { min-height: 40px; padding-bottom: 12px; display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--border); }
+.bucket-settings-title h3 { margin: 0; font-size: 15px; }
 .bucket-settings-title > span { color: var(--text-muted); font-size: 10px; }
 .bucket-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.bucket-setting-item, .bucket-usage { min-width: 0; min-height: 138px; padding: 22px 20px; border-bottom: 1px solid var(--border); }
-.bucket-setting-item { display: flex; flex-direction: column; align-items: flex-start; gap: 11px; }
+.bucket-setting-item, .bucket-usage { min-width: 0; min-height: 104px; padding: 15px 16px; border-bottom: 1px solid var(--border); }
+.bucket-setting-item { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
 .bucket-setting-label { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 12px; font-weight: 700; }
 .bucket-setting-label svg { width: 16px; height: 16px; color: var(--text-muted); stroke-width: 1.8; }
 .bucket-setting-value { display: flex; align-items: center; gap: 8px; }
@@ -370,16 +370,38 @@ td small { display: block; margin-top: 3px; color: var(--text-muted); font-size:
 .bucket-setting-edit svg { width: 13px; height: 13px; }
 .bucket-setting-item small { color: var(--text-faint); font-size: 10px; }
 .bucket-tags-setting .secondary-button { min-height: 30px; padding-inline: 9px; }
-.bucket-usage { display: flex; align-items: center; gap: 16px; }
-.bucket-usage > svg { width: 40px; height: 40px; flex: 0 0 auto; color: var(--accent-strong); stroke-width: 1.7; }
-.bucket-usage div { min-width: 0; display: grid; gap: 5px; }
+.bucket-tags-list { width: 100%; display: grid; gap: 4px; }
+.bucket-tag-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 24px; align-items: center; gap: 6px; font-size: 10px; }
+.bucket-tag-row span, .bucket-tag-row b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bucket-tag-row span { color: var(--text-muted); }
+.bucket-tag-row b { color: var(--text); font-weight: 650; }
+.bucket-tag-row button { width: 24px; height: 24px; padding: 0; display: grid; place-items: center; border: 0; color: var(--text-faint); background: transparent; }
+.bucket-tag-row button:hover { color: var(--danger); }
+.bucket-tag-row button svg { width: 13px; height: 13px; }
+.bucket-tags-editor { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 5px; }
+.bucket-tags-editor input { min-width: 0; width: 100%; min-height: 30px; padding: 4px 7px; font-size: 10px; }
+.bucket-tags-editor .secondary-button { min-height: 30px; padding-inline: 8px; }
+.bucket-tags-save { min-height: 30px; padding-inline: 10px; font-size: 11px; }
+.bucket-access-policy-setting select { width: min(180px, 100%); min-height: 32px; padding-block: 4px; font-size: 12px; }
+.bucket-encryption-setting select { width: min(180px, 100%); min-height: 32px; padding-block: 4px; font-size: 12px; }
+.bucket-usage { display: flex; align-items: center; gap: 12px; }
+.bucket-usage > svg { width: 34px; height: 34px; flex: 0 0 auto; color: var(--accent-strong); stroke-width: 1.7; }
+.bucket-usage div { min-width: 0; display: grid; gap: 3px; }
 .bucket-usage span, .bucket-usage small { color: var(--text-muted); font-size: 10px; }
-.bucket-usage strong { overflow-wrap: anywhere; font-size: 20px; font-weight: 650; }
-.bucket-settings-section { padding-top: 24px; }
-.bucket-settings-section > h3 { margin: 0; padding-bottom: 13px; border-bottom: 1px solid var(--border); font-size: 16px; }
+.bucket-usage strong { overflow-wrap: anywhere; font-size: 18px; font-weight: 650; }
+.bucket-settings-section { padding-top: 18px; }
+.bucket-settings-section > h3 { margin: 0; padding-bottom: 9px; border-bottom: 1px solid var(--border); font-size: 14px; }
 .bucket-settings-section-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.bucket-settings-section-grid .bucket-setting-item { min-height: 126px; }
+.bucket-settings-section-grid .bucket-setting-item { min-height: 102px; }
 .bucket-settings-section-grid .bucket-setting-item:nth-child(odd) { border-right: 1px solid var(--border); }
+.bucket-retention-setting { grid-column: 1 / -1; }
+.bucket-inline-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11px; }
+.bucket-inline-toggle input { margin: 0; accent-color: var(--accent); }
+.bucket-retention-controls { width: min(520px, 100%); display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.bucket-retention-controls label { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 10px; }
+.bucket-retention-controls input, .bucket-retention-controls select { min-height: 29px; border: 1px solid var(--border-strong); border-radius: 3px; background: var(--surface); color: var(--text); font-size: 11px; }
+.bucket-retention-controls input { width: 100px; padding: 4px 7px; }
+.bucket-retention-controls select { min-width: 132px; padding: 4px 7px; }
 .bucket-versioning-control { justify-content: center; }
 .segmented-control {
   min-height: 34px;
@@ -494,6 +516,7 @@ td small { display: block; margin-top: 3px; color: var(--text-muted); font-size:
 }
 .status-badge.enabled, .status-badge.latest { color: var(--success); border-color: color-mix(in srgb, var(--success) 38%, var(--border)); background: var(--success-soft); }
 .status-badge.delete-marker { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 36%, var(--border)); background: var(--danger-soft); }
+.status-badge.locked { color: var(--accent-strong); border-color: color-mix(in srgb, var(--accent) 38%, var(--border)); background: var(--accent-soft); }
 .credential-values { max-width: 430px; display: grid; gap: 4px; }
 .credential-values code { white-space: normal; overflow-wrap: anywhere; color: var(--text-muted); font-size: 10px; }
 

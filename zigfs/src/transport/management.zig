@@ -33,6 +33,7 @@ pub const routes = [_]Route{
     .{ .method = .delete, .path = "/_admin/v1/buckets/:name" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/configuration" },
     .{ .method = .patch, .path = "/_admin/v1/buckets/:name/configuration" },
+    .{ .method = .get, .path = "/_admin/v1/buckets/:name/usage" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/versions" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/objects" },
     .{ .method = .post, .path = "/_admin/v1/buckets/:name/directories" },
@@ -82,6 +83,27 @@ pub fn serveRequest(
                 .PATCH => serveUpdateBucketConfiguration(request, application, request_id, raw_name),
                 else => respondMethodNotAllowed(request, request_id, "GET, PATCH"),
             };
+        }
+        if (std.mem.endsWith(u8, resource, "/usage")) {
+            if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
+            const raw_name = resource[0 .. resource.len - "/usage".len];
+            if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '/') != null) return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+            return serveGetBucketUsage(request, application, request_id, raw_name);
+        }
+        if (std.mem.endsWith(u8, resource, "/tags")) {
+            const raw_name = resource[0 .. resource.len - "/tags".len];
+            if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '/') != null) return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+            return switch (request.head.method) {
+                .GET => serveGetBucketTags(request, application, request_id, raw_name),
+                .PUT => servePutBucketTags(request, application, request_id, raw_name),
+                .DELETE => serveDeleteBucketTags(request, application, request_id, raw_name),
+                else => respondMethodNotAllowed(request, request_id, "GET, PUT, DELETE"),
+            };
+        }
+        if (std.mem.endsWith(u8, resource, "/legal-hold")) {
+            if (request.head.method != .PATCH) return respondMethodNotAllowed(request, request_id, "PATCH");
+            const raw_name = resource[0 .. resource.len - "/legal-hold".len];
+            return serveSetLegalHold(request, application, request_id, raw_name);
         }
         if (std.mem.endsWith(u8, resource, "/versions")) {
             if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
@@ -281,9 +303,85 @@ fn serveDeleteBucket(
 
 const UpdateBucketConfigurationRequest = struct {
     versioning: ?[]const u8 = null,
+    access_policy: ?[]const u8 = null,
+    tags_json: ?[]const u8 = null,
+    clear_tags: bool = false,
+    encryption: ?[]const u8 = null,
+    max_bytes: ?u64 = null,
+    max_objects: ?u64 = null,
+    retention_enabled: ?bool = null,
+    retention_duration_seconds: ?u64 = null,
+    retention_mode: ?[]const u8 = null,
+    object_locking: ?bool = null,
+    replication_enabled: ?bool = null,
     lifecycle_configuration: ?[]const u8 = null,
     clear_lifecycle: bool = false,
 };
+
+const LegalHoldRequest = struct { key: []const u8, version_id: []const u8, enabled: bool };
+
+const TagsRequest = struct { tags_json: []const u8 };
+
+fn serveGetBucketTags(request: *std.http.Server.Request, application: *Application, request_id: []const u8, raw_name: []const u8) !std.http.Status {
+    const name = decodeComponent(application.allocator, raw_name, false) catch return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+    defer application.allocator.free(name);
+    const service = application.bucketService() orelse return respondNotReady(request, request_id);
+    const bucket = service.head(name) catch |err| return respondBucketError(request, request_id, err);
+    defer bucket.deinit(application.allocator);
+    return respondJson(request, request_id, .ok, .{ .tags_json = bucket.tags_json });
+}
+
+fn servePutBucketTags(request: *std.http.Server.Request, application: *Application, request_id: []const u8, raw_name: []const u8) !std.http.Status {
+    const name = decodeComponent(application.allocator, raw_name, false) catch return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+    defer application.allocator.free(name);
+    const parsed = try parseJsonBody(TagsRequest, request, application.allocator, request_id) orelse return .bad_request;
+    defer parsed.deinit();
+    const json = std.json.parseFromSlice(std.json.Value, application.allocator, parsed.value.tags_json, .{}) catch return respondError(request, request_id, .bad_request, "InvalidTags", "tags_json must be valid JSON");
+    defer json.deinit();
+    if (json.value != .object) return respondError(request, request_id, .bad_request, "InvalidTags", "tags_json must be an object");
+    const service = application.bucketService() orelse return respondNotReady(request, request_id);
+    const bucket = service.setTags(name, parsed.value.tags_json) catch |err| return respondBucketError(request, request_id, err);
+    defer bucket.deinit(application.allocator);
+    return respondJson(request, request_id, .ok, .{ .tags_json = bucket.tags_json });
+}
+
+fn serveDeleteBucketTags(request: *std.http.Server.Request, application: *Application, request_id: []const u8, raw_name: []const u8) !std.http.Status {
+    const name = decodeComponent(application.allocator, raw_name, false) catch return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+    defer application.allocator.free(name);
+    const service = application.bucketService() orelse return respondNotReady(request, request_id);
+    const bucket = service.setTags(name, null) catch |err| return respondBucketError(request, request_id, err);
+    bucket.deinit(application.allocator);
+    return respondNoContent(request, request_id);
+}
+
+fn serveSetLegalHold(request: *std.http.Server.Request, application: *Application, request_id: []const u8, raw_name: []const u8) !std.http.Status {
+    const name = decodeComponent(application.allocator, raw_name, false) catch return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+    defer application.allocator.free(name);
+    const parsed = try parseJsonBody(LegalHoldRequest, request, application.allocator, request_id) orelse return .bad_request;
+    defer parsed.deinit();
+    const version_id = @import("../domain/object.zig").parseVersionId(parsed.value.version_id) catch return respondError(request, request_id, .bad_request, "InvalidVersionId", "version_id is invalid");
+    const service = application.objectService() orelse return respondNotReady(request, request_id);
+    const object = service.setLegalHold(name, parsed.value.key, version_id, parsed.value.enabled) catch |err| {
+        return switch (err) {
+            error.ObjectNotFound => respondError(request, request_id, .not_found, "ObjectNotFound", "object version does not exist"),
+            error.ObjectLocked, error.RetentionActive => respondError(request, request_id, .forbidden, "ObjectLocked", "object is protected"),
+            else => respondError(request, request_id, .service_unavailable, "StorageUnavailable", "object metadata is unavailable"),
+        };
+    };
+    defer object.deinit(application.allocator);
+    return respondJson(request, request_id, .ok, .{ .key = object.key, .version_id = object.version_id, .legal_hold = object.legal_hold });
+}
+
+fn serveGetBucketUsage(request: *std.http.Server.Request, application: *Application, request_id: []const u8, raw_name: []const u8) !std.http.Status {
+    const name = decodeComponent(application.allocator, raw_name, false) catch return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+    defer application.allocator.free(name);
+    const service = application.objectService() orelse return respondNotReady(request, request_id);
+    const snapshot = service.usage(name) catch |err| return switch (err) {
+        error.BucketNotFound => respondError(request, request_id, .not_found, "BucketNotFound", "bucket does not exist"),
+        else => respondError(request, request_id, .service_unavailable, "StorageUnavailable", "usage statistics are unavailable"),
+    };
+    return respondJson(request, request_id, .ok, .{ .bytes = snapshot.bytes, .objects = snapshot.objects });
+}
 
 fn serveGetBucketConfiguration(
     request: *std.http.Server.Request,
@@ -313,7 +411,8 @@ fn serveUpdateBucketConfiguration(
     defer application.allocator.free(name);
     const parsed = try parseJsonBody(UpdateBucketConfigurationRequest, request, application.allocator, request_id) orelse return .bad_request;
     defer parsed.deinit();
-    if (parsed.value.versioning == null and parsed.value.lifecycle_configuration == null and !parsed.value.clear_lifecycle) {
+    if (parsed.value.replication_enabled != null) return respondError(request, request_id, .not_implemented, "FeatureUnavailable", "replication requires a second storage site");
+    if (parsed.value.versioning == null and parsed.value.access_policy == null and parsed.value.tags_json == null and parsed.value.encryption == null and parsed.value.max_bytes == null and parsed.value.max_objects == null and parsed.value.retention_enabled == null and parsed.value.retention_duration_seconds == null and parsed.value.retention_mode == null and parsed.value.object_locking == null and parsed.value.lifecycle_configuration == null and !parsed.value.clear_lifecycle and !parsed.value.clear_tags) {
         return respondError(request, request_id, .bad_request, "InvalidRequest", "at least one bucket setting is required");
     }
     if (parsed.value.lifecycle_configuration != null and parsed.value.clear_lifecycle) {
@@ -328,6 +427,65 @@ fn serveUpdateBucketConfiguration(
         else
             return respondError(request, request_id, .bad_request, "InvalidVersioning", "versioning must be Enabled or Suspended");
         const updated = service.setVersioning(name, versioning) catch |err| return respondBucketError(request, request_id, err);
+        updated.deinit(application.allocator);
+    }
+    if (parsed.value.access_policy) |policy| {
+        const access_policy: @import("../domain/bucket.zig").AccessPolicy = if (std.mem.eql(u8, policy, "Private"))
+            .private
+        else if (std.mem.eql(u8, policy, "Readonly"))
+            .readonly
+        else if (std.mem.eql(u8, policy, "Public"))
+            .public
+        else
+            return respondError(request, request_id, .bad_request, "InvalidAccessPolicy", "access_policy must be Private, Readonly, or Public");
+        const previous = service.head(name) catch |err| return respondBucketError(request, request_id, err);
+        defer previous.deinit(application.allocator);
+        const updated = service.setAccessPolicy(name, access_policy) catch |err| return respondBucketError(request, request_id, err);
+        auditAccessPolicy(application, request_id, name, accessPolicyName(previous.access_policy), accessPolicyName(updated.access_policy));
+        updated.deinit(application.allocator);
+    }
+    if (parsed.value.encryption) |status| {
+        const encryption: @import("../domain/bucket.zig").Encryption = if (std.mem.eql(u8, status, "Enabled")) .enabled else if (std.mem.eql(u8, status, "Disabled")) .disabled else return respondError(request, request_id, .bad_request, "InvalidEncryption", "encryption must be Enabled or Disabled");
+        const updated = service.setEncryption(name, encryption) catch |err| return respondBucketError(request, request_id, err);
+        updated.deinit(application.allocator);
+    }
+    if (parsed.value.max_bytes != null or parsed.value.max_objects != null) {
+        const updated = service.setQuota(name, .{ .max_bytes = parsed.value.max_bytes, .max_objects = parsed.value.max_objects }) catch |err| return respondBucketError(request, request_id, err);
+        updated.deinit(application.allocator);
+    }
+    if (parsed.value.retention_enabled != null or parsed.value.retention_duration_seconds != null or parsed.value.retention_mode != null) {
+        const before = service.head(name) catch |err| return respondBucketError(request, request_id, err);
+        defer before.deinit(application.allocator);
+        const enabled = parsed.value.retention_enabled orelse false;
+        const mode: ?@import("../domain/bucket.zig").RetentionMode = if (parsed.value.retention_mode) |value|
+            if (std.mem.eql(u8, value, "GOVERNANCE")) .governance else if (std.mem.eql(u8, value, "COMPLIANCE")) .compliance else return respondError(request, request_id, .bad_request, "InvalidRetentionMode", "retention_mode must be GOVERNANCE or COMPLIANCE")
+        else
+            null;
+        const updated = service.setRetention(name, .{ .enabled = enabled, .default_duration_seconds = parsed.value.retention_duration_seconds, .mode = mode }) catch |err| return respondBucketError(request, request_id, err);
+        auditRetention(application, request_id, name, before.retention, updated.retention);
+        updated.deinit(application.allocator);
+    }
+    if (parsed.value.object_locking) |enabled| {
+        const updated = service.setObjectLocking(name, enabled) catch |err| return respondBucketError(request, request_id, err);
+        updated.deinit(application.allocator);
+    }
+    if (parsed.value.tags_json) |tags_json| {
+        const parsed_tags = std.json.parseFromSlice(std.json.Value, application.allocator, tags_json, .{}) catch {
+            return respondError(request, request_id, .bad_request, "InvalidTags", "tags_json must be valid JSON");
+        };
+        defer parsed_tags.deinit();
+        if (parsed_tags.value != .object) return respondError(request, request_id, .bad_request, "InvalidTags", "tags_json must be a JSON object");
+        if (parsed_tags.value.object.count() > 50) return respondError(request, request_id, .bad_request, "InvalidTags", "at most 50 tags are allowed");
+        var tag_iterator = parsed_tags.value.object.iterator();
+        while (tag_iterator.next()) |entry| {
+            if (entry.key_ptr.*.len == 0 or entry.key_ptr.*.len > 128 or entry.value_ptr.* != .string or entry.value_ptr.*.string.len > 256) {
+                return respondError(request, request_id, .bad_request, "InvalidTags", "tag keys must be 1-128 characters and values must be strings up to 256 characters");
+            }
+        }
+        const updated = service.setTags(name, tags_json) catch |err| return respondBucketError(request, request_id, err);
+        updated.deinit(application.allocator);
+    } else if (parsed.value.clear_tags) {
+        const updated = service.setTags(name, null) catch |err| return respondBucketError(request, request_id, err);
         updated.deinit(application.allocator);
     }
     if (parsed.value.lifecycle_configuration) |configuration_xml| {
@@ -365,6 +523,28 @@ fn respondBucketConfiguration(
             .enabled => "Enabled",
             .suspended => "Suspended",
         },
+        .access_policy = switch (bucket.access_policy) {
+            .private => "Private",
+            .readonly => "Readonly",
+            .public => "Public",
+        },
+        .tags_json = bucket.tags_json,
+        .encryption = switch (bucket.encryption) {
+            .disabled => "Disabled",
+            .enabled => "Enabled",
+        },
+        .max_bytes = bucket.quota.max_bytes,
+        .max_objects = bucket.quota.max_objects,
+        .retention_enabled = bucket.retention.enabled,
+        .retention_duration_seconds = bucket.retention.default_duration_seconds,
+        .retention_mode = if (bucket.retention.mode) |mode| switch (mode) {
+            .governance => "GOVERNANCE",
+            .compliance => "COMPLIANCE",
+        } else null,
+        .object_locking = bucket.object_locking,
+        .replication_status = "UNAVAILABLE",
+        .replication_enabled = false,
+        .replication_reason = "SECOND_SITE_REQUIRED",
         .lifecycle_configuration = bucket.lifecycle_configuration,
     });
 }
@@ -408,6 +588,12 @@ fn serveListObjectVersions(
             .is_delete_marker = entry.is_delete_marker,
             .size = entry.size,
             .last_modified = time.formatIso8601(entry.last_modified_unix_seconds, &modified_buffer) catch return error.WriteFailed,
+            .retention_until_unix_seconds = entry.retention_until_unix_seconds,
+            .retention_mode = if (entry.retention_mode) |mode| switch (mode) {
+                .governance => "GOVERNANCE",
+                .compliance => "COMPLIANCE",
+            } else null,
+            .legal_hold = entry.legal_hold,
         });
     }
     try json.endArray();
@@ -982,6 +1168,7 @@ const PolicyRequest = struct {
     bucket_write: bool = true,
     object_read: bool = true,
     object_write: bool = true,
+    bypass_governance_retention: bool = false,
 
     fn domain(self: PolicyRequest) credential_domain.Policy {
         return .{
@@ -989,6 +1176,7 @@ const PolicyRequest = struct {
             .bucket_write = self.bucket_write,
             .object_read = self.object_read,
             .object_write = self.object_write,
+            .bypass_governance_retention = self.bypass_governance_retention and self.object_write,
         };
     }
 };
@@ -1191,6 +1379,7 @@ fn writeBucket(json: *std.json.Stringify, bucket: anytype) !void {
             .suspended => "Suspended",
         },
         .lifecycle_enabled = bucket.lifecycle_configuration != null,
+        .tags_json = bucket.tags_json,
         .created_at = created_at,
     });
 }
@@ -1209,6 +1398,12 @@ fn writeObject(json: *std.json.Stringify, object: anytype) !void {
         .size = object.size,
         .etag = etag,
         .last_modified = last_modified,
+        .retention_until_unix_seconds = object.retention_until_unix_seconds,
+        .retention_mode = if (object.retention_mode) |mode| switch (mode) {
+            .governance => "GOVERNANCE",
+            .compliance => "COMPLIANCE",
+        } else null,
+        .legal_hold = object.legal_hold,
     });
 }
 
@@ -1540,6 +1735,9 @@ fn respondBucketError(
         error.BucketNotFound => respondError(request, request_id, .not_found, "BucketNotFound", "bucket does not exist"),
         error.BucketAlreadyExists => respondError(request, request_id, .conflict, "BucketAlreadyExists", "bucket belongs to another owner"),
         error.BucketNotEmpty => respondError(request, request_id, .conflict, "BucketNotEmpty", "bucket is not empty"),
+        error.RetentionChangeRejected => respondError(request, request_id, .conflict, "RetentionChangeRejected", "COMPLIANCE retention cannot be weakened"),
+        error.ObjectLockingRequiresVersioning => respondError(request, request_id, .bad_request, "ObjectLockingRequiresVersioning", "Object Locking requires Versioning Enabled"),
+        error.ObjectLockingCannotDisable => respondError(request, request_id, .conflict, "ObjectLockingCannotDisable", "Object Locking cannot be disabled once enabled"),
         error.Conflict => respondError(request, request_id, .conflict, "Conflict", "bucket changed concurrently"),
         error.CorruptMetadata => respondError(request, request_id, .service_unavailable, "CorruptMetadata", "bucket metadata requires recovery"),
         error.OutOfMemory, error.Unavailable => respondError(request, request_id, .service_unavailable, "StorageUnavailable", "storage service is unavailable"),
@@ -1739,6 +1937,28 @@ fn audit(
             outcome,
             std.Io.Clock.real.now(application.io.?).toSeconds(),
         },
+    );
+}
+
+fn accessPolicyName(policy: @import("../domain/bucket.zig").AccessPolicy) []const u8 {
+    return switch (policy) {
+        .private => "Private",
+        .readonly => "Readonly",
+        .public => "Public",
+    };
+}
+
+fn auditAccessPolicy(application: *const Application, request_id: []const u8, bucket: []const u8, old_value: []const u8, new_value: []const u8) void {
+    std.log.info(
+        "management audit request_id={s} actor={s} action=update_access_policy bucket={s} old_value={s} new_value={s} time={d}",
+        .{ request_id, application.config.admin_username, bucket, old_value, new_value, std.Io.Clock.real.now(application.io.?).toSeconds() },
+    );
+}
+
+fn auditRetention(application: *const Application, request_id: []const u8, bucket: []const u8, old_value: @import("../domain/bucket.zig").Retention, new_value: @import("../domain/bucket.zig").Retention) void {
+    std.log.info(
+        "management audit request_id={s} actor={s} action=update_retention bucket={s} old_enabled={} old_duration={d} old_mode={s} new_enabled={} new_duration={d} new_mode={s} time={d}",
+        .{ request_id, application.config.admin_username, bucket, old_value.enabled, old_value.default_duration_seconds orelse 0, if (old_value.mode) |mode| @tagName(mode) else "null", new_value.enabled, new_value.default_duration_seconds orelse 0, if (new_value.mode) |mode| @tagName(mode) else "null", std.Io.Clock.real.now(application.io.?).toSeconds() },
     );
 }
 

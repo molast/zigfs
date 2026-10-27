@@ -47,6 +47,9 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
   const [configuration, setConfiguration] = useState<BucketConfiguration | null>(null)
   const [activeSection, setActiveSection] = useState<'Summary' | 'Lifecycle'>('Summary')
   const [lifecycleRules, setLifecycleRules] = useState<LifecycleRule[]>([])
+  const [tags, setTags] = useState<Record<string, string>>({})
+  const [tagKey, setTagKey] = useState('')
+  const [tagValue, setTagValue] = useState('')
   const [usage, setUsage] = useState<BucketUsage>({ bytes: 0, objects: 0 })
   const [bucketContentKnown, setBucketContentKnown] = useState(false)
   const [bucketHasContent, setBucketHasContent] = useState(false)
@@ -61,26 +64,26 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       setLoading(true)
       setBucketContentKnown(false)
       setError('')
-      const [buckets, bucketConfiguration] = await Promise.all([
+      const [buckets, bucketConfiguration, bucketUsage] = await Promise.all([
         api.listBuckets(),
         api.getBucketConfiguration(bucketName),
+        api.getBucketUsage(bucketName),
       ])
       const current = buckets.find((item) => item.name === bucketName)
       if (!current) throw new Error(`Bucket “${bucketName}” 不存在`)
       setBucket(current)
       setConfiguration(bucketConfiguration)
+      setTags(parseTags(bucketConfiguration.tags_json))
       setLifecycleRules(bucketConfiguration.lifecycle_configuration
         ? parseLifecycleConfiguration(bucketConfiguration.lifecycle_configuration)
         : [])
 
       let continuationToken = ''
-      let bytes = 0
-      let objects = 0
+      let bytes = bucketUsage.bytes
+      let objects = bucketUsage.objects
       let hasContent = false
       do {
         const page = await api.listObjects(bucketName, '', continuationToken, '', 1000, '/')
-        objects += page.items.length
-        bytes += page.items.reduce((total, item) => total + item.size, 0)
         hasContent = hasContent || page.items.length > 0 || (page.common_prefixes?.length ?? 0) > 0 || (page.directories?.length ?? 0) > 0
         const nextToken = page.is_truncated ? (page.continuation_token ?? '') : ''
         if (!nextToken || nextToken === continuationToken) break
@@ -162,6 +165,110 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     }
   }
 
+  async function updateAccessPolicy(access_policy: 'Private' | 'Readonly' | 'Public') {
+    const stopLoading = startLoading('正在更新 Access Policy...')
+    try {
+      setLoading(true)
+      setError('')
+      const updated = await api.updateBucketConfiguration(bucketName, { access_policy })
+      setConfiguration(updated)
+      showToast(`Access Policy 已更新为 ${access_policy}`)
+    } catch (reason) {
+      setError((reason as Error).message)
+    } finally {
+      setLoading(false)
+      stopLoading()
+    }
+  }
+
+  async function updateEncryption(encryption: 'Disabled' | 'Enabled') {
+    const stopLoading = startLoading('正在更新 Encryption...')
+    try {
+      setLoading(true)
+      setError('')
+      const updated = await api.updateBucketConfiguration(bucketName, { encryption })
+      setConfiguration(updated)
+      showToast(`Encryption 已更新为 ${encryption}`)
+    } catch (reason) {
+      setError((reason as Error).message)
+    } finally {
+      setLoading(false)
+      stopLoading()
+    }
+  }
+
+  async function updateRetention(patch: {
+    enabled?: boolean
+    duration?: number
+    mode?: 'GOVERNANCE' | 'COMPLIANCE'
+  }) {
+    if (!configuration) return
+    const currentEnabled = configuration.retention_enabled
+    const currentDuration = configuration.retention_duration_seconds ?? 86400
+    const currentMode = configuration.retention_mode ?? 'GOVERNANCE'
+    const enabled = patch.enabled ?? currentEnabled
+    const duration = patch.duration ?? currentDuration
+    const mode = patch.mode ?? currentMode
+    const isShortening = currentEnabled && enabled && duration < currentDuration
+    const isEnabling = !currentEnabled && enabled
+    const isModeSwitch = currentEnabled && enabled && mode !== currentMode
+    if ((isEnabling || isShortening || isModeSwitch) && !await confirm({
+      title: '确认更新 Retention',
+      message: isEnabling
+        ? `启用 Retention 后，新写入对象将在 ${duration} 秒内受到保留限制。是否继续？`
+        : isShortening
+          ? `保留期限将从 ${currentDuration} 秒缩短为 ${duration} 秒，可能影响后续对象删除。是否继续？`
+          : `Retention 模式将从 ${currentMode} 切换为 ${mode}。是否继续？`,
+      confirmLabel: '继续更新',
+      danger: isShortening || mode === 'COMPLIANCE',
+    })) return
+
+    const stopLoading = startLoading('正在更新 Retention...')
+    try {
+      setLoading(true)
+      setError('')
+      const updated = await api.updateBucketConfiguration(bucketName, {
+        retention_enabled: enabled,
+        retention_duration_seconds: duration,
+        retention_mode: mode,
+      })
+      setConfiguration(updated)
+      showToast(`Retention 已更新为 ${enabled ? `${duration}s / ${mode}` : 'Disabled'}`)
+    } catch (reason) {
+      setError((reason as Error).message)
+    } finally {
+      setLoading(false)
+      stopLoading()
+    }
+  }
+
+  function addTag() {
+    const key = tagKey.trim()
+    if (!key) return
+    setTags((current) => ({ ...current, [key]: tagValue.trim() }))
+    setTagKey('')
+    setTagValue('')
+  }
+
+  async function saveTags() {
+    const stopLoading = startLoading('正在保存 Tags...')
+    try {
+      setLoading(true)
+      setError('')
+      const updated = await api.updateBucketConfiguration(bucketName, Object.keys(tags).length > 0
+        ? { tags_json: JSON.stringify(tags) }
+        : { clear_tags: true })
+      setConfiguration(updated)
+      setTags(parseTags(updated.tags_json))
+      showToast('Tags 已保存')
+    } catch (reason) {
+      setError((reason as Error).message)
+    } finally {
+      setLoading(false)
+      stopLoading()
+    }
+  }
+
   async function saveLifecycle(rules: LifecycleRule[]) {
     const stopLoading = startLoading('正在保存 Lifecycle 规则...')
     try {
@@ -194,7 +301,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
             <span className="bucket-identity-icon" aria-hidden="true"><Archive /></span>
             <div>
               <h2>{bucket?.name ?? bucketName}</h2>
-              <p>Owner: <strong>{bucket?.owner ?? '-'}</strong><span>Access: <strong>Private</strong></span></p>
+              <p>Owner: <strong>{bucket?.owner ?? '-'}</strong><span>Access: <strong>{configuration?.access_policy ?? 'Private'}</strong></span></p>
             </div>
           </div>
         </div>
@@ -231,18 +338,56 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
 
           {activeSection === 'Summary' ? <>
           <div className="bucket-summary-grid">
-            <SettingItem icon={Shield} label="Access Policy" value="Private" />
-            <SettingItem icon={LockKeyhole} label="Encryption" value="Disabled" />
+            <div className="bucket-setting-item bucket-access-policy-setting">
+              <div className="bucket-setting-label"><Shield aria-hidden="true" /><span>Access Policy</span></div>
+              <select
+                aria-label="Bucket access policy"
+                value={configuration?.access_policy ?? 'Private'}
+                onChange={(event) => void updateAccessPolicy(event.target.value as 'Private' | 'Readonly' | 'Public')}
+                disabled={loading || !configuration}
+              >
+                <option value="Private">Private</option>
+                <option value="Readonly">Readonly</option>
+                <option value="Public">Public</option>
+              </select>
+              <small>控制匿名读取和列举权限</small>
+            </div>
+            <div className="bucket-setting-item bucket-encryption-setting">
+              <div className="bucket-setting-label"><LockKeyhole aria-hidden="true" /><span>Encryption</span></div>
+              <select aria-label="Bucket encryption" value={configuration?.encryption ?? 'Disabled'} onChange={(event) => void updateEncryption(event.target.value as 'Disabled' | 'Enabled')} disabled={loading || !configuration}>
+                <option value="Disabled">Disabled</option>
+                <option value="Enabled">Enabled</option>
+              </select>
+              <small>新写入对象使用服务端 AES-256-GCM；历史明文对象保持兼容</small>
+            </div>
             <div className="bucket-usage">
               <ChartPie aria-hidden="true" />
               <div><span>Reported Usage</span><strong>{formatBytes(usage.bytes)}</strong><small>{usage.objects.toLocaleString()} 个对象</small></div>
             </div>
-            <SettingItem icon={CircleX} label="Replication" value="Disabled" status="disabled" />
-            <SettingItem icon={LockKeyhole} label="Object Locking" value="Disabled" status="disabled" />
+            <SettingItem icon={CircleX} label="Replication" value={configuration?.replication_status === 'UNAVAILABLE' ? 'Unavailable' : 'Disabled'} status="unavailable" />
+            <SettingItem icon={LockKeyhole} label="Object Locking" value={configuration?.object_locking ? 'Enabled' : 'Disabled'} status={configuration?.object_locking ? 'enabled' : 'disabled'} />
             <div className="bucket-setting-item bucket-tags-setting">
               <div className="bucket-setting-label"><Tags aria-hidden="true" /><span>Tags</span></div>
-              <button className="secondary-button" type="button" disabled title="后续版本开放"><Plus className="button-icon" aria-hidden="true" />添加标签</button>
-              <small>尚未配置</small>
+              <div className="bucket-tags-list">
+                {Object.entries(tags).map(([key, value]) => <div className="bucket-tag-row" key={key}>
+                  <span>{key}</span><b>{value}</b>
+                  <button type="button" aria-label={`删除标签 ${key}`} title="删除标签" onClick={() => void (async () => {
+                    if (!await confirm({ title: '删除标签', message: `确认删除标签 “${key}”？`, confirmLabel: '删除', danger: true })) return
+                    setTags((current) => {
+                      const next = { ...current }
+                      delete next[key]
+                      return next
+                    })
+                  })()} disabled={loading}><Trash2 aria-hidden="true" /></button>
+                </div>)}
+                {Object.keys(tags).length === 0 && <small>尚未配置</small>}
+              </div>
+              <div className="bucket-tags-editor">
+                <input aria-label="标签 Key" placeholder="Key" value={tagKey} onChange={(event) => setTagKey(event.target.value)} disabled={loading} />
+                <input aria-label="标签 Value" placeholder="Value" value={tagValue} onChange={(event) => setTagValue(event.target.value)} disabled={loading} />
+                <button className="secondary-button" type="button" onClick={addTag} disabled={loading || !tagKey.trim()} title="添加标签"><Plus className="button-icon" aria-hidden="true" />添加</button>
+              </div>
+              <button className="primary-button bucket-tags-save" type="button" onClick={() => void saveTags()} disabled={loading}><span>保存 Tags</span></button>
             </div>
           </div>
 
@@ -255,12 +400,53 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
               </div>
               <small>{configuration?.versioning === 'Unversioned' ? '启用后将为新写入生成版本 ID' : '版本历史由 ZigFS 持久化管理'}</small>
             </div>
-            <SettingItem icon={Gauge} label="Quota" value="Disabled" status="unavailable" />
+            <SettingItem icon={Gauge} label="Quota" value={configuration?.max_bytes == null && configuration?.max_objects == null ? 'Disabled' : `${configuration?.max_bytes == null ? 'Unlimited' : formatBytes(configuration.max_bytes)} / ${configuration?.max_objects == null ? 'Unlimited' : `${configuration.max_objects.toLocaleString()} objects`}`} status={configuration?.max_bytes == null && configuration?.max_objects == null ? 'unavailable' : 'enabled'} />
           </SettingsSection>
 
           <SettingsSection title="Retention">
-            <SettingItem icon={KeyRound} label="Retention" value="Disabled" status="unavailable" />
-            <SettingItem icon={LockKeyhole} label="Mode" value="-" status="unavailable" />
+            <div className="bucket-setting-item bucket-retention-setting">
+              <div className="bucket-setting-label"><KeyRound aria-hidden="true" /><span>Retention</span></div>
+              <label className="bucket-inline-toggle">
+                <input
+                  type="checkbox"
+                  aria-label="启用 Retention"
+                  checked={configuration?.retention_enabled ?? false}
+                  onChange={(event) => void updateRetention({ enabled: event.target.checked })}
+                  disabled={loading || !configuration}
+                />
+                <span>Enabled</span>
+              </label>
+              <div className="bucket-retention-controls">
+                <label>
+                  <span>Duration</span>
+                  <input
+                    type="number"
+                    min={1}
+                    aria-label="Retention duration seconds"
+                    value={configuration?.retention_duration_seconds ?? 86400}
+                    onChange={(event) => {
+                      const value = Number(event.target.value)
+                      if (Number.isSafeInteger(value) && value > 0) void updateRetention({ duration: value })
+                    }}
+                    disabled={loading || !configuration}
+                  />
+                  <span>s</span>
+                </label>
+                <label>
+                  <span>Mode</span>
+                  <select
+                    aria-label="Retention mode"
+                    value={configuration?.retention_mode ?? 'GOVERNANCE'}
+                    onChange={(event) => void updateRetention({ mode: event.target.value as 'GOVERNANCE' | 'COMPLIANCE' })}
+                    disabled={loading || !configuration}
+                  >
+                    <option value="GOVERNANCE">GOVERNANCE</option>
+                    <option value="COMPLIANCE">COMPLIANCE</option>
+                  </select>
+                </label>
+              </div>
+              <small>{configuration?.retention_enabled ? '新写入对象继承默认保留期限' : '启用后新写入对象将继承保留期限'}</small>
+            </div>
           </SettingsSection>
           </> : <LifecycleRulesEditor
             rules={lifecycleRules}
@@ -311,4 +497,15 @@ function formatBytes(bytes: number) {
     index += 1
   }
   return `${value.toFixed(1)} ${units[index]}`
+}
+
+function parseTags(value?: string): Record<string, string> {
+  if (!value) return {}
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(Object.entries(parsed).filter(([, item]) => typeof item === 'string'))
+  } catch {
+    return {}
+  }
 }

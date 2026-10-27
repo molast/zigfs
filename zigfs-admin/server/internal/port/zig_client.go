@@ -32,6 +32,10 @@ type ZigClient interface {
 	CreateBucket(ctx context.Context, request contract.CreateBucketRequest) (contract.Bucket, error)
 	DeleteBucket(ctx context.Context, name string) error
 	GetBucketConfiguration(ctx context.Context, name string) (contract.BucketConfiguration, error)
+	GetBucketUsage(ctx context.Context, name string) (contract.BucketUsage, error)
+	GetBucketTags(ctx context.Context, name string) (contract.BucketTags, error)
+	PutBucketTags(ctx context.Context, name string, tags contract.BucketTags) (contract.BucketTags, error)
+	DeleteBucketTags(ctx context.Context, name string) error
 	UpdateBucketConfiguration(ctx context.Context, name string, request contract.UpdateBucketConfigurationRequest) (contract.BucketConfiguration, error)
 	ListObjectVersions(ctx context.Context, bucket, prefix string) (contract.ListObjectVersionsResponse, error)
 	ListObjects(ctx context.Context, bucket, prefix, search, cursor, maxKeys, delimiter string) (contract.ListObjectsResponse, error)

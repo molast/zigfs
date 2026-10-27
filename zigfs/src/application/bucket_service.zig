@@ -11,6 +11,9 @@ pub const Error = error{
     BucketAlreadyExists,
     BucketNotEmpty,
     Conflict,
+    RetentionChangeRejected,
+    ObjectLockingRequiresVersioning,
+    ObjectLockingCannotDisable,
     CorruptMetadata,
     Unavailable,
 };
@@ -225,7 +228,35 @@ pub const BucketService = struct {
         name: []const u8,
         versioning: bucket_domain.Versioning,
     ) Error!bucket_domain.Bucket {
-        return self.updateConfiguration(name, versioning, .keep);
+        return self.updateConfiguration(name, versioning, null, .keep, null, false, null, null, null, null);
+    }
+
+    pub fn setAccessPolicy(
+        self: BucketService,
+        name: []const u8,
+        access_policy: bucket_domain.AccessPolicy,
+    ) Error!bucket_domain.Bucket {
+        return self.updateConfiguration(name, null, access_policy, .keep, null, false, null, null, null, null);
+    }
+
+    pub fn setTags(self: BucketService, name: []const u8, tags_json: ?[]const u8) Error!bucket_domain.Bucket {
+        return self.updateConfiguration(name, null, null, .keep, tags_json, true, null, null, null, null);
+    }
+
+    pub fn setEncryption(self: BucketService, name: []const u8, encryption: bucket_domain.Encryption) Error!bucket_domain.Bucket {
+        return self.updateConfiguration(name, null, null, .keep, null, false, encryption, null, null, null);
+    }
+
+    pub fn setQuota(self: BucketService, name: []const u8, quota: bucket_domain.Quota) Error!bucket_domain.Bucket {
+        return self.updateConfiguration(name, null, null, .keep, null, false, null, quota, null, null);
+    }
+
+    pub fn setRetention(self: BucketService, name: []const u8, retention: bucket_domain.Retention) Error!bucket_domain.Bucket {
+        return self.updateConfiguration(name, null, null, .keep, null, false, null, null, retention, null);
+    }
+
+    pub fn setObjectLocking(self: BucketService, name: []const u8, enabled: bool) Error!bucket_domain.Bucket {
+        return self.updateConfiguration(name, null, null, .keep, null, false, null, null, null, enabled);
     }
 
     pub fn putLifecycle(
@@ -233,11 +264,11 @@ pub const BucketService = struct {
         name: []const u8,
         configuration: []const u8,
     ) Error!bucket_domain.Bucket {
-        return self.updateConfiguration(name, null, .{ .replace = configuration });
+        return self.updateConfiguration(name, null, null, .{ .replace = configuration }, null, false, null, null, null, null);
     }
 
     pub fn deleteLifecycle(self: BucketService, name: []const u8) Error!bucket_domain.Bucket {
-        return self.updateConfiguration(name, null, .remove);
+        return self.updateConfiguration(name, null, null, .remove, null, false, null, null, null, null);
     }
 
     const LifecycleUpdate = union(enum) {
@@ -250,7 +281,14 @@ pub const BucketService = struct {
         self: BucketService,
         name: []const u8,
         versioning: ?bucket_domain.Versioning,
+        access_policy: ?bucket_domain.AccessPolicy,
         lifecycle: LifecycleUpdate,
+        tags_json: ?[]const u8,
+        replace_tags: bool,
+        encryption: ?bucket_domain.Encryption,
+        quota: ?bucket_domain.Quota,
+        retention: ?bucket_domain.Retention,
+        object_locking: ?bool,
     ) Error!bucket_domain.Bucket {
         bucket_domain.validateName(name) catch return error.InvalidBucketName;
         self.mutex.lockUncancelable(self.io);
@@ -276,6 +314,20 @@ pub const BucketService = struct {
         else
             null;
         errdefer if (owned_lifecycle) |value| self.allocator.free(value);
+        const tags_value = if (replace_tags) tags_json else bucket.tags_json;
+        const owned_tags = if (replace_tags) if (tags_value) |value| self.allocator.dupe(u8, value) catch return error.OutOfMemory else null else null;
+        errdefer if (owned_tags) |value| self.allocator.free(value);
+        const next_retention = retention orelse bucket.retention;
+        const next_object_locking = object_locking orelse bucket.object_locking;
+        if (next_object_locking and (versioning orelse bucket.versioning) != .enabled) return error.ObjectLockingRequiresVersioning;
+        if (bucket.object_locking and !next_object_locking) return error.ObjectLockingCannotDisable;
+        if (bucket.retention.enabled and bucket.retention.mode == .compliance) {
+            const current_duration = bucket.retention.default_duration_seconds orelse 0;
+            const next_duration = next_retention.default_duration_seconds orelse 0;
+            if (!next_retention.enabled or next_retention.mode != .compliance or next_duration < current_duration) {
+                return error.RetentionChangeRejected;
+            }
+        }
         var prepared = self.index.prepareBucket(name) catch |err| return mapIndexError(err);
         defer prepared.deinit(self.index.allocator);
         const generation = self.store.put(self.allocator, .{
@@ -284,12 +336,27 @@ pub const BucketService = struct {
             .owner = bucket.owner,
             .status = bucket.status,
             .versioning = versioning orelse bucket.versioning,
+            .access_policy = access_policy orelse bucket.access_policy,
             .lifecycle_configuration = lifecycle_value,
+            .tags_json = tags_value,
+            .encryption = encryption orelse bucket.encryption,
+            .quota = quota orelse bucket.quota,
+            .retention = next_retention,
+            .object_locking = next_object_locking,
             .created_at_unix_seconds = bucket.created_at_unix_seconds,
         }, .{ .exact = bucket.generation }) catch |err| return mapStoreError(err);
         self.index.publishBucket(&prepared, generation);
 
         bucket.versioning = versioning orelse bucket.versioning;
+        bucket.access_policy = access_policy orelse bucket.access_policy;
+        if (replace_tags) {
+            if (bucket.tags_json) |existing| self.allocator.free(existing);
+            bucket.tags_json = owned_tags;
+        }
+        bucket.encryption = encryption orelse bucket.encryption;
+        bucket.quota = quota orelse bucket.quota;
+        bucket.retention = next_retention;
+        bucket.object_locking = next_object_locking;
         if (lifecycle != .keep) {
             if (bucket.lifecycle_configuration) |existing| self.allocator.free(existing);
             bucket.lifecycle_configuration = owned_lifecycle;

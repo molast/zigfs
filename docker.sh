@@ -124,9 +124,11 @@ push_image() {
   local hub_repository="$2"
   local local_image="${local_repository}:${LOCAL_IMAGE_TAG}"
   local remote_image
+  local latest_image
 
   resolve_dockerhub_namespace
   remote_image="${DOCKERHUB_NAMESPACE}/${hub_repository}:${DOCKERHUB_TAG}"
+  latest_image="${DOCKERHUB_NAMESPACE}/${hub_repository}:latest"
   docker image inspect "${local_image}" >/dev/null 2>&1 || \
     fail "本地镜像 ${local_image} 不存在，请先构建该镜像。"
 
@@ -135,6 +137,16 @@ push_image() {
   printf '正在推送 %s...\n' "${remote_image}"
   docker push "${remote_image}"
   printf '镜像已推送: %s\n' "${remote_image}"
+
+  # 发布版本时同步更新 latest，避免 Docker Hub 的 latest 仍指向旧镜像。
+  # DOCKERHUB_TAG=latest 时上面已经完成推送，不需要重复推送。
+  if [[ "${DOCKERHUB_TAG}" != "latest" ]]; then
+    printf '正在标记 %s 为 %s...\n' "${local_image}" "${latest_image}"
+    docker tag "${local_image}" "${latest_image}"
+    printf '正在推送 %s...\n' "${latest_image}"
+    docker push "${latest_image}"
+    printf '镜像已推送: %s\n' "${latest_image}"
+  fi
 }
 
 docker_menu() {

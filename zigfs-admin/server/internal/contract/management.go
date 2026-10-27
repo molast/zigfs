@@ -8,18 +8,51 @@ type Bucket struct {
 	CreatedAt        time.Time `json:"created_at"`
 	Versioning       string    `json:"versioning"`
 	LifecycleEnabled bool      `json:"lifecycle_enabled"`
+	TagsJSON         string    `json:"tags_json,omitempty"`
 }
 
 type BucketConfiguration struct {
-	Name                   string `json:"name"`
-	Versioning             string `json:"versioning"`
-	LifecycleConfiguration string `json:"lifecycle_configuration,omitempty"`
+	Name                   string  `json:"name"`
+	Versioning             string  `json:"versioning"`
+	AccessPolicy           string  `json:"access_policy"`
+	TagsJSON               string  `json:"tags_json,omitempty"`
+	Encryption             string  `json:"encryption"`
+	MaxBytes               *uint64 `json:"max_bytes,omitempty"`
+	MaxObjects             *uint64 `json:"max_objects,omitempty"`
+	RetentionEnabled       bool    `json:"retention_enabled"`
+	RetentionDuration      *uint64 `json:"retention_duration_seconds,omitempty"`
+	RetentionMode          *string `json:"retention_mode,omitempty"`
+	ObjectLocking          bool    `json:"object_locking"`
+	ReplicationStatus      string  `json:"replication_status"`
+	ReplicationEnabled     bool    `json:"replication_enabled"`
+	ReplicationReason      string  `json:"replication_reason"`
+	LifecycleConfiguration string  `json:"lifecycle_configuration,omitempty"`
+}
+
+type BucketUsage struct {
+	Bytes   uint64 `json:"bytes"`
+	Objects uint64 `json:"objects"`
+}
+
+type BucketTags struct {
+	TagsJSON string `json:"tags_json,omitempty"`
 }
 
 type UpdateBucketConfigurationRequest struct {
-	Versioning             string `json:"versioning,omitempty"`
-	LifecycleConfiguration string `json:"lifecycle_configuration,omitempty"`
-	ClearLifecycle         bool   `json:"clear_lifecycle,omitempty"`
+	Versioning             string  `json:"versioning,omitempty"`
+	AccessPolicy           string  `json:"access_policy,omitempty"`
+	TagsJSON               string  `json:"tags_json,omitempty"`
+	ClearTags              bool    `json:"clear_tags,omitempty"`
+	Encryption             string  `json:"encryption,omitempty"`
+	MaxBytes               *uint64 `json:"max_bytes,omitempty"`
+	MaxObjects             *uint64 `json:"max_objects,omitempty"`
+	RetentionEnabled       *bool   `json:"retention_enabled,omitempty"`
+	RetentionDuration      *uint64 `json:"retention_duration_seconds,omitempty"`
+	RetentionMode          *string `json:"retention_mode,omitempty"`
+	ObjectLocking          *bool   `json:"object_locking,omitempty"`
+	ReplicationEnabled     *bool   `json:"replication_enabled,omitempty"`
+	LifecycleConfiguration string  `json:"lifecycle_configuration,omitempty"`
+	ClearLifecycle         bool    `json:"clear_lifecycle,omitempty"`
 }
 
 type ObjectVersion struct {
@@ -29,6 +62,19 @@ type ObjectVersion struct {
 	IsDeleteMarker bool      `json:"is_delete_marker"`
 	Size           int64     `json:"size"`
 	LastModified   time.Time `json:"last_modified"`
+	RetentionUntil *int64 `json:"retention_until_unix_seconds,omitempty"`
+	RetentionMode  string `json:"retention_mode,omitempty"`
+	LegalHold      bool `json:"legal_hold"`
+}
+
+type ObjectSummary struct {
+	Key            string `json:"key"`
+	Size           int64 `json:"size"`
+	ETag           string `json:"etag"`
+	LastModified   time.Time `json:"last_modified"`
+	RetentionUntil *int64 `json:"retention_until_unix_seconds,omitempty"`
+	RetentionMode  string `json:"retention_mode,omitempty"`
+	LegalHold      bool `json:"legal_hold"`
 }
 
 type ListObjectVersionsResponse struct {
@@ -53,11 +99,11 @@ type Object struct {
 }
 
 type ListObjectsResponse struct {
-	Items             []Object `json:"items"`
-	CommonPrefixes    []string `json:"common_prefixes,omitempty"`
+	Items             []Object    `json:"items"`
+	CommonPrefixes    []string    `json:"common_prefixes,omitempty"`
 	Directories       []Directory `json:"directories,omitempty"`
-	IsTruncated       bool     `json:"is_truncated"`
-	ContinuationToken string   `json:"continuation_token,omitempty"`
+	IsTruncated       bool        `json:"is_truncated"`
+	ContinuationToken string      `json:"continuation_token,omitempty"`
 }
 
 type Directory struct {
@@ -153,6 +199,7 @@ type CredentialPolicy struct {
 	BucketWrite bool `json:"bucket_write"`
 	ObjectRead  bool `json:"object_read"`
 	ObjectWrite bool `json:"object_write"`
+	BypassGovernanceRetention bool `json:"bypass_governance_retention"`
 }
 
 type ListAccessKeysResponse struct {

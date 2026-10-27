@@ -15,12 +15,41 @@ pub const Versioning = enum(u8) {
     suspended = 2,
 };
 
+pub const AccessPolicy = enum(u8) {
+    private = 0,
+    readonly = 1,
+    public = 2,
+};
+
+pub const Encryption = enum(u8) {
+    disabled = 0,
+    enabled = 1,
+};
+
+pub const Quota = struct {
+    max_bytes: ?u64 = null,
+    max_objects: ?u64 = null,
+};
+
+pub const RetentionMode = enum(u8) { governance = 1, compliance = 2 };
+pub const Retention = struct {
+    enabled: bool = false,
+    default_duration_seconds: ?u64 = null,
+    mode: ?RetentionMode = null,
+};
+
 pub const Bucket = struct {
     id: id.Uuid,
     name: []u8,
     owner: []u8,
     status: Status,
     versioning: Versioning = .unversioned,
+    access_policy: AccessPolicy = .private,
+    tags_json: ?[]u8 = null,
+    encryption: Encryption = .disabled,
+    quota: Quota = .{},
+    retention: Retention = .{},
+    object_locking: bool = false,
     lifecycle_configuration: ?[]u8 = null,
     created_at_unix_seconds: i64,
     generation: u64,
@@ -29,6 +58,7 @@ pub const Bucket = struct {
         allocator.free(self.name);
         allocator.free(self.owner);
         if (self.lifecycle_configuration) |configuration| allocator.free(configuration);
+        if (self.tags_json) |tags| allocator.free(tags);
     }
 };
 

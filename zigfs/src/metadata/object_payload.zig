@@ -5,10 +5,11 @@ const id = @import("../common/id.zig");
 
 pub const magic = [4]u8{ 'Z', 'F', 'O', 'B' };
 pub const major_version: u16 = 1;
-pub const minor_version: u16 = 2;
+pub const minor_version: u16 = 5;
 pub const legacy_header_length: usize = 136;
 pub const etag_header_length: usize = 140;
-pub const header_length: usize = 164;
+pub const encryption_header_length: usize = 252;
+pub const header_length: usize = encryption_header_length + 16;
 pub const multipart_part_length: usize = 64;
 
 const flags_offset: usize = 8;
@@ -32,6 +33,14 @@ const layout_reserved_offset: usize = 141;
 const manifest_count_offset: usize = 144;
 const manifest_reserved_offset: usize = 146;
 const upload_id_offset: usize = 148;
+const wrapped_key_nonce_offset: usize = 164;
+const wrapped_key_tag_offset: usize = 176;
+const wrapped_key_offset: usize = 192;
+const data_nonce_offset: usize = 224;
+const data_tag_offset: usize = 236;
+const retention_until_offset: usize = 252;
+const retention_mode_offset: usize = 260;
+const legal_hold_offset: usize = 261;
 
 pub const Value = object_domain.View;
 
@@ -49,7 +58,7 @@ pub const Decoded = struct {
 pub const EncodeError = std.mem.Allocator.Error ||
     bucket_domain.ValidationError ||
     object_domain.ValidationError ||
-    error{ InvalidObjectId, InvalidBucketId, InvalidDataGeneration, InvalidModifiedAt, InvalidMultipartManifest, PayloadTooLarge };
+    error{ InvalidObjectId, InvalidBucketId, InvalidDataGeneration, InvalidModifiedAt, InvalidMultipartManifest, InvalidEncryptionMetadata, PayloadTooLarge };
 
 pub const DecodeError = std.mem.Allocator.Error || error{
     InvalidLength,
@@ -112,7 +121,7 @@ pub fn encode(allocator: std.mem.Allocator, value: Value) EncodeError![]u8 {
     std.mem.writeInt(u16, bytes[6..8], minor_version, .little);
     std.mem.writeInt(u16, bytes[flags_offset..status_offset], 0, .little);
     bytes[status_offset] = @intFromEnum(value.status);
-    bytes[reserved_offset] = 0;
+    bytes[reserved_offset] = @intFromEnum(value.encryption);
     @memcpy(bytes[object_id_offset..bucket_id_offset], &value.id);
     @memcpy(bytes[bucket_id_offset..data_generation_offset], &value.bucket_id);
     @memcpy(bytes[data_generation_offset..size_offset], &value.data_generation);
@@ -129,8 +138,18 @@ pub fn encode(allocator: std.mem.Allocator, value: Value) EncodeError![]u8 {
     if (value.multipart_manifest) |manifest| {
         bytes[layout_offset] = 1;
         std.mem.writeInt(u16, bytes[manifest_count_offset..manifest_reserved_offset], @intCast(manifest.parts.len), .little);
-        @memcpy(bytes[upload_id_offset..header_length], &manifest.upload_id);
+        @memcpy(bytes[upload_id_offset..wrapped_key_nonce_offset], &manifest.upload_id);
     }
+    if (value.encryption_metadata) |metadata| {
+        @memcpy(bytes[wrapped_key_nonce_offset..wrapped_key_tag_offset], &metadata.wrapped_key_nonce);
+        @memcpy(bytes[wrapped_key_tag_offset..wrapped_key_offset], &metadata.wrapped_key_tag);
+        @memcpy(bytes[wrapped_key_offset..data_nonce_offset], &metadata.wrapped_key);
+        @memcpy(bytes[data_nonce_offset..data_tag_offset], &metadata.data_nonce);
+        @memcpy(bytes[data_tag_offset..encryption_header_length], &metadata.data_tag);
+    }
+    if (value.retention_until_unix_seconds) |until| std.mem.writeInt(i64, bytes[retention_until_offset .. retention_until_offset + 8], until, .little);
+    bytes[retention_mode_offset] = if (value.retention_mode) |mode| @intFromEnum(mode) else 0;
+    bytes[legal_hold_offset] = @intFromBool(value.legal_hold);
 
     var offset = header_length;
     copyField(bytes, &offset, value.bucket_name);
@@ -170,11 +189,13 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
     const encoded_header_length = switch (encoded_minor_version) {
         0 => legacy_header_length,
         1 => etag_header_length,
+        2, 3 => 164,
+        4 => encryption_header_length,
         else => header_length,
     };
     if (bytes.len < encoded_header_length) return error.InvalidLength;
     if (std.mem.readInt(u16, bytes[flags_offset..status_offset], .little) != 0 or
-        bytes[reserved_offset] != 0 or
+        (encoded_minor_version < 3 and bytes[reserved_offset] != 0) or
         (encoded_minor_version >= 2 and
             (!allZero(bytes[layout_reserved_offset..manifest_count_offset]) or
                 !allZero(bytes[manifest_reserved_offset..upload_id_offset]))))
@@ -184,6 +205,11 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
     const status: object_domain.Status = switch (bytes[status_offset]) {
         1 => .active,
         else => return error.InvalidStatus,
+    };
+    const encryption: object_domain.Encryption = if (encoded_minor_version < 3) .unencrypted else switch (bytes[reserved_offset]) {
+        0 => .unencrypted,
+        1 => .encrypted,
+        else => return error.UnsupportedFlags,
     };
 
     var object_id: id.Uuid = undefined;
@@ -215,12 +241,27 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
     else
         0;
     var upload_id: id.Uuid = .{0} ** 16;
-    if (encoded_minor_version >= 2) @memcpy(&upload_id, bytes[upload_id_offset..header_length]);
+    if (encoded_minor_version >= 2) @memcpy(&upload_id, bytes[upload_id_offset..164]);
     if ((layout == 0 and (manifest_count != 0 or !allZero(&upload_id))) or
         (layout == 1 and (manifest_count == 0 or manifest_count != etag_part_count or !id.isValidV4(upload_id))))
     {
         return error.InvalidMultipartManifest;
     }
+    const encryption_metadata: ?object_domain.EncryptionMetadata = if (encryption == .encrypted and encoded_minor_version >= 4) .{
+        .wrapped_key_nonce = bytes[wrapped_key_nonce_offset..wrapped_key_tag_offset].*,
+        .wrapped_key_tag = bytes[wrapped_key_tag_offset..wrapped_key_offset].*,
+        .wrapped_key = bytes[wrapped_key_offset..data_nonce_offset].*,
+        .data_nonce = bytes[data_nonce_offset..data_tag_offset].*,
+        .data_tag = bytes[data_tag_offset..encryption_header_length].*,
+    } else null;
+    if (encryption == .encrypted and encryption_metadata == null) return error.UnsupportedFlags;
+    const retention_until = if (encoded_minor_version >= 5 and std.mem.readInt(i64, bytes[retention_until_offset .. retention_until_offset + 8], .little) != 0) std.mem.readInt(i64, bytes[retention_until_offset .. retention_until_offset + 8], .little) else null;
+    const retention_mode: ?bucket_domain.RetentionMode = if (encoded_minor_version < 5) null else switch (bytes[retention_mode_offset]) {
+        0 => null,
+        1 => .governance,
+        2 => .compliance,
+        else => return error.UnsupportedFlags,
+    };
 
     const bucket_name_length = std.mem.readInt(u16, bytes[bucket_name_length_offset..key_length_offset], .little);
     const key_length = std.mem.readInt(u16, bytes[key_length_offset..content_type_length_offset], .little);
@@ -313,6 +354,11 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
             .data_generation = data_generation,
             .multipart_manifest = if (layout == 1) .{ .upload_id = upload_id, .parts = manifest_parts } else null,
             .status = status,
+            .encryption = encryption,
+            .encryption_metadata = encryption_metadata,
+            .retention_until_unix_seconds = retention_until,
+            .retention_mode = retention_mode,
+            .legal_hold = encoded_minor_version >= 5 and bytes[legal_hold_offset] != 0,
         },
         .metadata_storage = metadata,
         .manifest_storage = manifest_parts,
@@ -325,6 +371,7 @@ fn validateValue(value: Value) EncodeError!void {
     if (!id.isValidV4(value.data_generation)) return error.InvalidDataGeneration;
     if (value.last_modified_unix_seconds <= 0) return error.InvalidModifiedAt;
     if (value.etag_part_count > object_domain.max_multipart_parts) return error.PayloadTooLarge;
+    if ((value.encryption == .encrypted) != (value.encryption_metadata != null)) return error.InvalidEncryptionMetadata;
     if (value.multipart_manifest) |manifest| {
         if (!id.isValidV4(manifest.upload_id) or manifest.parts.len == 0 or
             manifest.parts.len > object_domain.max_multipart_parts or
@@ -403,6 +450,34 @@ test "object payload round trips required metadata" {
     try std.testing.expectEqualStrings("mobile", decoded.value.user_metadata[0].value);
     try std.testing.expectEqualSlices(u8, &value.data_generation, &decoded.value.data_generation);
     try std.testing.expect(decoded.value.multipart_manifest == null);
+}
+
+test "object payload preserves encryption state and legacy payloads default to unencrypted" {
+    var value = testValue();
+    value.encryption = .encrypted;
+    value.encryption_metadata = .{
+        .wrapped_key_nonce = .{1} ** 12,
+        .wrapped_key_tag = .{2} ** 16,
+        .wrapped_key = .{3} ** 32,
+        .data_nonce = .{4} ** 12,
+        .data_tag = .{5} ** 16,
+    };
+    const bytes = try encode(std.testing.allocator, value);
+    defer std.testing.allocator.free(bytes);
+    const decoded = try decode(std.testing.allocator, bytes);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(object_domain.Encryption.encrypted, decoded.value.encryption);
+
+    const legacy_header = 164;
+    var legacy = try std.testing.allocator.alloc(u8, legacy_header + (bytes.len - header_length));
+    defer std.testing.allocator.free(legacy);
+    @memcpy(legacy[0..legacy_header], bytes[0..legacy_header]);
+    @memcpy(legacy[legacy_header..], bytes[header_length..]);
+    std.mem.writeInt(u16, legacy[6..8], 2, .little);
+    legacy[reserved_offset] = 0;
+    const legacy_decoded = try decode(std.testing.allocator, legacy);
+    defer legacy_decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(object_domain.Encryption.unencrypted, legacy_decoded.value.encryption);
 }
 
 test "object payload round trips multipart manifest" {

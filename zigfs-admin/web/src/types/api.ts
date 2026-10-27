@@ -30,7 +30,24 @@ export interface Bucket {
 export interface BucketConfiguration {
   name: string
   versioning: 'Unversioned' | 'Enabled' | 'Suspended'
+  access_policy: 'Private' | 'Readonly' | 'Public'
+  tags_json?: string
+  encryption: 'Disabled' | 'Enabled'
+  max_bytes?: number
+  max_objects?: number
+  retention_enabled: boolean
+  retention_duration_seconds?: number
+  retention_mode?: 'GOVERNANCE' | 'COMPLIANCE'
+  object_locking: boolean
+  replication_status: 'UNAVAILABLE'
+  replication_enabled: false
+  replication_reason: 'SECOND_SITE_REQUIRED'
   lifecycle_configuration?: string
+}
+
+export interface BucketUsage {
+  bytes: number
+  objects: number
 }
 
 export interface ObjectVersion {
@@ -40,6 +57,9 @@ export interface ObjectVersion {
   is_delete_marker: boolean
   size: number
   last_modified: string
+  retention_until_unix_seconds?: number
+  retention_mode?: 'GOVERNANCE' | 'COMPLIANCE'
+  legal_hold?: boolean
 }
 
 export interface ObjectSummary {
@@ -47,6 +67,9 @@ export interface ObjectSummary {
   size: number
   etag: string
   last_modified: string
+  retention_until_unix_seconds?: number
+  retention_mode?: 'GOVERNANCE' | 'COMPLIANCE'
+  legal_hold?: boolean
 }
 
 export interface AccessKey {
@@ -67,6 +90,7 @@ export interface CredentialPolicy {
   bucket_write: boolean
   object_read: boolean
   object_write: boolean
+  bypass_governance_retention: boolean
 }
 
 export interface CreatedAccessKey extends AccessKey {

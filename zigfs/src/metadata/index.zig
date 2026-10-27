@@ -534,6 +534,16 @@ pub const MetadataIndex = struct {
                 const remainder = entry.key[options.prefix.len..];
                 if (std.mem.indexOf(u8, remainder, separator)) |separator_index| {
                     const child_prefix = entry.key[0 .. options.prefix.len + separator_index + separator.len];
+                    var already_present = false;
+                    for (candidates.items) |candidate| {
+                        if (candidate.directory and std.mem.eql(u8, candidate.key, child_prefix)) {
+                            already_present = true;
+                            break;
+                        }
+                    }
+                    if (!already_present) {
+                        candidates.append(allocator, .{ .key = child_prefix, .directory = true }) catch return error.OutOfMemory;
+                    }
                     object_position = firstAfterObjectPrefix(self.objects.items, object_position, bucket, child_prefix);
                     continue;
                 }
@@ -564,7 +574,18 @@ pub const MetadataIndex = struct {
             }
         }
         if (end < candidates.items.len and end > cursor) {
-            next_start_after = allocator.dupe(u8, candidates.items[end - 1].key) catch return error.OutOfMemory;
+            const last = candidates.items[end - 1];
+            if (last.directory) {
+                var last_object: ?[]const u8 = null;
+                for (self.objects.items) |entry| {
+                    if (std.mem.eql(u8, entry.bucket, bucket) and std.mem.startsWith(u8, entry.key, last.key)) {
+                        last_object = entry.key;
+                    }
+                }
+                next_start_after = allocator.dupe(u8, last_object orelse last.key) catch return error.OutOfMemory;
+            } else {
+                next_start_after = allocator.dupe(u8, last.key) catch return error.OutOfMemory;
+            }
         }
 
         return finishList(

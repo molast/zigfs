@@ -102,6 +102,25 @@ func (client *Client) GetBucketConfiguration(ctx context.Context, name string) (
 	return response, err
 }
 
+func (client *Client) GetBucketUsage(ctx context.Context, name string) (contract.BucketUsage, error) {
+	var response contract.BucketUsage
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/buckets/"+url.PathEscape(name)+"/usage", nil, &response)
+	return response, err
+}
+func (client *Client) GetBucketTags(ctx context.Context, name string) (contract.BucketTags, error) {
+	var response contract.BucketTags
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/buckets/"+url.PathEscape(name)+"/tags", nil, &response)
+	return response, err
+}
+func (client *Client) PutBucketTags(ctx context.Context, name string, tags contract.BucketTags) (contract.BucketTags, error) {
+	var response contract.BucketTags
+	err := client.requestJSON(ctx, http.MethodPut, "/_admin/v1/buckets/"+url.PathEscape(name)+"/tags", tags, &response)
+	return response, err
+}
+func (client *Client) DeleteBucketTags(ctx context.Context, name string) error {
+	return client.requestJSON(ctx, http.MethodDelete, "/_admin/v1/buckets/"+url.PathEscape(name)+"/tags", nil, nil)
+}
+
 func (client *Client) UpdateBucketConfiguration(ctx context.Context, name string, request contract.UpdateBucketConfigurationRequest) (contract.BucketConfiguration, error) {
 	var response contract.BucketConfiguration
 	err := client.requestJSON(ctx, http.MethodPatch, "/_admin/v1/buckets/"+url.PathEscape(name)+"/configuration", request, &response)
