@@ -34,6 +34,7 @@ pub const routes = [_]Route{
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/configuration" },
     .{ .method = .patch, .path = "/_admin/v1/buckets/:name/configuration" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/usage" },
+    .{ .method = .get, .path = "/_admin/v1/buckets/:name/events" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/versions" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/objects" },
     .{ .method = .post, .path = "/_admin/v1/buckets/:name/directories" },
@@ -89,6 +90,12 @@ pub fn serveRequest(
             const raw_name = resource[0 .. resource.len - "/usage".len];
             if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '/') != null) return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
             return serveGetBucketUsage(request, application, request_id, raw_name);
+        }
+        if (std.mem.endsWith(u8, resource, "/events")) {
+            if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
+            const raw_name = resource[0 .. resource.len - "/events".len];
+            if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '/') != null) return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+            return serveListBucketEvents(request, application, request_id, raw_name, target);
         }
         if (std.mem.endsWith(u8, resource, "/tags")) {
             const raw_name = resource[0 .. resource.len - "/tags".len];
@@ -244,6 +251,90 @@ fn serveListBuckets(
     try json.beginArray();
     for (result.buckets) |bucket| try writeBucket(&json, bucket);
     try json.endArray();
+    try json.endObject();
+    return respondJsonBytes(request, request_id, .ok, output.written());
+}
+
+fn serveListBucketEvents(
+    request: *std.http.Server.Request,
+    application: *Application,
+    request_id: []const u8,
+    raw_name: []const u8,
+    target: []const u8,
+) !std.http.Status {
+    const name = decodeComponent(application.allocator, raw_name, false) catch return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+    defer application.allocator.free(name);
+    const service = application.bucketService() orelse return respondNotReady(request, request_id);
+    const bucket = service.head(name) catch |err| return respondBucketError(request, request_id, err);
+    bucket.deinit(application.allocator);
+    var offset: usize = 0;
+    var limit: usize = 50;
+    var from: ?i64 = null;
+    var to: ?i64 = null;
+    var action: ?[]u8 = null;
+    var outcome: ?[]u8 = null;
+    defer if (action) |value| application.allocator.free(value);
+    defer if (outcome) |value| application.allocator.free(value);
+    const query_start = std.mem.indexOfScalar(u8, target, '?');
+    if (query_start) |start| {
+        var parameters = std.mem.splitScalar(u8, target[start + 1 ..], '&');
+        while (parameters.next()) |parameter| {
+            if (parameter.len == 0) continue;
+            const equals = std.mem.indexOfScalar(u8, parameter, '=') orelse return respondError(request, request_id, .bad_request, "InvalidQuery", "events query is invalid");
+            const key = parameter[0..equals];
+            const value = decodeComponent(application.allocator, parameter[equals + 1 ..], true) catch return respondError(request, request_id, .bad_request, "InvalidQuery", "events query is invalid");
+            defer application.allocator.free(value);
+            if (std.mem.eql(u8, key, "cursor")) {
+                offset = std.fmt.parseInt(usize, value, 10) catch return respondError(request, request_id, .bad_request, "InvalidQuery", "cursor must be a non-negative integer");
+            } else if (std.mem.eql(u8, key, "limit")) {
+                limit = std.fmt.parseInt(usize, value, 10) catch return respondError(request, request_id, .bad_request, "InvalidQuery", "limit must be a positive integer");
+                if (limit == 0 or limit > 200) return respondError(request, request_id, .bad_request, "InvalidQuery", "limit must be between 1 and 200");
+            } else if (std.mem.eql(u8, key, "from")) {
+                from = std.fmt.parseInt(i64, value, 10) catch return respondError(request, request_id, .bad_request, "InvalidQuery", "from must be a Unix timestamp");
+            } else if (std.mem.eql(u8, key, "to")) {
+                to = std.fmt.parseInt(i64, value, 10) catch return respondError(request, request_id, .bad_request, "InvalidQuery", "to must be a Unix timestamp");
+            } else if (std.mem.eql(u8, key, "action")) {
+                action = application.allocator.dupe(u8, value) catch return respondError(request, request_id, .internal_server_error, "OutOfMemory", "unable to parse action");
+            } else if (std.mem.eql(u8, key, "outcome")) {
+                outcome = application.allocator.dupe(u8, value) catch return respondError(request, request_id, .internal_server_error, "OutOfMemory", "unable to parse outcome");
+            } else {
+                return respondError(request, request_id, .bad_request, "InvalidQuery", "unsupported events query parameter");
+            }
+        }
+    }
+    if (from != null and to != null and from.? > to.?) return respondError(request, request_id, .bad_request, "InvalidQuery", "from must not be after to");
+    var page = application.listAuditEvents(name, offset, limit, from, to, action, outcome) catch |err| return switch (err) {
+        error.OutOfMemory => respondError(request, request_id, .internal_server_error, "OutOfMemory", "unable to list audit events"),
+        else => respondNotReady(request, request_id),
+    };
+    defer page.deinit(application.allocator);
+    var output: std.Io.Writer.Allocating = .init(application.allocator);
+    defer output.deinit();
+    var json: std.json.Stringify = .{ .writer = &output.writer };
+    try json.beginObject();
+    try json.objectField("items");
+    try json.beginArray();
+    for (page.items) |event| {
+        try json.beginObject();
+        try json.objectField("timestamp_unix_seconds");
+        try json.write(event.timestamp_unix_seconds);
+        try json.objectField("request_id");
+        try json.write(event.request_id);
+        try json.objectField("actor");
+        try json.write(event.actor);
+        try json.objectField("action");
+        try json.write(event.action);
+        try json.objectField("target");
+        try json.write(event.target);
+        try json.objectField("outcome");
+        try json.write(event.outcome);
+        try json.endObject();
+    }
+    try json.endArray();
+    if (page.next_cursor) |cursor| {
+        try json.objectField("next_cursor");
+        try json.write(cursor);
+    }
     try json.endObject();
     return respondJsonBytes(request, request_id, .ok, output.written());
 }
@@ -450,7 +541,14 @@ fn serveUpdateBucketConfiguration(
         updated.deinit(application.allocator);
     }
     if (parsed.value.max_bytes != null or parsed.value.max_objects != null) {
-        const updated = service.setQuota(name, .{ .max_bytes = parsed.value.max_bytes, .max_objects = parsed.value.max_objects }) catch |err| return respondBucketError(request, request_id, err);
+        // The JSON API uses zero as the clear value because omitted fields
+        // mean "leave the existing quota unchanged". Keep the domain model
+        // canonical by storing cleared limits as null.
+        const current = service.head(name) catch |err| return respondBucketError(request, request_id, err);
+        defer current.deinit(application.allocator);
+        const max_bytes = if (parsed.value.max_bytes) |value| if (value == 0) null else value else current.quota.max_bytes;
+        const max_objects = if (parsed.value.max_objects) |value| if (value == 0) null else value else current.quota.max_objects;
+        const updated = service.setQuota(name, .{ .max_bytes = max_bytes, .max_objects = max_objects }) catch |err| return respondBucketError(request, request_id, err);
         updated.deinit(application.allocator);
     }
     if (parsed.value.retention_enabled != null or parsed.value.retention_duration_seconds != null or parsed.value.retention_mode != null) {
@@ -1921,12 +2019,20 @@ fn respondNoContent(
 }
 
 fn audit(
-    application: *const Application,
+    application: *Application,
     request_id: []const u8,
     action: []const u8,
     target: []const u8,
     outcome: []const u8,
 ) void {
+    application.recordAudit(.{
+        .timestamp_unix_seconds = std.Io.Clock.real.now(application.io.?).toSeconds(),
+        .request_id = request_id,
+        .actor = application.config.admin_username,
+        .action = action,
+        .target = target,
+        .outcome = outcome,
+    });
     std.log.info(
         "management audit request_id={s} actor={s} action={s} target={s} outcome={s} time={d}",
         .{
@@ -1948,14 +2054,16 @@ fn accessPolicyName(policy: @import("../domain/bucket.zig").AccessPolicy) []cons
     };
 }
 
-fn auditAccessPolicy(application: *const Application, request_id: []const u8, bucket: []const u8, old_value: []const u8, new_value: []const u8) void {
+fn auditAccessPolicy(application: *Application, request_id: []const u8, bucket: []const u8, old_value: []const u8, new_value: []const u8) void {
+    audit(application, request_id, "update_access_policy", bucket, new_value);
     std.log.info(
         "management audit request_id={s} actor={s} action=update_access_policy bucket={s} old_value={s} new_value={s} time={d}",
         .{ request_id, application.config.admin_username, bucket, old_value, new_value, std.Io.Clock.real.now(application.io.?).toSeconds() },
     );
 }
 
-fn auditRetention(application: *const Application, request_id: []const u8, bucket: []const u8, old_value: @import("../domain/bucket.zig").Retention, new_value: @import("../domain/bucket.zig").Retention) void {
+fn auditRetention(application: *Application, request_id: []const u8, bucket: []const u8, old_value: @import("../domain/bucket.zig").Retention, new_value: @import("../domain/bucket.zig").Retention) void {
+    audit(application, request_id, "update_retention", bucket, if (new_value.enabled) "enabled" else "disabled");
     std.log.info(
         "management audit request_id={s} actor={s} action=update_retention bucket={s} old_enabled={} old_duration={d} old_mode={s} new_enabled={} new_duration={d} new_mode={s} time={d}",
         .{ request_id, application.config.admin_username, bucket, old_value.enabled, old_value.default_duration_seconds orelse 0, if (old_value.mode) |mode| @tagName(mode) else "null", new_value.enabled, new_value.default_duration_seconds orelse 0, if (new_value.mode) |mode| @tagName(mode) else "null", std.Io.Clock.real.now(application.io.?).toSeconds() },

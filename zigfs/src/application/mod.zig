@@ -53,6 +53,39 @@ pub const StorageScannerSnapshot = struct {
     last_scan: ?StorageScanReport,
 };
 
+pub const AuditEvent = struct {
+    timestamp_unix_seconds: i64,
+    request_id: []const u8,
+    actor: []const u8,
+    action: []const u8,
+    target: []const u8,
+    outcome: []const u8,
+};
+
+pub const AuditEventPage = struct {
+    items: []AuditEvent,
+    next_cursor: ?[]const u8 = null,
+
+    pub fn deinit(self: *AuditEventPage, allocator: std.mem.Allocator) void {
+        for (self.items) |event| {
+            allocator.free(event.request_id);
+            allocator.free(event.actor);
+            allocator.free(event.action);
+            allocator.free(event.target);
+            allocator.free(event.outcome);
+        }
+        allocator.free(self.items);
+        if (self.next_cursor) |cursor| allocator.free(cursor);
+        self.* = .{ .items = &.{} };
+    }
+};
+
+// Retain a practical single-node audit window while keeping query memory bounded.
+// Durable long-term archival is planned as a separate storage tier.
+const audit_event_capacity: usize = 4096;
+const audit_events_path = ".zigfs/system/audit-events.json";
+const audit_archive_dir = ".zigfs/system/audit-archive";
+
 pub const Application = struct {
     allocator: std.mem.Allocator,
     config: Config,
@@ -82,6 +115,8 @@ pub const Application = struct {
     scanner_state_mutex: std.Io.Mutex = .init,
     scanner_partition: u8 = 0,
     last_scanner_report: ?StorageScanReport = null,
+    audit_mutex: std.Io.Mutex = .init,
+    audit_events: std.ArrayListUnmanaged(AuditEvent) = .empty,
 
     pub fn init(config: Config) Application {
         return initWithAllocator(config, std.heap.smp_allocator);
@@ -96,6 +131,177 @@ pub const Application = struct {
             .config = config,
             .local_storage = LocalStorageBackend.init(config.data_root),
         };
+    }
+
+    pub fn recordAudit(self: *Application, event: AuditEvent) void {
+        self.audit_mutex.lockUncancelable(self.io orelse return);
+        defer self.audit_mutex.unlock(self.io.?);
+        if (self.audit_events.items.len == audit_event_capacity) {
+            self.persistArchivedEvent(self.audit_events.items[0]);
+            self.allocator.free(self.audit_events.items[0].request_id);
+            self.allocator.free(self.audit_events.items[0].actor);
+            self.allocator.free(self.audit_events.items[0].action);
+            self.allocator.free(self.audit_events.items[0].target);
+            self.allocator.free(self.audit_events.items[0].outcome);
+            _ = self.audit_events.orderedRemove(0);
+        }
+        const owned: AuditEvent = .{
+            .timestamp_unix_seconds = event.timestamp_unix_seconds,
+            .request_id = self.allocator.dupe(u8, event.request_id) catch return,
+            .actor = self.allocator.dupe(u8, event.actor) catch return,
+            .action = self.allocator.dupe(u8, event.action) catch return,
+            .target = self.allocator.dupe(u8, event.target) catch return,
+            .outcome = self.allocator.dupe(u8, event.outcome) catch return,
+        };
+        self.audit_events.append(self.allocator, owned) catch {
+            self.allocator.free(owned.request_id);
+            self.allocator.free(owned.actor);
+            self.allocator.free(owned.action);
+            self.allocator.free(owned.target);
+            self.allocator.free(owned.outcome);
+        };
+        self.persistAuditEvents();
+    }
+
+    fn persistArchivedEvent(self: *Application, event: AuditEvent) void {
+        const io = self.io orelse return;
+        const root = self.data_root orelse return;
+        root.createDirPath(io, audit_archive_dir) catch return;
+        var path_buffer: [180]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buffer, "{s}/{d}-{x}.json", .{ audit_archive_dir, event.timestamp_unix_seconds, std.hash.Wyhash.hash(0, event.request_id) }) catch return;
+        var output: std.Io.Writer.Allocating = .init(self.allocator);
+        defer output.deinit();
+        var json: std.json.Stringify = .{ .writer = &output.writer };
+        json.write(event) catch return;
+        var atomic = root.createFileAtomic(io, path, .{ .replace = false }) catch return;
+        defer atomic.deinit(io);
+        atomic.file.writeStreamingAll(io, output.written()) catch return;
+        atomic.file.sync(io) catch return;
+        atomic.link(io) catch return;
+    }
+
+    fn persistAuditEvents(self: *Application) void {
+        const io = self.io orelse return;
+        const root = self.data_root orelse return;
+        var output: std.Io.Writer.Allocating = .init(self.allocator);
+        defer output.deinit();
+        var json: std.json.Stringify = .{ .writer = &output.writer };
+        json.beginArray() catch return;
+        for (self.audit_events.items) |event| {
+            json.beginObject() catch return;
+            json.objectField("timestamp_unix_seconds") catch return;
+            json.write(event.timestamp_unix_seconds) catch return;
+            json.objectField("request_id") catch return;
+            json.write(event.request_id) catch return;
+            json.objectField("actor") catch return;
+            json.write(event.actor) catch return;
+            json.objectField("action") catch return;
+            json.write(event.action) catch return;
+            json.objectField("target") catch return;
+            json.write(event.target) catch return;
+            json.objectField("outcome") catch return;
+            json.write(event.outcome) catch return;
+            json.endObject() catch return;
+        }
+        json.endArray() catch return;
+        var atomic = root.createFileAtomic(io, audit_events_path, .{ .replace = true }) catch return;
+        defer atomic.deinit(io);
+        atomic.file.writeStreamingAll(io, output.written()) catch return;
+        atomic.file.sync(io) catch return;
+        atomic.link(io) catch return;
+    }
+
+    fn loadAuditEvents(self: *Application) void {
+        const io = self.io orelse return;
+        const root = self.data_root orelse return;
+        const bytes = root.readFileAlloc(io, audit_events_path, self.allocator, .limited(1024 * 1024)) catch return;
+        defer self.allocator.free(bytes);
+        const parsed = std.json.parseFromSlice([]AuditEvent, self.allocator, bytes, .{ .allocate = .alloc_always }) catch return;
+        defer parsed.deinit();
+        for (parsed.value) |event| {
+            if (self.audit_events.items.len == audit_event_capacity) break;
+            const owned: AuditEvent = .{
+                .timestamp_unix_seconds = event.timestamp_unix_seconds,
+                .request_id = self.allocator.dupe(u8, event.request_id) catch break,
+                .actor = self.allocator.dupe(u8, event.actor) catch break,
+                .action = self.allocator.dupe(u8, event.action) catch break,
+                .target = self.allocator.dupe(u8, event.target) catch break,
+                .outcome = self.allocator.dupe(u8, event.outcome) catch break,
+            };
+            self.audit_events.append(self.allocator, owned) catch break;
+        }
+    }
+
+    fn freeAuditEvent(self: *Application, event: AuditEvent) void {
+        self.allocator.free(event.request_id);
+        self.allocator.free(event.actor);
+        self.allocator.free(event.action);
+        self.allocator.free(event.target);
+        self.allocator.free(event.outcome);
+    }
+
+    fn cloneAuditEvent(self: *Application, event: AuditEvent) !AuditEvent {
+        return .{
+            .timestamp_unix_seconds = event.timestamp_unix_seconds,
+            .request_id = try self.allocator.dupe(u8, event.request_id),
+            .actor = try self.allocator.dupe(u8, event.actor),
+            .action = try self.allocator.dupe(u8, event.action),
+            .target = try self.allocator.dupe(u8, event.target),
+            .outcome = try self.allocator.dupe(u8, event.outcome),
+        };
+    }
+
+    fn auditEventNewestFirst(_: void, left: AuditEvent, right: AuditEvent) bool {
+        return left.timestamp_unix_seconds > right.timestamp_unix_seconds;
+    }
+
+    pub fn listAuditEvents(self: *Application, bucket: []const u8, offset: usize, limit: usize, from: ?i64, to: ?i64, action: ?[]const u8, outcome: ?[]const u8) !AuditEventPage {
+        const io = self.io orelse return error.Unavailable;
+        self.audit_mutex.lockUncancelable(io);
+        defer self.audit_mutex.unlock(io);
+        var candidates: std.ArrayListUnmanaged(AuditEvent) = .empty;
+        defer candidates.deinit(self.allocator);
+        defer for (candidates.items) |event| self.freeAuditEvent(event);
+        for (self.audit_events.items) |event| try candidates.append(self.allocator, try self.cloneAuditEvent(event));
+        if (self.data_root) |root| if (root.openDir(io, audit_archive_dir, .{ .iterate = true })) |directory_value| {
+            var directory = directory_value;
+            defer directory.close(io);
+            var iterator = directory.iterate();
+            while (try iterator.next(io)) |entry| {
+                if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".json")) continue;
+                const path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ audit_archive_dir, entry.name });
+                defer self.allocator.free(path);
+                const bytes = root.readFileAlloc(io, path, self.allocator, .limited(64 * 1024)) catch continue;
+                defer self.allocator.free(bytes);
+                const parsed = std.json.parseFromSlice(AuditEvent, self.allocator, bytes, .{ .allocate = .alloc_always }) catch continue;
+                defer parsed.deinit();
+                try candidates.append(self.allocator, try self.cloneAuditEvent(parsed.value));
+            }
+        } else |_| {};
+        std.mem.sort(AuditEvent, candidates.items, {}, auditEventNewestFirst);
+        var items = try self.allocator.alloc(AuditEvent, @min(limit, candidates.items.len));
+        var count: usize = 0;
+        var skipped: usize = 0;
+        var matched_total: usize = 0;
+        for (candidates.items) |event| {
+            if (!std.mem.eql(u8, event.target, bucket)) continue;
+            if (from) |value| if (event.timestamp_unix_seconds < value) continue;
+            if (to) |value| if (event.timestamp_unix_seconds > value) continue;
+            if (action) |value| if (!std.mem.eql(u8, event.action, value)) continue;
+            if (outcome) |value| if (!std.mem.eql(u8, event.outcome, value)) continue;
+            matched_total += 1;
+            if (skipped < offset) {
+                skipped += 1;
+                continue;
+            }
+            if (count == items.len) break;
+            items[count] = try self.cloneAuditEvent(event);
+            count += 1;
+        }
+        items = try self.allocator.realloc(items, count);
+        const has_more = offset + count < matched_total;
+        const next_cursor = if (has_more) try std.fmt.allocPrint(self.allocator, "{d}", .{offset + count}) else null;
+        return .{ .items = items, .next_cursor = next_cursor };
     }
 
     pub fn initialize(self: *Application, io: std.Io) !void {
@@ -131,6 +337,7 @@ pub const Application = struct {
             io,
             self.config.stream_buffer_size,
         );
+        self.loadAuditEvents();
 
         self.recovery_state.begin();
         self.recovery_report = recovery.run(
@@ -281,6 +488,14 @@ pub const Application = struct {
     }
 
     pub fn deinit(self: *Application, io: std.Io) void {
+        for (self.audit_events.items) |event| {
+            self.allocator.free(event.request_id);
+            self.allocator.free(event.actor);
+            self.allocator.free(event.action);
+            self.allocator.free(event.target);
+            self.allocator.free(event.outcome);
+        }
+        self.audit_events.deinit(self.allocator);
         if (self.metadata_index) |*metadata_index| {
             metadata_index.deinit();
             self.metadata_index = null;
@@ -1535,6 +1750,37 @@ test "directory deletion removes a same-key object marker from listings" {
     );
 }
 
+test "removing a delete marker restores the object to management listings" {
+    const test_streams = @import("../testing/streams.zig");
+    const object_domain = @import("../domain/object.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(data_root);
+    var app = Application.initWithAllocator(.{ .data_root = data_root, .metrics_enabled = false }, std.testing.allocator);
+    defer app.deinit(std.testing.io);
+    try app.initialize(std.testing.io);
+    const bucket = try app.bucketService().?.create("project-assets", "owner-a");
+    bucket.deinit(std.testing.allocator);
+    const enabled = try app.bucketService().?.setVersioning("project-assets", .enabled);
+    enabled.deinit(std.testing.allocator);
+    var source = test_streams.SliceSource.init("body");
+    const object = try app.objectService().?.put("project-assets", "restored.txt", source.interface(), .{});
+    const object_version = object.version_id;
+    object.deinit(std.testing.allocator);
+    const marker = try app.objectService().?.delete("project-assets", "restored.txt");
+    const marker_version = marker.version_id.?;
+    try std.testing.expectError(error.ObjectNotFound, app.objectService().?.head("project-assets", "restored.txt"));
+    _ = try app.objectService().?.deleteVersion("project-assets", "restored.txt", marker_version);
+    const restored = try app.objectService().?.head("project-assets", "restored.txt");
+    defer restored.deinit(std.testing.allocator);
+    try std.testing.expect(object_domain.VersionId.eql(restored.version_id, object_version));
+    const listed = try app.objectListing().?.list("project-assets", .{ .delimiter = "/" });
+    defer listed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), listed.objects.len);
+    try std.testing.expectEqualStrings("restored.txt", listed.objects[0].key);
+}
+
 test "object gc retains current data and reclaims old deleted and orphan generations" {
     const id = @import("../common/id.zig");
     const object_data_port = @import("../ports/object_data_store.zig");
@@ -2010,6 +2256,31 @@ test "invalid object payload keeps a restarted application not ready" {
     try std.testing.expect(reader.objectService() == null);
     try std.testing.expect(reader.objectListing() == null);
     try std.testing.expect(reader.objectGc() == null);
+}
+
+test "audit events support bucket filtering, time filtering, and cursor pagination" {
+    var application = Application.initWithAllocator(.{}, std.testing.allocator);
+    defer application.deinit(std.testing.io);
+    application.io = std.testing.io;
+    application.recordAudit(.{ .timestamp_unix_seconds = 10, .request_id = "r1", .actor = "admin", .action = "create", .target = "alpha", .outcome = "ok" });
+    application.recordAudit(.{ .timestamp_unix_seconds = 20, .request_id = "r2", .actor = "admin", .action = "update", .target = "alpha", .outcome = "ok" });
+    application.recordAudit(.{ .timestamp_unix_seconds = 30, .request_id = "r3", .actor = "admin", .action = "update", .target = "beta", .outcome = "ok" });
+
+    var page = try application.listAuditEvents("alpha", 0, 1, null, null, null, null);
+    defer page.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), page.items.len);
+    try std.testing.expectEqualStrings("r2", page.items[0].request_id);
+    try std.testing.expect(page.next_cursor != null);
+
+    var filtered = try application.listAuditEvents("alpha", 0, 10, 15, null, null, null);
+    defer filtered.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), filtered.items.len);
+    try std.testing.expectEqualStrings("r2", filtered.items[0].request_id);
+
+    var next = try application.listAuditEvents("alpha", 1, 10, null, null, null, null);
+    defer next.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), next.items.len);
+    try std.testing.expectEqualStrings("r1", next.items[0].request_id);
 }
 
 test {

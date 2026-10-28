@@ -5,6 +5,7 @@ import type {
   Bucket,
   BucketConfiguration,
   BucketUsage,
+  ListBucketEventsResponse,
   CreatedAccessKey,
   CredentialPolicy,
   ListObjectsResponse,
@@ -100,6 +101,15 @@ export function createApiClient() {
       request<BucketConfiguration>(`/api/v1/buckets/${encodeURIComponent(name)}/configuration`),
     getBucketUsage: (name: string) =>
       request<BucketUsage>(`/api/v1/buckets/${encodeURIComponent(name)}/usage`),
+    listBucketEvents: (name: string, cursor = '', limit = 50, from = '', to = '', action = '', outcome = '') => {
+      const query = new URLSearchParams({ limit: String(limit) })
+      if (cursor) query.set('cursor', cursor)
+      if (from) query.set('from', from)
+      if (to) query.set('to', to)
+      if (action) query.set('action', action)
+      if (outcome) query.set('outcome', outcome)
+      return request<ListBucketEventsResponse>(`/api/v1/buckets/${encodeURIComponent(name)}/events?${query.toString()}`)
+    },
     updateBucketConfiguration: (
       name: string,
       update: { versioning?: 'Enabled' | 'Suspended'; access_policy?: 'Private' | 'Readonly' | 'Public'; tags_json?: string; clear_tags?: boolean; encryption?: 'Disabled' | 'Enabled'; max_bytes?: number; max_objects?: number; retention_enabled?: boolean; retention_duration_seconds?: number; retention_mode?: 'GOVERNANCE' | 'COMPLIANCE'; object_locking?: boolean; replication_enabled?: boolean; lifecycle_configuration?: string; clear_lifecycle?: boolean },

@@ -34,6 +34,20 @@ type BucketUsage struct {
 	Objects uint64 `json:"objects"`
 }
 
+type AuditEvent struct {
+	Timestamp int64  `json:"timestamp_unix_seconds"`
+	RequestID string `json:"request_id"`
+	Actor     string `json:"actor"`
+	Action    string `json:"action"`
+	Target    string `json:"target"`
+	Outcome   string `json:"outcome"`
+}
+
+type ListBucketEventsResponse struct {
+	Items      []AuditEvent `json:"items"`
+	NextCursor string       `json:"next_cursor,omitempty"`
+}
+
 type BucketTags struct {
 	TagsJSON string `json:"tags_json,omitempty"`
 }
@@ -62,19 +76,19 @@ type ObjectVersion struct {
 	IsDeleteMarker bool      `json:"is_delete_marker"`
 	Size           int64     `json:"size"`
 	LastModified   time.Time `json:"last_modified"`
-	RetentionUntil *int64 `json:"retention_until_unix_seconds,omitempty"`
-	RetentionMode  string `json:"retention_mode,omitempty"`
-	LegalHold      bool `json:"legal_hold"`
+	RetentionUntil *int64    `json:"retention_until_unix_seconds,omitempty"`
+	RetentionMode  string    `json:"retention_mode,omitempty"`
+	LegalHold      bool      `json:"legal_hold"`
 }
 
 type ObjectSummary struct {
-	Key            string `json:"key"`
-	Size           int64 `json:"size"`
-	ETag           string `json:"etag"`
+	Key            string    `json:"key"`
+	Size           int64     `json:"size"`
+	ETag           string    `json:"etag"`
 	LastModified   time.Time `json:"last_modified"`
-	RetentionUntil *int64 `json:"retention_until_unix_seconds,omitempty"`
-	RetentionMode  string `json:"retention_mode,omitempty"`
-	LegalHold      bool `json:"legal_hold"`
+	RetentionUntil *int64    `json:"retention_until_unix_seconds,omitempty"`
+	RetentionMode  string    `json:"retention_mode,omitempty"`
+	LegalHold      bool      `json:"legal_hold"`
 }
 
 type ListObjectVersionsResponse struct {
@@ -195,10 +209,10 @@ type AccessKey struct {
 }
 
 type CredentialPolicy struct {
-	BucketRead  bool `json:"bucket_read"`
-	BucketWrite bool `json:"bucket_write"`
-	ObjectRead  bool `json:"object_read"`
-	ObjectWrite bool `json:"object_write"`
+	BucketRead                bool `json:"bucket_read"`
+	BucketWrite               bool `json:"bucket_write"`
+	ObjectRead                bool `json:"object_read"`
+	ObjectWrite               bool `json:"object_write"`
 	BypassGovernanceRetention bool `json:"bypass_governance_retention"`
 }
 

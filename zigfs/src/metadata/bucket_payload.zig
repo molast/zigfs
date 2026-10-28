@@ -114,7 +114,10 @@ pub fn encode(
     offset += value.name.len;
     @memcpy(bytes[offset .. offset + value.owner.len], value.owner);
     offset += value.owner.len;
-    @memcpy(bytes[offset..], lifecycle);
+    // `@memcpy` requires source and destination slices to have identical
+    // lengths. At this point the destination still includes the tags field,
+    // so bound it to the lifecycle payload explicitly.
+    @memcpy(bytes[offset .. offset + lifecycle.len], lifecycle);
     offset += lifecycle.len;
     @memcpy(bytes[offset..], tags);
     return bytes;
@@ -254,6 +257,23 @@ test "bucket payload round trips all required metadata" {
     try std.testing.expectEqualStrings(value.owner, decoded.owner);
     try std.testing.expectEqual(value.status, decoded.status);
     try std.testing.expectEqual(value.created_at_unix_seconds, decoded.created_at_unix_seconds);
+}
+
+test "bucket payload writes lifecycle and tags fields independently" {
+    const value: Value = .{
+        .id = .{ 0, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 },
+        .name = "project-assets",
+        .owner = "root",
+        .status = .active,
+        .lifecycle_configuration = "{\"rules\":[]}",
+        .tags_json = "{\"age\":\"12\"}",
+        .created_at_unix_seconds = 1_800_000_000,
+    };
+    const encoded = try encode(std.testing.allocator, value);
+    defer std.testing.allocator.free(encoded);
+    const decoded = try decode(encoded);
+    try std.testing.expectEqualStrings(value.lifecycle_configuration.?, decoded.lifecycle_configuration.?);
+    try std.testing.expectEqualStrings(value.tags_json.?, decoded.tags_json.?);
 }
 
 test "bucket payload round trips access policy and defaults legacy policy to private" {

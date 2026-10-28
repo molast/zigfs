@@ -50,6 +50,20 @@ export interface BucketUsage {
   objects: number
 }
 
+export interface AuditEvent {
+  timestamp_unix_seconds: number
+  request_id: string
+  actor: string
+  action: string
+  target: string
+  outcome: string
+}
+
+export interface ListBucketEventsResponse {
+  items: AuditEvent[]
+  next_cursor?: string
+}
+
 export interface ObjectVersion {
   key: string
   version_id: string

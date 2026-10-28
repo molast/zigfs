@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"zigfs-admin/server/internal/contract"
@@ -105,6 +106,35 @@ func (client *Client) GetBucketConfiguration(ctx context.Context, name string) (
 func (client *Client) GetBucketUsage(ctx context.Context, name string) (contract.BucketUsage, error) {
 	var response contract.BucketUsage
 	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/buckets/"+url.PathEscape(name)+"/usage", nil, &response)
+	return response, err
+}
+
+func (client *Client) ListBucketEvents(ctx context.Context, name, cursor, from, to, action, outcome string, limit int) (contract.ListBucketEventsResponse, error) {
+	var response contract.ListBucketEventsResponse
+	query := url.Values{}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	if from != "" {
+		query.Set("from", from)
+	}
+	if to != "" {
+		query.Set("to", to)
+	}
+	if action != "" {
+		query.Set("action", action)
+	}
+	if outcome != "" {
+		query.Set("outcome", outcome)
+	}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	path := "/_admin/v1/buckets/" + url.PathEscape(name) + "/events"
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	err := client.requestJSON(ctx, http.MethodGet, path, nil, &response)
 	return response, err
 }
 func (client *Client) GetBucketTags(ctx context.Context, name string) (contract.BucketTags, error) {

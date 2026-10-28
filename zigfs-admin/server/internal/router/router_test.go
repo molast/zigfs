@@ -61,6 +61,10 @@ func (managementService) GetBucketConfiguration(context.Context, string) (contra
 func (managementService) GetBucketUsage(context.Context, string) (contract.BucketUsage, error) {
 	return contract.BucketUsage{}, nil
 }
+
+func (managementService) ListBucketEvents(context.Context, string, string, string, string, string, string, int) (contract.ListBucketEventsResponse, error) {
+	return contract.ListBucketEventsResponse{}, nil
+}
 func (managementService) GetBucketTags(context.Context, string) (contract.BucketTags, error) {
 	return contract.BucketTags{}, nil
 }

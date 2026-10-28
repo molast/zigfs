@@ -14,7 +14,6 @@ import {
   History,
   List,
   Pause,
-  PanelRight,
   Play,
   RefreshCw,
   RotateCcw,
@@ -76,6 +75,12 @@ interface TransferDialogState {
   items: SelectedObject[]
 }
 
+interface FolderSizeSummary {
+  bytes: number
+  objects: number
+  generatedAt: string
+}
+
 export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNavigatePath, onBack }: ObjectsViewProps) {
   const confirm = useConfirm()
   const { startLoading, withLoading } = useLoading()
@@ -116,11 +121,15 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   const [transferDialog, setTransferDialog] = useState<TransferDialogState | null>(null)
   const [transferBucket, setTransferBucket] = useState(bucket)
   const [transferPath, setTransferPath] = useState('')
+  const [transferDirectories, setTransferDirectories] = useState<string[]>([])
+  const [transferTreeOpen, setTransferTreeOpen] = useState(false)
   const [transferError, setTransferError] = useState('')
   const [transferring, setTransferring] = useState(false)
   const [detail, setDetail] = useState<ObjectSummary | null>(null)
   const [detailUrl, setDetailUrl] = useState<PresignObjectResponse | null>(null)
   const [detailError, setDetailError] = useState('')
+  const [directorySizeSummaries, setDirectorySizeSummaries] = useState<Map<string, FolderSizeSummary>>(new Map())
+  const [directorySizeLoading, setDirectorySizeLoading] = useState<Set<string>>(new Set())
   const fileInput = useRef<HTMLInputElement>(null)
   const uploadControl = useRef<{
     uploadId: string
@@ -181,9 +190,9 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       })
   }, [api, bucket, withLoading])
 
-  async function load(reset: boolean, requestedPrefix = prefix) {
+  async function load(reset: boolean, requestedPrefix = prefix, requestedShowDeleted = showDeleted) {
     if (!bucket) return
-    if (!reset && (listLoading.current || !nextToken || viewMode !== 'current' || showDeleted)) return
+    if (!reset && (listLoading.current || !nextToken || viewMode !== 'current' || requestedShowDeleted)) return
     const requestId = ++listRequestId.current
     listLoading.current = true
     const stopLoading = startLoading(`正在加载${viewMode === 'versions' ? '对象版本' : '对象'}...`)
@@ -192,6 +201,8 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         setSelectedObjectKeys(new Set())
         setSelectedDeletedIds(new Set())
         setSelectedVersionIds(new Set())
+        setDirectorySizeSummaries(new Map())
+        setDirectorySizeLoading(new Set())
       }
       setLoading(true)
       setError('')
@@ -203,7 +214,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         setDeletedObjects([])
         setDeletedObjectSizes(new Map())
         setNextToken('')
-      } else if (showDeleted) {
+      } else if (requestedShowDeleted) {
         const history = await api.listObjectVersions(bucket, currentPrefix)
         if (requestId !== listRequestId.current) return
         setObjects([])
@@ -214,11 +225,14 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         setDeletedObjects(sortObjectVersions(visibleHistory.filter((item) => !isDirectoryKey(item.key) && item.is_delete_marker && item.is_latest)))
       } else {
         const search = searchQuery.trim()
-        const result = await api.listObjects(bucket, search ? '' : currentPrefix, reset ? '' : nextToken, search, 10, search ? '' : '/')
+        // Deleted markers still occupy index pagination slots in ZigFS. Read a
+        // larger page here so a bucket with many deleted versions does not
+        // produce an empty visible page before active objects are reached.
+        const result = await api.listObjects(bucket, search ? '' : currentPrefix, reset ? '' : nextToken, search, 1000, search ? '' : '/')
         if (requestId !== listRequestId.current) return
         const directoryItems = (result.directories ?? []).map((directory) => directorySummary(directory.key, directory.last_modified))
         const visibleItems = hideCurrentDirectoryMarker([...result.items, ...directoryItems], currentPrefix)
-        setObjects((current) => sortObjectSummaries(reset ? visibleItems : [...current, ...visibleItems]))
+        setObjects((current) => reset ? sortObjectSummaries(visibleItems) : [...current, ...visibleItems])
         setNextToken(result.is_truncated ? (result.continuation_token ?? '') : '')
         setDeletedObjects([])
         setDeletedObjectSizes(new Map())
@@ -231,6 +245,39 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         listLoading.current = false
       }
       stopLoading()
+    }
+  }
+
+  async function calculateFolderSize(folderPrefix: string): Promise<FolderSizeSummary> {
+    let continuation = ''
+    let bytes = 0
+    let objectsCount = 0
+    do {
+      const result = await api.listObjects(bucket, folderPrefix, continuation, '', 1000, '')
+      for (const item of result.items) {
+        if (isDirectoryKey(item.key)) continue
+        bytes += item.size
+        objectsCount += 1
+      }
+      continuation = result.is_truncated ? (result.continuation_token ?? '') : ''
+    } while (continuation)
+    return { bytes, objects: objectsCount, generatedAt: new Date().toISOString() }
+  }
+
+  async function refreshDirectorySize(directoryKey: string) {
+    if (!bucket || directorySizeLoading.has(directoryKey)) return
+    setDirectorySizeLoading((current) => new Set(current).add(directoryKey))
+    try {
+      const summary = await calculateFolderSize(directoryKey)
+      setDirectorySizeSummaries((current) => new Map(current).set(directoryKey, summary))
+    } catch (reason) {
+      setError((reason as Error).message)
+    } finally {
+      setDirectorySizeLoading((current) => {
+        const next = new Set(current)
+        next.delete(directoryKey)
+        return next
+      })
     }
   }
 
@@ -289,6 +336,33 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     void loadMultipartUploads()
   }, [bucket])
 
+  useEffect(() => {
+    if (!transferDialog || !transferBucket) return
+    let cancelled = false
+    async function loadTransferDirectories() {
+      const found = new Set<string>()
+      const queue = ['']
+      while (queue.length > 0) {
+        const current = queue.shift()!
+        let continuation = ''
+        do {
+          const page = await api.listObjects(transferBucket, current, continuation, '', 1000, '/')
+          for (const directory of [...(page.directories ?? []), ...(page.common_prefixes ?? []).map((key) => ({ key }))]) {
+            const key = typeof directory === 'string' ? directory : directory.key
+            if (!found.has(key)) {
+              found.add(key)
+              queue.push(key)
+            }
+          }
+          continuation = page.is_truncated ? page.continuation_token ?? '' : ''
+        } while (continuation)
+      }
+      if (!cancelled) setTransferDirectories([...found].sort((left, right) => compareObjectKeys({ key: left }, { key: right })))
+    }
+    void loadTransferDirectories().catch(() => { if (!cancelled) setTransferDirectories([]) })
+    return () => { cancelled = true }
+  }, [api, transferBucket, transferDialog])
+
   function selectFile(event: ChangeEvent<HTMLInputElement>) {
     const selected = [...(event.target.files ?? [])]
     event.target.value = ''
@@ -342,7 +416,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       setSelectedDeletedIds(checked ? new Set(filteredDeletedObjects.map(versionIdentity)) : new Set())
       return
     }
-    setSelectedObjectKeys(checked ? new Set(filteredObjects.map((object) => object.key)) : new Set())
+    setSelectedObjectKeys(checked ? new Set(filteredObjects.filter((object) => !isDirectoryKey(object.key)).map((object) => object.key)) : new Set())
   }
 
   function toggleAllVersions(checked: boolean) {
@@ -374,6 +448,8 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     if (items.length === 0) return
     setTransferBucket(bucket)
     setTransferPath(prefix.trim())
+    setTransferDirectories([])
+    setTransferTreeOpen(false)
     setTransferError('')
     setTransferDialog({ mode, items })
   }
@@ -475,6 +551,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   async function beginUploads(files: File[]) {
     if (!bucket || !accessKey || files.length === 0) return
     setError('')
+    const startNewUploadSession = !uploadsPanelOpen
+    if (startNewUploadSession) {
+      setUploadTasks([])
+      setCompletedUploads([])
+    }
     setUploadsPanelOpen(true)
     const tasks: UploadTask[] = []
     const failures: string[] = []
@@ -523,6 +604,9 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       await api.createDirectory(bucket, key)
       setShowCreatePath(false)
       setPathName('')
+      setShowDeleted(false)
+      setShowDeletedVersions(false)
+      setViewMode('current')
       showToast(`已创建路径 ${displayDirectoryKey(key)}`)
       setPrefix(key)
       onNavigatePath(key)
@@ -646,7 +730,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         ...current,
       ].slice(0, 20))
       setUploadTasks((current) => current.filter((item) => item.uploadId !== task.uploadId))
-      showToast(`已上传 ${displayFileName(task.key)}`)
       await load(true)
     } catch (reason) {
       if (control.cancelled) {
@@ -1044,8 +1127,10 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       setSelectedObjectKeys(new Set())
       setSelectedDeletedIds(new Set())
       setSelectedVersionIds(new Set())
+      initialLoadKey.current = ''
+      setShowDeleted(false)
       showToast(`已恢复 ${items.length} 个对象`)
-      await load(true)
+      await load(true, prefix, false)
     } catch (reason) {
       setError((reason as Error).message)
     } finally {
@@ -1213,8 +1298,10 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       const presigned = await api.presignObject(accessKey, bucket, version.key, 'DELETE', 900, { versionId: version.version_id })
       const response = await fetch(presigned.url, { method: 'DELETE' })
       if (!response.ok) throw new Error(`恢复对象失败（${response.status}）`)
+      initialLoadKey.current = ''
+      setShowDeleted(false)
       showToast(`已恢复 ${displayFileName(version.key)}`)
-      await load(true)
+      await load(true, prefix, false)
     } catch (reason) {
       setError((reason as Error).message)
     } finally {
@@ -1297,11 +1384,12 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   const selectedData = selected.filter((item) => item.kind === 'current' || !item.version.is_delete_marker)
   const selectedFiles = selectedData.filter((item) => !isDirectoryKey(item.kind === 'current' ? item.object.key : item.version.key))
   const selectedCount = selected.length
-  const selectableCurrentCount = showDeleted ? filteredDeletedObjects.length : filteredObjects.length
+  const selectableObjects = filteredObjects.filter((object) => !isDirectoryKey(object.key))
+  const selectableCurrentCount = showDeleted ? filteredDeletedObjects.length : selectableObjects.length
   const selectableVersionCount = filteredVersions.length
   const allCurrentSelected = selectableCurrentCount > 0 && (showDeleted
     ? filteredDeletedObjects.every((version) => selectedDeletedIds.has(versionIdentity(version)))
-    : filteredObjects.every((object) => selectedObjectKeys.has(object.key)))
+    : selectableObjects.length > 0 && selectableObjects.every((object) => selectedObjectKeys.has(object.key)))
   const allVersionsSelected = selectableVersionCount > 0 && filteredVersions.every((version) => selectedVersionIds.has(versionIdentity(version)))
   const hasDeleteMarkerSelection = selectedDeleted.length > 0
   const permanentDeleteOnly = viewMode === 'versions' || hasDeleteMarkerSelection
@@ -1356,10 +1444,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
           <button className="primary-button" type="button" onClick={() => fileInput.current?.click()} disabled={!bucket || !accessKey || uploading}>
             <Upload className="button-icon" aria-hidden="true" />上传文件
           </button>
-          {(uploadTasks.length > 0 || completedUploads.length > 0 || uploadsLoading) && <button className="secondary-button uploads-toggle-button" type="button" onClick={() => setUploadsPanelOpen(true)} aria-haspopup="dialog" aria-expanded={uploadsPanelOpen}>
-            <PanelRight className="button-icon" aria-hidden="true" />上传任务{uploadTasks.length + completedUploads.length > 0 ? ` (${uploadTasks.length + completedUploads.length})` : ''}
-          </button>
-          }
           <button className="secondary-button refresh-action-button" type="button" onClick={() => void load(true)} disabled={!bucket || loading} aria-busy={loading}>
             <RefreshCw className={`button-icon${loading ? ' spinning' : ''}`} aria-hidden="true" />刷新
           </button>
@@ -1373,7 +1457,10 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         <FolderOpen className="object-location-icon" aria-hidden="true" />
         <div className="object-location-path">
           <button className="object-location-link" type="button" onClick={() => onNavigatePath('')} disabled={!bucket}>{bucket || '未选择 Bucket'}</button>
-          {prefix.trim() && <><b>/</b><span>{displayObjectPath(prefix)}</span></>}
+          {prefix.trim() && prefix.split('/').filter(Boolean).map((segment, index, segments) => {
+            const target = `${segments.slice(0, index + 1).join('/')}/`
+            return <span className="object-location-crumb" key={target}><b>/</b><button className="object-location-link" type="button" onClick={() => onNavigatePath(target)}>{segment}</button></span>
+          })}
         </div>
         <div className="object-location-actions">
           <button className="icon-button copy-path-button" type="button" onClick={() => void copyCurrentPath()} disabled={!bucket} title="复制当前路径" aria-label="复制当前路径">
@@ -1388,9 +1475,9 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
             }} disabled={!bucket} />
             <span>显示已删除对象</span>
           </label>}
-          <button className="secondary-button create-path-button" type="button" onClick={() => { setPathError(''); setPathName(''); setShowCreatePath(true) }} disabled={!bucket || !accessKey || viewMode !== 'current'}>
+          {viewMode === 'current' && !showDeleted && <button className="secondary-button create-path-button" type="button" onClick={() => { setPathError(''); setPathName(''); setShowCreatePath(true) }} disabled={!bucket || !accessKey}>
             <FolderPlus className="button-icon" aria-hidden="true" />Create new path
-          </button>
+          </button>}
         </div>
       </div>
       {error && <p className="error-banner">{error}</p>}
@@ -1413,13 +1500,20 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 
       <section className="panel table-panel">
         <div className="table-wrap">
-          {viewMode === 'current' ? <table className="object-table">
-            <thead><tr><th className="selection-column"><input type="checkbox" checked={allCurrentSelected} onChange={(event) => toggleAllCurrent(event.target.checked)} aria-label="选择全部对象" /></th><th className="object-column-title">Object</th><th>Size</th><th>Last Modified</th><th className="sticky-actions-column">Actions</th></tr></thead>
+          {viewMode === 'current' ? <table className={`object-table${showDeleted ? ' deleted-object-table' : ''}`}>
+            <thead><tr><th className="selection-column"><input type="checkbox" checked={allCurrentSelected} onChange={(event) => toggleAllCurrent(event.target.checked)} aria-label="选择全部对象" /></th><th className="object-column-title">Object</th>{showDeleted && <th>状态</th>}<th>Size</th><th>Last Modified</th><th className="sticky-actions-column">Actions</th></tr></thead>
             <tbody>{!showDeleted && filteredObjects.map((object) => (
                 <tr key={object.key}>
                   <td className="selection-column"><input type="checkbox" checked={selectedObjectKeys.has(object.key)} onChange={(event) => toggleObjectSelection(object.key, event.target.checked)} aria-label={`选择 ${object.key}`} /></td>
                   <td className="object-key"><div className="file-cell object-tree-cell object-key-trigger" role="button" tabIndex={0} onClick={() => openObject(object)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openObject(object) } }} title={isDirectoryKey(object.key) ? '打开目录' : '查看对象详情'}><ObjectTreeIndent depth={objectTreeDepth(object.key, prefix)} />{isDirectoryKey(object.key) ? <Folder className="file-symbol" aria-hidden="true" /> : <File className="file-symbol" aria-hidden="true" />}<span>{displayObjectKey(object.key, prefix)}</span>{object.legal_hold && <span className="status-badge locked">Legal Hold</span>}{object.retention_until_unix_seconds && <span className="status-badge locked">{object.retention_mode ?? 'Retention'} · 到 {new Date(object.retention_until_unix_seconds * 1000).toLocaleDateString()}</span>}</div></td>
-                  <td>{isDirectoryKey(object.key) ? '-' : formatBytes(object.size)}</td>
+                  <td>{isDirectoryKey(object.key) ? (() => {
+                    const summary = directorySizeSummaries.get(object.key)
+                    const calculating = directorySizeLoading.has(object.key)
+                    return <div className="directory-size-cell" title={summary ? `数据生成时间：${new Date(summary.generatedAt).toLocaleString('zh-CN')}` : '统计该目录及所有子目录中的文件大小'}>
+                      <span>{summary ? formatBytes(summary.bytes) : '未统计'}</span>
+                      <button className="icon-button directory-size-refresh" type="button" onClick={() => void refreshDirectorySize(object.key)} disabled={calculating} aria-label={`刷新目录 ${displayObjectKey(object.key, prefix)} 大小`} title="刷新目录大小"><RefreshCw className={calculating ? 'spinning' : ''} aria-hidden="true" /></button>
+                    </div>
+                  })() : formatBytes(object.size)}</td>
                   <td>{object.last_modified ? new Date(object.last_modified).toLocaleString() : '-'}</td>
                   <td className="table-actions sticky-actions-column">
                     <ActionMenu label={`${isDirectoryKey(object.key) ? '管理目录' : '管理'} ${displayKeyForMessage(object.key)}`}>
@@ -1436,7 +1530,8 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                 const restoring = restoringVersion === identity
                 return <tr key={identity} className="delete-marker-row">
                   <td className="selection-column"><input type="checkbox" checked={selectedDeletedIds.has(identity)} onChange={(event) => toggleDeletedSelection(version, event.target.checked)} aria-label={`选择已删除对象 ${version.key}`} /></td>
-                  <td className="object-key"><div className="file-cell object-tree-cell"><ObjectTreeIndent depth={objectTreeDepth(version.key, prefix)} /><Trash2 className="file-symbol" aria-hidden="true" /><span>{displayObjectKey(version.key, prefix)}</span><span className="status-badge delete-marker">已删除</span></div></td>
+                  <td className="object-key"><div className="file-cell object-tree-cell"><ObjectTreeIndent depth={objectTreeDepth(version.key, prefix)} /><Trash2 className="file-symbol" aria-hidden="true" /><span>{displayObjectKey(version.key, prefix)}</span></div></td>
+                  <td><span className="status-badge delete-marker">已删除</span></td>
                   <td>{deletedObjectSizes.has(version.key) ? formatBytes(deletedObjectSizes.get(version.key)!) : '-'}</td>
                   <td>{new Date(version.last_modified).toLocaleString()}</td>
                   <td className="table-actions sticky-actions-column">
@@ -1588,13 +1683,24 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
               <p className="credential-modal-description">已选择 {transferDialog.items.length} 项。目标路径填写父目录，文件名保持不变，目录会保留目录名及其全部内容。</p>
               <div className="credential-modal-fields transfer-fields">
                 <label>目标 Bucket
-                  <select value={transferBucket} onChange={(event) => setTransferBucket(event.target.value)} required disabled={transferring}>
+                  <select value={transferBucket} onChange={(event) => { setTransferBucket(event.target.value); setTransferPath(''); setTransferTreeOpen(false) }} required disabled={transferring}>
                     <option value="" disabled>选择 Bucket</option>
                     {buckets.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
                   </select>
                 </label>
-                <label>目标路径
-                  <input value={transferPath} onChange={(event) => setTransferPath(event.target.value)} placeholder="例如 archive/2026" disabled={transferring} />
+                <label className="transfer-tree-field">目标路径
+                  <button className="transfer-tree-trigger" type="button" onClick={() => setTransferTreeOpen((open) => !open)} disabled={transferring} aria-haspopup="listbox" aria-expanded={transferTreeOpen}>
+                    {transferPath ? `${transferBucket}/${transferPath.replace(/\/+$/, '')}` : `${transferBucket || 'Bucket'}（根目录）`}
+                    <span aria-hidden="true">⌄</span>
+                  </button>
+                  {transferTreeOpen && <div className="transfer-tree-menu" role="listbox">
+                    <button type="button" role="option" aria-selected={!transferPath} onClick={() => { setTransferPath(''); setTransferTreeOpen(false) }}>⌂ <span>根目录</span></button>
+                    {transferDirectories.map((directory) => {
+                      const value = directory.replace(/\/+$/, '')
+                      const depth = value ? value.split('/').length - 1 : 0
+                      return <button key={directory} type="button" role="option" aria-selected={transferPath === value} style={{ paddingLeft: `${14 + depth * 18}px` }} onClick={() => { setTransferPath(value); setTransferTreeOpen(false) }}><Folder className="button-icon" aria-hidden="true" /><span>{value.split('/').pop() || value}</span></button>
+                    })}
+                  </div>}
                 </label>
               </div>
               {transferError && <p className="form-error credential-form-error" role="alert">{transferError}</p>}

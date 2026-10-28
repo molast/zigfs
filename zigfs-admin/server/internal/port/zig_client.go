@@ -33,6 +33,7 @@ type ZigClient interface {
 	DeleteBucket(ctx context.Context, name string) error
 	GetBucketConfiguration(ctx context.Context, name string) (contract.BucketConfiguration, error)
 	GetBucketUsage(ctx context.Context, name string) (contract.BucketUsage, error)
+	ListBucketEvents(ctx context.Context, name, cursor, from, to, action, outcome string, limit int) (contract.ListBucketEventsResponse, error)
 	GetBucketTags(ctx context.Context, name string) (contract.BucketTags, error)
 	PutBucketTags(ctx context.Context, name string, tags contract.BucketTags) (contract.BucketTags, error)
 	DeleteBucketTags(ctx context.Context, name string) error

@@ -32,9 +32,13 @@ require_compose() {
 
 build_admin_web_assets() {
   if [[ -d "${ADMIN_WEB_DIR}/node_modules" ]]; then
-    require_command pnpm
+    [[ -x "${ADMIN_WEB_DIR}/node_modules/.bin/tsc" ]] || \
+      fail "Admin Web 依赖不完整，请先在 zigfs-admin/web 目录执行 pnpm install。"
+    [[ -x "${ADMIN_WEB_DIR}/node_modules/.bin/vite" ]] || \
+      fail "Admin Web 依赖不完整，请先在 zigfs-admin/web 目录执行 pnpm install。"
     printf '正在构建 Admin Web...\n'
-    (cd "${ADMIN_WEB_DIR}" && pnpm run build)
+    # 直接调用本地工具，避免 pnpm 在 macOS Apple Silicon 上加载错误的原生执行器。
+    (cd "${ADMIN_WEB_DIR}" && ./node_modules/.bin/tsc -b && ./node_modules/.bin/vite build)
   elif [[ ! -f "${ADMIN_WEB_DIR}/dist/index.html" ]]; then
     fail "Admin Web 依赖尚未安装，请先在 zigfs-admin/web 目录执行 pnpm install。"
   fi
@@ -70,7 +74,11 @@ build_fs_image() {
   if [[ -n "${ZIG_TOOLCHAIN_SHA256:-}" ]]; then
     build_args+=(--build-arg "ZIG_TOOLCHAIN_SHA256=${ZIG_TOOLCHAIN_SHA256}")
   fi
-  docker build "${build_args[@]}" --tag "zigfs:${LOCAL_IMAGE_TAG}" "${FS_DIR}"
+  if ((${#build_args[@]} > 0)); then
+    docker build "${build_args[@]}" --tag "zigfs:${LOCAL_IMAGE_TAG}" "${FS_DIR}"
+  else
+    docker build --tag "zigfs:${LOCAL_IMAGE_TAG}" "${FS_DIR}"
+  fi
 }
 
 build_admin_image() {

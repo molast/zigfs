@@ -41,6 +41,7 @@ func New(auth *handler.Auth, system *handler.System, management *handler.Managem
 	private.DELETE("/buckets/:name", management.DeleteBucket)
 	private.GET("/buckets/:name/configuration", management.GetBucketConfiguration)
 	private.GET("/buckets/:name/usage", management.GetBucketUsage)
+	private.GET("/buckets/:name/events", management.ListBucketEvents)
 	private.GET("/buckets/:name/tags", management.GetBucketTags)
 	private.PUT("/buckets/:name/tags", management.PutBucketTags)
 	private.DELETE("/buckets/:name/tags", management.DeleteBucketTags)

@@ -75,6 +75,26 @@ func TestSystem(t *testing.T) {
 	}
 }
 
+func TestListBucketEventsForwardsFilters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/_admin/v1/buckets/project-assets/events" || request.URL.Query().Get("cursor") != "5" || request.URL.Query().Get("from") != "100" || request.URL.Query().Get("to") != "200" || request.URL.Query().Get("action") != "update" || request.URL.Query().Get("outcome") != "ok" || request.URL.Query().Get("limit") != "25" {
+			t.Fatalf("unexpected events query: %s", request.URL.String())
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"items":[],"next_cursor":"6"}`))
+	}))
+	defer server.Close()
+
+	client := zigclient.New(server.URL, time.Second)
+	response, err := client.ListBucketEvents(context.Background(), "project-assets", "5", "100", "200", "update", "ok", 25)
+	if err != nil {
+		t.Fatalf("events request failed: %v", err)
+	}
+	if response.NextCursor != "6" {
+		t.Fatalf("unexpected response: %+v", response)
+	}
+}
+
 func TestPreservesZigFSErrorContract(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")

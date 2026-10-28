@@ -37,6 +37,10 @@ func (service *Management) GetBucketConfiguration(ctx context.Context, name stri
 func (service *Management) GetBucketUsage(ctx context.Context, name string) (contract.BucketUsage, error) {
 	return service.zig.GetBucketUsage(ctx, name)
 }
+
+func (service *Management) ListBucketEvents(ctx context.Context, name, cursor, from, to, action, outcome string, limit int) (contract.ListBucketEventsResponse, error) {
+	return service.zig.ListBucketEvents(ctx, name, cursor, from, to, action, outcome, limit)
+}
 func (service *Management) GetBucketTags(ctx context.Context, name string) (contract.BucketTags, error) {
 	return service.zig.GetBucketTags(ctx, name)
 }

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -15,6 +16,7 @@ type ManagementService interface {
 	DeleteBucket(ctx context.Context, name string) error
 	GetBucketConfiguration(ctx context.Context, name string) (contract.BucketConfiguration, error)
 	GetBucketUsage(ctx context.Context, name string) (contract.BucketUsage, error)
+	ListBucketEvents(ctx context.Context, name, cursor, from, to, action, outcome string, limit int) (contract.ListBucketEventsResponse, error)
 	GetBucketTags(ctx context.Context, name string) (contract.BucketTags, error)
 	PutBucketTags(ctx context.Context, name string, tags contract.BucketTags) (contract.BucketTags, error)
 	DeleteBucketTags(ctx context.Context, name string) error
@@ -90,6 +92,24 @@ func (handler *Management) GetBucketConfiguration(ctx *gin.Context) {
 
 func (handler *Management) GetBucketUsage(ctx *gin.Context) {
 	response, err := handler.service.GetBucketUsage(ctx.Request.Context(), ctx.Param("name"))
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) ListBucketEvents(ctx *gin.Context) {
+	limit := 50
+	if value := ctx.Query("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			writeError(ctx, http.StatusBadRequest, "InvalidQuery", "limit must be an integer")
+			return
+		}
+		limit = parsed
+	}
+	response, err := handler.service.ListBucketEvents(ctx.Request.Context(), ctx.Param("name"), ctx.Query("cursor"), ctx.Query("from"), ctx.Query("to"), ctx.Query("action"), ctx.Query("outcome"), limit)
 	if err != nil {
 		writeStorageError(ctx, err)
 		return

@@ -493,3 +493,26 @@ test "bucket service rejects invalid names and non-empty delete" {
     index.publishObject(&prepared, created.bucket.generation + 1);
     try std.testing.expectError(error.BucketNotEmpty, service.delete("project-assets"));
 }
+
+test "bucket service requires versioning and prevents disabling object locking" {
+    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MetadataBucketStore = @import("../metadata/bucket_store.zig").MetadataBucketStore;
+    var memory = MemoryMetadataRepository.init(std.testing.allocator);
+    defer memory.deinit();
+    var bucket_store = MetadataBucketStore.init(memory.interface());
+    var index = index_module.MetadataIndex.init(std.testing.allocator);
+    defer index.deinit();
+    try index.rebuild(memory.interface());
+    var mutex: std.Io.Mutex = .init;
+    const service = BucketService.init(std.testing.allocator, std.testing.io, bucket_store.interface(), &index, &mutex);
+    const created = try service.create("lock-assets", "owner");
+    defer created.deinit(std.testing.allocator);
+
+    try std.testing.expectError(error.ObjectLockingRequiresVersioning, service.setObjectLocking("lock-assets", true));
+    const versioned = try service.setVersioning("lock-assets", .enabled);
+    versioned.deinit(std.testing.allocator);
+    const locked = try service.setObjectLocking("lock-assets", true);
+    defer locked.deinit(std.testing.allocator);
+    try std.testing.expect(locked.object_locking);
+    try std.testing.expectError(error.ObjectLockingCannotDisable, service.setObjectLocking("lock-assets", false));
+}

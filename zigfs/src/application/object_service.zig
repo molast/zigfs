@@ -1472,6 +1472,60 @@ test "retention cutoff uses UTC epoch seconds and expires at the boundary" {
     try std.testing.expect(!retentionActiveAt(0, 100));
 }
 
+test "object retention blocks deletes and only governance permits bypass" {
+    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MetadataBucketStore = @import("../metadata/bucket_store.zig").MetadataBucketStore;
+    const MetadataObjectStore = @import("../metadata/object_store.zig").MetadataObjectStore;
+    const LocalObjectDataStore = @import("../backend/local_object_data.zig").LocalObjectDataStore;
+    const BucketService = @import("bucket_service.zig").BucketService;
+    const streaming = @import("../common/streaming.zig");
+    const test_streams = @import("../testing/streams.zig");
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".zigfs/tmp");
+    try tmp.dir.createDirPath(std.testing.io, "objects");
+    var memory = MemoryMetadataRepository.init(std.testing.allocator);
+    defer memory.deinit();
+    var bucket_store = MetadataBucketStore.init(memory.interface());
+    var object_store = MetadataObjectStore.init(memory.interface());
+    var data_store = LocalObjectDataStore.init(std.testing.allocator, tmp.dir, std.testing.io, streaming.min_buffer_size);
+    var index = index_module.MetadataIndex.init(std.testing.allocator);
+    defer index.deinit();
+    try index.rebuild(memory.interface());
+    var state_mutex: std.Io.Mutex = .init;
+    var object_locks: ObjectLockPool = .{};
+    const buckets = BucketService.init(std.testing.allocator, std.testing.io, bucket_store.interface(), &index, &state_mutex);
+    const bucket = try buckets.create("retention-test", "owner-a");
+    defer bucket.deinit(std.testing.allocator);
+    const configured = try buckets.setRetention("retention-test", .{ .enabled = true, .default_duration_seconds = 86400, .mode = .governance });
+    configured.deinit(std.testing.allocator);
+    const objects = ObjectService.init(std.testing.allocator, std.testing.io, bucket_store.interface(), object_store.interface(), data_store.interface(), null, null, &index, &state_mutex, &object_locks, null);
+
+    var source = test_streams.SliceSource.init("protected");
+    const created = try objects.put("retention-test", "governed.txt", source.interface(), .{});
+    defer created.deinit(std.testing.allocator);
+    try std.testing.expectEqual(bucket_domain.RetentionMode.governance, created.retention_mode.?);
+    try std.testing.expect(created.retention_until_unix_seconds.? > std.Io.Clock.real.now(std.testing.io).toSeconds());
+    try std.testing.expectError(error.RetentionActive, objects.delete("retention-test", "governed.txt"));
+    try std.testing.expect((try objects.deleteWithGovernanceBypass("retention-test", "governed.txt", true)).deleted);
+
+    const compliance = try buckets.setRetention("retention-test", .{ .enabled = true, .default_duration_seconds = 86400, .mode = .compliance });
+    compliance.deinit(std.testing.allocator);
+    var compliance_source = test_streams.SliceSource.init("compliance");
+    const compliance_object = try objects.put("retention-test", "compliance.txt", compliance_source.interface(), .{});
+    defer compliance_object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(bucket_domain.RetentionMode.compliance, compliance_object.retention_mode.?);
+    const held = try objects.setLegalHold("retention-test", "compliance.txt", compliance_object.version_id, true);
+    defer held.deinit(std.testing.allocator);
+    try std.testing.expect(held.legal_hold);
+    try std.testing.expectError(error.ObjectLocked, objects.delete("retention-test", "compliance.txt"));
+    const released = try objects.setLegalHold("retention-test", "compliance.txt", compliance_object.version_id, false);
+    defer released.deinit(std.testing.allocator);
+    try std.testing.expect(!released.legal_hold);
+    try std.testing.expectError(error.RetentionActive, objects.deleteWithGovernanceBypass("retention-test", "compliance.txt", true));
+}
+
 fn validateRequest(
     bucket_name: []const u8,
     key: []const u8,
@@ -1746,6 +1800,8 @@ test "object service puts gets overwrites and tombstones objects" {
     );
     const bucket = try buckets.create("project-assets", "owner-a");
     defer bucket.deinit(std.testing.allocator);
+    const quota_bucket = try buckets.setQuota("project-assets", .{ .max_bytes = 64, .max_objects = 2 });
+    quota_bucket.deinit(std.testing.allocator);
     const objects = ObjectService.init(
         std.testing.allocator,
         std.testing.io,
@@ -1777,6 +1833,17 @@ test "object service puts gets overwrites and tombstones objects" {
     defer created.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u64, body.len), created.size);
     try std.testing.expectEqualStrings("mobile", created.user_metadata[0].value);
+    const usage_before_rejected_put = try objects.usage("project-assets");
+    try std.testing.expectEqual(@as(u64, 1), usage_before_rejected_put.objects);
+    try std.testing.expectEqual(@as(u64, body.len), usage_before_rejected_put.bytes);
+    var oversized_source = test_streams.SliceSource.init("this object is deliberately larger than the configured quota");
+    try std.testing.expectError(
+        error.QuotaExceeded,
+        objects.put("project-assets", "too-large.txt", oversized_source.interface(), .{}),
+    );
+    const usage_after_rejected_put = try objects.usage("project-assets");
+    try std.testing.expectEqual(usage_before_rejected_put.bytes, usage_after_rejected_put.bytes);
+    try std.testing.expectEqual(usage_before_rejected_put.objects, usage_after_rejected_put.objects);
 
     const headed = try objects.head("project-assets", "../../images/cover.txt");
     defer headed.deinit(std.testing.allocator);
@@ -1803,6 +1870,15 @@ test "object service puts gets overwrites and tombstones objects" {
     defer copied.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("text/plain", copied.content_type);
     try std.testing.expectEqualStrings("mobile", copied.user_metadata[0].value);
+    const usage_before_object_limit = try objects.usage("project-assets");
+    try std.testing.expectEqual(@as(u64, 2), usage_before_object_limit.objects);
+    var third_source = test_streams.SliceSource.init("third object");
+    try std.testing.expectError(
+        error.QuotaExceeded,
+        objects.put("project-assets", "third.txt", third_source.interface(), .{}),
+    );
+    const usage_after_object_limit = try objects.usage("project-assets");
+    try std.testing.expectEqual(usage_before_object_limit.objects, usage_after_object_limit.objects);
     var copy_sink = test_streams.CollectingSink.init(std.testing.allocator);
     defer copy_sink.deinit();
     const copied_body = try objects.get("project-assets", "copies/cover.txt", copy_sink.interface());
