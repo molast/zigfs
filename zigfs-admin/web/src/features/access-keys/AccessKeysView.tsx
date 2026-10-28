@@ -180,8 +180,8 @@ export function AccessKeysView({ api }: { api: ApiClient }) {
           </label>
         </div>
         <div className="toolbar-actions">
-          <button className="primary-button create-action-button" type="button" onClick={() => { setCreateError(''); setShowCreate((current) => !current) }} aria-expanded={showCreate}>
-            <Plus className="button-icon" aria-hidden="true" />{showCreate ? '取消创建' : '创建 Access Key'}
+          <button className="primary-button create-action-button" type="button" onClick={() => { setCreateError(''); setShowCreate(true) }} aria-expanded={showCreate}>
+            <Plus className="button-icon" aria-hidden="true" />创建 Access Key
           </button>
           <button className="secondary-button refresh-action-button" type="button" onClick={() => void refresh()} disabled={refreshing} aria-busy={refreshing}>
             <RefreshCw className={`button-icon${refreshing ? ' spinning' : ''}`} aria-hidden="true" />刷新
