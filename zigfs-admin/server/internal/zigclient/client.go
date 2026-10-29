@@ -332,3 +332,109 @@ func (client *Client) requestJSON(ctx context.Context, method, path string, body
 	}
 	return nil
 }
+
+func (client *Client) ListPolicies(ctx context.Context) (contract.PolicyList, error) {
+	var response contract.PolicyList
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/policies", nil, &response)
+	return response, err
+}
+
+func (client *Client) GetPolicy(ctx context.Context, name string) (contract.ManagedPolicy, error) {
+	var response contract.ManagedPolicy
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/policies/"+url.PathEscape(name), nil, &response)
+	return response, err
+}
+
+func (client *Client) CreatePolicy(ctx context.Context, policy contract.ManagedPolicy) (contract.ManagedPolicy, error) {
+	var response contract.ManagedPolicy
+	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/policies", policy, &response)
+	return response, err
+}
+
+func (client *Client) UpdatePolicy(ctx context.Context, policy contract.ManagedPolicy) (contract.ManagedPolicy, error) {
+	var response contract.ManagedPolicy
+	err := client.requestJSON(ctx, http.MethodPatch, "/_admin/v1/policies/"+url.PathEscape(policy.Name), policy, &response)
+	return response, err
+}
+
+func (client *Client) DeletePolicy(ctx context.Context, name string) error {
+	return client.requestJSON(ctx, http.MethodDelete, "/_admin/v1/policies/"+url.PathEscape(name), nil, nil)
+}
+
+func (client *Client) ListUsers(ctx context.Context) (contract.UserList, error) {
+	var response contract.UserList
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/users", nil, &response)
+	return response, err
+}
+
+func (client *Client) GetUser(ctx context.Context, name string) (contract.ManagedUser, error) {
+	var response contract.ManagedUser
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/users/"+url.PathEscape(name), nil, &response)
+	return response, err
+}
+
+func (client *Client) CreateUser(ctx context.Context, value contract.UserWrite) (contract.ManagedUser, error) {
+	var response contract.ManagedUser
+	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/users", value, &response)
+	return response, err
+}
+
+func (client *Client) UpdateUser(ctx context.Context, value contract.UserWrite) (contract.ManagedUser, error) {
+	var response contract.ManagedUser
+	err := client.requestJSON(ctx, http.MethodPatch, "/_admin/v1/users/"+url.PathEscape(value.Name), value, &response)
+	return response, err
+}
+
+func (client *Client) DeleteUser(ctx context.Context, name string) error {
+	return client.requestJSON(ctx, http.MethodDelete, "/_admin/v1/users/"+url.PathEscape(name), nil, nil)
+}
+
+func (client *Client) ListGroups(ctx context.Context) (contract.GroupList, error) {
+	var response contract.GroupList
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/groups", nil, &response)
+	return response, err
+}
+
+func (client *Client) GetGroup(ctx context.Context, name string) (contract.ManagedGroup, error) {
+	var response contract.ManagedGroup
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/groups/"+url.PathEscape(name), nil, &response)
+	return response, err
+}
+
+func (client *Client) CreateGroup(ctx context.Context, value contract.ManagedGroup) (contract.ManagedGroup, error) {
+	var response contract.ManagedGroup
+	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/groups", value, &response)
+	return response, err
+}
+
+func (client *Client) UpdateGroup(ctx context.Context, value contract.ManagedGroup) (contract.ManagedGroup, error) {
+	var response contract.ManagedGroup
+	err := client.requestJSON(ctx, http.MethodPatch, "/_admin/v1/groups/"+url.PathEscape(value.Name), value, &response)
+	return response, err
+}
+
+func (client *Client) DeleteGroup(ctx context.Context, name string) error {
+	return client.requestJSON(ctx, http.MethodDelete, "/_admin/v1/groups/"+url.PathEscape(name), nil, nil)
+}
+
+func userAccessKeysPath(name string) string {
+	return "/_admin/v1/users/" + url.PathEscape(name) + "/access-keys"
+}
+func (client *Client) ListUserAccessKeys(ctx context.Context, name string) (contract.ListAccessKeysResponse, error) {
+	var response contract.ListAccessKeysResponse
+	err := client.requestJSON(ctx, http.MethodGet, userAccessKeysPath(name), nil, &response)
+	return response, err
+}
+func (client *Client) CreateUserAccessKey(ctx context.Context, name string, request contract.CreateAccessKeyRequest) (contract.CreateAccessKeyResponse, error) {
+	var response contract.CreateAccessKeyResponse
+	err := client.requestJSON(ctx, http.MethodPost, userAccessKeysPath(name), request, &response)
+	return response, err
+}
+func (client *Client) UpdateUserAccessKey(ctx context.Context, name, id string, request contract.UpdateAccessKeyRequest) (contract.AccessKey, error) {
+	var response contract.AccessKey
+	err := client.requestJSON(ctx, http.MethodPatch, userAccessKeysPath(name)+"/"+url.PathEscape(id), request, &response)
+	return response, err
+}
+func (client *Client) DeleteUserAccessKey(ctx context.Context, name, id string) error {
+	return client.requestJSON(ctx, http.MethodDelete, userAccessKeysPath(name)+"/"+url.PathEscape(id), nil, nil)
+}

@@ -1,3 +1,4 @@
+import { useErrorToast } from '../../components/ToastProvider'
 import { useState } from 'react'
 import { Clock3, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import {
@@ -19,24 +20,21 @@ export function LifecycleRulesEditor({ rules, configured, loading, onSave }: Lif
   const confirm = useConfirm()
   const [draft, setDraft] = useState<LifecycleRule | null>(null)
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
-  const [formError, setFormError] = useState('')
+  const notifyError = useErrorToast()
 
   function addRule() {
     setEditingIndex(null)
-    setFormError('')
     setDraft(createLifecycleRule(nextRuleId(rules)))
   }
 
   function editRule(index: number) {
     setEditingIndex(index)
-    setFormError('')
     setDraft({ ...rules[index] })
   }
 
   function closeEditor() {
     setDraft(null)
     setEditingIndex(null)
-    setFormError('')
   }
 
   async function submitRule() {
@@ -46,11 +44,10 @@ export function LifecycleRulesEditor({ rules, configured, loading, onSave }: Lif
       : rules.map((rule, index) => index === editingIndex ? { ...draft, id: draft.id.trim() } : rule)
     try {
       validateLifecycleRules(next)
-      setFormError('')
       await onSave(next)
       closeEditor()
     } catch (reason) {
-      setFormError((reason as Error).message)
+      notifyError((reason as Error).message)
     }
   }
 
@@ -58,7 +55,7 @@ export function LifecycleRulesEditor({ rules, configured, loading, onSave }: Lif
     try {
       await onSave(rules.map((rule, ruleIndex) => ruleIndex === index ? { ...rule, enabled: !rule.enabled } : rule))
     } catch {
-      // BucketDetailView renders the ZigFS error banner.
+      // BucketDetailView reports the ZigFS error through a toast.
     }
   }
 
@@ -72,7 +69,7 @@ export function LifecycleRulesEditor({ rules, configured, loading, onSave }: Lif
     try {
       await onSave(rules.filter((_, ruleIndex) => ruleIndex !== index))
     } catch {
-      // BucketDetailView renders the ZigFS error banner.
+      // BucketDetailView reports the ZigFS error through a toast.
     }
   }
 
@@ -202,8 +199,6 @@ export function LifecycleRulesEditor({ rules, configured, loading, onSave }: Lif
                 </label>
               )}
             </div>
-
-            {formError && <p className="form-error lifecycle-form-error">{formError}</p>}
             <footer className="lifecycle-modal-actions">
               <button className="secondary-button" type="button" onClick={closeEditor} disabled={loading}>取消</button>
               <button className="primary-button" type="button" onClick={() => void submitRule()} disabled={loading}>保存</button>

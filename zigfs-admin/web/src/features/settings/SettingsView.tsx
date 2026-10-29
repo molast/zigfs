@@ -1,3 +1,4 @@
+import { useErrorToast } from '../../components/ToastProvider'
 import { useEffect, useState } from 'react'
 import type { ApiClient } from '../../api/client'
 import { useLoading } from '../../components/LoadingProvider'
@@ -6,16 +7,15 @@ import type { Settings } from '../../types/api'
 export function SettingsView({ api }: { api: ApiClient }) {
   const { withLoading } = useLoading()
   const [settings, setSettings] = useState<Settings | null>(null)
-  const [error, setError] = useState('')
+  const notifyError = useErrorToast()
 
   useEffect(() => {
-    withLoading('正在加载配置...', () => api.settings()).then(setSettings).catch((reason: Error) => setError(reason.message))
+    withLoading('正在加载配置...', () => api.settings()).then(setSettings).catch((reason: Error) => notifyError(reason.message))
   }, [api, withLoading])
 
   return (
     <section>
       <header className="page-header"><div><p className="eyebrow">Effective configuration</p><h2>Settings</h2><p className="page-description">当前生效的只读配置。修改配置后需要重启 ZigFS。</p></div></header>
-      {error && <p className="error-banner">{error}</p>}
       {settings && (
         <section className="panel table-panel"><dl className="definition-list">
           <Row label="API address" value={settings.api_address} />

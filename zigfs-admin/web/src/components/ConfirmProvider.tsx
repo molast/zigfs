@@ -1,6 +1,5 @@
-import { AlertTriangle } from 'lucide-react'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { createPortal } from 'react-dom'
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from './ui/alert-dialog'
 
 export interface ConfirmOptions {
   title: string
@@ -23,7 +22,6 @@ const ConfirmContext = createContext<Confirm | null>(null)
 export function ConfirmProvider({ children }: { children: ReactNode }) {
   const [request, setRequest] = useState<ConfirmRequest | null>(null)
   const requestRef = useRef<ConfirmRequest | null>(null)
-  const confirmButtonRef = useRef<HTMLButtonElement>(null)
 
   const confirm = useCallback<Confirm>((options) => new Promise((resolve) => {
     // A confirmation is modal and should never be silently orphaned if a
@@ -42,56 +40,25 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
     setRequest(null)
   }, [])
 
-  useEffect(() => {
-    if (!request) return
-    confirmButtonRef.current?.focus()
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape') close(false)
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [close, request])
-
   useEffect(() => () => {
     requestRef.current?.resolve(false)
     requestRef.current = null
   }, [])
 
   const value = useMemo(() => confirm, [confirm])
-  const portalTarget = document.querySelector('.app-shell') ?? document.body
 
   return (
     <ConfirmContext.Provider value={value}>
       {children}
-      {request && createPortal(
-        <div className="modal-backdrop confirm-backdrop" role="presentation" onMouseDown={() => close(false)}>
-          <section
-            className={`lifecycle-modal confirm-modal${request.options.danger ? ' danger' : ''}`}
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="confirm-dialog-title"
-            aria-describedby="confirm-dialog-message"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <header className="lifecycle-modal-header confirm-modal-header">
-              <div className="lifecycle-modal-title">
-                <AlertTriangle aria-hidden="true" />
-                <h3 id="confirm-dialog-title">{request.options.title}</h3>
-              </div>
-            </header>
-            <p className="confirm-modal-message" id="confirm-dialog-message">{request.options.message}</p>
-            <footer className="lifecycle-modal-actions">
-              <button className="secondary-button" type="button" onClick={() => close(false)}>
-                {request.options.cancelLabel ?? '取消'}
-              </button>
-              {!request.options.hideConfirm && <button ref={confirmButtonRef} className={request.options.danger ? 'danger-button' : 'primary-button'} type="button" onClick={() => close(true)}>
-                {request.options.confirmLabel ?? '确认'}
-              </button>}
-            </footer>
-          </section>
-        </div>,
-        portalTarget,
-      )}
+      <AlertDialog open={Boolean(request)} onOpenChange={open => { if (!open) close(false) }}>
+        {request && <AlertDialogContent>
+          <AlertDialogHeader><AlertDialogTitle>{request.options.title}</AlertDialogTitle><AlertDialogDescription>{request.options.message}</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => close(false)}>{request.options.cancelLabel ?? '取消'}</AlertDialogCancel>
+            {!request.options.hideConfirm && <AlertDialogAction variant={request.options.danger ? 'destructive' : 'default'} onClick={() => close(true)}>{request.options.confirmLabel ?? '确认'}</AlertDialogAction>}
+          </AlertDialogFooter>
+        </AlertDialogContent>}
+      </AlertDialog>
     </ConfirmContext.Provider>
   )
 }

@@ -1,0 +1,27 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "admin:Profiling",
+        "admin:ServerTrace",
+        "admin:ConsoleLog",
+        "admin:ServerInfo",
+        "admin:TopLocksInfo",
+        "admin:OBDInfo",
+        "admin:Prometheus",
+        "admin:BandwidthMonitor"
+      ],
+      "Resource": [
+        "arn:aws:s3:::*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "sts:AssumeRole"
+      ]
+    }
+  ]
+}

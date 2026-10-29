@@ -113,3 +113,74 @@ func TestPreservesZigFSErrorContract(t *testing.T) {
 		t.Fatalf("unexpected status error: %+v", statusError)
 	}
 }
+
+func TestGroupForwardingPreservesAssignmentsAndUpstreamConflict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_admin/v1/groups/team" || r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Errorf("unexpected forwarding: %s", r.URL.Path)
+		}
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"Conflict","message":"retry"}`))
+			return
+		}
+		var group contract.ManagedGroup
+		if err := json.NewDecoder(r.Body).Decode(&group); err != nil {
+			t.Error(err)
+		}
+		if group.Enabled || len(group.Members) != 1 || group.Members[0] != "alice" || len(group.Policies) != 1 {
+			t.Errorf("lost fields: %+v", group)
+		}
+		_ = json.NewEncoder(w).Encode(group)
+	}))
+	defer server.Close()
+	client := zigclient.New(server.URL, time.Second)
+	ctx := managementauth.WithToken(context.Background(), "test-token")
+	saved, err := client.UpdateGroup(ctx, contract.ManagedGroup{Name: "team", Enabled: false, Members: []string{"alice"}, Policies: []string{"readonly"}})
+	if err != nil || saved.Name != "team" {
+		t.Fatalf("update: %+v %v", saved, err)
+	}
+	var upstream *port.StatusError
+	if err := client.DeleteGroup(ctx, "team"); !errors.As(err, &upstream) || upstream.StatusCode != http.StatusConflict {
+		t.Fatalf("expected conflict: %v", err)
+	}
+}
+
+func TestUserWriteForwardsPasswordAndEmptyGroupsWithoutExposingSecrets(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_admin/v1/users/alice" || r.Method != http.MethodPatch {
+			t.Errorf("unexpected route: %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if body["password"] != "test-password" {
+			t.Error("password not forwarded")
+		}
+		groups, ok := body["groups"].([]any)
+		if !ok || len(groups) != 0 {
+			t.Error("explicit empty groups must be preserved")
+		}
+		if _, ok := body["updated_at"]; ok {
+			t.Error("client cannot set update time")
+		}
+		_, _ = w.Write([]byte(`{"name":"alice","enabled":true,"policies":[],"groups":[],"updated_at":123}`))
+	}))
+	defer server.Close()
+	password := "test-password"
+	groups := []string{}
+	value, err := zigclient.New(server.URL, time.Second).UpdateUser(context.Background(), contract.UserWrite{Name: "alice", Enabled: true, Policies: []string{}, Password: &password, Groups: &groups})
+	if err != nil || value.UpdatedAt != 123 {
+		t.Fatalf("update: %+v %v", value, err)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(encoded, &body)
+	if _, ok := body["password"]; ok {
+		t.Error("password appeared in response")
+	}
+}

@@ -86,6 +86,10 @@ pub const View = struct {
     encrypted_secret: []const u8,
     kind: Kind = .permanent,
     expires_at_unix_seconds: ?i64 = null,
+    name: []const u8 = "",
+    description: []const u8 = "",
+    inherit_policy: bool = false,
+    policy_document: []const u8 = "",
 };
 
 pub const Credential = struct {
@@ -100,10 +104,17 @@ pub const Credential = struct {
     metadata_generation: u64,
     kind: Kind = .permanent,
     expires_at_unix_seconds: ?i64 = null,
+    name: []u8,
+    description: []u8,
+    inherit_policy: bool = false,
+    policy_document: []u8,
 
     pub fn deinit(self: Credential, allocator: std.mem.Allocator) void {
         allocator.free(self.access_key);
         allocator.free(self.owner);
+        allocator.free(self.name);
+        allocator.free(self.description);
+        allocator.free(self.policy_document);
         allocator.free(self.encrypted_secret);
     }
 
@@ -119,6 +130,10 @@ pub const Credential = struct {
             .encrypted_secret = self.encrypted_secret,
             .kind = self.kind,
             .expires_at_unix_seconds = self.expires_at_unix_seconds,
+            .name = self.name,
+            .description = self.description,
+            .inherit_policy = self.inherit_policy,
+            .policy_document = self.policy_document,
         };
     }
 
@@ -133,6 +148,7 @@ pub const ValidationError = error{
     InvalidEncryptedSecret,
     InvalidCreatedAt,
     InvalidExpiration,
+    InvalidMetadata,
 };
 
 pub fn validateAccessKey(value: []const u8) ValidationError!void {
@@ -140,7 +156,7 @@ pub fn validateAccessKey(value: []const u8) ValidationError!void {
         return error.InvalidAccessKey;
     }
     for (value) |character| {
-        if (!std.ascii.isUpper(character) and !std.ascii.isDigit(character)) {
+        if (!std.ascii.isAlphabetic(character) and !std.ascii.isDigit(character)) {
             return error.InvalidAccessKey;
         }
     }
@@ -154,10 +170,12 @@ pub fn validateOwner(value: []const u8) ValidationError!void {
 pub fn validateView(value: View) ValidationError!void {
     try validateAccessKey(value.access_key);
     try validateOwner(value.owner);
+    if (value.policy_document.len > 256 * 1024 or !std.unicode.utf8ValidateSlice(value.policy_document)) return error.InvalidMetadata;
+    if (value.name.len > 128 or value.description.len > 1024 or !std.unicode.utf8ValidateSlice(value.name) or !std.unicode.utf8ValidateSlice(value.description)) return error.InvalidMetadata;
+    if (value.expires_at_unix_seconds) |expiry| if (expiry <= value.created_at_unix_seconds) return error.InvalidExpiration;
     if (value.created_at_unix_seconds <= 0) return error.InvalidCreatedAt;
     switch (value.kind) {
         .permanent => {
-            if (value.expires_at_unix_seconds != null) return error.InvalidExpiration;
             if (value.encrypted_secret.len < min_secret_key_length or
                 value.encrypted_secret.len > max_secret_key_length)
             {
@@ -183,6 +201,12 @@ pub fn cloneFromView(
     errdefer allocator.free(access_key);
     const owner = try allocator.dupe(u8, value.owner);
     errdefer allocator.free(owner);
+    const name = try allocator.dupe(u8, value.name);
+    errdefer allocator.free(name);
+    const description = try allocator.dupe(u8, value.description);
+    errdefer allocator.free(description);
+    const document = try allocator.dupe(u8, value.policy_document);
+    errdefer allocator.free(document);
     const encrypted_secret = try allocator.dupe(u8, value.encrypted_secret);
     return .{
         .access_key = access_key,
@@ -196,6 +220,10 @@ pub fn cloneFromView(
         .metadata_generation = metadata_generation,
         .kind = value.kind,
         .expires_at_unix_seconds = value.expires_at_unix_seconds,
+        .name = name,
+        .description = description,
+        .inherit_policy = value.inherit_policy,
+        .policy_document = document,
     };
 }
 

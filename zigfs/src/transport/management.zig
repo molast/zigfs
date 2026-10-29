@@ -26,6 +26,27 @@ pub const Route = struct {
 };
 
 pub const routes = [_]Route{
+    .{ .method = .get, .path = "/_admin/v1/users/:name/access-keys" },
+    .{ .method = .post, .path = "/_admin/v1/users/:name/access-keys" },
+    .{ .method = .patch, .path = "/_admin/v1/users/:name/access-keys/:id" },
+    .{ .method = .delete, .path = "/_admin/v1/users/:name/access-keys/:id" },
+    .{ .method = .get, .path = "/_admin/v1/users" },
+    .{ .method = .post, .path = "/_admin/v1/users" },
+    .{ .method = .get, .path = "/_admin/v1/users/:name" },
+    .{ .method = .patch, .path = "/_admin/v1/users/:name" },
+    .{ .method = .delete, .path = "/_admin/v1/users/:name" },
+    .{ .method = .get, .path = "/_admin/v1/groups" },
+    .{ .method = .post, .path = "/_admin/v1/groups" },
+    .{ .method = .get, .path = "/_admin/v1/groups/:name" },
+    .{ .method = .patch, .path = "/_admin/v1/groups/:name" },
+    .{ .method = .delete, .path = "/_admin/v1/groups/:name" },
+
+    .{ .method = .get, .path = "/_admin/v1/policies" },
+    .{ .method = .post, .path = "/_admin/v1/policies" },
+    .{ .method = .get, .path = "/_admin/v1/policies/:name" },
+    .{ .method = .patch, .path = "/_admin/v1/policies/:name" },
+    .{ .method = .delete, .path = "/_admin/v1/policies/:name" },
+
     .{ .method = .post, .path = "/_admin/v1/auth/login" },
     .{ .method = .get, .path = "/_admin/v1/auth/session" },
     .{ .method = .get, .path = "/_admin/v1/buckets" },
@@ -65,6 +86,12 @@ pub fn serveRequest(
     const target = request.head.target;
     const path = requestPath(target);
 
+    if (std.mem.startsWith(u8, path, api_prefix ++ "/users/") and std.mem.indexOf(u8, path, "/access-keys") != null) return serveUserAccessKeys(request, application, request_id, path);
+    if (std.mem.eql(u8, path, api_prefix ++ "/users") or std.mem.startsWith(u8, path, api_prefix ++ "/users/")) return serveIdentities(false, request, application, request_id, path);
+    if (std.mem.eql(u8, path, api_prefix ++ "/groups") or std.mem.startsWith(u8, path, api_prefix ++ "/groups/")) return serveIdentities(true, request, application, request_id, path);
+    if (std.mem.eql(u8, path, api_prefix ++ "/policies") or std.mem.startsWith(u8, path, api_prefix ++ "/policies/")) {
+        return servePolicies(request, application, request_id, path);
+    }
     if (std.mem.eql(u8, path, api_prefix ++ "/buckets")) {
         return switch (request.head.method) {
             .GET => serveListBuckets(request, application, request_id),
@@ -191,7 +218,7 @@ pub fn serveRequest(
     if (std.mem.eql(u8, path, api_prefix ++ "/access-keys")) {
         return switch (request.head.method) {
             .GET => serveListAccessKeys(request, application, request_id),
-            .POST => serveCreateAccessKey(request, application, request_id),
+            .POST => serveCreateAccessKey(request, application, request_id, null),
             else => respondMethodNotAllowed(request, request_id, "GET, POST"),
         };
     }
@@ -1101,6 +1128,10 @@ fn servePresignObject(
         return respondError(request, request_id, .forbidden, "AccessDenied", "access key policy does not allow reading the copy source");
     }
 
+    const iam_action = if (required_action == .get_object) (if (value.version_id != null) "s3:GetObjectVersion" else "s3:GetObject") else if (required_action == .delete_object) (if (value.version_id != null) "s3:DeleteObjectVersion" else "s3:DeleteObject") else "s3:PutObject";
+    if (!material.allowsPresign(application.allocator, iam_action, value.bucket, value.key)) return respondError(request, request_id, .forbidden, "AccessDenied", "inherited policy denies this operation");
+    if (value.copy_source_bucket) |source| if (!material.allowsPresign(application.allocator, if (value.copy_source_version_id != null) "s3:GetObjectVersion" else "s3:GetObject", source, value.copy_source_key)) return respondError(request, request_id, .forbidden, "AccessDenied", "inherited policy denies copy source access");
+
     const buckets = application.bucketService() orelse return respondNotReady(request, request_id);
     const bucket = buckets.head(value.bucket) catch |err| return respondBucketError(request, request_id, err);
     defer bucket.deinit(application.allocator);
@@ -1249,11 +1280,12 @@ fn serveListAccessKeys(
     try json.objectField("items");
     try json.beginArray();
     for (result.credentials) |details| {
+        if (std.mem.startsWith(u8, details.credential.owner, "user:")) continue;
         try writeCredential(
             &json,
             details.credential,
-            details.secret_key,
-            details.session_token,
+            null,
+            null,
         );
     }
     try json.endArray();
@@ -1283,24 +1315,39 @@ const CreateAccessKeyRequest = struct {
     owner: ?[]const u8 = null,
     policy: PolicyRequest = .{},
     ttl_seconds: ?u64 = null,
+    access_key: ?[]const u8 = null,
+    secret_key: ?[]const u8 = null,
+    expires_at: ?[]const u8 = null,
+    name: []const u8 = "",
+    description: []const u8 = "",
+    inherit_policy: bool = false,
+    policy_document: []const u8 = "",
 };
 
 fn serveCreateAccessKey(
     request: *std.http.Server.Request,
     application: *Application,
     request_id: []const u8,
+    scoped_owner: ?[]const u8,
 ) !std.http.Status {
     const parsed = try parseJsonBody(CreateAccessKeyRequest, request, application.allocator, request_id) orelse {
         return .bad_request;
     };
     defer parsed.deinit();
     const service = application.credentialService() orelse return respondNotReady(request, request_id);
-    const owner = parsed.value.owner orelse application.config.admin_username;
-    var result = service.createWithTTL(
-        owner,
-        parsed.value.policy.domain(),
-        parsed.value.ttl_seconds,
-    ) catch |err| {
+    const owner = scoped_owner orelse parsed.value.owner orelse application.config.admin_username;
+    if (scoped_owner == null and std.mem.startsWith(u8, owner, "user:")) return respondError(request, request_id, .bad_request, "InvalidOwner", "use the user access key endpoint");
+    const expiry = if (parsed.value.expires_at) |value| time.parseIso8601(value) catch return respondCredentialError(request, request_id, error.InvalidExpiration) else null;
+    var result = service.createWithOptions(owner, parsed.value.policy.domain(), .{
+        .ttl_seconds = parsed.value.ttl_seconds,
+        .access_key = parsed.value.access_key,
+        .secret_key = parsed.value.secret_key,
+        .expires_at = expiry,
+        .name = parsed.value.name,
+        .description = parsed.value.description,
+        .inherit_policy = parsed.value.inherit_policy,
+        .policy_document = parsed.value.policy_document,
+    }) catch |err| {
         audit(application, request_id, "create_access_key", owner, @errorName(err));
         return respondCredentialError(request, request_id, err);
     };
@@ -1310,12 +1357,18 @@ fn serveCreateAccessKey(
     var output: std.Io.Writer.Allocating = .init(application.allocator);
     defer output.deinit();
     var json: std.json.Stringify = .{ .writer = &output.writer };
-    try writeCredential(&json, result.credential, &result.secret_key, if (result.session_token) |*token| token else null);
+    try writeCredential(&json, result.credential, result.secret_key, if (result.session_token) |*token| token else null);
     return respondJsonBytes(request, request_id, .created, output.written());
 }
 
 const UpdateAccessKeyRequest = struct {
-    enabled: bool,
+    enabled: ?bool = null,
+    name: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    inherit_policy: ?bool = null,
+    expires_at: ?[]const u8 = null,
+    clear_expiry: bool = false,
+    policy_document: ?[]const u8 = null,
 };
 
 fn serveUpdateAccessKey(
@@ -1333,12 +1386,13 @@ fn serveUpdateAccessKey(
     };
     defer parsed.deinit();
     const service = application.credentialService() orelse return respondNotReady(request, request_id);
-    const credential = service.update(access_key, .{ .enabled = parsed.value.enabled }) catch |err| {
+    const expiry = if (parsed.value.expires_at) |value| time.parseIso8601(value) catch return respondCredentialError(request, request_id, error.InvalidExpiration) else null;
+    const credential = service.update(access_key, .{ .enabled = parsed.value.enabled, .name = parsed.value.name, .description = parsed.value.description, .inherit_policy = parsed.value.inherit_policy, .expires_at = expiry, .clear_expiry = parsed.value.clear_expiry, .policy_document = parsed.value.policy_document }) catch |err| {
         audit(application, request_id, "update_access_key", access_key, @errorName(err));
         return respondCredentialError(request, request_id, err);
     };
     defer credential.deinit(application.allocator);
-    audit(application, request_id, "update_access_key", access_key, if (parsed.value.enabled) "enabled" else "disabled");
+    audit(application, request_id, "update_access_key", access_key, "updated");
 
     var output: std.Io.Writer.Allocating = .init(application.allocator);
     defer output.deinit();
@@ -1526,6 +1580,14 @@ fn writeCredential(
     try json.write(credential.access_key);
     try json.objectField("owner");
     try json.write(credential.owner);
+    try json.objectField("name");
+    try json.write(credential.name);
+    try json.objectField("description");
+    try json.write(credential.description);
+    try json.objectField("policy_document");
+    try json.write(credential.policy_document);
+    try json.objectField("inherit_policy");
+    try json.write(credential.inherit_policy);
     try json.objectField("enabled");
     try json.write(credential.status == .active);
     try json.objectField("policy");
@@ -1902,6 +1964,10 @@ fn respondCredentialError(
         error.CredentialNotFound => respondError(request, request_id, .not_found, "AccessKeyNotFound", "access key does not exist"),
         error.CredentialDisabled => respondError(request, request_id, .conflict, "AccessKeyDisabled", "access key is disabled"),
         error.CredentialExpired => respondError(request, request_id, .conflict, "ExpiredToken", "temporary credential has expired"),
+        error.InvalidPolicy => respondError(request, request_id, .bad_request, "InvalidPolicy", "policy must be a valid 2012-10-17 policy document"),
+        error.InvalidSecretKey => respondError(request, request_id, .bad_request, "InvalidSecretKey", "secret key must be 32 to 64 printable ASCII characters (40 for temporary tokens)"),
+        error.InvalidMetadata => respondError(request, request_id, .bad_request, "InvalidMetadata", "name or description is invalid or too long"),
+        error.InvalidExpiration => respondError(request, request_id, .bad_request, "InvalidExpiration", "expiry must be a future UTC date and cannot be combined with TTL"),
         error.InvalidTTL => respondError(request, request_id, .bad_request, "InvalidCredentialTTL", "temporary credential TTL must be between 60 and 43200 seconds"),
         error.Conflict => respondError(request, request_id, .conflict, "Conflict", "access key changed concurrently"),
         error.CorruptMetadata, error.SecretDecryptionFailed => respondError(request, request_id, .service_unavailable, "CorruptMetadata", "credential metadata requires recovery"),
@@ -2120,4 +2186,213 @@ test "management directory delete query decodes a trailing slash key" {
     )).?;
     defer std.testing.allocator.free(key);
     try std.testing.expectEqualStrings("images/", key);
+}
+
+fn servePolicies(request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8) !std.http.Status {
+    const store = @import("../application/policy_store.zig");
+    const root = app.data_root orelse return respondNotReady(request, request_id);
+    const io = app.io orelse return respondNotReady(request, request_id);
+    const collection = std.mem.eql(u8, route_path, api_prefix ++ "/policies");
+    const method = request.head.method;
+    if (collection and method != .GET and method != .POST) return respondMethodNotAllowed(request, request_id, "GET, POST");
+    if (!collection and method != .GET and method != .PATCH and method != .DELETE) return respondMethodNotAllowed(request, request_id, "GET, PATCH, DELETE");
+    const name = if (collection) try app.allocator.dupe(u8, "") else decodeComponent(app.allocator, route_path[(api_prefix ++ "/policies/").len..], false) catch return respondError(request, request_id, .bad_request, "InvalidPolicy", "invalid policy name");
+    defer app.allocator.free(name);
+    var input: ?std.json.Parsed(store.Policy) = null;
+    defer if (input) |parsed| parsed.deinit();
+    if (method == .POST or method == .PATCH) {
+        input = try parseJsonBody(store.Policy, request, app.allocator, request_id) orelse return .bad_request;
+        store.validate(app.allocator, input.?.value) catch return respondError(request, request_id, .bad_request, "InvalidPolicy", "policy name or JSON document is invalid");
+        if (!collection and !std.mem.eql(u8, name, input.?.value.name)) return respondError(request, request_id, .bad_request, "InvalidPolicy", "policy names cannot be changed");
+    }
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
+    const loaded = store.load(root, io, app.allocator) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot read policy storage");
+    defer loaded.deinit();
+    var index: ?usize = null;
+    const lookup = if (input) |parsed| parsed.value.name else name;
+    for (loaded.value, 0..) |policy, i| {
+        if (std.mem.eql(u8, policy.name, lookup)) {
+            index = i;
+            break;
+        }
+    }
+    if (method == .GET) {
+        if (collection) return respondJson(request, request_id, .ok, .{ .items = loaded.value });
+        if (index) |i| return respondJson(request, request_id, .ok, loaded.value[i]);
+        return respondError(request, request_id, .not_found, "PolicyNotFound", "policy does not exist");
+    }
+    if (method == .POST and index != null) return respondError(request, request_id, .conflict, "PolicyAlreadyExists", "policy already exists");
+    if (method != .POST and index == null) return respondError(request, request_id, .not_found, "PolicyNotFound", "policy does not exist");
+    if (method == .DELETE) {
+        const identities = @import("../application/identity_store.zig");
+        const attached = identities.load(root, io, app.allocator) catch return respondError(request, request_id, .service_unavailable, "IdentityStorageUnavailable", "cannot check policy attachments");
+        defer attached.deinit();
+        if (identities.policyInUse(attached.value, name)) return respondError(request, request_id, .conflict, "PolicyInUse", "detach this policy from users and groups before deleting it");
+    }
+    var items: std.ArrayList(store.Policy) = .empty;
+    defer items.deinit(app.allocator);
+    for (loaded.value, 0..) |policy, i| {
+        if (index != null and index.? == i) {
+            if (method == .PATCH) try items.append(app.allocator, input.?.value);
+        } else try items.append(app.allocator, policy);
+    }
+    if (method == .POST) try items.append(app.allocator, input.?.value);
+    store.save(root, io, app.allocator, items.items) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot save policy storage");
+    audit(app, request_id, "mutate_policy", lookup, @tagName(method));
+    if (method == .DELETE) return respondNoContent(request, request_id);
+    return respondJson(request, request_id, if (method == .POST) .created else .ok, input.?.value);
+}
+
+fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8) !std.http.Status {
+    const store = @import("../application/identity_store.zig");
+    const policies = @import("../application/policy_store.zig");
+    const T = if (is_group) store.Group else store.User;
+    const Input = if (is_group) store.Group else store.UserInput;
+    const prefix = api_prefix ++ (if (is_group) "/groups" else "/users");
+    const root = app.data_root orelse return respondNotReady(request, request_id);
+    const io = app.io orelse return respondNotReady(request, request_id);
+    const method = request.head.method;
+    const collection = std.mem.eql(u8, prefix, route_path);
+    if (collection and method != .GET and method != .POST) return respondMethodNotAllowed(request, request_id, "GET, POST");
+    if (!collection and method != .GET and method != .PATCH and method != .DELETE) return respondMethodNotAllowed(request, request_id, "GET, PATCH, DELETE");
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const name = if (collection) "" else decodeComponent(a, route_path[prefix.len + 1 ..], false) catch return respondError(request, request_id, .bad_request, "InvalidIdentity", "invalid name");
+    if (!collection and !store.validName(name)) return respondError(request, request_id, .bad_request, "InvalidIdentity", "invalid name");
+    var input: ?Input = null;
+    if (method == .POST or method == .PATCH) {
+        const parsed = try parseJsonBody(Input, request, a, request_id) orelse return .bad_request;
+        input = parsed.value;
+        if (!collection and !std.mem.eql(u8, name, input.?.name)) return respondError(request, request_id, .bad_request, "InvalidIdentity", "names cannot be changed");
+    }
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
+    const loaded = store.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "IdentityStorageUnavailable", "cannot read identity storage");
+    const items = if (is_group) loaded.value.groups else loaded.value.users;
+    const lookup = if (input) |value| value.name else name;
+    const index = store.find(items, lookup);
+    if (method == .GET) {
+        if (collection) {
+            if (is_group) return respondJson(request, request_id, .ok, .{ .items = items });
+            const public = try a.alloc(store.PublicUser, items.len);
+            for (items, 0..) |user, i| public[i] = try store.publicUser(a, user, loaded.value.groups);
+            return respondJson(request, request_id, .ok, .{ .items = public });
+        }
+        if (index) |i| {
+            if (is_group) return respondJson(request, request_id, .ok, items[i]);
+            return respondJson(request, request_id, .ok, try store.publicUser(a, items[i], loaded.value.groups));
+        }
+        return respondError(request, request_id, .not_found, "IdentityNotFound", "user or group does not exist");
+    }
+    if (method == .POST and index != null) return respondError(request, request_id, .conflict, "IdentityAlreadyExists", "name already exists");
+    if (method != .POST and index == null) return respondError(request, request_id, .not_found, "IdentityNotFound", "user or group does not exist");
+    if (!is_group and method == .DELETE) {
+        const credentials = app.credentialService() orelse return respondNotReady(request, request_id);
+        const keys = credentials.list() catch |err| return respondCredentialError(request, request_id, err);
+        defer keys.deinit(app.allocator);
+        const owner = try std.fmt.allocPrint(a, "user:{s}", .{name});
+        for (keys.credentials) |key| if (std.mem.eql(u8, key.credential.owner, owner)) return respondError(request, request_id, .conflict, "UserAccessKeysExist", "delete the user's access keys before deleting the user");
+    }
+    if (input) |value| {
+        const available = policies.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot read policy storage");
+        store.validate(value, loaded.value, available.value) catch |err| return respondError(request, request_id, .bad_request, @errorName(err), switch (err) {
+            error.PolicyNotFound => "a selected policy no longer exists; refresh and retry",
+            error.UserNotFound => "a selected user no longer exists; refresh and retry",
+            else => "invalid name, description or duplicate selections",
+        });
+    }
+    var snapshot = loaded.value;
+    const now = std.Io.Clock.real.now(io).toSeconds();
+    var prepared: ?T = null;
+    if (input) |value| {
+        if (is_group) {
+            prepared = value;
+            prepared.?.updated_at = now;
+        } else {
+            if (value.groups) |names| store.assignGroups(a, &snapshot, value.name, names, now) catch return respondError(request, request_id, .bad_request, "InvalidGroup", "selected groups are invalid or no longer exist");
+            prepared = store.prepareUser(a, io, value, if (index) |i| items[i] else null, now) catch |err| return respondError(request, request_id, if (err == error.InvalidPassword) .bad_request else .service_unavailable, @errorName(err), if (err == error.InvalidPassword) "password must contain 8 to 1024 bytes" else "cannot prepare password");
+        }
+    }
+    if (is_group) {
+        const users = try a.dupe(store.User, snapshot.users);
+        for (users) |*user| {
+            const before = if (index) |i| store.contains(items[i].members, user.name) else false;
+            const after = if (prepared) |value| store.contains(value.members, user.name) else false;
+            if (before != after) user.updated_at = now;
+        }
+        snapshot.users = users;
+    }
+    if (!is_group and method == .DELETE) {
+        snapshot = try store.withoutUser(a, snapshot, name);
+        const groups = try a.dupe(store.Group, snapshot.groups);
+        for (groups, loaded.value.groups) |*group, old| {
+            if (old.members.len != group.members.len) group.updated_at = now;
+        }
+        snapshot.groups = groups;
+    } else {
+        var next: std.ArrayList(T) = .empty;
+        for (items, 0..) |item, i| {
+            if (index != null and i == index.?) {
+                if (method == .PATCH) try next.append(a, prepared.?);
+            } else try next.append(a, item);
+        }
+        if (method == .POST) try next.append(a, prepared.?);
+        if (is_group) snapshot.groups = next.items else snapshot.users = next.items;
+    }
+    store.save(root, io, a, snapshot) catch |err| return respondError(request, request_id, if (err == error.IdentityLimit) .bad_request else .service_unavailable, @errorName(err), "cannot save identities");
+    audit(app, request_id, if (is_group) "mutate_group" else "mutate_user", lookup, @tagName(method));
+    if (method == .DELETE) return respondNoContent(request, request_id);
+    if (is_group) return respondJson(request, request_id, if (method == .POST) .created else .ok, prepared.?);
+    return respondJson(request, request_id, if (method == .POST) .created else .ok, try store.publicUser(a, prepared.?, snapshot.groups));
+}
+
+// Lock identity changes through the scoped operation; credential ownership is immutable.
+fn serveUserAccessKeys(request: *std.http.Server.Request, app: *Application, request_id: []const u8, path: []const u8) !std.http.Status {
+    const identities = @import("../application/identity_store.zig");
+    const root = app.data_root orelse return respondNotReady(request, request_id);
+    const io = app.io orelse return respondNotReady(request, request_id);
+    const service = app.credentialService() orelse return respondNotReady(request, request_id);
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var parts = std.mem.splitScalar(u8, path[(api_prefix ++ "/users/").len..], '/');
+    const name = decodeComponent(a, parts.next() orelse "", false) catch return respondError(request, request_id, .bad_request, "InvalidIdentity", "invalid user");
+    if (!identities.validName(name) or !std.mem.eql(u8, parts.next() orelse "", "access-keys")) return respondError(request, request_id, .bad_request, "InvalidIdentity", "invalid user access key path");
+    const raw_key = parts.next();
+    if (parts.next() != null or (raw_key != null and raw_key.?.len == 0)) return respondError(request, request_id, .bad_request, "InvalidAccessKey", "invalid access key path");
+    const method = request.head.method;
+    if (raw_key == null and method != .GET and method != .POST) return respondMethodNotAllowed(request, request_id, "GET, POST");
+    if (raw_key != null and method != .PATCH and method != .DELETE) return respondMethodNotAllowed(request, request_id, "PATCH, DELETE");
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
+    const snapshot = identities.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "IdentityStorageUnavailable", "cannot read users");
+    const index = identities.find(snapshot.value.users, name) orelse return respondError(request, request_id, .not_found, "IdentityNotFound", "user does not exist");
+    const owner = try std.fmt.allocPrint(a, "user:{s}", .{name});
+    if (method == .POST) {
+        if (!snapshot.value.users[index].enabled) return respondError(request, request_id, .conflict, "UserDisabled", "enable the user before creating access keys");
+        return serveCreateAccessKey(request, app, request_id, owner);
+    }
+    if (raw_key) |raw| {
+        const key = decodeComponent(a, raw, false) catch return respondError(request, request_id, .bad_request, "InvalidAccessKey", "invalid access key");
+        const record = service.get(key) catch |err| return respondCredentialError(request, request_id, err);
+        defer record.deinit(app.allocator);
+        if (!std.mem.eql(u8, record.owner, owner)) return respondError(request, request_id, .not_found, "CredentialNotFound", "access key does not belong to this user");
+        return if (method == .PATCH) serveUpdateAccessKey(request, app, request_id, raw) else serveDeleteAccessKey(request, app, request_id, raw);
+    }
+    const keys = service.list() catch |err| return respondCredentialError(request, request_id, err);
+    defer keys.deinit(app.allocator);
+    var output: std.Io.Writer.Allocating = .init(app.allocator);
+    defer output.deinit();
+    var json: std.json.Stringify = .{ .writer = &output.writer };
+    try json.beginObject();
+    try json.objectField("items");
+    try json.beginArray();
+    for (keys.credentials) |key| {
+        if (std.mem.eql(u8, key.credential.owner, owner)) try writeCredential(&json, key.credential, null, null);
+    }
+    try json.endArray();
+    try json.endObject();
+    return respondJsonBytes(request, request_id, .ok, output.written());
 }

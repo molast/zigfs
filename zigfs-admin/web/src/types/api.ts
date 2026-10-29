@@ -87,6 +87,10 @@ export interface ObjectSummary {
 }
 
 export interface AccessKey {
+  policy_document: string
+  name: string
+  description: string
+  inherit_policy: boolean
   id: string
   access_key: string
   secret_key?: string
@@ -203,4 +207,24 @@ export interface Settings {
   metrics_address: string
   admin_session_ttl_seconds: number
   reload_required: true
+}
+
+export interface AccessKeyCreate {
+  access_key: string
+  secret_key: string
+  name: string
+  description: string
+  expires_at?: string
+  inherit_policy: boolean
+  policy?: CredentialPolicy
+}
+
+export interface AccessKeyUpdate {
+  enabled?: boolean
+  name?: string
+  description?: string
+  inherit_policy?: boolean
+  expires_at?: string
+  clear_expiry?: boolean
+  policy_document?: string
 }

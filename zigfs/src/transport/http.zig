@@ -187,7 +187,7 @@ fn serveConnection(context: *ListenerContext, stream: std.Io.net.Stream) void {
             return;
         };
 
-        const status = serveRequest(&request, context, current_request_id) catch |err| {
+        const status = serveRequest(&request, context, current_request_id, stream.socket.address) catch |err| {
             if (err == error.OutputWriteFailed) return;
             const duration_ms = started.untilNow(io).raw.toMilliseconds();
             std.log.warn(
@@ -255,6 +255,7 @@ fn serveRequest(
     request: *std.http.Server.Request,
     context: *const ListenerContext,
     current_request_id: []const u8,
+    peer: std.Io.net.IpAddress,
 ) !std.http.Status {
     const path = requestPath(request.head.target);
     const route = classifyRoute(context.kind, path);
@@ -274,7 +275,7 @@ fn serveRequest(
             management.serveRequest(request, context.application, current_request_id)
         else
             respondUnauthorized(request, current_request_id),
-        .s3 => s3.serveRequest(request, context.application, current_request_id),
+        .s3 => s3.serveRequest(request, context.application, current_request_id, peer),
         .not_found => respond(
             request,
             "not found\n",
@@ -1510,7 +1511,7 @@ test "ZigFS Management API directly serves the Phase 6 contract" {
     );
     defer listed_keys.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.ok, listed_keys.status);
-    try std.testing.expect(std.mem.indexOf(u8, listed_keys.body, "\"secret_key\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed_keys.body, "\"secret_key\"") == null);
 
     const temporary_key_request = try sendTestManagementRequest(
         std.testing.allocator,
@@ -2004,7 +2005,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .corrupt_signature = true,
         },
     );
@@ -2035,7 +2036,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .timestamp = 1_369_353_600,
         },
     );
@@ -2051,7 +2052,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .PUT,
             .target = "/project-assets",
             .access_key = read_only.credential.access_key,
-            .secret_key = &read_only.secret_key,
+            .secret_key = read_only.secret_key,
         },
     );
     defer denied.deinit(std.testing.allocator);
@@ -2066,7 +2067,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .PUT,
             .target = "/project-assets",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer create_bucket.deinit(std.testing.allocator);
@@ -2081,7 +2082,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer list_buckets.deinit(std.testing.allocator);
@@ -2096,7 +2097,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .HEAD,
             .target = "/project-assets",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer head_bucket.deinit(std.testing.allocator);
@@ -2111,7 +2112,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets?location=",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer bucket_location.deinit(std.testing.allocator);
@@ -2142,7 +2143,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .PUT,
             .target = "/project-assets/folder/hello.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = object_body,
             .extra_headers = &put_headers,
         },
@@ -2163,7 +2164,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .PUT,
             .target = "/project-assets/folder/copied.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .extra_headers = &copy_headers,
         },
     );
@@ -2180,7 +2181,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets/folder/copied.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer copied_get.deinit(std.testing.allocator);
@@ -2202,7 +2203,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .PUT,
             .target = "/project-assets/folder/replaced-copy.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .extra_headers = &replace_copy_headers,
         },
     );
@@ -2216,7 +2217,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets/folder/replaced-copy.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer replaced_copy_get.deinit(std.testing.allocator);
@@ -2237,7 +2238,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
                 .method = .DELETE,
                 .target = target,
                 .access_key = credential.credential.access_key,
-                .secret_key = &credential.secret_key,
+                .secret_key = credential.secret_key,
             },
         );
         defer deleted.deinit(std.testing.allocator);
@@ -2256,7 +2257,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .PUT,
             .target = "/project-assets/bad.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = object_body,
             .extra_headers = &bad_digest_headers,
         },
@@ -2278,7 +2279,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .PUT,
             .target = "/project-assets/sha-mismatch.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = object_body,
             .payload_hash_override = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
@@ -2303,7 +2304,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .PUT,
             .target = "/project-assets/duplicate.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = object_body,
             .extra_headers = &duplicate_digest_headers,
         },
@@ -2320,7 +2321,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets/folder/hello.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer get_object.deinit(std.testing.allocator);
@@ -2346,7 +2347,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets/folder/hello.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .extra_headers = &not_modified_headers,
         },
     );
@@ -2367,7 +2368,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .HEAD,
             .target = "/project-assets/folder/hello.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .extra_headers = &modified_since_headers,
         },
     );
@@ -2387,7 +2388,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets/folder/hello.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .extra_headers = &failed_match_headers,
         },
     );
@@ -2407,7 +2408,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .HEAD,
             .target = "/project-assets/folder/hello.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .extra_headers = &failed_since_headers,
         },
     );
@@ -2426,7 +2427,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .PUT,
             .target = "/project-assets/conditional.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = "initial",
             .extra_headers = &conditional_create_headers,
         },
@@ -2447,7 +2448,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .PUT,
             .target = "/project-assets/conditional.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = "replacement",
             .extra_headers = &conditional_replace_headers,
         },
@@ -2467,7 +2468,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .PUT,
             .target = "/project-assets/conditional.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = "stale-write",
             .extra_headers = &conditional_stale_headers,
         },
@@ -2483,7 +2484,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets/conditional.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer conditional_after_stale.deinit(std.testing.allocator);
@@ -2498,7 +2499,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .DELETE,
             .target = "/project-assets/conditional.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer delete_conditional.deinit(std.testing.allocator);
@@ -2512,7 +2513,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets/folder/hello.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer presigned_get.deinit(std.testing.allocator);
@@ -2532,7 +2533,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .PUT,
             .target = "/project-assets/presigned-put.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = presigned_put_body,
             .extra_headers = &presigned_put_headers,
         },
@@ -2548,7 +2549,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .PUT,
             .target = "/project-assets/presigned-denied.txt",
             .access_key = read_only.credential.access_key,
-            .secret_key = &read_only.secret_key,
+            .secret_key = read_only.secret_key,
             .body = presigned_put_body,
         },
     );
@@ -2568,7 +2569,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets/presigned-put.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer get_presigned_put.deinit(std.testing.allocator);
@@ -2583,7 +2584,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .DELETE,
             .target = "/project-assets/presigned-put.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer delete_presigned_put.deinit(std.testing.allocator);
@@ -2598,7 +2599,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .signing_method = .GET,
             .target = "/project-assets/folder/hello.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer presigned_method_mismatch.deinit(std.testing.allocator);
@@ -2617,7 +2618,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets/folder/hello.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .query_suffix_after_signing = "&response-content-type=text%2Fplain",
         },
     );
@@ -2637,7 +2638,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets/folder/hello.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .timestamp = std.Io.Clock.real.now(std.testing.io).toSeconds() - 61,
             .expires_seconds = 60,
         },
@@ -2658,7 +2659,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .HEAD,
             .target = "/project-assets/folder/hello.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer head_object.deinit(std.testing.allocator);
@@ -2678,7 +2679,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets/folder/hello.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .extra_headers = &range_headers,
         },
     );
@@ -2700,7 +2701,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets/folder/hello.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .extra_headers = &invalid_range_headers,
         },
     );
@@ -2721,7 +2722,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .PUT,
             .target = "/project-assets/folder/a%26%3C.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = "special",
         },
     );
@@ -2736,7 +2737,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets?list-type=2&max-keys=1",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer first_page.deinit(std.testing.allocator);
@@ -2765,7 +2766,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = second_page_target,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer second_page.deinit(std.testing.allocator);
@@ -2781,7 +2782,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets?encoding-type=url&list-type=2",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer list_objects.deinit(std.testing.allocator);
@@ -2797,7 +2798,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/project-assets?fetch-owner=true&list-type=2&max-keys=1",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer list_with_owner.deinit(std.testing.allocator);
@@ -2830,7 +2831,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .POST,
             .target = "/project-assets?delete=",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = delete_objects_body,
             .extra_headers = &delete_objects_headers,
         },
@@ -2851,7 +2852,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .DELETE,
             .target = "/project-assets",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer bucket_not_empty.deinit(std.testing.allocator);
@@ -2870,7 +2871,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
                 .method = .DELETE,
                 .target = target,
                 .access_key = credential.credential.access_key,
-                .secret_key = &credential.secret_key,
+                .secret_key = credential.secret_key,
             },
         );
         defer deleted.deinit(std.testing.allocator);
@@ -2885,7 +2886,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .HEAD,
             .target = "/project-assets/folder/hello.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer missing.deinit(std.testing.allocator);
@@ -2900,7 +2901,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .DELETE,
             .target = "/project-assets",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer delete_bucket.deinit(std.testing.allocator);
@@ -2919,7 +2920,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
             .method = .GET,
             .target = "/",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer disabled_request.deinit(std.testing.allocator);
@@ -2969,7 +2970,7 @@ test "S3 CopyObject promotes a selected source version without mutating history"
             .method = .PUT,
             .target = "/versioned-assets/release.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = "first release",
         },
     );
@@ -2985,7 +2986,7 @@ test "S3 CopyObject promotes a selected source version without mutating history"
             .method = .PUT,
             .target = "/versioned-assets/release.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = "second release",
         },
     );
@@ -3008,7 +3009,7 @@ test "S3 CopyObject promotes a selected source version without mutating history"
             .method = .PUT,
             .target = "/versioned-assets/release.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .extra_headers = &copy_headers,
         },
     );
@@ -3027,7 +3028,7 @@ test "S3 CopyObject promotes a selected source version without mutating history"
             .method = .GET,
             .target = "/versioned-assets/release.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer current.deinit(std.testing.allocator);
@@ -3047,7 +3048,7 @@ test "S3 CopyObject promotes a selected source version without mutating history"
             .method = .PUT,
             .target = "/versioned-assets/missing-source.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .extra_headers = &missing_source_headers,
         },
     );
@@ -3063,7 +3064,7 @@ test "S3 CopyObject promotes a selected source version without mutating history"
             .method = .GET,
             .target = "/versioned-assets?versions=",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer versions.deinit(std.testing.allocator);
@@ -3109,7 +3110,7 @@ test "S3 HTTP verifies signed CRC64NVME trailers before publishing objects and p
             .method = .PUT,
             .target = "/streaming",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer create_bucket.deinit(std.testing.allocator);
@@ -3130,7 +3131,7 @@ test "S3 HTTP verifies signed CRC64NVME trailers before publishing objects and p
         .{
             .target = "/streaming/verified.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = object_body,
         },
     );
@@ -3148,7 +3149,7 @@ test "S3 HTTP verifies signed CRC64NVME trailers before publishing objects and p
             .method = .GET,
             .target = "/streaming/verified.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer get_object.deinit(std.testing.allocator);
@@ -3162,7 +3163,7 @@ test "S3 HTTP verifies signed CRC64NVME trailers before publishing objects and p
         .{
             .target = "/streaming/bad-checksum.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = object_body,
             .corrupt_checksum = true,
         },
@@ -3178,7 +3179,7 @@ test "S3 HTTP verifies signed CRC64NVME trailers before publishing objects and p
             .method = .HEAD,
             .target = "/streaming/bad-checksum.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer missing_bad_checksum.deinit(std.testing.allocator);
@@ -3191,7 +3192,7 @@ test "S3 HTTP verifies signed CRC64NVME trailers before publishing objects and p
         .{
             .target = "/streaming/bad-signature.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = object_body,
             .corrupt_trailer_signature = true,
         },
@@ -3211,7 +3212,7 @@ test "S3 HTTP verifies signed CRC64NVME trailers before publishing objects and p
             .method = .HEAD,
             .target = "/streaming/bad-signature.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer missing_bad_signature.deinit(std.testing.allocator);
@@ -3225,7 +3226,7 @@ test "S3 HTTP verifies signed CRC64NVME trailers before publishing objects and p
             .method = .POST,
             .target = "/streaming/multipart.bin?uploads=",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer create_upload.deinit(std.testing.allocator);
@@ -3260,7 +3261,7 @@ test "S3 HTTP verifies signed CRC64NVME trailers before publishing objects and p
         .{
             .target = upload_part_target,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = object_body,
             .corrupt_checksum = true,
         },
@@ -3276,7 +3277,7 @@ test "S3 HTTP verifies signed CRC64NVME trailers before publishing objects and p
             .method = .GET,
             .target = list_parts_target,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer parts_after_failure.deinit(std.testing.allocator);
@@ -3294,7 +3295,7 @@ test "S3 HTTP verifies signed CRC64NVME trailers before publishing objects and p
         .{
             .target = upload_part_target,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = object_body,
         },
     );
@@ -3312,7 +3313,7 @@ test "S3 HTTP verifies signed CRC64NVME trailers before publishing objects and p
             .method = .GET,
             .target = list_parts_target,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer parts_after_success.deinit(std.testing.allocator);
@@ -3362,7 +3363,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
             .method = .PUT,
             .target = "/project-assets",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer create_bucket.deinit(std.testing.allocator);
@@ -3376,7 +3377,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
             .method = .POST,
             .target = "/project-assets/multipart.bin?uploads=",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer create.deinit(std.testing.allocator);
@@ -3394,7 +3395,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
             .method = .GET,
             .target = "/project-assets?prefix=multipart&uploads=",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer active_uploads.deinit(std.testing.allocator);
@@ -3417,7 +3418,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
             .method = .PUT,
             .target = upload_target,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = part_body,
         },
     );
@@ -3439,7 +3440,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
             .method = .GET,
             .target = list_target,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer listed.deinit(std.testing.allocator);
@@ -3458,7 +3459,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
             .method = .POST,
             .target = list_target,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = invalid_completion,
         },
     );
@@ -3480,7 +3481,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
             .method = .POST,
             .target = list_target,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = completion_body,
         },
     );
@@ -3496,7 +3497,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
             .method = .GET,
             .target = "/project-assets/multipart.bin",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer downloaded.deinit(std.testing.allocator);
@@ -3512,7 +3513,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
             .method = .GET,
             .target = list_target,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer after_complete.deinit(std.testing.allocator);
@@ -3527,7 +3528,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
             .method = .POST,
             .target = "/project-assets/aborted.bin?uploads=",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer abort_create.deinit(std.testing.allocator);
@@ -3548,7 +3549,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
             .method = .DELETE,
             .target = abort_target,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer aborted.deinit(std.testing.allocator);
@@ -3595,7 +3596,7 @@ test "S3 HTTP interrupted uploads do not publish and canceled downloads release 
             .method = .PUT,
             .target = "/project-assets",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer create_bucket.deinit(std.testing.allocator);
@@ -3610,7 +3611,7 @@ test "S3 HTTP interrupted uploads do not publish and canceled downloads release 
             .method = .PUT,
             .target = "/project-assets/interrupted.bin",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = partial_object_body,
             .declared_content_length = partial_object_body.len + 4096,
             .shutdown_send_after_body = true,
@@ -3628,7 +3629,7 @@ test "S3 HTTP interrupted uploads do not publish and canceled downloads release 
             .method = .GET,
             .target = "/project-assets/interrupted.bin",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer missing_object.deinit(std.testing.allocator);
@@ -3643,7 +3644,7 @@ test "S3 HTTP interrupted uploads do not publish and canceled downloads release 
             .method = .POST,
             .target = "/project-assets/interrupted-part.bin?uploads=",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer create_upload.deinit(std.testing.allocator);
@@ -3673,7 +3674,7 @@ test "S3 HTTP interrupted uploads do not publish and canceled downloads release 
             .method = .PUT,
             .target = part_target,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = partial_part_body,
             .declared_content_length = partial_part_body.len + 4096,
             .shutdown_send_after_body = true,
@@ -3697,7 +3698,7 @@ test "S3 HTTP interrupted uploads do not publish and canceled downloads release 
             .method = .GET,
             .target = list_target,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer parts.deinit(std.testing.allocator);
@@ -3722,7 +3723,7 @@ test "S3 HTTP interrupted uploads do not publish and canceled downloads release 
         address,
         "/project-assets/cancel-download.bin",
         credential.credential.access_key,
-        &credential.secret_key,
+        credential.secret_key,
     );
 
     const replacement_body = "replacement after canceled download";
@@ -3734,7 +3735,7 @@ test "S3 HTTP interrupted uploads do not publish and canceled downloads release 
             .method = .PUT,
             .target = "/project-assets/cancel-download.bin",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = replacement_body,
         },
     );
@@ -3749,7 +3750,7 @@ test "S3 HTTP interrupted uploads do not publish and canceled downloads release 
             .method = .GET,
             .target = "/project-assets/cancel-download.bin",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer replacement_get.deinit(std.testing.allocator);
@@ -3824,7 +3825,7 @@ test "S3 HTTP serves configured virtual-hosted style with SigV4 Host binding" {
             .method = .PUT,
             .target = "/vh-assets",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer create_bucket.deinit(std.testing.allocator);
@@ -3841,7 +3842,7 @@ test "S3 HTTP serves configured virtual-hosted style with SigV4 Host binding" {
             .target = "/folder/hello.txt",
             .host = virtual_host,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .body = &object_body,
         },
     );
@@ -3857,7 +3858,7 @@ test "S3 HTTP serves configured virtual-hosted style with SigV4 Host binding" {
             .target = "/folder/hello.txt",
             .host = virtual_host,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer get_object.deinit(std.testing.allocator);
@@ -3873,7 +3874,7 @@ test "S3 HTTP serves configured virtual-hosted style with SigV4 Host binding" {
             .target = "/folder/hello.txt",
             .host = virtual_host,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer presigned_get.deinit(std.testing.allocator);
@@ -3889,7 +3890,7 @@ test "S3 HTTP serves configured virtual-hosted style with SigV4 Host binding" {
             .target = "/?list-type=2",
             .host = virtual_host,
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer listed.deinit(std.testing.allocator);
@@ -3905,7 +3906,7 @@ test "S3 HTTP serves configured virtual-hosted style with SigV4 Host binding" {
             .target = "/folder/hello.txt",
             .host = "vh-assets.invalid.example",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer wrong_host.deinit(std.testing.allocator);
@@ -3952,7 +3953,7 @@ test "S3 HTTP enforces temporary credential session tokens for header and presig
             .method = .GET,
             .target = "/",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer missing_token.deinit(std.testing.allocator);
@@ -3967,7 +3968,7 @@ test "S3 HTTP enforces temporary credential session tokens for header and presig
             .method = .GET,
             .target = "/",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .session_token = "wrong-session-token",
         },
     );
@@ -3983,7 +3984,7 @@ test "S3 HTTP enforces temporary credential session tokens for header and presig
             .method = .PUT,
             .target = "/temporary-auth",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .session_token = session_token,
         },
     );
@@ -3998,7 +3999,7 @@ test "S3 HTTP enforces temporary credential session tokens for header and presig
             .method = .PUT,
             .target = "/temporary-auth/object.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .session_token = session_token,
             .body = "temporary credential payload",
         },
@@ -4014,7 +4015,7 @@ test "S3 HTTP enforces temporary credential session tokens for header and presig
             .method = .GET,
             .target = "/temporary-auth/object.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .session_token = session_token,
         },
     );
@@ -4030,7 +4031,7 @@ test "S3 HTTP enforces temporary credential session tokens for header and presig
             .method = .GET,
             .target = "/temporary-auth/object.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer presigned_missing_token.deinit(std.testing.allocator);
@@ -4060,7 +4061,7 @@ test "S3 HTTP enforces temporary credential session tokens for header and presig
             .method = .GET,
             .target = "/",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
             .session_token = session_token,
         },
     );
@@ -4107,7 +4108,7 @@ test "S3 HTTP accepts signed POST policies and does not publish failed uploads" 
             .method = .PUT,
             .target = "/post-assets",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer create_bucket.deinit(std.testing.allocator);
@@ -4134,7 +4135,7 @@ test "S3 HTTP accepts signed POST policies and does not publish failed uploads" 
     const signature = try signTestPostPolicy(
         std.testing.allocator,
         policy_encoded,
-        &credential.secret_key,
+        credential.secret_key,
         amz_date,
     );
     defer std.testing.allocator.free(signature);
@@ -4174,7 +4175,7 @@ test "S3 HTTP accepts signed POST policies and does not publish failed uploads" 
             .method = .GET,
             .target = "/post-assets/uploads/upload.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer downloaded.deinit(std.testing.allocator);
@@ -4192,7 +4193,7 @@ test "S3 HTTP accepts signed POST policies and does not publish failed uploads" 
     const limited_signature = try signTestPostPolicy(
         std.testing.allocator,
         limited_encoded,
-        &credential.secret_key,
+        credential.secret_key,
         amz_date,
     );
     defer std.testing.allocator.free(limited_signature);
@@ -4232,7 +4233,7 @@ test "S3 HTTP accepts signed POST policies and does not publish failed uploads" 
             .method = .GET,
             .target = "/post-assets/uploads/too-large.txt",
             .access_key = credential.credential.access_key,
-            .secret_key = &credential.secret_key,
+            .secret_key = credential.secret_key,
         },
     );
     defer missing.deinit(std.testing.allocator);

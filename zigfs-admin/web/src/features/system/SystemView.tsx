@@ -1,3 +1,4 @@
+import { useErrorToast } from '../../components/ToastProvider'
 import { useEffect, useState } from 'react'
 import type { ApiClient } from '../../api/client'
 import { useLoading } from '../../components/LoadingProvider'
@@ -7,7 +8,7 @@ export function SystemView({ api }: { api: ApiClient }) {
   const { withLoading } = useLoading()
   const [system, setSystem] = useState<SystemInfo | null>(null)
   const [health, setHealth] = useState<ManagementHealth | null>(null)
-  const [error, setError] = useState('')
+  const notifyError = useErrorToast()
 
   useEffect(() => {
     withLoading('正在加载系统信息...', () => Promise.all([api.system(), api.managementHealth()]))
@@ -15,7 +16,7 @@ export function SystemView({ api }: { api: ApiClient }) {
         setSystem(systemInfo)
         setHealth(healthInfo)
       })
-      .catch((reason: Error) => setError(reason.message))
+      .catch((reason: Error) => notifyError(reason.message))
   }, [api, withLoading])
 
   return (
@@ -24,7 +25,6 @@ export function SystemView({ api }: { api: ApiClient }) {
         <div><p className="eyebrow">Runtime</p><h2>System</h2><p className="page-description">服务版本、恢复状态和运行时规模。</p></div>
         {health && <span className={`status-indicator status-${health.status}`}>{health.status}</span>}
       </header>
-      {error && <p className="error-banner">{error}</p>}
       {system && health && (
         <section className="panel table-panel"><dl className="definition-list">
           <div><dt>Version</dt><dd>{system.version}</dd></div>

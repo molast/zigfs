@@ -115,6 +115,7 @@ pub const Application = struct {
     scanner_state_mutex: std.Io.Mutex = .init,
     scanner_partition: u8 = 0,
     last_scanner_report: ?StorageScanReport = null,
+    policy_mutex: std.Io.Mutex = .init,
     audit_mutex: std.Io.Mutex = .init,
     audit_events: std.ArrayListUnmanaged(AuditEvent) = .empty,
 
@@ -633,7 +634,7 @@ pub const Application = struct {
             &master_key.bytes
         else
             return null;
-        return credential_service.CredentialService.init(
+        var service = credential_service.CredentialService.init(
             self.allocator,
             io,
             store,
@@ -641,6 +642,9 @@ pub const Application = struct {
             &self.state_mutex,
             master_key,
         );
+        service.identity_root = self.data_root;
+        service.identity_mutex = &self.policy_mutex;
+        return service;
     }
 
     pub fn multipartService(self: *Application) ?multipart_service.MultipartService {
@@ -1349,7 +1353,7 @@ test "credential secret stays encrypted and authentication state survives restar
         var created = try writer.credentialService().?.create("tenant-a", .all);
         defer created.deinit(std.testing.allocator);
         @memcpy(&access_key, created.credential.access_key);
-        @memcpy(&secret_key, &created.secret_key);
+        @memcpy(&secret_key, created.secret_key);
     }
 
     const key_hash = local_layout.hashKey(&access_key);

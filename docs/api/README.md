@@ -10,6 +10,9 @@ ZigFS 维护三套相互独立的网络契约：
 
 Health 与监控契约见 [operations.md](operations.md)。
 
+权限闭环的现状、实施步骤、Go/Zig 测试矩阵与前端联动要求见
+[单机 S3 与 IAM 完整权限实施计划](../plans/iam-permissions-completion.md)。该计划尚未完成，不能作为已实现能力声明。
+
 AWS S3 的完整操作级覆盖盘点见 [s3-api-coverage.md](s3-api-coverage.md)。该清单区分
 “核心 V1 操作已实现”和“整个 AWS S3 操作仍未实现”，不能仅依据某个单独的 CRUD 操作
 判断 ZigFS 已覆盖全部 S3 API。

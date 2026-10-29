@@ -27,7 +27,7 @@ import { ApiError, type ApiClient } from '../../api/client'
 import { ActionMenu } from '../../components/ActionMenu'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
-import { useToast } from '../../components/ToastProvider'
+import { useErrorToast, useToast } from '../../components/ToastProvider'
 import type { AccessKey, Bucket, MultipartUpload, MultipartUploadSummary, ObjectSummary, ObjectVersion, PresignObjectResponse } from '../../types/api'
 import {
   choosePartSize,
@@ -100,7 +100,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   const [deletedObjectSizes, setDeletedObjectSizes] = useState<Map<string, number>>(new Map())
   const [versions, setVersions] = useState<ObjectVersion[]>([])
   const [nextToken, setNextToken] = useState('')
-  const [error, setError] = useState('')
+  const notifyError = useErrorToast()
   const showToast = useToast()
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -111,7 +111,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   const [uploadsPanelOpen, setUploadsPanelOpen] = useState(false)
   const [showCreatePath, setShowCreatePath] = useState(false)
   const [pathName, setPathName] = useState('')
-  const [pathError, setPathError] = useState('')
   const [deletingKey, setDeletingKey] = useState('')
   const [deletingVersion, setDeletingVersion] = useState('')
   const [restoringVersion, setRestoringVersion] = useState('')
@@ -123,11 +122,9 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   const [transferPath, setTransferPath] = useState('')
   const [transferDirectories, setTransferDirectories] = useState<string[]>([])
   const [transferTreeOpen, setTransferTreeOpen] = useState(false)
-  const [transferError, setTransferError] = useState('')
   const [transferring, setTransferring] = useState(false)
   const [detail, setDetail] = useState<ObjectSummary | null>(null)
   const [detailUrl, setDetailUrl] = useState<PresignObjectResponse | null>(null)
-  const [detailError, setDetailError] = useState('')
   const [directorySizeSummaries, setDirectorySizeSummaries] = useState<Map<string, FolderSizeSummary>>(new Map())
   const [directorySizeLoading, setDirectorySizeLoading] = useState<Set<string>>(new Set())
   const fileInput = useRef<HTMLInputElement>(null)
@@ -172,7 +169,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       })
       .catch((reason: Error) => {
         accessKeysLoaded.current = false
-        setError(reason.message)
+        notifyError(reason.message)
       })
   }, [api, withLoading])
 
@@ -186,7 +183,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       })
       .catch((reason: Error) => {
         if (bucketInfoLoaded.current === bucket) bucketInfoLoaded.current = ''
-        setError(reason.message)
+        notifyError(reason.message)
       })
   }, [api, bucket, withLoading])
 
@@ -205,7 +202,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         setDirectorySizeLoading(new Set())
       }
       setLoading(true)
-      setError('')
       const currentPrefix = requestedPrefix.trim()
       if (viewMode === 'versions') {
         const loadedVersions = await api.listObjectVersions(bucket, currentPrefix)
@@ -238,7 +234,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         setDeletedObjectSizes(new Map())
       }
     } catch (reason) {
-      if (requestId === listRequestId.current) setError((reason as Error).message)
+      if (requestId === listRequestId.current) notifyError((reason as Error).message)
     } finally {
       if (requestId === listRequestId.current) {
         setLoading(false)
@@ -271,7 +267,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       const summary = await calculateFolderSize(directoryKey)
       setDirectorySizeSummaries((current) => new Map(current).set(directoryKey, summary))
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setDirectorySizeLoading((current) => {
         const next = new Set(current)
@@ -450,7 +446,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     setTransferPath(prefix.trim())
     setTransferDirectories([])
     setTransferTreeOpen(false)
-    setTransferError('')
     setTransferDialog({ mode, items })
   }
 
@@ -482,7 +477,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       await navigator.clipboard.writeText(path ? `${bucket}/${path}` : bucket)
       showToast('当前路径已复制')
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     }
   }
 
@@ -492,7 +487,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     try {
       uploadsHydrated.current = false
       setUploadsLoading(true)
-      setError('')
       let keyMarker = ''
       let uploadIDMarker = ''
       const summaries: MultipartUploadSummary[] = []
@@ -541,7 +535,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       uploadsHydrated.current = true
       if (completedDuringSync) await load(true)
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setUploadsLoading(false)
       stopLoading()
@@ -550,7 +544,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 
   async function beginUploads(files: File[]) {
     if (!bucket || !accessKey || files.length === 0) return
-    setError('')
     const startNewUploadSession = !uploadsPanelOpen
     if (startNewUploadSession) {
       setUploadTasks([])
@@ -583,7 +576,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       }
     }
     if (tasks.length > 0) setUploadTasks((current) => [...tasks, ...current])
-    if (failures.length > 0) setError(`以下文件未能创建上传任务：${failures.join('；')}`)
+    if (failures.length > 0) notifyError(`以下文件未能创建上传任务：${failures.join('；')}`)
     for (const task of tasks) {
       if (task.file) await runUpload(task, task.file)
     }
@@ -594,13 +587,12 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const name = pathName.trim().replace(/^\/+|\/+$/g, '')
     if (!name || !bucket || !accessKey) return
     if (name.includes('/')) {
-      setPathError('目录名称只能创建一级目录，不能包含“/”。')
+      notifyError('目录名称只能创建一级目录，不能包含“/”。')
       return
     }
     const key = `${joinObjectPath(prefix, name)}/`
     const stopLoading = startLoading('正在创建路径...')
     try {
-      setPathError('')
       await api.createDirectory(bucket, key)
       setShowCreatePath(false)
       setPathName('')
@@ -611,7 +603,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       setPrefix(key)
       onNavigatePath(key)
     } catch (reason) {
-      setPathError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       stopLoading()
     }
@@ -628,7 +620,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     }
     uploadControl.current = control
     setUploading(true)
-    setError('')
     let committedBytes = task.uploadedBytes
     let committedParts = task.completedParts
     try {
@@ -746,7 +737,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       } else {
         const message = (reason as Error).message
         updateUploadTask(task.uploadId, { status: 'failed', error: message })
-        setError(message)
+        notifyError(message)
       }
     } finally {
       if (uploadControl.current === control) uploadControl.current = null
@@ -787,7 +778,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     } catch (reason) {
       const message = (reason as Error).message
       updateUploadTask(task.uploadId, { status: 'failed', error: message })
-      setError(message)
+      notifyError(message)
     } finally {
       stopLoading()
     }
@@ -842,7 +833,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     if (!accessKey || !bucket) return false
     const stopLoading = startLoading('正在下载对象...')
     try {
-      setError('')
       const presigned = await api.presignObject(accessKey, bucket, object.key, 'GET', 900)
       const response = await fetch(presigned.url)
       if (!response.ok) throw new Error(`下载失败（${response.status}）`)
@@ -858,7 +848,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       showToast(`已下载 ${displayFileName(object.key)}`)
       return true
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
       return false
     } finally {
       stopLoading()
@@ -869,7 +859,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     if (!accessKey || !bucket || version.is_delete_marker) return false
     const stopLoading = startLoading('正在下载对象版本...')
     try {
-      setError('')
       const presigned = await api.presignObject(accessKey, bucket, version.key, 'GET', 900, { versionId: version.version_id })
       const response = await fetch(presigned.url)
       if (!response.ok) throw new Error(`下载失败（${response.status}）`)
@@ -885,7 +874,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       showToast(`已下载 ${displayFileName(version.key)} 的版本 ${shortVersionId(version.version_id)}`)
       return true
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
       return false
     } finally {
       stopLoading()
@@ -971,7 +960,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const stopLoading = startLoading('正在检查目录...')
     let hasChildren = false
     try {
-      setError('')
       const [page, versions] = await Promise.all([
         api.listObjects(bucket, key, '', '', 1, '/'),
         api.listObjectVersions(bucket, key),
@@ -981,7 +969,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         (page.directories ?? []).some((directory) => directory.key !== key) ||
         versions.some((version) => version.key !== key && version.key.startsWith(key))
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
       return false
     } finally {
       stopLoading()
@@ -1039,12 +1027,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const stopLoading = startLoading('正在永久删除对象...')
     try {
       setDeletingVersion(identity)
-      setError('')
       await purgeObject(version.key)
       showToast(`已永久删除 ${displayFileName(version.key)}`)
       await load(true)
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setDeletingVersion('')
       stopLoading()
@@ -1067,7 +1054,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       setSelectedDeletedIds(new Set())
       setSelectedVersionIds(new Set())
     } else {
-      setError('部分对象下载失败，请重试。')
+      notifyError('部分对象下载失败，请重试。')
     }
   }
 
@@ -1094,7 +1081,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     })) return
     const stopLoading = startLoading(permanent ? '正在永久删除对象版本...' : '正在删除对象...')
     try {
-      setError('')
       if (purgingDeletedObjects) {
         for (const key of new Set(deleteMarkers.map((item) => item.version.key))) await purgeObject(key)
       } else {
@@ -1106,7 +1092,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       showToast(`已处理 ${items.length} 个对象`)
       await load(true)
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       stopLoading()
     }
@@ -1122,7 +1108,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     })) return
     const stopLoading = startLoading('正在恢复对象...')
     try {
-      setError('')
       for (const item of items) await deleteItem(item)
       setSelectedObjectKeys(new Set())
       setSelectedDeletedIds(new Set())
@@ -1132,7 +1117,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       showToast(`已恢复 ${items.length} 个对象`)
       await load(true, prefix, false)
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       stopLoading()
     }
@@ -1144,10 +1129,8 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const destinationPath = transferPath.trim().replace(/^\/+|\/+$/g, '')
     const { mode, items } = transferDialog
     setTransferring(true)
-    setTransferError('')
     const stopLoading = startLoading(mode === 'copy' ? '正在复制对象...' : '正在移动对象...')
     try {
-      setError('')
       for (const item of items) await copyItem(item, transferBucket, destinationPath)
       if (mode === 'move') {
         for (const item of items) {
@@ -1162,7 +1145,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       showToast(`${mode === 'copy' ? '已复制' : '已移动'} ${items.length} 个对象`)
       await load(true)
     } catch (reason) {
-      setTransferError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setTransferring(false)
       stopLoading()
@@ -1172,13 +1155,12 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   async function openDetail(object: ObjectSummary) {
     setDetail(object)
     setDetailUrl(null)
-    setDetailError('')
     if (!accessKey || !bucket) return
     const stopLoading = startLoading('正在生成预览链接...')
     try {
       setDetailUrl(await api.presignObject(accessKey, bucket, object.key, 'GET', 900))
     } catch (reason) {
-      setDetailError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       stopLoading()
     }
@@ -1187,7 +1169,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   function closeDetail() {
     setDetail(null)
     setDetailUrl(null)
-    setDetailError('')
   }
 
   async function removeDirectory(object: ObjectSummary) {
@@ -1202,7 +1183,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const stopLoading = startLoading('正在删除目录...')
     try {
       setDeletingKey(object.key)
-      setError('')
       await api.deleteDirectory(bucket, object.key)
       showToast(`已删除目录 ${displayDirectoryKey(object.key)}`)
       await load(true)
@@ -1216,7 +1196,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
           hideConfirm: true,
         })
       } else {
-        setError((reason as Error).message)
+        notifyError((reason as Error).message)
       }
     } finally {
       setDeletingKey('')
@@ -1240,7 +1220,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const stopLoading = startLoading('正在删除对象...')
     try {
       setDeletingKey(object.key)
-      setError('')
       const presigned = await api.presignObject(accessKey, bucket, object.key, 'DELETE', 900)
       const response = await fetch(presigned.url, { method: 'DELETE' })
       if (!response.ok) throw new Error(`删除失败（${response.status}）`)
@@ -1248,7 +1227,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       showToast(`已删除 ${displayFileName(object.key)}`)
       await load(true)
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setDeletingKey('')
       stopLoading()
@@ -1269,14 +1248,13 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setDeletingVersion(identity)
-      setError('')
       const presigned = await api.presignObject(accessKey, bucket, version.key, 'DELETE', 900, { versionId: version.version_id })
       const response = await fetch(presigned.url, { method: 'DELETE' })
       if (!response.ok) throw new Error(`删除版本失败（${response.status}）`)
       showToast(`已永久删除 ${displayFileName(version.key)} 的${target} ${shortVersionId(version.version_id)}`)
       await load(true)
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setDeletingVersion('')
       stopLoading()
@@ -1294,7 +1272,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setRestoringVersion(identity)
-      setError('')
       const presigned = await api.presignObject(accessKey, bucket, version.key, 'DELETE', 900, { versionId: version.version_id })
       const response = await fetch(presigned.url, { method: 'DELETE' })
       if (!response.ok) throw new Error(`恢复对象失败（${response.status}）`)
@@ -1303,7 +1280,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       showToast(`已恢复 ${displayFileName(version.key)}`)
       await load(true, prefix, false)
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setRestoringVersion('')
       stopLoading()
@@ -1321,7 +1298,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setRestoringVersion(identity)
-      setError('')
       const presigned = await api.presignObject(accessKey, bucket, version.key, 'PUT', 900, {
         copySource: { bucket, key: version.key, versionId: version.version_id },
       })
@@ -1333,7 +1309,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       showToast(`已将 ${displayFileName(version.key)} 回溯到版本 ${shortVersionId(version.version_id)}`)
       await load(true)
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setRestoringVersion('')
       stopLoading()
@@ -1353,7 +1329,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setRestoringVersion(identity)
-      setError('')
       const presigned = await api.presignObject(accessKey, bucket, version.key, 'PUT', 900, {
         copySource: { bucket, key: version.key, versionId: version.version_id },
       })
@@ -1365,7 +1340,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       showToast(`已恢复 ${displayFileName(version.key)}，当前版本为 ${shortVersionId(version.version_id)}`)
       await load(true)
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setRestoringVersion('')
       stopLoading()
@@ -1475,12 +1450,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
             }} disabled={!bucket} />
             <span>显示已删除对象</span>
           </label>}
-          {viewMode === 'current' && !showDeleted && <button className="secondary-button create-path-button" type="button" onClick={() => { setPathError(''); setPathName(''); setShowCreatePath(true) }} disabled={!bucket || !accessKey}>
+          {viewMode === 'current' && !showDeleted && <button className="secondary-button create-path-button" type="button" onClick={() => { setPathName(''); setShowCreatePath(true) }} disabled={!bucket || !accessKey}>
             <FolderPlus className="button-icon" aria-hidden="true" />Create new path
           </button>}
         </div>
       </div>
-      {error && <p className="error-banner">{error}</p>}
 
       {selectedCount > 0 && (
         <div className="selection-toolbar" role="toolbar" aria-label="批量对象操作">
@@ -1662,7 +1636,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
               <div className="credential-modal-fields create-path-fields">
                 <label>目录名称<input aria-label="目录名称" placeholder="例如 images" value={pathName} onChange={(event) => setPathName(event.target.value)} required autoFocus /></label>
               </div>
-              {pathError && <p className="form-error credential-form-error" role="alert">{pathError}</p>}
               <footer className="lifecycle-modal-actions">
                 <button className="secondary-button" type="button" onClick={() => setShowCreatePath(false)}>取消</button>
                 <button className="primary-button" type="submit">创建路径</button>
@@ -1703,7 +1676,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                   </div>}
                 </label>
               </div>
-              {transferError && <p className="form-error credential-form-error" role="alert">{transferError}</p>}
               <footer className="lifecycle-modal-actions">
                 <button className="secondary-button" type="button" onClick={() => setTransferDialog(null)} disabled={transferring}>取消</button>
                 <button className="primary-button" type="submit" disabled={transferring || !transferBucket}>{transferring ? '处理中...' : transferDialog.mode === 'copy' ? '开始复制' : '开始移动'}</button>
@@ -1724,7 +1696,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
               {isImageKey(detail.key) && detailUrl ? <img src={detailUrl.url} alt={detail.key} /> : <div className="format-icon" aria-label={`${fileExtension(detail.key)} 文件`}>{fileExtension(detail.key)}</div>}
               {!isImageKey(detail.key) && <span>暂不支持此格式预览</span>}
             </div>
-            {detailError && <p className="error-banner">{detailError}</p>}
             <dl className="detail-list">
               <div><dt>Object Key</dt><dd>{detail.key}</dd></div>
               <div><dt>Format</dt><dd>{fileExtension(detail.key)}</dd></div>

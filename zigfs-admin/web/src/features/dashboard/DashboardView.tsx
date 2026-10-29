@@ -1,3 +1,4 @@
+import { useErrorToast } from '../../components/ToastProvider'
 import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
@@ -12,19 +13,18 @@ export function DashboardView({ api }: DashboardViewProps) {
   const { startLoading } = useLoading()
   const [system, setSystem] = useState<SystemInfo | null>(null)
   const [health, setHealth] = useState<ManagementHealth | null>(null)
-  const [error, setError] = useState('')
+  const notifyError = useErrorToast()
   const [refreshing, setRefreshing] = useState(false)
 
   const refresh = useCallback(async () => {
     const stopLoading = startLoading('正在加载服务信息...')
     try {
       setRefreshing(true)
-      setError('')
       const [systemInfo, healthInfo] = await Promise.all([api.system(), api.managementHealth()])
       setSystem(systemInfo)
       setHealth(healthInfo)
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setRefreshing(false)
       stopLoading()
@@ -47,7 +47,6 @@ export function DashboardView({ api }: DashboardViewProps) {
           <RefreshCw className={`button-icon${refreshing ? ' spinning' : ''}`} aria-hidden="true" />同步
         </button>
       </header>
-      {error && <p className="error-banner">{error}</p>}
       {system && (
         <>
           <div className="metric-grid">

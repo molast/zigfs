@@ -1,3 +1,4 @@
+import { useErrorToast } from '../../components/ToastProvider'
 import { type FormEvent, useState } from 'react'
 import { useLoading } from '../../components/LoadingProvider'
 
@@ -10,18 +11,17 @@ export function LoginView({ onLogin }: LoginViewProps) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState('')
+  const notifyError = useErrorToast()
 
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (!username.trim() || !password) return
 
     setSubmitting(true)
-    setError('')
     try {
       await withLoading('正在登录...', () => onLogin(username.trim(), password))
     } catch {
-      setError('账号或密码错误，或 ZigFS 当前不可用')
+      notifyError('账号或密码错误，或 ZigFS 当前不可用')
     } finally {
       setSubmitting(false)
     }
@@ -64,7 +64,6 @@ export function LoginView({ onLogin }: LoginViewProps) {
             onChange={(event) => setPassword(event.target.value)}
             required
           />
-          {error && <p className="form-error" role="alert">{error}</p>}
           <button className="primary-button" type="submit" disabled={submitting} aria-busy={submitting}>
             登录
           </button>

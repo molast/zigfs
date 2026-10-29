@@ -11,14 +11,19 @@ import {
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
+  ShieldCheck,
   Settings,
   Sun,
+  ContactRound,
+  UsersRound,
   X,
   type LucideIcon,
 } from 'lucide-react'
 import { ApiError, createApiClient } from './api/client'
 import { useLoading } from './components/LoadingProvider'
 import { AccessKeysView } from './features/access-keys/AccessKeysView'
+import { IdentitiesView } from './features/identities/IdentitiesView'
+import { PoliciesView } from './features/policies/PoliciesView'
 import { LoginView } from './features/auth/LoginView'
 import { BucketDetailView } from './features/buckets/BucketDetailView'
 import { BucketsView } from './features/buckets/BucketsView'
@@ -51,7 +56,12 @@ interface NavItem {
 const navigation: Array<{ label: string; items: NavItem[] }> = [
   { label: '工作台', items: [{ view: 'dashboard', label: 'Overview', icon: LayoutDashboard }] },
   { label: '对象存储', items: [{ view: 'buckets', label: 'Buckets', icon: FolderOpen }] },
-  { label: '访问控制', items: [{ view: 'access-keys', label: 'Access Keys', icon: KeyRound }] },
+  { label: '访问控制', items: [
+    { view: 'users', label: 'Users', icon: ContactRound },
+    { view: 'user-groups', label: 'User Groups', icon: UsersRound },
+    { view: 'access-keys', label: 'Access Keys', icon: KeyRound },
+    { view: 'policies', label: 'Policies', icon: ShieldCheck },
+  ] },
   {
     label: '服务状态',
     items: [
@@ -67,7 +77,10 @@ const viewMeta: Record<View, { section: string; label: string }> = {
   buckets: { section: 'Buckets', label: 'All Buckets' },
   'bucket-detail': { section: 'Buckets', label: 'Summary' },
   objects: { section: 'Buckets', label: 'Objects' },
+  users: { section: 'Access Control', label: 'Users' },
+  'user-groups': { section: 'Access Control', label: 'User Groups' },
   'access-keys': { section: 'Access Control', label: 'Access Keys' },
+  policies: { section: 'Access Control', label: 'Policies' },
   storage: { section: 'System', label: 'Storage' },
   system: { section: 'System', label: 'Runtime' },
   settings: { section: 'Configuration', label: 'Settings' },
@@ -243,6 +256,9 @@ export default function App() {
           />}
           {view === 'objects' && <ObjectsView api={api} initialBucket={selectedBucket} initialPrefix={selectedPrefix} onNavigatePath={(prefix) => navigate('objects', selectedBucket, prefix)} onBack={() => navigate('bucket-detail', selectedBucket)} />}
           {view === 'access-keys' && <AccessKeysView api={api} />}
+          {view === 'users' && <IdentitiesView key="users" kind="users" api={api} />}
+          {view === 'user-groups' && <IdentitiesView key="groups" kind="groups" api={api} />}
+          {view === 'policies' && <PoliciesView api={api} />}
           {view === 'storage' && <StorageView api={api} />}
           {view === 'system' && <SystemView api={api} />}
           {view === 'settings' && <SettingsView api={api} />}

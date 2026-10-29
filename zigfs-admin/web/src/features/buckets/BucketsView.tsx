@@ -3,7 +3,7 @@ import { ArrowRight, Folder, FolderPlus, Plus, RefreshCw, Search, Trash2, X } fr
 import { ApiError, type ApiClient } from '../../api/client'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
-import { useToast } from '../../components/ToastProvider'
+import { useErrorToast, useToast } from '../../components/ToastProvider'
 import type { Bucket } from '../../types/api'
 
 interface BucketsViewProps {
@@ -20,17 +20,15 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
   const [query, setQuery] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
-  const [error, setError] = useState('')
-  const [createError, setCreateError] = useState('')
+  const notifyError = useErrorToast()
 
   const refresh = useCallback(async () => {
     const stopLoading = startLoading('正在加载 Buckets...')
     try {
       setRefreshing(true)
-      setError('')
       setBuckets(await api.listBuckets())
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setRefreshing(false)
       stopLoading()
@@ -60,15 +58,13 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
     event.preventDefault()
     const stopLoading = startLoading('正在创建 Bucket...')
     try {
-      setError('')
-      setCreateError('')
       await api.createBucket(name.trim())
       setName('')
       setShowCreate(false)
       await refresh()
       showToast(`已创建 Bucket ${name.trim()}`)
     } catch (reason) {
-      setCreateError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       stopLoading()
     }
@@ -83,7 +79,6 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
     })) return
     const stopLoading = startLoading('正在删除 Bucket...')
     try {
-      setError('')
       await api.deleteBucket(bucket)
       await refresh()
       showToast(`已删除 Bucket ${bucket}`)
@@ -97,7 +92,7 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
           hideConfirm: true,
         })
       } else {
-        setError((reason as Error).message)
+        notifyError((reason as Error).message)
       }
     } finally {
       stopLoading()
@@ -114,7 +109,6 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
         </div>
         <span className="count-badge">{buckets.length} 个 Bucket</span>
       </header>
-      {error && <p className="error-banner">{error}</p>}
       <div className="page-toolbar">
         <div className="toolbar-leading">
           <label className="search-box">
@@ -123,7 +117,7 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
           </label>
         </div>
         <div className="toolbar-actions">
-          <button className="primary-button create-action-button" type="button" onClick={() => { setCreateError(''); setShowCreate(true) }} aria-haspopup="dialog" aria-expanded={showCreate}>
+          <button className="primary-button create-action-button" type="button" onClick={() => { setShowCreate(true) }} aria-haspopup="dialog" aria-expanded={showCreate}>
             <Plus className="button-icon" aria-hidden="true" />创建 Bucket
           </button>
           <button className="secondary-button refresh-action-button" type="button" onClick={() => void refresh()} disabled={refreshing} aria-busy={refreshing}>
@@ -143,7 +137,6 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
               <div className="credential-modal-fields">
                 <label>Bucket name<input aria-label="Bucket name" placeholder="bucket-name" value={name} onChange={(event) => setName(event.target.value)} required autoFocus /></label>
               </div>
-              {createError && <p className="form-error credential-form-error" role="alert">{createError}</p>}
               <footer className="lifecycle-modal-actions">
                 <button className="secondary-button" type="button" onClick={() => setShowCreate(false)}>取消</button>
                 <button className="primary-button" type="submit">确认创建</button>

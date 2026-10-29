@@ -1,4 +1,4 @@
-export type View = 'dashboard' | 'buckets' | 'bucket-detail' | 'objects' | 'access-keys' | 'storage' | 'system' | 'settings'
+export type View = 'dashboard' | 'buckets' | 'bucket-detail' | 'objects' | 'users' | 'user-groups' | 'access-keys' | 'policies' | 'storage' | 'system' | 'settings'
 
 export interface AppRoute {
   view: View
@@ -7,7 +7,10 @@ export interface AppRoute {
 }
 
 const staticRoutes: Record<string, View> = {
+  users: 'users',
+  'user-groups': 'user-groups',
   'access-keys': 'access-keys',
+  policies: 'policies',
   storage: 'storage',
   system: 'system',
   settings: 'settings',
@@ -60,7 +63,10 @@ export function appRoutePath(route: AppRoute): string {
       const prefixPath = normalizedPrefix.split('/').filter(Boolean).map(encodeURIComponent).join('/')
       return `${bucketPath}/${prefixPath}${normalizedPrefix.endsWith('/') ? '/' : ''}`
     }
+    case 'users': return '/users'
+    case 'user-groups': return '/user-groups'
     case 'access-keys': return '/access-keys'
+    case 'policies': return '/policies'
     case 'storage': return '/storage'
     case 'system': return '/system'
     case 'settings': return '/settings'

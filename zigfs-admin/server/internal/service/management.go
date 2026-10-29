@@ -133,3 +133,77 @@ func (service *Management) Health(ctx context.Context) (contract.ManagementHealt
 func (service *Management) Settings(ctx context.Context) (contract.SettingsResponse, error) {
 	return service.zig.Settings(ctx)
 }
+
+func (service *Management) ListPolicies(ctx context.Context) (contract.PolicyList, error) {
+	return service.zig.ListPolicies(ctx)
+}
+
+func (service *Management) GetPolicy(ctx context.Context, name string) (contract.ManagedPolicy, error) {
+	return service.zig.GetPolicy(ctx, name)
+}
+
+func (service *Management) CreatePolicy(ctx context.Context, policy contract.ManagedPolicy) (contract.ManagedPolicy, error) {
+	return service.zig.CreatePolicy(ctx, policy)
+}
+
+func (service *Management) UpdatePolicy(ctx context.Context, policy contract.ManagedPolicy) (contract.ManagedPolicy, error) {
+	return service.zig.UpdatePolicy(ctx, policy)
+}
+
+func (service *Management) DeletePolicy(ctx context.Context, name string) error {
+	return service.zig.DeletePolicy(ctx, name)
+}
+
+func (service *Management) ListUsers(ctx context.Context) (contract.UserList, error) {
+	return service.zig.ListUsers(ctx)
+}
+
+func (service *Management) GetUser(ctx context.Context, name string) (contract.ManagedUser, error) {
+	return service.zig.GetUser(ctx, name)
+}
+
+func (service *Management) CreateUser(ctx context.Context, value contract.UserWrite) (contract.ManagedUser, error) {
+	return service.zig.CreateUser(ctx, value)
+}
+
+func (service *Management) UpdateUser(ctx context.Context, value contract.UserWrite) (contract.ManagedUser, error) {
+	return service.zig.UpdateUser(ctx, value)
+}
+
+func (service *Management) DeleteUser(ctx context.Context, name string) error {
+	return service.zig.DeleteUser(ctx, name)
+}
+
+func (service *Management) ListGroups(ctx context.Context) (contract.GroupList, error) {
+	return service.zig.ListGroups(ctx)
+}
+
+func (service *Management) GetGroup(ctx context.Context, name string) (contract.ManagedGroup, error) {
+	return service.zig.GetGroup(ctx, name)
+}
+
+func (service *Management) CreateGroup(ctx context.Context, value contract.ManagedGroup) (contract.ManagedGroup, error) {
+	return service.zig.CreateGroup(ctx, value)
+}
+
+func (service *Management) UpdateGroup(ctx context.Context, value contract.ManagedGroup) (contract.ManagedGroup, error) {
+	return service.zig.UpdateGroup(ctx, value)
+}
+
+func (service *Management) DeleteGroup(ctx context.Context, name string) error {
+	return service.zig.DeleteGroup(ctx, name)
+}
+
+func (service *Management) ListUserAccessKeys(ctx context.Context, name string) (contract.ListAccessKeysResponse, error) {
+	return service.zig.ListUserAccessKeys(ctx, name)
+}
+func (service *Management) CreateUserAccessKey(ctx context.Context, name string, request contract.CreateAccessKeyRequest) (contract.CreateAccessKeyResponse, error) {
+	request.Owner = ""
+	return service.zig.CreateUserAccessKey(ctx, name, request)
+}
+func (service *Management) UpdateUserAccessKey(ctx context.Context, name, id string, request contract.UpdateAccessKeyRequest) (contract.AccessKey, error) {
+	return service.zig.UpdateUserAccessKey(ctx, name, id, request)
+}
+func (service *Management) DeleteUserAccessKey(ctx context.Context, name, id string) error {
+	return service.zig.DeleteUserAccessKey(ctx, name, id)
+}

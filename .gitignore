@@ -1,5 +1,6 @@
 # Local architecture and requirements documents
 .docs/
+.agents/
 
 # Zig build output and cache
 .zig-cache/

@@ -196,16 +196,20 @@ type CompleteMultipartUploadRequest struct {
 }
 
 type AccessKey struct {
-	ID           string           `json:"id"`
-	AccessKey    string           `json:"access_key"`
-	SecretKey    string           `json:"secret_key"`
-	SessionToken string           `json:"session_token,omitempty"`
-	Kind         string           `json:"kind"`
-	Owner        string           `json:"owner"`
-	Enabled      bool             `json:"enabled"`
-	Policy       CredentialPolicy `json:"policy"`
-	CreatedAt    time.Time        `json:"created_at"`
-	ExpiresAt    *time.Time       `json:"expires_at,omitempty"`
+	PolicyDocument string           `json:"policy_document"`
+	Name           string           `json:"name"`
+	Description    string           `json:"description"`
+	InheritPolicy  bool             `json:"inherit_policy"`
+	ID             string           `json:"id"`
+	AccessKey      string           `json:"access_key"`
+	SecretKey      string           `json:"secret_key,omitempty"`
+	SessionToken   string           `json:"session_token,omitempty"`
+	Kind           string           `json:"kind"`
+	Owner          string           `json:"owner"`
+	Enabled        bool             `json:"enabled"`
+	Policy         CredentialPolicy `json:"policy"`
+	CreatedAt      time.Time        `json:"created_at"`
+	ExpiresAt      *time.Time       `json:"expires_at,omitempty"`
 }
 
 type CredentialPolicy struct {
@@ -221,6 +225,14 @@ type ListAccessKeysResponse struct {
 }
 
 type CreateAccessKeyRequest struct {
+	PolicyDocument string     `json:"policy_document,omitempty" binding:"max=262144"`
+	AccessKey      string     `json:"access_key,omitempty" binding:"omitempty,min=16,max=128,alphanum"`
+	SecretKey      string     `json:"secret_key,omitempty" binding:"omitempty,min=32,max=64"`
+	Name           string     `json:"name" binding:"max=128"`
+	Description    string     `json:"description" binding:"max=1024"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	InheritPolicy  bool       `json:"inherit_policy"`
+
 	Owner      string            `json:"owner,omitempty"`
 	Policy     *CredentialPolicy `json:"policy,omitempty"`
 	TTLSeconds *int64            `json:"ttl_seconds,omitempty" binding:"omitempty,min=60,max=43200"`
@@ -231,7 +243,13 @@ type CreateAccessKeyResponse struct {
 }
 
 type UpdateAccessKeyRequest struct {
-	Enabled *bool `json:"enabled" binding:"required"`
+	Enabled        *bool      `json:"enabled,omitempty"`
+	Name           *string    `json:"name,omitempty" binding:"omitempty,max=128"`
+	Description    *string    `json:"description,omitempty" binding:"omitempty,max=1024"`
+	InheritPolicy  *bool      `json:"inherit_policy,omitempty"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	ClearExpiry    bool       `json:"clear_expiry,omitempty"`
+	PolicyDocument *string    `json:"policy_document,omitempty" binding:"omitempty,max=262144"`
 }
 
 type StorageResponse struct {
@@ -279,4 +297,44 @@ type SettingsResponse struct {
 	MetricsAddress               string `json:"metrics_address"`
 	AdminSessionTTLSeconds       int64  `json:"admin_session_ttl_seconds"`
 	ReloadRequired               bool   `json:"reload_required"`
+}
+
+type ManagedPolicy struct {
+	Name     string `json:"name"`
+	Document string `json:"document"`
+}
+type PolicyList struct {
+	Items []ManagedPolicy `json:"items"`
+}
+
+// Managed identities are persisted by ZigFS. Policy assignments are management metadata.
+type UserWrite struct {
+	Name        string    `json:"name" binding:"required"`
+	Description string    `json:"description"`
+	Enabled     bool      `json:"enabled"`
+	Policies    []string  `json:"policies"`
+	Password    *string   `json:"password,omitempty"`
+	Groups      *[]string `json:"groups,omitempty"`
+}
+type ManagedUser struct {
+	Groups      []string `json:"groups"`
+	UpdatedAt   int64    `json:"updated_at"`
+	Name        string   `json:"name" binding:"required"`
+	Description string   `json:"description"`
+	Enabled     bool     `json:"enabled"`
+	Policies    []string `json:"policies"`
+}
+type ManagedGroup struct {
+	UpdatedAt   int64    `json:"updated_at"`
+	Name        string   `json:"name" binding:"required"`
+	Description string   `json:"description"`
+	Enabled     bool     `json:"enabled"`
+	Policies    []string `json:"policies"`
+	Members     []string `json:"members"`
+}
+type UserList struct {
+	Items []ManagedUser `json:"items"`
+}
+type GroupList struct {
+	Items []ManagedGroup `json:"items"`
 }

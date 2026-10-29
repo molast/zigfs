@@ -346,3 +346,131 @@ func TestCreateBucketAcceptsNameWithoutOwner(t *testing.T) {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, recorder.Code, recorder.Body.String())
 	}
 }
+
+func (managementService) ListPolicies(ctx context.Context) (contract.PolicyList, error) {
+	return contract.PolicyList{}, nil
+}
+
+func (managementService) GetPolicy(ctx context.Context, name string) (contract.ManagedPolicy, error) {
+	return contract.ManagedPolicy{}, nil
+}
+
+func (managementService) CreatePolicy(ctx context.Context, policy contract.ManagedPolicy) (contract.ManagedPolicy, error) {
+	return contract.ManagedPolicy{}, nil
+}
+
+func (managementService) UpdatePolicy(ctx context.Context, policy contract.ManagedPolicy) (contract.ManagedPolicy, error) {
+	return contract.ManagedPolicy{}, nil
+}
+
+func (managementService) DeletePolicy(ctx context.Context, name string) error { return nil }
+
+func TestPolicyRoutesRequireSessionAndValidateRename(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := testEngine(true)
+	for _, route := range []struct{ method, path string }{
+		{"GET", "/api/v1/policies"}, {"POST", "/api/v1/policies"},
+		{"GET", "/api/v1/policies/custom"}, {"PATCH", "/api/v1/policies/custom"},
+		{"DELETE", "/api/v1/policies/custom"},
+	} {
+		response := httptest.NewRecorder()
+		engine.ServeHTTP(response, httptest.NewRequest(route.method, route.path, nil))
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s: got %d", route.method, route.path, response.Code)
+		}
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PATCH", "/api/v1/policies/custom", strings.NewReader(`{"name":"different","document":"{}"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(&http.Cookie{Name: middleware.AdminSessionCookie, Value: "zigfs-issued-token"})
+	engine.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("rename should fail: %d", response.Code)
+	}
+}
+
+func (managementService) ListUsers(context.Context) (contract.UserList, error) {
+	return contract.UserList{Items: []contract.ManagedUser{}}, nil
+}
+func (managementService) GetUser(ctx context.Context, name string) (contract.ManagedUser, error) {
+	return contract.ManagedUser{Name: name, Enabled: true, Policies: []string{}}, nil
+}
+func (managementService) CreateUser(ctx context.Context, value contract.UserWrite) (contract.ManagedUser, error) {
+	return contract.ManagedUser{Name: value.Name, Enabled: value.Enabled, Policies: value.Policies}, nil
+}
+func (managementService) UpdateUser(ctx context.Context, value contract.UserWrite) (contract.ManagedUser, error) {
+	return contract.ManagedUser{Name: value.Name, Enabled: value.Enabled, Policies: value.Policies}, nil
+}
+func (managementService) DeleteUser(context.Context, string) error { return nil }
+
+func (managementService) ListGroups(context.Context) (contract.GroupList, error) {
+	return contract.GroupList{Items: []contract.ManagedGroup{}}, nil
+}
+func (managementService) GetGroup(ctx context.Context, name string) (contract.ManagedGroup, error) {
+	return contract.ManagedGroup{Name: name, Enabled: true, Policies: []string{}}, nil
+}
+func (managementService) CreateGroup(ctx context.Context, value contract.ManagedGroup) (contract.ManagedGroup, error) {
+	return value, nil
+}
+func (managementService) UpdateGroup(ctx context.Context, value contract.ManagedGroup) (contract.ManagedGroup, error) {
+	return value, nil
+}
+func (managementService) DeleteGroup(context.Context, string) error { return nil }
+
+func TestIdentityRoutesRequireSessionAndValidatePayloads(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := testEngine(true)
+	for _, kind := range []string{"users", "groups"} {
+		for _, route := range []struct{ method, suffix string }{{"GET", ""}, {"POST", ""}, {"GET", "/alice"}, {"PATCH", "/alice"}, {"DELETE", "/alice"}} {
+			response := httptest.NewRecorder()
+			engine.ServeHTTP(response, httptest.NewRequest(route.method, "/api/v1/"+kind+route.suffix, nil))
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("%s %s: got %d", route.method, kind, response.Code)
+			}
+		}
+		for _, tc := range []struct {
+			method, suffix, body string
+			status               int
+		}{
+			{"POST", "", `{"name":"alice","password":"test-password","enabled":true,"policies":["readonly"],"members":["bob"]}`, http.StatusCreated},
+			{"PATCH", "/alice", `{"name":"alice","enabled":false,"policies":[],"members":[]}`, http.StatusOK},
+			{"PATCH", "/alice", `{"name":"renamed"}`, http.StatusBadRequest},
+			{"POST", "", `{"name":""}`, http.StatusBadRequest},
+			{"POST", "", `{`, http.StatusBadRequest},
+			{"GET", "/alice", ``, http.StatusOK},
+			{"DELETE", "/alice", ``, http.StatusNoContent},
+		} {
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(tc.method, "/api/v1/"+kind+tc.suffix, strings.NewReader(tc.body))
+			request.Header.Set("Content-Type", "application/json")
+			request.AddCookie(&http.Cookie{Name: middleware.AdminSessionCookie, Value: "zigfs-issued-token"})
+			engine.ServeHTTP(response, request)
+			if response.Code != tc.status {
+				t.Fatalf("%s %s: got %d: %s", tc.method, kind, response.Code, response.Body.String())
+			}
+			if tc.method == "POST" && tc.status == http.StatusCreated {
+				var created contract.ManagedGroup
+				if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+					t.Fatal(err)
+				}
+				if !created.Enabled || len(created.Policies) != 1 || created.Policies[0] != "readonly" {
+					t.Fatalf("lost fields: %+v", created)
+				}
+				if kind == "groups" && (len(created.Members) != 1 || created.Members[0] != "bob") {
+					t.Fatalf("lost members: %+v", created)
+				}
+			}
+		}
+	}
+}
+
+func (managementService) ListUserAccessKeys(context.Context, string) (contract.ListAccessKeysResponse, error) {
+	return contract.ListAccessKeysResponse{}, nil
+}
+func (managementService) CreateUserAccessKey(context.Context, string, contract.CreateAccessKeyRequest) (contract.CreateAccessKeyResponse, error) {
+	return contract.CreateAccessKeyResponse{}, nil
+}
+func (managementService) UpdateUserAccessKey(context.Context, string, string, contract.UpdateAccessKeyRequest) (contract.AccessKey, error) {
+	return contract.AccessKey{}, nil
+}
+func (managementService) DeleteUserAccessKey(context.Context, string, string) error { return nil }

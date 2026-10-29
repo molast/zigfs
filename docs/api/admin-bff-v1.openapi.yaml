@@ -11,6 +11,367 @@ servers:
 security:
   - zigfsSessionCookie: []
 paths:
+  /api/v1/users:
+    get:
+      summary: Get managed users
+      description: Management metadata only; assignments do not change S3 authorization or Admin login. Names are immutable. Updates replace the full record.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ManagedUser"
+        "400":
+          description: Invalid identity, duplicate selections or missing reference
+        "401":
+          description: Authentication required
+        "404":
+          description: User or group not found
+        "409":
+          description: Name already exists
+        "503":
+          description: Persistent storage unavailable
+    post:
+      summary: Post managed users
+      description: Management metadata only; assignments do not change S3 authorization or Admin login. Names are immutable. Updates replace the full record.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/UserWrite"
+                - type: object
+                  required: [password]
+      responses:
+        "201":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagedUser"
+        "400":
+          description: Invalid identity, duplicate selections or missing reference
+        "401":
+          description: Authentication required
+        "404":
+          description: User or group not found
+        "409":
+          description: Name already exists
+        "503":
+          description: Persistent storage unavailable
+  /api/v1/users/{name}:
+    parameters:
+      - in: path
+        name: name
+        required: true
+        schema: { type: string }
+    get:
+      summary: Get managed users
+      description: Management metadata only; assignments do not change S3 authorization or Admin login. Names are immutable. Updates replace the full record.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagedUser"
+        "400":
+          description: Invalid identity, duplicate selections or missing reference
+        "401":
+          description: Authentication required
+        "404":
+          description: User or group not found
+        "409":
+          description: Name already exists
+        "503":
+          description: Persistent storage unavailable
+    patch:
+      summary: Patch managed users
+      description: Management metadata only; assignments do not change S3 authorization or Admin login. Names are immutable. Updates replace the full record.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserWrite"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagedUser"
+        "400":
+          description: Invalid identity, duplicate selections or missing reference
+        "401":
+          description: Authentication required
+        "404":
+          description: User or group not found
+        "409":
+          description: Name already exists
+        "503":
+          description: Persistent storage unavailable
+    delete:
+      summary: Delete managed users
+      description: Management metadata only; assignments do not change S3 authorization or Admin login. Names are immutable. Updates replace the full record.
+      responses:
+        "204":
+          description: Success
+        "400":
+          description: Invalid identity, duplicate selections or missing reference
+        "401":
+          description: Authentication required
+        "404":
+          description: User or group not found
+        "409":
+          description: Name already exists
+        "503":
+          description: Persistent storage unavailable
+  /api/v1/groups:
+    get:
+      summary: Get managed groups
+      description: Management metadata only; assignments do not change S3 authorization or Admin login. Names are immutable. Updates replace the full record.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ManagedGroup"
+        "400":
+          description: Invalid identity, duplicate selections or missing reference
+        "401":
+          description: Authentication required
+        "404":
+          description: User or group not found
+        "409":
+          description: Name already exists
+        "503":
+          description: Persistent storage unavailable
+    post:
+      summary: Post managed groups
+      description: Management metadata only; assignments do not change S3 authorization or Admin login. Names are immutable. Updates replace the full record.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManagedGroup"
+      responses:
+        "201":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagedGroup"
+        "400":
+          description: Invalid identity, duplicate selections or missing reference
+        "401":
+          description: Authentication required
+        "404":
+          description: User or group not found
+        "409":
+          description: Name already exists
+        "503":
+          description: Persistent storage unavailable
+  /api/v1/groups/{name}:
+    parameters:
+      - in: path
+        name: name
+        required: true
+        schema: { type: string }
+    get:
+      summary: Get managed groups
+      description: Management metadata only; assignments do not change S3 authorization or Admin login. Names are immutable. Updates replace the full record.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagedGroup"
+        "400":
+          description: Invalid identity, duplicate selections or missing reference
+        "401":
+          description: Authentication required
+        "404":
+          description: User or group not found
+        "409":
+          description: Name already exists
+        "503":
+          description: Persistent storage unavailable
+    patch:
+      summary: Patch managed groups
+      description: Management metadata only; assignments do not change S3 authorization or Admin login. Names are immutable. Updates replace the full record.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManagedGroup"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagedGroup"
+        "400":
+          description: Invalid identity, duplicate selections or missing reference
+        "401":
+          description: Authentication required
+        "404":
+          description: User or group not found
+        "409":
+          description: Name already exists
+        "503":
+          description: Persistent storage unavailable
+    delete:
+      summary: Delete managed groups
+      description: Management metadata only; assignments do not change S3 authorization or Admin login. Names are immutable. Updates replace the full record.
+      responses:
+        "204":
+          description: Success
+        "400":
+          description: Invalid identity, duplicate selections or missing reference
+        "401":
+          description: Authentication required
+        "404":
+          description: User or group not found
+        "409":
+          description: Name already exists
+        "503":
+          description: Persistent storage unavailable
+  /api/v1/policies:
+    get:
+      summary: Get managed policy documents
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ManagedPolicy"
+        "400":
+          description: Invalid policy name or document
+        "401":
+          description: Authentication required
+        "404":
+          description: Policy not found
+        "409":
+          description: Policy already exists
+        "503":
+          description: Policy storage unavailable
+    post:
+      summary: Post managed policy documents
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManagedPolicy"
+      responses:
+        "201":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagedPolicy"
+        "400":
+          description: Invalid policy name or document
+        "401":
+          description: Authentication required
+        "404":
+          description: Policy not found
+        "409":
+          description: Policy already exists
+        "503":
+          description: Policy storage unavailable
+  /api/v1/policies/{name}:
+    parameters:
+      - in: path
+        name: name
+        required: true
+        schema: { type: string }
+    get:
+      summary: Get managed policy documents
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagedPolicy"
+        "400":
+          description: Invalid policy name or document
+        "401":
+          description: Authentication required
+        "404":
+          description: Policy not found
+        "409":
+          description: Policy already exists
+        "503":
+          description: Policy storage unavailable
+    patch:
+      summary: Patch managed policy documents
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManagedPolicy"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagedPolicy"
+        "400":
+          description: Invalid policy name or document
+        "401":
+          description: Authentication required
+        "404":
+          description: Policy not found
+        "409":
+          description: Policy already exists
+        "503":
+          description: Policy storage unavailable
+    delete:
+      summary: Delete managed policy documents
+      responses:
+        "204":
+          description: Success
+        "400":
+          description: Invalid policy name or document
+        "401":
+          description: Authentication required
+        "404":
+          description: Policy not found
+        "409":
+          description: Policy already exists
+        "503":
+          description: Policy storage unavailable
   /api/v1/auth/login:
     post:
       operationId: loginAdminWeb
@@ -316,6 +677,75 @@ paths:
             application/json:
               schema:
                 $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/PresignObjectResponse"
+  /api/v1/users/{name}/access-keys:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string, pattern: "^[A-Za-z0-9_.-]{1,128}$" }
+    get:
+      operationId: listUserAccessKeys
+      description: User-scoped credentials. Ownership comes from the path; another user's key returns 404. Only creation returns secrets. Disabled users cannot create keys.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/ListAccessKeysResponse"
+        default:
+          $ref: "./zigfs-management-v1.openapi.yaml#/components/responses/Error"
+    post:
+      operationId: createUserAccessKey
+      description: User-scoped credentials. Ownership comes from the path; another user's key returns 404. Only creation returns secrets. Disabled users cannot create keys.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/CreateUserAccessKeyRequest"
+      responses:
+        "201":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/CreateAccessKeyResponse"
+        default:
+          $ref: "./zigfs-management-v1.openapi.yaml#/components/responses/Error"
+  /api/v1/users/{name}/access-keys/{id}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string, pattern: "^[A-Za-z0-9_.-]{1,128}$" }
+      - $ref: "./zigfs-management-v1.openapi.yaml#/components/parameters/AccessKeyID"
+    patch:
+      operationId: updateUserAccessKey
+      description: User-scoped credentials. Ownership comes from the path; another user's key returns 404. Only creation returns secrets. Disabled users cannot create keys.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/UpdateAccessKeyRequest"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/AccessKey"
+        default:
+          $ref: "./zigfs-management-v1.openapi.yaml#/components/responses/Error"
+    delete:
+      operationId: deleteUserAccessKey
+      description: User-scoped credentials. Ownership comes from the path; another user's key returns 404. Only creation returns secrets. Disabled users cannot create keys.
+      responses:
+        "204":
+          description: Success
+        default:
+          $ref: "./zigfs-management-v1.openapi.yaml#/components/responses/Error"
   /api/v1/access-keys:
     get:
       operationId: listAccessKeys
@@ -374,6 +804,94 @@ components:
       name: zigfs_admin_session
       description: ZigFS 签发、Admin 仅中转的短期 Management Token。
   schemas:
+    UserWrite:
+      type: object
+      required: [name, enabled, policies]
+      properties:
+        name: { type: string, pattern: '^[A-Za-z0-9_.-]{1,128}$' }
+        description: { type: string, default: '' }
+        enabled: { type: boolean }
+        policies:
+          type: array
+          uniqueItems: true
+          maxItems: 1024
+          items: { type: string }
+        groups:
+          type: array
+          uniqueItems: true
+          maxItems: 1024
+          items: { type: string }
+          description: When supplied, replaces group memberships atomically. Omit to preserve; an empty array removes all memberships.
+        password:
+          type: string
+          writeOnly: true
+          description: Required on create. 8–1024 UTF-8 bytes. Omit on update to retain the existing hash. Never returned; stored as an Argon2id hash.
+    ManagedUser:
+      type: object
+      required: [name, enabled, policies, groups, updated_at]
+      properties:
+        groups:
+          type: array
+          items: { type: string }
+          readOnly: true
+        updated_at:
+          type: integer
+          format: int64
+          readOnly: true
+          description: Unix seconds; zero for legacy records without a known update time.
+        name:
+          type: string
+          pattern: '^[A-Za-z0-9_.-]{1,128}$'
+        description:
+          type: string
+          description: At most 1024 UTF-8 bytes.
+          default: ''
+        enabled:
+          type: boolean
+        policies:
+          type: array
+          maxItems: 1024
+          uniqueItems: true
+          items: { type: string }
+    ManagedGroup:
+      type: object
+      required: [name, enabled, policies, members]
+      properties:
+        updated_at:
+          type: integer
+          format: int64
+          readOnly: true
+        name:
+          type: string
+          pattern: '^[A-Za-z0-9_.-]{1,128}$'
+        description:
+          type: string
+          description: At most 1024 UTF-8 bytes.
+          default: ''
+        enabled:
+          type: boolean
+        policies:
+          type: array
+          maxItems: 1024
+          uniqueItems: true
+          items: { type: string }
+        members:
+          type: array
+          maxItems: 1024
+          uniqueItems: true
+          items: { type: string }
+    ManagedPolicy:
+      type: object
+      required: [name, document]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[a-zA-Z0-9_.-]+$'
+        document:
+          type: string
+          description: JSON-encoded IAM policy document, Version 2012-10-17 and Statement object or array. Maximum 256 KiB. Assigned user/group policies authorize inheriting keys. Supports Condition, NotAction and NotResource; unsupported context keys/operators are rejected.
     CreateAdminBucketRequest:
       type: object
       additionalProperties: false
@@ -391,6 +909,36 @@ components:
         Owner 不由浏览器提交。Admin 根据当前 ZigFS 管理员会话自动绑定凭证所属租户，
         再转发给 ZigFS Management API。
       properties:
+        policy_document:
+          type: string
+          maxLength: 262144
+          description: Optional key JSON policy; restricts inherited permissions when enabled.
+        access_key:
+          type: string
+          pattern: '^[A-Za-z0-9]{16,128}$'
+          description: Optional custom AK; generated by ZigFS when omitted.
+        secret_key:
+          type: string
+          minLength: 32
+          maxLength: 64
+          writeOnly: true
+          description: Printable ASCII. Temporary token credentials require exactly 40 characters. Generated when omitted.
+        name:
+          type: string
+          maxLength: 128
+          description: Optional label; 128 UTF-8 bytes maximum.
+        description:
+          type: string
+          maxLength: 1024
+          description: Optional description; 1024 UTF-8 bytes maximum.
+        inherit_policy:
+          type: boolean
+          default: false
+          description: Use administrator permissions or dynamically evaluate user and enabled-group JSON policies. When false use the explicit credential policy. UI defaults to true; API default preserves legacy behavior.
+        expires_at:
+          type: string
+          format: date-time
+          description: Future UTC expiry, no 12-hour limit. Omit for no expiry. Cannot be combined with ttl_seconds.
         policy:
           $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/CredentialPolicyInput"
         ttl_seconds:

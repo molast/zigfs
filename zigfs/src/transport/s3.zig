@@ -7,6 +7,8 @@ const multipart_service = @import("../application/multipart_service.zig");
 const object_service = @import("../application/object_service.zig");
 const lifecycle_service = @import("../application/lifecycle_service.zig");
 const policy = @import("../auth/policy.zig");
+const iam_context = @import("iam_context.zig");
+const iam = @import("../auth/iam_policy.zig");
 const sigv4 = @import("../auth/sigv4.zig");
 const checksum = @import("../common/checksum.zig");
 const time = @import("../common/time.zig");
@@ -70,6 +72,7 @@ pub fn serveRequest(
     request: *std.http.Server.Request,
     application: *Application,
     request_id: []const u8,
+    peer: std.Io.net.IpAddress,
 ) !std.http.Status {
     // Browsers use this unauthenticated preflight before direct presigned writes and deletes.
     if (request.head.method == .OPTIONS) return respondCorsPreflight(request, request_id);
@@ -111,7 +114,7 @@ pub fn serveRequest(
         if (sigv4.hasPresignedParameters(raw_target) or policy_authorization != null) {
             return respondError(request, allocator, .invalid_request, request_id);
         }
-        return servePostPolicyUpload(request, application, parsed, headers.items, request_id);
+        return servePostPolicyUpload(request, application, parsed, headers.items, request_id, peer);
     }
 
     const authorization_header = singleHeader(headers.items, "authorization") catch {
@@ -187,10 +190,26 @@ pub fn serveRequest(
         return respondError(request, allocator, .not_implemented, request_id);
     }
 
+    var condition_arena = std.heap.ArenaAllocator.init(allocator);
+    defer condition_arena.deinit();
+    const signed_date = if (uses_presigned_auth) (parsed.query("X-Amz-Date") catch null) else (singleHeader(headers.items, "x-amz-date") catch null);
+    const signed_at = if (signed_date) |date| sigv4.parseAmzDate(date) catch null else null;
+    const conditions = iam_context.build(condition_arena.allocator(), auth_material.owner, headers.items, parsed, peer, auth_request.now_unix_seconds, if (uses_presigned_auth) "REST-QUERY-STRING" else "REST-HEADER", signed_at, application.config.s3_region) catch return respondError(request, allocator, .invalid_argument, request_id);
+
     const copy_source_header = singleHeader(headers.items, "x-amz-copy-source") catch {
         return respondError(request, allocator, .invalid_argument, request_id);
     };
 
+    if (parsed.operation != .delete_objects) {
+        const action = inheritedActionFor(parsed.operation, (parsed.query("versionId") catch null) != null);
+        if (!auth_material.allowsWithContext(allocator, action, parsed.bucket, parsed.key, conditions)) return respondError(request, allocator, .access_denied, request_id);
+        if (governanceBypassRequestedFromHeaders(headers.items) and !auth_material.allowsWithContext(allocator, "s3:BypassGovernanceRetention", parsed.bucket, parsed.key, conditions)) return respondError(request, allocator, .access_denied, request_id);
+    }
+    if (copy_source_header != null) {
+        var source = (parseCopySource(allocator, headers.items) catch return respondError(request, allocator, .invalid_argument, request_id)) orelse return respondError(request, allocator, .invalid_argument, request_id);
+        defer source.deinit();
+        if (!auth_material.allowsWithContext(allocator, if (source.version_id != null) "s3:GetObjectVersion" else "s3:GetObject", source.bucket, source.key, conditions)) return respondError(request, allocator, .access_denied, request_id);
+    }
     if (actionFor(parsed.operation)) |action| {
         policy.authorize(auth_material.policy, action) catch {
             return respondError(request, allocator, .access_denied, request_id);
@@ -253,6 +272,8 @@ pub fn serveRequest(
             auth_material.owner,
             headers.items,
             auth_material.policy.bypass_governance_retention,
+            &auth_material,
+            conditions,
             request_id,
         ),
         .list_objects_v2 => serveListObjects(
@@ -385,6 +406,29 @@ fn serveAnonymousRead(
         .head_object => serveHeadObject(request, application, parsed, "", headers, request_id),
         .list_objects_v2 => serveListObjects(request, application, parsed, "", headers, request_id),
         else => unreachable,
+    };
+}
+
+fn inheritedActionFor(operation: protocol.Operation, versioned: bool) []const u8 {
+    return switch (operation) {
+        .list_buckets => "s3:ListAllMyBuckets",
+        .create_bucket => "s3:CreateBucket",
+        .head_bucket, .list_objects_v2 => "s3:ListBucket",
+        .get_bucket_location => "s3:GetBucketLocation",
+        .get_bucket_versioning => "s3:GetBucketVersioning",
+        .put_bucket_versioning => "s3:PutBucketVersioning",
+        .get_bucket_lifecycle => "s3:GetLifecycleConfiguration",
+        .put_bucket_lifecycle, .delete_bucket_lifecycle => "s3:PutLifecycleConfiguration",
+        .delete_bucket => "s3:DeleteBucket",
+        .list_object_versions => "s3:ListBucketVersions",
+        .list_multipart_uploads => "s3:ListBucketMultipartUploads",
+        .put_object, .create_multipart_upload, .upload_part, .complete_multipart_upload, .post_policy_upload => "s3:PutObject",
+        .get_object, .head_object => if (versioned) "s3:GetObjectVersion" else "s3:GetObject",
+        .delete_object => if (versioned) "s3:DeleteObjectVersion" else "s3:DeleteObject",
+        .delete_objects => "s3:DeleteObject",
+        .list_parts => "s3:ListMultipartUploadParts",
+        .abort_multipart_upload => "s3:AbortMultipartUpload",
+        .unsupported => "s3:Unsupported",
     };
 }
 
@@ -1255,10 +1299,15 @@ fn servePostPolicyUpload(
     request: *std.http.Server.Request,
     application: *Application,
     parsed: protocol.ParsedTarget,
-    headers: []const sigv4.Header,
+    input_headers: []const sigv4.Header,
     request_id: []const u8,
+    peer: std.Io.net.IpAddress,
 ) !std.http.Status {
-    _ = headers;
+    var condition_arena = std.heap.ArenaAllocator.init(application.allocator);
+    defer condition_arena.deinit();
+    const ca = condition_arena.allocator();
+    const headers = try ca.alloc(sigv4.Header, input_headers.len);
+    for (input_headers, headers) |input, *saved| saved.* = .{ .name = try ca.dupe(u8, input.name), .value = try ca.dupe(u8, input.value) };
     if (request.head.transfer_encoding != .none) {
         return respondError(request, application.allocator, .invalid_request, request_id);
     }
@@ -1348,6 +1397,16 @@ fn servePostPolicyUpload(
         return respondError(request, application.allocator, .internal_error, request_id);
     };
     defer application.allocator.free(expanded_key);
+    const base_conditions = iam_context.build(ca, auth_material.owner, headers, parsed, peer, now, "POST", signed_at, application.config.s3_region) catch return respondError(request, application.allocator, .invalid_argument, request_id);
+    var condition_entries: std.ArrayList(iam.Entry) = .empty;
+    for (base_conditions.entries) |entry| if (!std.ascii.startsWithIgnoreCase(entry.key, "s3:x-amz-")) try condition_entries.append(ca, entry);
+    for (form.fields.items) |field| {
+        const condition_key = try std.fmt.allocPrint(ca, "s3:{s}", .{field.name});
+        if (std.ascii.startsWithIgnoreCase(field.name, "x-amz-") and iam.supportedKey(condition_key)) try iam_context.add(ca, &condition_entries, condition_key, field.value);
+    }
+    const conditions: iam.Context = .{ .entries = condition_entries.items };
+    if (!auth_material.policy.allows(.put_object) or !auth_material.allowsWithContext(application.allocator, "s3:PutObject", parsed.bucket, expanded_key, conditions)) return respondError(request, application.allocator, .access_denied, request_id);
+
     var policy_constraints = validatePostPolicy(
         application.allocator,
         policy_value,
@@ -2384,6 +2443,8 @@ fn serveDeleteObjects(
     owner: []const u8,
     headers: []const sigv4.Header,
     bypass_governance_retention: bool,
+    material: *const credential_service.AuthMaterial,
+    conditions: iam.Context,
     request_id: []const u8,
 ) !std.http.Status {
     const delete_query = parsed.query("delete") catch {
@@ -2479,6 +2540,13 @@ fn serveDeleteObjects(
     ) catch return respondError(request, application.allocator, .internal_error, request_id);
     const bypass_requested = governanceBypassRequestedFromHeaders(headers) and bypass_governance_retention;
     for (delete_request.keys) |key| {
+        if (!material.allowsWithContext(application.allocator, "s3:DeleteObject", parsed.bucket, key, conditions) or (bypass_requested and !material.allowsWithContext(application.allocator, "s3:BypassGovernanceRetention", parsed.bucket, key, conditions))) {
+            try writer.writeAll("<Error><Key>");
+            try protocol.writeXmlEscaped(writer, key);
+            try writer.writeAll("</Key><Code>AccessDenied</Code><Message>Access Denied</Message></Error>");
+            continue;
+        }
+
         _ = objects.deleteWithGovernanceBypass(parsed.bucket.?, key, bypass_requested) catch |err| {
             const descriptor = protocol.describe(mapObjectError(err));
             writer.writeAll("<Error><Key>") catch {
@@ -3736,6 +3804,10 @@ fn mapCredentialError(err: credential_service.Error) protocol.ErrorKind {
         error.Unavailable,
         error.InvalidOwner,
         error.InvalidTTL,
+        error.InvalidSecretKey,
+        error.InvalidPolicy,
+        error.InvalidMetadata,
+        error.InvalidExpiration,
         => .internal_error,
     };
 }

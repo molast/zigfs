@@ -303,6 +303,7 @@ node benchmarks/run.mjs
 
 ## 📚 进一步阅读
 
+- [单机 S3 与 IAM 完整权限实施计划](docs/plans/iam-permissions-completion.md)
 - [运维手册](docs/operations.md)
 - [存储扫描与文件清理架构](docs/storage-reclamation.md)
 - [备份与恢复](docs/backup-and-recovery.md)

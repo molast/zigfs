@@ -20,7 +20,7 @@ import {
 import { ApiError, type ApiClient } from '../../api/client'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
-import { useToast } from '../../components/ToastProvider'
+import { useErrorToast, useToast } from '../../components/ToastProvider'
 import type { AuditEvent, Bucket, BucketConfiguration } from '../../types/api'
 import { LifecycleRulesEditor } from './LifecycleRulesEditor'
 import { parseLifecycleConfiguration, serializeLifecycleConfiguration, type LifecycleRule } from './lifecycle'
@@ -58,11 +58,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
   const [bucketHasContent, setBucketHasContent] = useState(false)
   const [loading, setLoading] = useState(false)
   const [deleting, setDeleting] = useState(false)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    if (error) showToast(error)
-  }, [error, showToast])
+  const notifyError = useErrorToast()
 
   const refresh = useCallback(async () => {
     if (!bucketName) return
@@ -70,7 +66,6 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     try {
       setLoading(true)
       setBucketContentKnown(false)
-      setError('')
       const [buckets, bucketConfiguration, bucketUsage] = await Promise.all([
         api.listBuckets(),
         api.getBucketConfiguration(bucketName),
@@ -104,7 +99,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       setBucketContentKnown(true)
     } catch (reason) {
       setBucketContentKnown(false)
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setLoading(false)
       stopLoading()
@@ -136,7 +131,6 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     const stopLoading = startLoading('正在删除 Bucket...')
     try {
       setDeleting(true)
-      setError('')
       await api.deleteBucket(bucketName)
       showToast(`已删除 Bucket ${bucketName}`)
       onDeleted()
@@ -150,7 +144,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
           hideConfirm: true,
         })
       } else {
-        setError((reason as Error).message)
+        notifyError((reason as Error).message)
       }
     } finally {
       setDeleting(false)
@@ -162,12 +156,11 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     const stopLoading = startLoading('正在更新 Versioning...')
     try {
       setLoading(true)
-      setError('')
       setConfiguration(await api.updateBucketConfiguration(bucketName, { versioning }))
       setBucket((current) => current ? { ...current, versioning } : current)
       showToast(`Versioning 已更新为 ${versioning}`)
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setLoading(false)
       stopLoading()
@@ -178,12 +171,11 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     const stopLoading = startLoading('正在更新 Access Policy...')
     try {
       setLoading(true)
-      setError('')
       const updated = await api.updateBucketConfiguration(bucketName, { access_policy })
       setConfiguration(updated)
       showToast(`Access Policy 已更新为 ${access_policy}`)
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setLoading(false)
       stopLoading()
@@ -194,12 +186,11 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     const stopLoading = startLoading('正在更新 Encryption...')
     try {
       setLoading(true)
-      setError('')
       const updated = await api.updateBucketConfiguration(bucketName, { encryption })
       setConfiguration(updated)
       showToast(`Encryption 已更新为 ${encryption}`)
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setLoading(false)
       stopLoading()
@@ -209,7 +200,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
   async function enableObjectLocking() {
     if (!configuration || configuration.object_locking) return
     if (configuration.versioning !== 'Enabled') {
-      setError('启用 Object Locking 前必须先将 Versioning 设置为 Enabled')
+      notifyError('启用 Object Locking 前必须先将 Versioning 设置为 Enabled')
       return
     }
     if (!await confirm({
@@ -221,12 +212,11 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     const stopLoading = startLoading('正在启用 Object Locking...')
     try {
       setLoading(true)
-      setError('')
       const updated = await api.updateBucketConfiguration(bucketName, { object_locking: true })
       setConfiguration(updated)
       showToast('Object Locking 已启用')
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setLoading(false)
       stopLoading()
@@ -239,7 +229,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       if (!trimmed) return null
       const parsed = Number(trimmed)
       if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-        setError(`${label} 必须是大于 0 的整数`)
+        notifyError(`${label} 必须是大于 0 的整数`)
         return undefined
       }
       return parsed
@@ -250,7 +240,6 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     const stopLoading = startLoading('正在保存 Quota...')
     try {
       setLoading(true)
-      setError('')
       const updated = await api.updateBucketConfiguration(bucketName, {
         max_bytes: maxBytes ?? 0,
         max_objects: maxObjects ?? 0,
@@ -260,7 +249,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       setQuotaObjects(updated.max_objects == null ? '' : String(updated.max_objects))
       showToast('Quota 已保存')
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setLoading(false)
       stopLoading()
@@ -296,7 +285,6 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     const stopLoading = startLoading('正在更新 Retention...')
     try {
       setLoading(true)
-      setError('')
       const updated = await api.updateBucketConfiguration(bucketName, {
         retention_enabled: enabled,
         retention_duration_seconds: duration,
@@ -305,7 +293,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       setConfiguration(updated)
       showToast(`Retention 已更新为 ${enabled ? `${duration}s / ${mode}` : 'Disabled'}`)
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setLoading(false)
       stopLoading()
@@ -329,7 +317,6 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     const stopLoading = startLoading('正在保存 Tags...')
     try {
       setLoading(true)
-      setError('')
       const updated = await api.updateBucketConfiguration(bucketName, Object.keys(tagsToSave).length > 0
         ? { tags_json: JSON.stringify(tagsToSave) }
         : { clear_tags: true })
@@ -341,7 +328,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       }
       showToast('Tags 已保存')
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
     } finally {
       setLoading(false)
       stopLoading()
@@ -352,7 +339,6 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     const stopLoading = startLoading('正在保存 Lifecycle 规则...')
     try {
       setLoading(true)
-      setError('')
       const updated = rules.length > 0
         ? await api.updateBucketConfiguration(bucketName, {
             lifecycle_configuration: serializeLifecycleConfiguration(rules),
@@ -363,7 +349,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       setBucket((current) => current ? { ...current, lifecycle_enabled: rules.length > 0 } : current)
       showToast(rules.length > 0 ? 'Lifecycle 规则已保存' : 'Lifecycle 规则已清除')
     } catch (reason) {
-      setError((reason as Error).message)
+      notifyError((reason as Error).message)
       throw reason
     } finally {
       setLoading(false)
@@ -646,7 +632,7 @@ function EventsOverview({ api, bucket, configuration }: { api: ApiClient; bucket
       setNextCursor(page.next_cursor ?? '')
       setLoaded(true)
     } catch (reason) {
-      showToast(reason instanceof Error ? reason.message : '加载审计事件失败')
+      showToast(reason instanceof Error ? reason.message : '加载审计事件失败', 'error')
     } finally {
       setLoading(false)
     }

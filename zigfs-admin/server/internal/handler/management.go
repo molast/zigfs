@@ -11,6 +11,24 @@ import (
 )
 
 type ManagementService interface {
+	ListGroups(ctx context.Context) (contract.GroupList, error)
+	GetGroup(ctx context.Context, name string) (contract.ManagedGroup, error)
+	CreateGroup(ctx context.Context, value contract.ManagedGroup) (contract.ManagedGroup, error)
+	UpdateGroup(ctx context.Context, value contract.ManagedGroup) (contract.ManagedGroup, error)
+	DeleteGroup(ctx context.Context, name string) error
+
+	ListUsers(ctx context.Context) (contract.UserList, error)
+	GetUser(ctx context.Context, name string) (contract.ManagedUser, error)
+	CreateUser(ctx context.Context, value contract.UserWrite) (contract.ManagedUser, error)
+	UpdateUser(ctx context.Context, value contract.UserWrite) (contract.ManagedUser, error)
+	DeleteUser(ctx context.Context, name string) error
+
+	ListPolicies(ctx context.Context) (contract.PolicyList, error)
+	GetPolicy(ctx context.Context, name string) (contract.ManagedPolicy, error)
+	CreatePolicy(ctx context.Context, policy contract.ManagedPolicy) (contract.ManagedPolicy, error)
+	UpdatePolicy(ctx context.Context, policy contract.ManagedPolicy) (contract.ManagedPolicy, error)
+	DeletePolicy(ctx context.Context, name string) error
+
 	ListBuckets(ctx context.Context) (contract.ListBucketsResponse, error)
 	CreateBucket(ctx context.Context, request contract.CreateBucketRequest) (contract.Bucket, error)
 	DeleteBucket(ctx context.Context, name string) error
@@ -31,6 +49,10 @@ type ManagementService interface {
 	GetMultipartUpload(ctx context.Context, uploadID, bucket, key string) (contract.MultipartUpload, error)
 	CompleteMultipartUpload(ctx context.Context, uploadID string, request contract.CompleteMultipartUploadRequest) (contract.Object, error)
 	AbortMultipartUpload(ctx context.Context, uploadID, bucket, key string) error
+	ListUserAccessKeys(ctx context.Context, name string) (contract.ListAccessKeysResponse, error)
+	CreateUserAccessKey(ctx context.Context, name string, request contract.CreateAccessKeyRequest) (contract.CreateAccessKeyResponse, error)
+	UpdateUserAccessKey(ctx context.Context, name, id string, request contract.UpdateAccessKeyRequest) (contract.AccessKey, error)
+	DeleteUserAccessKey(ctx context.Context, name, id string) error
 	ListAccessKeys(ctx context.Context) (contract.ListAccessKeysResponse, error)
 	CreateAccessKey(ctx context.Context, request contract.CreateAccessKeyRequest) (contract.CreateAccessKeyResponse, error)
 	UpdateAccessKey(ctx context.Context, id string, request contract.UpdateAccessKeyRequest) (contract.AccessKey, error)
@@ -389,4 +411,255 @@ func (handler *Management) Settings(ctx *gin.Context) {
 		return
 	}
 	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) ListPolicies(ctx *gin.Context) {
+	response, err := handler.service.ListPolicies(ctx.Request.Context())
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) GetPolicy(ctx *gin.Context) {
+	response, err := handler.service.GetPolicy(ctx.Request.Context(), ctx.Param("name"))
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) CreatePolicy(ctx *gin.Context) {
+	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, 1024*1024)
+	var policy contract.ManagedPolicy
+	if err := ctx.ShouldBindJSON(&policy); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidPolicy", "invalid request")
+		return
+	}
+	response, err := handler.service.CreatePolicy(ctx.Request.Context(), policy)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusCreated, response)
+}
+
+func (handler *Management) UpdatePolicy(ctx *gin.Context) {
+	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, 1024*1024)
+	var policy contract.ManagedPolicy
+	if err := ctx.ShouldBindJSON(&policy); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidPolicy", "invalid request")
+		return
+	}
+	if policy.Name != ctx.Param("name") {
+		writeError(ctx, http.StatusBadRequest, "InvalidPolicy", "policy names cannot be changed")
+		return
+	}
+	response, err := handler.service.UpdatePolicy(ctx.Request.Context(), policy)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) DeletePolicy(ctx *gin.Context) {
+	if err := handler.service.DeletePolicy(ctx.Request.Context(), ctx.Param("name")); err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.Status(http.StatusNoContent)
+}
+
+func (handler *Management) ListUsers(ctx *gin.Context) {
+	response, err := handler.service.ListUsers(ctx.Request.Context())
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) GetUser(ctx *gin.Context) {
+	response, err := handler.service.GetUser(ctx.Request.Context(), ctx.Param("name"))
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) CreateUser(ctx *gin.Context) {
+	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, 1024*1024)
+	var value contract.UserWrite
+	if err := ctx.ShouldBindJSON(&value); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidIdentity", "invalid request")
+		return
+	}
+	if value.Password == nil || len(*value.Password) < 8 || len(*value.Password) > 1024 {
+		writeError(ctx, http.StatusBadRequest, "InvalidPassword", "password must contain 8 to 1024 bytes")
+		return
+	}
+	if value.Policies == nil {
+		value.Policies = []string{}
+	}
+	response, err := handler.service.CreateUser(ctx.Request.Context(), value)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusCreated, response)
+}
+
+func (handler *Management) UpdateUser(ctx *gin.Context) {
+	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, 1024*1024)
+	var value contract.UserWrite
+	if err := ctx.ShouldBindJSON(&value); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidIdentity", "invalid request")
+		return
+	}
+	if value.Password != nil && (len(*value.Password) < 8 || len(*value.Password) > 1024) {
+		writeError(ctx, http.StatusBadRequest, "InvalidPassword", "password must contain 8 to 1024 bytes")
+		return
+	}
+	if value.Policies == nil {
+		value.Policies = []string{}
+	}
+	if value.Name != ctx.Param("name") {
+		writeError(ctx, http.StatusBadRequest, "InvalidIdentity", "names cannot be changed")
+		return
+	}
+	response, err := handler.service.UpdateUser(ctx.Request.Context(), value)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) DeleteUser(ctx *gin.Context) {
+	if err := handler.service.DeleteUser(ctx.Request.Context(), ctx.Param("name")); err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.Status(http.StatusNoContent)
+}
+
+func (handler *Management) ListGroups(ctx *gin.Context) {
+	response, err := handler.service.ListGroups(ctx.Request.Context())
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) GetGroup(ctx *gin.Context) {
+	response, err := handler.service.GetGroup(ctx.Request.Context(), ctx.Param("name"))
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) CreateGroup(ctx *gin.Context) {
+	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, 1024*1024)
+	var value contract.ManagedGroup
+	if err := ctx.ShouldBindJSON(&value); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidIdentity", "invalid request")
+		return
+	}
+	if value.Policies == nil {
+		value.Policies = []string{}
+	}
+	if value.Members == nil {
+		value.Members = []string{}
+	}
+	response, err := handler.service.CreateGroup(ctx.Request.Context(), value)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusCreated, response)
+}
+
+func (handler *Management) UpdateGroup(ctx *gin.Context) {
+	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, 1024*1024)
+	var value contract.ManagedGroup
+	if err := ctx.ShouldBindJSON(&value); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidIdentity", "invalid request")
+		return
+	}
+	if value.Policies == nil {
+		value.Policies = []string{}
+	}
+	if value.Members == nil {
+		value.Members = []string{}
+	}
+	if value.Name != ctx.Param("name") {
+		writeError(ctx, http.StatusBadRequest, "InvalidIdentity", "names cannot be changed")
+		return
+	}
+	response, err := handler.service.UpdateGroup(ctx.Request.Context(), value)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) DeleteGroup(ctx *gin.Context) {
+	if err := handler.service.DeleteGroup(ctx.Request.Context(), ctx.Param("name")); err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.Status(http.StatusNoContent)
+}
+
+func (handler *Management) ListUserAccessKeys(ctx *gin.Context) {
+	response, err := handler.service.ListUserAccessKeys(ctx.Request.Context(), ctx.Param("name"))
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) CreateUserAccessKey(ctx *gin.Context) {
+	var request contract.CreateAccessKeyRequest
+	if err := ctx.ShouldBindJSON(&request); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "request body is invalid")
+		return
+	}
+	response, err := handler.service.CreateUserAccessKey(ctx.Request.Context(), ctx.Param("name"), request)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusCreated, response)
+}
+
+func (handler *Management) UpdateUserAccessKey(ctx *gin.Context) {
+	var request contract.UpdateAccessKeyRequest
+	if err := ctx.ShouldBindJSON(&request); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "request body is invalid")
+		return
+	}
+	response, err := handler.service.UpdateUserAccessKey(ctx.Request.Context(), ctx.Param("name"), ctx.Param("id"), request)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) DeleteUserAccessKey(ctx *gin.Context) {
+	if err := handler.service.DeleteUserAccessKey(ctx.Request.Context(), ctx.Param("name"), ctx.Param("id")); err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.Status(http.StatusNoContent)
 }

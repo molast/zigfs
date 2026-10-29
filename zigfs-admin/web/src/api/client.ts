@@ -1,5 +1,13 @@
+export interface ManagedIdentity { name: string; description: string; enabled: boolean; policies: string[]; updated_at: number }
+export interface ManagedUser extends ManagedIdentity { groups: string[] }
+export interface ManagedGroup extends ManagedIdentity { members: string[] }
+export interface UserWrite { name: string; description: string; enabled: boolean; policies: string[]; groups?: string[]; password?: string }
+export type GroupWrite = Omit<ManagedGroup, 'updated_at'>
+export interface ManagedPolicy { name: string; document: string }
 import type {
   AccessKey,
+  AccessKeyCreate,
+  AccessKeyUpdate,
   AdminSession,
   ApiErrorBody,
   Bucket,
@@ -75,6 +83,21 @@ export function createApiClient() {
   }
 
   return {
+    listUsers: async () => (await request<{ items: ManagedUser[] }>('/api/v1/users')).items,
+    getUser: (name: string) => request<ManagedUser>(`/api/v1/users/${encodeURIComponent(name)}`),
+    createUser: (value: UserWrite) => request<ManagedUser>('/api/v1/users', { method: 'POST', body: JSON.stringify(value) }),
+    updateUser: (value: UserWrite) => request<ManagedUser>(`/api/v1/users/${encodeURIComponent(value.name)}`, { method: 'PATCH', body: JSON.stringify(value) }),
+    deleteUser: (name: string) => request<void>(`/api/v1/users/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    listGroups: async () => (await request<{ items: ManagedGroup[] }>('/api/v1/groups')).items,
+    getGroup: (name: string) => request<ManagedGroup>(`/api/v1/groups/${encodeURIComponent(name)}`),
+    createGroup: (value: GroupWrite) => request<ManagedGroup>('/api/v1/groups', { method: 'POST', body: JSON.stringify(value) }),
+    updateGroup: (value: GroupWrite) => request<ManagedGroup>(`/api/v1/groups/${encodeURIComponent(value.name)}`, { method: 'PATCH', body: JSON.stringify(value) }),
+    deleteGroup: (name: string) => request<void>(`/api/v1/groups/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    listPolicies: async () => (await request<{ items: ManagedPolicy[] }>('/api/v1/policies')).items,
+    getPolicy: (name: string) => request<ManagedPolicy>(`/api/v1/policies/${encodeURIComponent(name)}`),
+    createPolicy: (policy: ManagedPolicy) => request<ManagedPolicy>('/api/v1/policies', { method: 'POST', body: JSON.stringify(policy) }),
+    updatePolicy: (policy: ManagedPolicy) => request<ManagedPolicy>(`/api/v1/policies/${encodeURIComponent(policy.name)}`, { method: 'PATCH', body: JSON.stringify(policy) }),
+    deletePolicy: (name: string) => request<void>(`/api/v1/policies/${encodeURIComponent(name)}`, { method: 'DELETE' }),
     ready: () => request<{ status: 'ready' }>('/health/ready'),
     login: (username: string, password: string) =>
       request<AdminSession>('/api/v1/auth/login', {
@@ -212,12 +235,28 @@ export function createApiClient() {
         { method: 'DELETE' },
       )
     },
+    listUserAccessKeys: async (name: string) =>
+      (await request<{ items: AccessKey[] }>(`/api/v1/users/${encodeURIComponent(name)}/access-keys`)).items,
+    createUserAccessKey: (name: string, value: AccessKeyCreate) =>
+      request<CreatedAccessKey>(`/api/v1/users/${encodeURIComponent(name)}/access-keys`, {
+        method: 'POST', body: JSON.stringify(value),
+      }),
+    updateUserAccessKey: (name: string, id: string, value: AccessKeyUpdate) =>
+      request<AccessKey>(`/api/v1/users/${encodeURIComponent(name)}/access-keys/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(value) }),
+    updateAccessKey: (id: string, value: AccessKeyUpdate) =>
+      request<AccessKey>(`/api/v1/access-keys/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(value) }),
+    setUserAccessKeyEnabled: (name: string, id: string, enabled: boolean) =>
+      request<AccessKey>(`/api/v1/users/${encodeURIComponent(name)}/access-keys/${encodeURIComponent(id)}`, {
+        method: 'PATCH', body: JSON.stringify({ enabled }),
+      }),
+    deleteUserAccessKey: (name: string, id: string) =>
+      request<void>(`/api/v1/users/${encodeURIComponent(name)}/access-keys/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     listAccessKeys: async () =>
       (await request<{ items: AccessKey[] }>('/api/v1/access-keys')).items,
-    createAccessKey: (policy: CredentialPolicy, ttlSeconds?: number) =>
+    createAccessKey: (value: AccessKeyCreate) =>
       request<CreatedAccessKey>('/api/v1/access-keys', {
         method: 'POST',
-        body: JSON.stringify({ policy, ...(ttlSeconds ? { ttl_seconds: ttlSeconds } : {}) }),
+        body: JSON.stringify(value),
       }),
     setAccessKeyEnabled: (id: string, enabled: boolean) =>
       request<AccessKey>(`/api/v1/access-keys/${encodeURIComponent(id)}`, {

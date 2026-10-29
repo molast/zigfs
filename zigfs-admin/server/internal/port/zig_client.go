@@ -19,6 +19,24 @@ func (err *StatusError) Error() string {
 }
 
 type ZigClient interface {
+	ListGroups(ctx context.Context) (contract.GroupList, error)
+	GetGroup(ctx context.Context, name string) (contract.ManagedGroup, error)
+	CreateGroup(ctx context.Context, value contract.ManagedGroup) (contract.ManagedGroup, error)
+	UpdateGroup(ctx context.Context, value contract.ManagedGroup) (contract.ManagedGroup, error)
+	DeleteGroup(ctx context.Context, name string) error
+
+	ListUsers(ctx context.Context) (contract.UserList, error)
+	GetUser(ctx context.Context, name string) (contract.ManagedUser, error)
+	CreateUser(ctx context.Context, value contract.UserWrite) (contract.ManagedUser, error)
+	UpdateUser(ctx context.Context, value contract.UserWrite) (contract.ManagedUser, error)
+	DeleteUser(ctx context.Context, name string) error
+
+	ListPolicies(ctx context.Context) (contract.PolicyList, error)
+	GetPolicy(ctx context.Context, name string) (contract.ManagedPolicy, error)
+	CreatePolicy(ctx context.Context, policy contract.ManagedPolicy) (contract.ManagedPolicy, error)
+	UpdatePolicy(ctx context.Context, policy contract.ManagedPolicy) (contract.ManagedPolicy, error)
+	DeletePolicy(ctx context.Context, name string) error
+
 	Ready(ctx context.Context) error
 	Login(ctx context.Context, request contract.LoginRequest) (contract.LoginResponse, error)
 	Session(ctx context.Context) (contract.SessionResponse, error)
@@ -48,6 +66,10 @@ type ZigClient interface {
 	GetMultipartUpload(ctx context.Context, uploadID, bucket, key string) (contract.MultipartUpload, error)
 	CompleteMultipartUpload(ctx context.Context, uploadID string, request contract.CompleteMultipartUploadRequest) (contract.Object, error)
 	AbortMultipartUpload(ctx context.Context, uploadID, bucket, key string) error
+	ListUserAccessKeys(ctx context.Context, name string) (contract.ListAccessKeysResponse, error)
+	CreateUserAccessKey(ctx context.Context, name string, request contract.CreateAccessKeyRequest) (contract.CreateAccessKeyResponse, error)
+	UpdateUserAccessKey(ctx context.Context, name, id string, request contract.UpdateAccessKeyRequest) (contract.AccessKey, error)
+	DeleteUserAccessKey(ctx context.Context, name, id string) error
 	ListAccessKeys(ctx context.Context) (contract.ListAccessKeysResponse, error)
 	CreateAccessKey(ctx context.Context, request contract.CreateAccessKeyRequest) (contract.CreateAccessKeyResponse, error)
 	UpdateAccessKey(ctx context.Context, id string, request contract.UpdateAccessKeyRequest) (contract.AccessKey, error)

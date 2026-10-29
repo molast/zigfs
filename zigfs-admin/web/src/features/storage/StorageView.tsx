@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { ApiClient } from '../../api/client'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
-import { useToast } from '../../components/ToastProvider'
+import { useErrorToast, useToast } from '../../components/ToastProvider'
 import type { StorageInfo, StorageScanReport, StorageScannerStatus } from '../../types/api'
 
 export function StorageView({ api }: { api: ApiClient }) {
@@ -13,10 +13,9 @@ export function StorageView({ api }: { api: ApiClient }) {
   const [storage, setStorage] = useState<StorageInfo | null>(null)
   const [scanner, setScanner] = useState<StorageScannerStatus | null>(null)
   const [lastResult, setLastResult] = useState<StorageScanReport | null>(null)
-  const [error, setError] = useState('')
+  const notifyError = useErrorToast()
 
   const load = useCallback(async () => {
-    setError('')
     const [storageInfo, scannerInfo] = await Promise.all([api.storage(), api.storageScanner()])
     setStorage(storageInfo)
     setScanner(scannerInfo)
@@ -24,7 +23,7 @@ export function StorageView({ api }: { api: ApiClient }) {
   }, [api])
 
   useEffect(() => {
-    withLoading('正在加载存储信息...', load).catch((reason: Error) => setError(reason.message))
+    withLoading('正在加载存储信息...', load).catch((reason: Error) => notifyError(reason.message))
     let active = true
     const timer = window.setInterval(() => {
       api.storageScanner().then((scannerInfo) => {
@@ -32,7 +31,7 @@ export function StorageView({ api }: { api: ApiClient }) {
         setScanner(scannerInfo)
         setLastResult(scannerInfo.last_scan)
       }).catch((reason: Error) => {
-        if (active) setError(reason.message)
+        if (active) notifyError(reason.message)
       })
     }, 30_000)
     return () => {
@@ -49,7 +48,6 @@ export function StorageView({ api }: { api: ApiClient }) {
       danger: true,
     })) return
     try {
-      setError('')
       const report = await withLoading('正在扫描并清理存储...', () => api.runStorageGC())
       setLastResult(report)
       const [storageInfo, scannerInfo] = await Promise.all([api.storage(), api.storageScanner()])
@@ -57,7 +55,7 @@ export function StorageView({ api }: { api: ApiClient }) {
       setScanner(scannerInfo)
       showToast(`清理完成，回收 ${report.removed_generations} 个 generation（${formatBytes(report.removed_bytes)}）`)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '存储清理失败')
+      notifyError(reason instanceof Error ? reason.message : '存储清理失败')
     }
   }
 
@@ -67,7 +65,6 @@ export function StorageView({ api }: { api: ApiClient }) {
         <div><p className="eyebrow">Capacity & Reclamation</p><h2>Storage</h2><p className="page-description">查看逻辑对象占用、分片扫描进度和不可达数据回收结果。</p></div>
         <button className="danger-button" type="button" onClick={() => void runGC()}><Trash2 className="button-icon" aria-hidden="true" />扫描并清理</button>
       </header>
-      {error && <p className="error-banner">{error}</p>}
       {storage && (
         <div className="panel metric-grid metric-grid-three">
           <Metric label="Object bytes" value={formatBytes(storage.used)} />
