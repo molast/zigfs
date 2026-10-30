@@ -239,6 +239,23 @@ pub const BucketService = struct {
         return self.updateConfiguration(name, null, access_policy, .keep, null, false, null, null, null, null);
     }
 
+    pub fn setPublicAccess(self: BucketService, name: []const u8, block_public_access: bool) Error!bucket_domain.Bucket {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const generation = self.index.bucketGeneration(name) orelse return error.BucketNotFound;
+        const record = self.store.get(self.allocator, name) catch |err| return mapStoreError(err);
+        var bucket = switch (record) { .active => |active| active, .tombstone => return error.CorruptMetadata };
+        errdefer bucket.deinit(self.allocator);
+        if (bucket.generation != generation) return error.CorruptMetadata;
+        var prepared = self.index.prepareBucket(name) catch |err| return mapIndexError(err);
+        defer prepared.deinit(self.index.allocator);
+        const next = self.store.put(self.allocator, .{ .id = bucket.id, .name = bucket.name, .owner = bucket.owner, .status = bucket.status, .versioning = bucket.versioning, .access_policy = bucket.access_policy, .object_ownership = bucket.object_ownership, .block_public_access = block_public_access, .lifecycle_configuration = bucket.lifecycle_configuration, .tags_json = bucket.tags_json, .encryption = bucket.encryption, .quota = bucket.quota, .retention = bucket.retention, .object_locking = bucket.object_locking, .created_at_unix_seconds = bucket.created_at_unix_seconds }, .{ .exact = bucket.generation }) catch |err| return mapStoreError(err);
+        self.index.publishBucket(&prepared, next);
+        bucket.block_public_access = block_public_access;
+        bucket.generation = next;
+        return bucket;
+    }
+
     pub fn setTags(self: BucketService, name: []const u8, tags_json: ?[]const u8) Error!bucket_domain.Bucket {
         return self.updateConfiguration(name, null, null, .keep, tags_json, true, null, null, null, null);
     }
@@ -337,6 +354,8 @@ pub const BucketService = struct {
             .status = bucket.status,
             .versioning = versioning orelse bucket.versioning,
             .access_policy = access_policy orelse bucket.access_policy,
+            .object_ownership = bucket.object_ownership,
+            .block_public_access = bucket.block_public_access,
             .lifecycle_configuration = lifecycle_value,
             .tags_json = tags_value,
             .encryption = encryption orelse bucket.encryption,

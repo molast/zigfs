@@ -27,6 +27,20 @@ type managementService struct{}
 
 type authService struct{}
 
+func (managementService) AssumeRole(context.Context, contract.AssumeRoleRequest) (contract.AssumeRoleResponse, error) {
+	return contract.AssumeRoleResponse{}, nil
+}
+func (managementService) ListOrganizations(context.Context) (contract.OrganizationList, error) { return contract.OrganizationList{}, nil }
+func (managementService) CreateOrganization(context.Context, contract.Organization) (contract.Organization, error) { return contract.Organization{}, nil }
+func (managementService) UpdateOrganization(context.Context, contract.Organization) (contract.Organization, error) { return contract.Organization{}, nil }
+func (managementService) DeleteOrganization(context.Context, string) error { return nil }
+func (managementService) ListRoles(context.Context) (contract.RoleList, error) { return contract.RoleList{}, nil }
+func (managementService) CreateRole(context.Context, contract.Role) (contract.Role, error) { return contract.Role{}, nil }
+func (managementService) UpdateRole(context.Context, contract.Role) (contract.Role, error) { return contract.Role{}, nil }
+func (managementService) DeleteRole(context.Context, string) error { return nil }
+func (managementService) ListRoleSessions(context.Context) (contract.RoleSessionList, error) { return contract.RoleSessionList{}, nil }
+func (managementService) RevokeRoleSession(context.Context, string) error { return nil }
+
 func (authService) Login(context.Context, contract.LoginRequest) (contract.LoginResponse, error) {
 	return contract.LoginResponse{
 		Token:     "zigfs-issued-token",
@@ -65,6 +79,14 @@ func (managementService) GetBucketUsage(context.Context, string) (contract.Bucke
 func (managementService) ListBucketEvents(context.Context, string, string, string, string, string, string, int) (contract.ListBucketEventsResponse, error) {
 	return contract.ListBucketEventsResponse{}, nil
 }
+func (managementService) GetBucketPolicy(context.Context, string) (contract.BucketPolicy, error) {
+	return contract.BucketPolicy{}, nil
+}
+func (managementService) PutBucketPolicy(context.Context, string, contract.BucketPolicy) (contract.BucketPolicy, error) {
+	return contract.BucketPolicy{}, nil
+}
+func (managementService) DeleteBucketPolicy(context.Context, string) error { return nil }
+
 func (managementService) GetBucketTags(context.Context, string) (contract.BucketTags, error) {
 	return contract.BucketTags{}, nil
 }

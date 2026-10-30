@@ -371,11 +371,13 @@ pub fn validateUserMetadata(entries: []const UserMetadata) ValidationError!void 
 test "object key preserves S3 key bytes without treating them as paths" {
     try validateKey("images/2026/cover.png");
     try validateKey("../../etc/passwd");
-    try validateKey(&([_]u8{'k'} ** max_key_length));
+    var max_key: [max_key_length]u8 = @splat('k');
+    var too_long: [max_key_length + 1]u8 = @splat('k');
+    try validateKey(&max_key);
     try std.testing.expectError(error.InvalidKeyLength, validateKey(""));
     try std.testing.expectError(
         error.InvalidKeyLength,
-        validateKey(&([_]u8{'k'} ** (max_key_length + 1))),
+        validateKey(&too_long),
     );
     try std.testing.expectError(error.KeyContainsNull, validateKey("a\x00b"));
 }

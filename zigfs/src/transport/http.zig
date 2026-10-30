@@ -8,6 +8,7 @@ const request_id = @import("../common/request_id.zig");
 const recovery = @import("../metadata/recovery.zig");
 const management = @import("management.zig");
 const s3 = @import("s3.zig");
+const management_auth = @import("management_auth.zig");
 
 pub const health_live_path = "/health/live";
 pub const health_ready_path = "/health/ready";
@@ -271,10 +272,7 @@ fn serveRequest(
         .metrics => serveMetrics(request, context.application.recoveryState().*, current_request_id),
         .management_login => serveManagementLogin(request, context, current_request_id),
         .management_session => serveManagementSession(request, context, current_request_id),
-        .management => if (managementTokenExpiration(request, context)) |_|
-            management.serveRequest(request, context.application, current_request_id)
-        else
-            respondUnauthorized(request, current_request_id),
+        .management => serveAuthorizedManagement(request, context, current_request_id, peer),
         .s3 => s3.serveRequest(request, context.application, current_request_id, peer),
         .not_found => respond(
             request,
@@ -382,7 +380,14 @@ fn serveManagementLogin(
         parsed.value.username,
         parsed.value.password,
     )) {
-        return respondUnauthorized(request, current_request_id);
+        var arena = std.heap.ArenaAllocator.init(context.application.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const now = std.Io.Clock.real.now(context.io).toSeconds();
+        const token = (management_auth.authenticateUser(a, context.application, parsed.value.username, parsed.value.password, now) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
+        const principal = (management_auth.resolve(a, context.application, token.value(), now) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
+        const body_json = try std.json.Stringify.valueAlloc(a, .{ .token = token.value(), .token_type = "Bearer", .username = principal.username, .subject_id = principal.id, .is_root = false, .expires_at = principal.expires_at }, .{});
+        return respond(request, body_json, .ok, "application/json; charset=utf-8", current_request_id, null);
     }
 
     const now = std.Io.Clock.real.now(context.io).toSeconds();
@@ -395,7 +400,7 @@ fn serveManagementLogin(
     var response_buffer: [512]u8 = undefined;
     const response_body = try std.fmt.bufPrint(
         &response_buffer,
-        "{{\"token\":\"{s}\",\"token_type\":\"Bearer\",\"username\":\"{s}\",\"expires_at\":{d}}}\n",
+        "{{\"token\":\"{s}\",\"token_type\":\"Bearer\",\"username\":\"{s}\",\"subject_id\":\"deployment-root\",\"is_root\":true,\"expires_at\":{d}}}\n",
         .{ issued.value(), config.admin_username, issued.expires_at_unix_seconds },
     );
     return respond(
@@ -416,24 +421,65 @@ fn serveManagementSession(
     if (request.head.method != .GET) {
         return management.respondMethodNotAllowed(request, current_request_id, "GET");
     }
-    const expires_at = managementTokenExpiration(request, context) orelse {
-        return respondUnauthorized(request, current_request_id);
-    };
+    var arena = std.heap.ArenaAllocator.init(context.application.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const token = bearerToken(request) orelse return respondUnauthorized(request, current_request_id);
+    const principal = (management_auth.resolve(a, context.application, token, std.Io.Clock.real.now(context.io).toSeconds()) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
+    const response_body = try std.json.Stringify.valueAlloc(a, .{ .authenticated = true, .username = principal.username, .subject_id = principal.id, .is_root = principal.is_root, .expires_at = principal.expires_at }, .{});
+    return respond(request, response_body, .ok, "application/json; charset=utf-8", current_request_id, null);
+}
 
-    var response_buffer: [256]u8 = undefined;
-    const response_body = try std.fmt.bufPrint(
-        &response_buffer,
-        "{{\"authenticated\":true,\"username\":\"{s}\",\"expires_at\":{d}}}\n",
-        .{ context.config.admin_username, expires_at },
-    );
-    return respond(
-        request,
-        response_body,
-        .ok,
-        "application/json; charset=utf-8",
-        current_request_id,
-        null,
-    );
+fn bearerToken(request: *const std.http.Server.Request) ?[]const u8 {
+    var result: ?[]const u8 = null;
+    var headers = request.iterateHeaders();
+    while (headers.next()) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, "authorization")) continue;
+        if (result != null or !std.mem.startsWith(u8, header.value, "Bearer ")) return null;
+        result = header.value[7..];
+    }
+    return result;
+}
+
+fn serveAuthorizedManagement(request: *std.http.Server.Request, context: *const ListenerContext, current_request_id: []const u8, peer: std.Io.net.IpAddress) !std.http.Status {
+    var arena = std.heap.ArenaAllocator.init(context.application.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const token = bearerToken(request) orelse return respondUnauthorized(request, current_request_id);
+    const now = std.Io.Clock.real.now(context.io).toSeconds();
+    const principal = (management_auth.resolve(a, context.application, token, now) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
+    if (!principal.is_root) {
+        var headers: std.ArrayList(sigv4.Header) = .empty;
+        var iterator = request.iterateHeaders();
+        while (iterator.next()) |header| try headers.append(a, .{ .name = header.name, .value = header.value });
+        const parsed = try @import("s3_protocol.zig").parseTarget(a, .GET, "/");
+        const owner = try std.fmt.allocPrint(a, "user:{s}", .{principal.username});
+        const conditions = try @import("iam_context.zig").build(a, owner, headers.items, parsed, peer, now, "ManagementSession", null, context.config.s3_region, principal.id);
+        const action = management_auth.routeAction(request.head.method, requestPath(request.head.target));
+        const resource = managementResource(a, requestPath(request.head.target));
+        if (!principal.allows(a, action, resource, conditions)) return management.respondError(request, current_request_id, .forbidden, "AccessDenied", "current identity is not authorized for this management operation");
+    }
+    return management.serveRequest(request, context.application, current_request_id, principal);
+}
+
+fn managementResource(a: std.mem.Allocator, path: []const u8) []const u8 {
+    const prefix = "/_admin/v1/buckets/";
+    if (std.mem.startsWith(u8, path, prefix)) {
+        const rest = path[prefix.len..];
+        const end = std.mem.indexOfScalar(u8, rest, '/') orelse rest.len;
+        return std.fmt.allocPrint(a, "arn:aws:s3:::{s}", .{rest[0..end]}) catch "arn:aws:s3:::*";
+    }
+    if (std.mem.startsWith(u8, path, "/_admin/v1/users/")) {
+        const rest = path["/_admin/v1/users/".len..];
+        const end = std.mem.indexOfScalar(u8, rest, '/') orelse rest.len;
+        return std.fmt.allocPrint(a, "arn:aws:iam::000000000000:user/{s}", .{rest[0..end]}) catch "arn:aws:iam::*:user/*";
+    }
+    if (std.mem.startsWith(u8, path, "/_admin/v1/roles/")) {
+        const rest = path["/_admin/v1/roles/".len..];
+        const end = std.mem.indexOfScalar(u8, rest, '/') orelse rest.len;
+        return std.fmt.allocPrint(a, "arn:aws:iam::000000000000:role/{s}", .{rest[0..end]}) catch "arn:aws:iam::*:role/*";
+    }
+    return "arn:aws:s3:::*";
 }
 
 fn managementTokenExpiration(
@@ -2072,6 +2118,7 @@ test "S3 HTTP authenticates and serves Bucket Object and List V2 operations" {
     );
     defer create_bucket.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.ok, create_bucket.status);
+
     try std.testing.expectEqualStrings("/project-assets", create_bucket.header("location").?);
 
     const list_buckets = try sendTestSignedRequest(
@@ -3369,6 +3416,22 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
     defer create_bucket.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.ok, create_bucket.status);
 
+    const copy_source_body = "copied multipart bytes";
+    const copy_source_put = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = "/project-assets/copy-source.txt",
+            .access_key = credential.credential.access_key,
+            .secret_key = credential.secret_key,
+            .body = copy_source_body,
+        },
+    );
+    defer copy_source_put.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, copy_source_put.status);
+
     const create = try sendTestSignedRequest(
         std.testing.allocator,
         std.testing.io,
@@ -3426,6 +3489,34 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
     try std.testing.expectEqual(std.http.Status.ok, uploaded.status);
     const etag = uploaded.header("etag") orelse return error.TestUnexpectedResult;
 
+    const copy_part_target = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "/project-assets/multipart.bin?partNumber=2&uploadId={s}",
+        .{upload_id},
+    );
+    defer std.testing.allocator.free(copy_part_target);
+    const copy_part_headers = [_]std.http.Header{
+        .{ .name = "x-amz-copy-source", .value = "/project-assets/copy-source.txt" },
+        .{ .name = "x-amz-copy-source-range", .value = "bytes=0-21" },
+    };
+    const copied_part = try sendTestSignedRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .{
+            .method = .PUT,
+            .target = copy_part_target,
+            .access_key = credential.credential.access_key,
+            .secret_key = credential.secret_key,
+            .extra_headers = &copy_part_headers,
+        },
+    );
+    defer copied_part.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, copied_part.status);
+    const copy_etag_start = std.mem.indexOf(u8, copied_part.body, "<ETag>") orelse return error.TestUnexpectedResult;
+    const copy_etag_end = std.mem.indexOfPos(u8, copied_part.body, copy_etag_start, "</ETag>") orelse return error.TestUnexpectedResult;
+    const copy_etag = copied_part.body[copy_etag_start + "<ETag>".len .. copy_etag_end];
+
     const list_target = try std.fmt.allocPrint(
         std.testing.allocator,
         "/project-assets/multipart.bin?uploadId={s}",
@@ -3446,6 +3537,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
     defer listed.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.ok, listed.status);
     try std.testing.expect(std.mem.indexOf(u8, listed.body, "<PartNumber>1</PartNumber>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed.body, "<PartNumber>2</PartNumber>") != null);
     try std.testing.expect(std.mem.indexOf(u8, listed.body, etag) != null);
 
     const invalid_completion =
@@ -3469,8 +3561,8 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
 
     const completion_body = try std.fmt.allocPrint(
         std.testing.allocator,
-        "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{s}</ETag></Part></CompleteMultipartUpload>",
-        .{etag},
+        "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{s}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>{s}</ETag></Part></CompleteMultipartUpload>",
+        .{ etag, copy_etag },
     );
     defer std.testing.allocator.free(completion_body);
     const complete = try sendTestSignedRequest(
@@ -3502,7 +3594,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
     );
     defer downloaded.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.ok, downloaded.status);
-    try std.testing.expectEqualStrings(part_body, downloaded.body);
+    try std.testing.expectEqualStrings(part_body ++ copy_source_body, downloaded.body);
     try std.testing.expect(std.mem.endsWith(u8, downloaded.header("etag").?, "-1\""));
 
     const after_complete = try sendTestSignedRequest(

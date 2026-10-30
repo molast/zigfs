@@ -55,6 +55,7 @@ type BucketTags struct {
 type UpdateBucketConfigurationRequest struct {
 	Versioning             string  `json:"versioning,omitempty"`
 	AccessPolicy           string  `json:"access_policy,omitempty"`
+	BlockPublicAccess      *bool   `json:"block_public_access,omitempty"`
 	TagsJSON               string  `json:"tags_json,omitempty"`
 	ClearTags              bool    `json:"clear_tags,omitempty"`
 	Encryption             string  `json:"encryption,omitempty"`
@@ -142,6 +143,7 @@ type PresignObjectRequest struct {
 	CopySourceBucket    string `json:"copy_source_bucket,omitempty"`
 	CopySourceKey       string `json:"copy_source_key,omitempty"`
 	CopySourceVersionID string `json:"copy_source_version_id,omitempty"`
+	Tagging             bool   `json:"tagging,omitempty"`
 }
 
 type PresignObjectResponse struct {
@@ -315,6 +317,7 @@ type UserWrite struct {
 	Policies    []string  `json:"policies"`
 	Password    *string   `json:"password,omitempty"`
 	Groups      *[]string `json:"groups,omitempty"`
+	TagsJSON    *string   `json:"tags_json,omitempty"`
 }
 type ManagedUser struct {
 	Groups      []string `json:"groups"`
@@ -323,6 +326,7 @@ type ManagedUser struct {
 	Description string   `json:"description"`
 	Enabled     bool     `json:"enabled"`
 	Policies    []string `json:"policies"`
+	TagsJSON    string   `json:"tags_json,omitempty"`
 }
 type ManagedGroup struct {
 	UpdatedAt   int64    `json:"updated_at"`
@@ -331,10 +335,69 @@ type ManagedGroup struct {
 	Enabled     bool     `json:"enabled"`
 	Policies    []string `json:"policies"`
 	Members     []string `json:"members"`
+	TagsJSON    string   `json:"tags_json,omitempty"`
 }
 type UserList struct {
 	Items []ManagedUser `json:"items"`
 }
 type GroupList struct {
 	Items []ManagedGroup `json:"items"`
+}
+
+type BucketPolicy struct {
+	Document string `json:"document"`
+}
+
+type Organization struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Enabled bool     `json:"enabled"`
+	Paths   []string `json:"paths,omitempty"`
+	Members []string `json:"members,omitempty"`
+}
+type Role struct {
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	OrganizationID      string   `json:"organization_id,omitempty"`
+	Enabled             bool     `json:"enabled"`
+	MaxSessionSeconds   uint64   `json:"max_session_seconds"`
+	TrustPolicy         string   `json:"trust_policy"`
+	Policies            []string `json:"policies,omitempty"`
+	PermissionsBoundary string   `json:"permissions_boundary,omitempty"`
+	TagsJSON            string   `json:"tags_json,omitempty"`
+}
+type OrganizationList struct {
+	Items []Organization `json:"items"`
+}
+type RoleList struct {
+	Items []Role `json:"items"`
+}
+type AssumeRoleRequest struct {
+	RoleID                string `json:"role_id" binding:"required"`
+	SessionName           string `json:"session_name" binding:"required"`
+	DurationSeconds       uint64 `json:"duration_seconds,omitempty"`
+	ExternalID            string `json:"external_id,omitempty"`
+	SourceIdentity        string `json:"source_identity,omitempty"`
+	SessionTagsJSON       string `json:"session_tags_json,omitempty"`
+	TransitiveTagKeysJSON string `json:"transitive_tag_keys_json,omitempty"`
+	SessionPolicy         string `json:"session_policy,omitempty"`
+}
+type AssumeRoleResponse struct {
+	AccessKey    string `json:"access_key"`
+	SecretKey    string `json:"secret_key"`
+	SessionToken string `json:"session_token"`
+	RoleID       string `json:"role_id"`
+	SessionName  string `json:"session_name"`
+	ExpiresAt    int64  `json:"expires_at"`
+}
+type RoleSession struct {
+	AccessKey   string `json:"access_key"`
+	RoleID      string `json:"role_id"`
+	SessionName string `json:"session_name"`
+	SubjectID   string `json:"subject_id"`
+	ExpiresAt   int64  `json:"expires_at"`
+	Revoked     bool   `json:"revoked"`
+}
+type RoleSessionList struct {
+	Items []RoleSession `json:"items"`
 }

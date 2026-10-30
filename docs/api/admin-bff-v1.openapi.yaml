@@ -934,7 +934,7 @@ components:
         inherit_policy:
           type: boolean
           default: false
-          description: Use administrator permissions or dynamically evaluate user and enabled-group JSON policies. When false use the explicit credential policy. UI defaults to true; API default preserves legacy behavior.
+          description: Use parent user and enabled-group permissions, with the key policy applied as an additional restriction. Disabling inheritance never grants permissions beyond the parent; UI defaults to true.
         expires_at:
           type: string
           format: date-time

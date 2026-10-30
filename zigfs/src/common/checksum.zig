@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const Crc64Nvme = std.hash.crc.Crc(u64, .{
+pub const Crc64Nvme = std.hash.crc.Generic(u64, .{
     .polynomial = 0xad93d23594c93659,
     .initial = 0xffffffffffffffff,
     .reflect_input = true,
@@ -8,8 +8,8 @@ pub const Crc64Nvme = std.hash.crc.Crc(u64, .{
     .xor_output = 0xffffffffffffffff,
 });
 
-pub const Crc32 = std.hash.crc.Crc32;
-pub const Crc32C = std.hash.crc.Crc32Iscsi;
+pub const Crc32 = std.hash.crc.@"CRC-32/ISO-HDLC";
+pub const Crc32C = std.hash.crc.@"CRC-32/ISCSI";
 pub const Sha1 = std.crypto.hash.Sha1;
 pub const Sha256 = std.crypto.hash.sha2.Sha256;
 

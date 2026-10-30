@@ -4,6 +4,7 @@ const data_store_port = @import("../ports/object_data_store.zig");
 const multipart_data_store_port = @import("../ports/multipart_data_store.zig");
 const multipart_store_port = @import("../ports/multipart_store.zig");
 const object_store_port = @import("../ports/object_store.zig");
+const object_tags = @import("object_tag_store.zig");
 const ObjectLockPool = @import("object_lock_pool.zig").ObjectLockPool;
 
 const ObjectLocationKey = [48]u8;
@@ -32,6 +33,7 @@ pub const partition_count: u8 = 16;
 pub const ObjectGcService = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
+    data_root: std.Io.Dir,
     object_store: object_store_port.ObjectStore,
     data_store: data_store_port.ObjectDataStore,
     multipart_store: multipart_store_port.MultipartStore,
@@ -44,6 +46,7 @@ pub const ObjectGcService = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         io: std.Io,
+        data_root: std.Io.Dir,
         object_store: object_store_port.ObjectStore,
         data_store: data_store_port.ObjectDataStore,
         multipart_store: multipart_store_port.MultipartStore,
@@ -56,6 +59,7 @@ pub const ObjectGcService = struct {
         return .{
             .allocator = allocator,
             .io = io,
+            .data_root = data_root,
             .object_store = object_store,
             .data_store = data_store,
             .multipart_store = multipart_store,
@@ -89,12 +93,23 @@ pub const ObjectGcService = struct {
         defer reachable_objects.deinit();
         var reachable_parts = std.AutoHashMap(MultipartLocationKey, void).init(self.allocator);
         defer reachable_parts.deinit();
+        var live_tags = std.StringHashMap(void).init(self.allocator);
+        defer {
+            var tag_iterator = live_tags.keyIterator();
+            while (tag_iterator.next()) |tag| self.allocator.free(tag.*);
+            live_tags.deinit();
+        }
         self.state_mutex.lockUncancelable(self.io);
-        self.collectReachableLocked(&reachable_objects, &reachable_parts) catch |err| {
+        self.collectReachableLocked(&reachable_objects, &reachable_parts, &live_tags) catch |err| {
             self.state_mutex.unlock(self.io);
             return err;
         };
         self.state_mutex.unlock(self.io);
+        _ = object_tags.pruneOrphans(self.allocator, self.data_root, self.io, &live_tags) catch |err| return switch (err) {
+            error.InvalidTag => error.CorruptMetadata,
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.Unavailable,
+        };
 
         const scan = (if (partition) |value|
             self.data_store.scanGenerationPartition(self.allocator, value)
@@ -187,11 +202,22 @@ pub const ObjectGcService = struct {
         var reachable_parts = std.AutoHashMap(MultipartLocationKey, void).init(self.allocator);
         defer reachable_parts.deinit();
         self.state_mutex.lockUncancelable(self.io);
-        self.collectReachableLocked(&reachable_objects, &reachable_parts) catch |err| {
+        var live_tags = std.StringHashMap(void).init(self.allocator);
+        defer {
+            var tag_iterator = live_tags.keyIterator();
+            while (tag_iterator.next()) |tag| self.allocator.free(tag.*);
+            live_tags.deinit();
+        }
+        self.collectReachableLocked(&reachable_objects, &reachable_parts, &live_tags) catch |err| {
             self.state_mutex.unlock(self.io);
             return err;
         };
         self.state_mutex.unlock(self.io);
+        _ = object_tags.pruneOrphans(self.allocator, self.data_root, self.io, &live_tags) catch |err| return switch (err) {
+            error.InvalidTag => error.CorruptMetadata,
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.Unavailable,
+        };
 
         const scan = self.multipart_data_store.scanGenerations(self.allocator) catch |err| {
             return mapMultipartDataStoreError(err);
@@ -234,6 +260,7 @@ pub const ObjectGcService = struct {
         self: ObjectGcService,
         reachable_objects: *std.AutoHashMap(ObjectLocationKey, void),
         reachable_parts: *std.AutoHashMap(MultipartLocationKey, void),
+        live_tags: *std.StringHashMap(void),
     ) Error!void {
         for (self.index.objectEntries()) |entry| {
             const record = self.object_store.getHistory(
@@ -252,6 +279,10 @@ pub const ObjectGcService = struct {
             for (history.entries) |version| switch (version) {
                 .delete_marker => {},
                 .object => |object| {
+                    var version_buffer: [32]u8 = undefined;
+                    const version_text = object.version_id.write(&version_buffer);
+                    const tag_filename = object_tags.filenameFor(self.allocator, entry.bucket, entry.key, version_text) catch return error.OutOfMemory;
+                    live_tags.put(tag_filename, {}) catch { self.allocator.free(tag_filename); return error.OutOfMemory; };
                     if (object.multipart_manifest) |manifest| {
                         for (manifest.parts) |part| {
                             const key = multipartLocationKey(.{
@@ -288,6 +319,9 @@ pub const ObjectGcService = struct {
                 });
                 reachable_parts.put(key, {}) catch return error.OutOfMemory;
             }
+            const upload_id = std.fmt.bytesToHex(upload.id, .lower);
+            const tag_filename = object_tags.filenameFor(self.allocator, upload.bucket_name, upload.key, &upload_id) catch return error.OutOfMemory;
+            live_tags.put(tag_filename, {}) catch { self.allocator.free(tag_filename); return error.OutOfMemory; };
         }
     }
 };

@@ -8,12 +8,14 @@ const object_listing = @import("../application/object_listing.zig");
 const lifecycle_service = @import("../application/lifecycle_service.zig");
 const directory_service = @import("../application/directory_service.zig");
 const credential_domain = @import("../domain/credential.zig");
+const role_store = @import("../application/role_store.zig");
 const object_domain = @import("../domain/object.zig");
 const multipart_domain = @import("../domain/multipart.zig");
 const sigv4 = @import("../auth/sigv4.zig");
 const time = @import("../common/time.zig");
 const s3_multipart = @import("s3_multipart.zig");
 const version = @import("../version.zig").value;
+const management_auth = @import("management_auth.zig");
 
 pub const api_prefix = "/_admin/v1";
 const max_body_size = 1024 * 1024;
@@ -25,6 +27,7 @@ pub const Route = struct {
     path: []const u8,
 };
 
+// Role and organization routes are persisted in the same local authorization root.
 pub const routes = [_]Route{
     .{ .method = .get, .path = "/_admin/v1/users/:name/access-keys" },
     .{ .method = .post, .path = "/_admin/v1/users/:name/access-keys" },
@@ -40,6 +43,17 @@ pub const routes = [_]Route{
     .{ .method = .get, .path = "/_admin/v1/groups/:name" },
     .{ .method = .patch, .path = "/_admin/v1/groups/:name" },
     .{ .method = .delete, .path = "/_admin/v1/groups/:name" },
+    .{ .method = .get, .path = "/_admin/v1/organizations" },
+    .{ .method = .post, .path = "/_admin/v1/organizations" },
+    .{ .method = .patch, .path = "/_admin/v1/organizations/:name" },
+    .{ .method = .delete, .path = "/_admin/v1/organizations/:name" },
+    .{ .method = .get, .path = "/_admin/v1/roles" },
+    .{ .method = .post, .path = "/_admin/v1/roles" },
+    .{ .method = .patch, .path = "/_admin/v1/roles/:name" },
+    .{ .method = .delete, .path = "/_admin/v1/roles/:name" },
+    .{ .method = .post, .path = "/_admin/v1/sts/assume-role" },
+    .{ .method = .get, .path = "/_admin/v1/role-sessions" },
+    .{ .method = .post, .path = "/_admin/v1/role-sessions/:access_key/revoke" },
 
     .{ .method = .get, .path = "/_admin/v1/policies" },
     .{ .method = .post, .path = "/_admin/v1/policies" },
@@ -82,11 +96,17 @@ pub fn serveRequest(
     request: *std.http.Server.Request,
     application: *Application,
     request_id: []const u8,
+    caller: management_auth.Principal,
 ) !std.http.Status {
     const target = request.head.target;
     const path = requestPath(target);
 
+    if (std.mem.eql(u8, path, api_prefix ++ "/sts/assume-role")) return serveAssumeRole(request, application, request_id, caller);
+    if (std.mem.eql(u8, path, api_prefix ++ "/role-sessions") or std.mem.startsWith(u8, path, api_prefix ++ "/role-sessions/")) return serveRoleSessions(request, application, request_id, path);
+
     if (std.mem.startsWith(u8, path, api_prefix ++ "/users/") and std.mem.indexOf(u8, path, "/access-keys") != null) return serveUserAccessKeys(request, application, request_id, path);
+    if (std.mem.eql(u8, path, api_prefix ++ "/organizations") or std.mem.startsWith(u8, path, api_prefix ++ "/organizations/")) return serveRoles(true, request, application, request_id, path);
+    if (std.mem.eql(u8, path, api_prefix ++ "/roles") or std.mem.startsWith(u8, path, api_prefix ++ "/roles/")) return serveRoles(false, request, application, request_id, path);
     if (std.mem.eql(u8, path, api_prefix ++ "/users") or std.mem.startsWith(u8, path, api_prefix ++ "/users/")) return serveIdentities(false, request, application, request_id, path);
     if (std.mem.eql(u8, path, api_prefix ++ "/groups") or std.mem.startsWith(u8, path, api_prefix ++ "/groups/")) return serveIdentities(true, request, application, request_id, path);
     if (std.mem.eql(u8, path, api_prefix ++ "/policies") or std.mem.startsWith(u8, path, api_prefix ++ "/policies/")) {
@@ -101,6 +121,11 @@ pub fn serveRequest(
     }
     if (std.mem.startsWith(u8, path, api_prefix ++ "/buckets/")) {
         const resource = path[(api_prefix ++ "/buckets/").len..];
+        if (std.mem.endsWith(u8, resource, "/policy")) {
+            const raw_name = resource[0 .. resource.len - "/policy".len];
+            if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '/') != null) return respondError(request, request_id, .bad_request, "InvalidBucketName", "invalid bucket name");
+            return serveBucketResourcePolicy(request, application, request_id, raw_name);
+        }
         if (std.mem.endsWith(u8, resource, "/configuration")) {
             const raw_name = resource[0 .. resource.len - "/configuration".len];
             if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '/') != null) {
@@ -432,6 +457,7 @@ const UpdateBucketConfigurationRequest = struct {
     retention_mode: ?[]const u8 = null,
     object_locking: ?bool = null,
     replication_enabled: ?bool = null,
+    block_public_access: ?bool = null,
     lifecycle_configuration: ?[]const u8 = null,
     clear_lifecycle: bool = false,
 };
@@ -530,7 +556,7 @@ fn serveUpdateBucketConfiguration(
     const parsed = try parseJsonBody(UpdateBucketConfigurationRequest, request, application.allocator, request_id) orelse return .bad_request;
     defer parsed.deinit();
     if (parsed.value.replication_enabled != null) return respondError(request, request_id, .not_implemented, "FeatureUnavailable", "replication requires a second storage site");
-    if (parsed.value.versioning == null and parsed.value.access_policy == null and parsed.value.tags_json == null and parsed.value.encryption == null and parsed.value.max_bytes == null and parsed.value.max_objects == null and parsed.value.retention_enabled == null and parsed.value.retention_duration_seconds == null and parsed.value.retention_mode == null and parsed.value.object_locking == null and parsed.value.lifecycle_configuration == null and !parsed.value.clear_lifecycle and !parsed.value.clear_tags) {
+    if (parsed.value.versioning == null and parsed.value.access_policy == null and parsed.value.block_public_access == null and parsed.value.tags_json == null and parsed.value.encryption == null and parsed.value.max_bytes == null and parsed.value.max_objects == null and parsed.value.retention_enabled == null and parsed.value.retention_duration_seconds == null and parsed.value.retention_mode == null and parsed.value.object_locking == null and parsed.value.lifecycle_configuration == null and !parsed.value.clear_lifecycle and !parsed.value.clear_tags) {
         return respondError(request, request_id, .bad_request, "InvalidRequest", "at least one bucket setting is required");
     }
     if (parsed.value.lifecycle_configuration != null and parsed.value.clear_lifecycle) {
@@ -560,6 +586,10 @@ fn serveUpdateBucketConfiguration(
         defer previous.deinit(application.allocator);
         const updated = service.setAccessPolicy(name, access_policy) catch |err| return respondBucketError(request, request_id, err);
         auditAccessPolicy(application, request_id, name, accessPolicyName(previous.access_policy), accessPolicyName(updated.access_policy));
+        updated.deinit(application.allocator);
+    }
+    if (parsed.value.block_public_access) |blocked| {
+        const updated = service.setPublicAccess(name, blocked) catch |err| return respondBucketError(request, request_id, err);
         updated.deinit(application.allocator);
     }
     if (parsed.value.encryption) |status| {
@@ -653,6 +683,8 @@ fn respondBucketConfiguration(
             .readonly => "Readonly",
             .public => "Public",
         },
+        .object_ownership = "BucketOwnerEnforced",
+        .block_public_access = bucket.block_public_access,
         .tags_json = bucket.tags_json,
         .encryption = switch (bucket.encryption) {
             .disabled => "Disabled",
@@ -839,6 +871,7 @@ const PresignObjectRequest = struct {
     copy_source_bucket: ?[]const u8 = null,
     copy_source_key: ?[]const u8 = null,
     copy_source_version_id: ?[]const u8 = null,
+    tagging: bool = false,
 };
 
 const CreateMultipartUploadRequest = struct {
@@ -1135,13 +1168,13 @@ fn servePresignObject(
     const buckets = application.bucketService() orelse return respondNotReady(request, request_id);
     const bucket = buckets.head(value.bucket) catch |err| return respondBucketError(request, request_id, err);
     defer bucket.deinit(application.allocator);
-    if (!std.mem.eql(u8, bucket.owner, material.owner)) {
+    if (material.inherited_documents == null and material.key_document == null and !std.mem.eql(u8, bucket.owner, material.owner)) {
         return respondError(request, request_id, .forbidden, "AccessDenied", "access key does not own this bucket");
     }
     if (value.copy_source_bucket) |source_bucket_name| {
         const source_bucket = buckets.head(source_bucket_name) catch |err| return respondBucketError(request, request_id, err);
         defer source_bucket.deinit(application.allocator);
-        if (!std.mem.eql(u8, source_bucket.owner, material.owner)) {
+        if (material.inherited_documents == null and material.key_document == null and !std.mem.eql(u8, source_bucket.owner, material.owner)) {
             return respondError(request, request_id, .forbidden, "AccessDenied", "access key does not own the copy source bucket");
         }
     }
@@ -1173,10 +1206,12 @@ fn servePresignObject(
             value.upload_id.?,
         })
     else if (value.version_id) |version_id|
-        try std.fmt.allocPrint(application.allocator, "{s}?versionId={s}", .{ base_target, version_id })
+        try std.fmt.allocPrint(application.allocator, "{s}?versionId={s}{s}", .{ base_target, version_id, if (value.tagging) "&tagging" else "" })
+    else if (value.tagging)
+        try std.fmt.allocPrint(application.allocator, "{s}?tagging", .{base_target})
     else
         base_target;
-    defer if (multipart_part or value.version_id != null) application.allocator.free(unsigned_target);
+    defer if (multipart_part or value.version_id != null or value.tagging) application.allocator.free(unsigned_target);
     const encoded_source_key = if (value.copy_source_key) |source_key|
         try encodePath(application.allocator, source_key)
     else
@@ -2229,6 +2264,9 @@ fn servePolicies(request: *std.http.Server.Request, app: *Application, request_i
         const attached = identities.load(root, io, app.allocator) catch return respondError(request, request_id, .service_unavailable, "IdentityStorageUnavailable", "cannot check policy attachments");
         defer attached.deinit();
         if (identities.policyInUse(attached.value, name)) return respondError(request, request_id, .conflict, "PolicyInUse", "detach this policy from users and groups before deleting it");
+        const roles = role_store.load(root, io, app.allocator) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot check role policy attachments");
+        defer roles.deinit();
+        if (role_store.policyInUse(roles.value, name)) return respondError(request, request_id, .conflict, "PolicyInUse", "detach this policy from roles before deleting it");
     }
     var items: std.ArrayList(store.Policy) = .empty;
     defer items.deinit(app.allocator);
@@ -2242,6 +2280,204 @@ fn servePolicies(request: *std.http.Server.Request, app: *Application, request_i
     audit(app, request_id, "mutate_policy", lookup, @tagName(method));
     if (method == .DELETE) return respondNoContent(request, request_id);
     return respondJson(request, request_id, if (method == .POST) .created else .ok, input.?.value);
+}
+
+fn serveRoles(comptime organization: bool, request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8) !std.http.Status {
+    const root = app.data_root orelse return respondNotReady(request, request_id);
+    const io = app.io orelse return respondNotReady(request, request_id);
+    const method = request.head.method;
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const prefix = api_prefix ++ (if (organization) "/organizations" else "/roles");
+    const collection = std.mem.eql(u8, route_path, prefix);
+    const raw_name = if (collection) null else decodeComponent(a, route_path[prefix.len + 1 ..], false) catch return respondError(request, request_id, .bad_request, "InvalidName", "invalid role or organization name");
+    if (!collection and (raw_name == null or !role_store.validName(raw_name.?))) return respondError(request, request_id, .bad_request, "InvalidName", "invalid role or organization name");
+    if (method == .GET) {
+        const loaded = role_store.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot read roles");
+        if (collection) return respondJson(request, request_id, .ok, if (organization) .{ .items = loaded.value.organizations } else .{ .items = loaded.value.roles });
+        if (organization) for (loaded.value.organizations) |item| if (std.mem.eql(u8, item.name, raw_name.?)) return respondJson(request, request_id, .ok, item);
+        if (!organization) for (loaded.value.roles) |item| if (std.mem.eql(u8, item.name, raw_name.?)) return respondJson(request, request_id, .ok, item);
+        return respondError(request, request_id, .not_found, "NotFound", "role or organization does not exist");
+    }
+    if (method != .POST and method != .PATCH and method != .DELETE) return respondMethodNotAllowed(request, request_id, "GET, POST, PATCH, DELETE");
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
+    const loaded = role_store.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot read roles");
+    var snapshot = loaded.value;
+    if (method == .PATCH) {
+        if (collection) return respondError(request, request_id, .bad_request, "InvalidName", "PATCH must target one role or organization");
+        if (organization) {
+            const input = (try parseJsonBody(role_store.Organization, request, a, request_id) orelse return .bad_request).value;
+            var items: std.ArrayList(role_store.Organization) = .empty;
+            var found = false;
+            for (snapshot.organizations) |item| {
+                if (std.mem.eql(u8, item.name, raw_name.?)) { found = true; if (!role_store.validName(input.name)) return respondError(request, request_id, .bad_request, "InvalidName", "invalid organization name"); try items.append(a, .{ .id = item.id, .name = input.name, .enabled = input.enabled, .paths = input.paths, .members = input.members }); } else try items.append(a, item);
+            }
+            if (!found) return respondError(request, request_id, .not_found, "OrganizationNotFound", "organization does not exist");
+            snapshot.organizations = items.items;
+            try role_store.save(root, io, a, snapshot);
+            return respondJson(request, request_id, .ok, items.items[items.items.len - 1]);
+        }
+        const input = (try parseJsonBody(role_store.Role, request, a, request_id) orelse return .bad_request).value;
+        var items: std.ArrayList(role_store.Role) = .empty;
+        var found = false;
+        const policies = try @import("../application/policy_store.zig").load(root, io, a);
+        for (snapshot.roles) |item| {
+            if (std.mem.eql(u8, item.name, raw_name.?)) { found = true; if (!role_store.validName(input.name)) return respondError(request, request_id, .bad_request, "InvalidName", "invalid role name"); try role_store.validate(a, .{ .id = item.id, .name = input.name, .organization_id = input.organization_id, .enabled = input.enabled, .max_session_seconds = input.max_session_seconds, .trust_policy = input.trust_policy, .policies = input.policies, .permissions_boundary = input.permissions_boundary, .tags_json = input.tags_json }, snapshot, policies.value); try items.append(a, .{ .id = item.id, .name = input.name, .organization_id = input.organization_id, .enabled = input.enabled, .max_session_seconds = input.max_session_seconds, .trust_policy = input.trust_policy, .policies = input.policies, .permissions_boundary = input.permissions_boundary, .tags_json = input.tags_json }); } else try items.append(a, item);
+        }
+        if (!found) return respondError(request, request_id, .not_found, "RoleNotFound", "role does not exist");
+        snapshot.roles = items.items;
+        try role_store.save(root, io, a, snapshot);
+        return respondJson(request, request_id, .ok, items.items[items.items.len - 1]);
+    }
+    if (method == .DELETE) {
+        if (collection) return respondError(request, request_id, .bad_request, "InvalidName", "collection cannot be deleted");
+        if (organization) {
+            const org = for (snapshot.organizations) |item| {
+                if (std.mem.eql(u8, item.name, raw_name.?)) break item;
+            } else return respondError(request, request_id, .not_found, "OrganizationNotFound", "organization does not exist");
+            if (role_store.organizationInUse(snapshot, org.id)) return respondError(request, request_id, .conflict, "OrganizationInUse", "organization is referenced by a role");
+            var items: std.ArrayList(role_store.Organization) = .empty;
+            for (snapshot.organizations) |item| if (!std.mem.eql(u8, item.name, raw_name.?)) try items.append(a, item);
+            snapshot.organizations = items.items;
+        } else {
+            const role = for (snapshot.roles) |item| {
+                if (std.mem.eql(u8, item.name, raw_name.?)) break item;
+            } else return respondError(request, request_id, .not_found, "RoleNotFound", "role does not exist");
+            if (role_store.hasActiveSession(snapshot, role.id, std.Io.Clock.real.now(io).toSeconds())) return respondError(request, request_id, .conflict, "RoleSessionsExist", "revoke active role sessions before deleting the role");
+            var items: std.ArrayList(role_store.Role) = .empty;
+            for (snapshot.roles) |item| if (!std.mem.eql(u8, item.name, raw_name.?)) try items.append(a, item);
+            snapshot.roles = items.items;
+        }
+        try role_store.save(root, io, a, snapshot);
+        return respondNoContent(request, request_id);
+    }
+    if (!collection) return respondError(request, request_id, .bad_request, "InvalidName", "POST must target a collection");
+    if (organization) {
+        const value = (try parseJsonBody(role_store.Organization, request, a, request_id) orelse return .bad_request).value;
+        if (!role_store.validName(value.name)) return respondError(request, request_id, .bad_request, "InvalidName", "invalid organization name");
+        const id = if (value.id.len > 0) value.id else try @import("../application/identity_store.zig").newId(a, io);
+        var items: std.ArrayList(role_store.Organization) = .empty;
+        for (snapshot.organizations) |item| {
+            if (std.mem.eql(u8, item.name, value.name)) return respondError(request, request_id, .conflict, "AlreadyExists", "organization already exists");
+            try items.append(a, item);
+        }
+        try items.append(a, .{ .id = id, .name = value.name, .enabled = value.enabled, .paths = value.paths, .members = value.members });
+        snapshot.organizations = items.items;
+    } else {
+        const value = (try parseJsonBody(role_store.Role, request, a, request_id) orelse return .bad_request).value;
+        if (!role_store.validName(value.name)) return respondError(request, request_id, .bad_request, "InvalidName", "invalid role name");
+        const id = if (value.id.len > 0) value.id else try @import("../application/identity_store.zig").newId(a, io);
+        for (snapshot.roles) |item| if (std.mem.eql(u8, item.name, value.name)) return respondError(request, request_id, .conflict, "AlreadyExists", "role already exists");
+        const policies = try @import("../application/policy_store.zig").load(root, io, a);
+        try role_store.validate(a, .{ .id = id, .name = value.name, .organization_id = value.organization_id, .enabled = value.enabled, .max_session_seconds = value.max_session_seconds, .trust_policy = value.trust_policy, .policies = value.policies, .permissions_boundary = value.permissions_boundary, .tags_json = value.tags_json }, snapshot, policies.value);
+        var items: std.ArrayList(role_store.Role) = .empty;
+        try items.appendSlice(a, snapshot.roles);
+        try items.append(a, .{ .id = id, .name = value.name, .organization_id = value.organization_id, .enabled = value.enabled, .max_session_seconds = value.max_session_seconds, .trust_policy = value.trust_policy, .policies = value.policies, .permissions_boundary = value.permissions_boundary, .tags_json = value.tags_json });
+        snapshot.roles = items.items;
+    }
+    try role_store.save(root, io, a, snapshot);
+    return respondJson(request, request_id, .created, if (organization) snapshot.organizations[snapshot.organizations.len - 1] else snapshot.roles[snapshot.roles.len - 1]);
+}
+
+const AssumeRoleInput = struct {
+    role_id: []const u8,
+    session_name: []const u8,
+    duration_seconds: u64 = 3600,
+    external_id: ?[]const u8 = null,
+    source_identity: ?[]const u8 = null,
+    session_tags_json: ?[]const u8 = null,
+    transitive_tag_keys_json: ?[]const u8 = null,
+    session_policy: ?[]const u8 = null,
+};
+
+fn serveAssumeRole(request: *std.http.Server.Request, app: *Application, request_id: []const u8, caller: management_auth.Principal) !std.http.Status {
+    if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
+    const root = app.data_root orelse return respondNotReady(request, request_id);
+    const io = app.io orelse return respondNotReady(request, request_id);
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try parseJsonBody(AssumeRoleInput, request, a, request_id) orelse return .bad_request;
+    const input = parsed.value;
+    if (!role_store.validName(input.session_name) or input.session_name.len > 64) return respondError(request, request_id, .bad_request, "InvalidSessionName", "session name is invalid");
+    if ((input.external_id != null and !role_store.validSessionAttribute(input.external_id.?, 1024)) or (input.source_identity != null and !role_store.validSessionAttribute(input.source_identity.?, 128)) or !role_store.validTagsJson(input.session_tags_json) or !role_store.validTagsJson(input.transitive_tag_keys_json)) return respondError(request, request_id, .bad_request, "InvalidSessionAttributes", "invalid external id, source identity, or session tags");
+    if (input.session_policy) |policy| _ = @import("../auth/iam_policy.zig").validateDocument(a, policy, .session) catch return respondError(request, request_id, .bad_request, "InvalidSessionPolicy", "invalid session policy");
+    const loaded = role_store.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot read roles");
+    const role = role_store.findRole(loaded.value, input.role_id) orelse return respondError(request, request_id, .not_found, "RoleNotFound", "role does not exist");
+    if (!role.enabled) return respondError(request, request_id, .forbidden, "RoleDisabled", "role is disabled");
+    if (input.duration_seconds < 900 or input.duration_seconds > 43200 or input.duration_seconds > role.max_session_seconds) return respondError(request, request_id, .bad_request, "InvalidDuration", "duration exceeds role limits");
+    if (!caller.is_root) {
+        var entries = std.ArrayList(@import("../auth/iam_policy.zig").Entry).empty;
+        try entries.append(a, .{ .key = "aws:userid", .value = caller.id });
+        try entries.append(a, .{ .key = "aws:username", .value = caller.username });
+        try entries.append(a, .{ .key = "aws:PrincipalArn", .value = try std.fmt.allocPrint(a, "arn:aws:iam::{s}:user/{s}", .{ @import("../application/resource_policy_store.zig").account_id, caller.username }) });
+        try entries.append(a, .{ .key = "aws:PrincipalAccount", .value = @import("../application/resource_policy_store.zig").account_id });
+        if (input.external_id) |value| try entries.append(a, .{ .key = "sts:ExternalId", .value = value });
+        if (input.source_identity) |value| try entries.append(a, .{ .key = "sts:SourceIdentity", .value = value });
+        if (input.session_tags_json) |raw_tags| {
+            const parsed_tags = std.json.parseFromSlice(std.json.Value, a, raw_tags, .{}) catch return respondError(request, request_id, .bad_request, "InvalidSessionAttributes", "session tags are invalid");
+            defer parsed_tags.deinit();
+            if (parsed_tags.value != .object) return respondError(request, request_id, .bad_request, "InvalidSessionAttributes", "session tags must be an object");
+            var tag_iterator = parsed_tags.value.object.iterator();
+            while (tag_iterator.next()) |tag| {
+                if (tag.value_ptr.* != .string) return respondError(request, request_id, .bad_request, "InvalidSessionAttributes", "session tag values must be strings");
+                try entries.append(a, .{ .key = try std.fmt.allocPrint(a, "aws:RequestTag/{s}", .{tag.key_ptr.*}), .value = tag.value_ptr.*.string });
+            }
+        }
+        const role_resource = try std.fmt.allocPrint(a, "arn:aws:iam::{s}:role/{s}", .{@import("../application/resource_policy_store.zig").account_id, role.name});
+        const assume_context: @import("../auth/iam_policy.zig").Context = .{ .entries = entries.items, .kind = .identity };
+        if (!caller.allows(a, "sts:AssumeRole", role_resource, assume_context)) return respondError(request, request_id, .forbidden, "AccessDenied", "caller policy does not allow sts:AssumeRole");
+        if (!try role_store.canAssume(a, role, .{ .entries = entries.items, .principal_bindings = &.{} }, "sts:AssumeRole", role_resource)) return respondError(request, request_id, .forbidden, "AccessDenied", "trust policy does not allow this principal");
+    }
+    const credentials = app.credentialService() orelse return respondNotReady(request, request_id);
+    const owner = try std.fmt.allocPrint(a, "role:{s}:{s}", .{ role.id, input.session_name });
+    const created = credentials.createWithOptions(owner, .all, .{ .ttl_seconds = input.duration_seconds, .name = input.session_name, .policy_document = input.session_policy orelse "" });
+    var result = created catch |err| return respondCredentialError(request, request_id, err);
+    defer result.deinit(app.allocator);
+    const now = std.Io.Clock.real.now(io).toSeconds();
+    var sessions: std.ArrayList(role_store.Session) = .empty;
+    for (loaded.value.sessions) |session| try sessions.append(a, session);
+    try sessions.append(a, .{ .access_key = result.credential.access_key, .role_id = role.id, .session_name = input.session_name, .subject_id = try std.fmt.allocPrint(a, "{s}:{s}", .{ role.id, input.session_name }), .expires_at = now + @as(i64, @intCast(input.duration_seconds)), .source_identity = input.source_identity, .external_id = input.external_id, .session_tags_json = input.session_tags_json, .transitive_tag_keys_json = input.transitive_tag_keys_json, .session_policy = input.session_policy });
+    var snapshot = loaded.value;
+    snapshot.sessions = sessions.items;
+    role_store.save(root, io, a, snapshot) catch {
+        _ = credentials.delete(result.credential.access_key) catch {};
+        return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot persist role session");
+    };
+    return respondJson(request, request_id, .created, .{ .access_key = result.credential.access_key, .secret_key = result.secret_key, .session_token = result.session_token.?, .role_id = role.id, .session_name = input.session_name, .expires_at = now + @as(i64, @intCast(input.duration_seconds)) });
+}
+
+fn serveRoleSessions(request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8) !std.http.Status {
+    const root = app.data_root orelse return respondNotReady(request, request_id);
+    const io = app.io orelse return respondNotReady(request, request_id);
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const loaded = role_store.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot read roles");
+    if (std.mem.eql(u8, route_path, api_prefix ++ "/role-sessions")) {
+        if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
+        return respondJson(request, request_id, .ok, .{ .items = loaded.value.sessions });
+    }
+    const prefix = api_prefix ++ "/role-sessions/";
+    if (!std.mem.endsWith(u8, route_path, "/revoke") or request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
+    const access_key = route_path[prefix.len .. route_path.len - "/revoke".len];
+    var sessions: std.ArrayList(role_store.Session) = .empty;
+    var found = false;
+    for (loaded.value.sessions) |session| {
+        var copy = session;
+        if (std.mem.eql(u8, session.access_key, access_key)) {
+            copy.revoked = true;
+            found = true;
+        }
+        try sessions.append(a, copy);
+    }
+    if (!found) return respondError(request, request_id, .not_found, "RoleSessionNotFound", "role session does not exist");
+    var snapshot = loaded.value;
+    snapshot.sessions = sessions.items;
+    role_store.save(root, io, a, snapshot) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot persist role session");
+    return respondNoContent(request, request_id);
 }
 
 fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8) !std.http.Status {
@@ -2262,10 +2498,21 @@ fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, a
     const name = if (collection) "" else decodeComponent(a, route_path[prefix.len + 1 ..], false) catch return respondError(request, request_id, .bad_request, "InvalidIdentity", "invalid name");
     if (!collection and !store.validName(name)) return respondError(request, request_id, .bad_request, "InvalidIdentity", "invalid name");
     var input: ?Input = null;
-    if (method == .POST or method == .PATCH) {
+    var user_patch: ?store.UserPatch = null;
+    var group_patch: ?store.GroupPatch = null;
+    if (method == .PATCH) {
+        if (is_group) {
+            const parsed = try parseJsonBody(store.GroupPatch, request, a, request_id) orelse return .bad_request;
+            group_patch = parsed.value;
+            if (group_patch.?.name) |value| if (!std.mem.eql(u8, name, value)) return respondError(request, request_id, .bad_request, "InvalidIdentity", "names cannot be changed");
+        } else {
+            const parsed = try parseJsonBody(store.UserPatch, request, a, request_id) orelse return .bad_request;
+            user_patch = parsed.value;
+            if (user_patch.?.name) |value| if (!std.mem.eql(u8, name, value)) return respondError(request, request_id, .bad_request, "InvalidIdentity", "names cannot be changed");
+        }
+    } else if (method == .POST) {
         const parsed = try parseJsonBody(Input, request, a, request_id) orelse return .bad_request;
         input = parsed.value;
-        if (!collection and !std.mem.eql(u8, name, input.?.name)) return respondError(request, request_id, .bad_request, "InvalidIdentity", "names cannot be changed");
     }
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
@@ -2273,6 +2520,7 @@ fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, a
     const items = if (is_group) loaded.value.groups else loaded.value.users;
     const lookup = if (input) |value| value.name else name;
     const index = store.find(items, lookup);
+    if (method == .POST and !collection and !std.mem.eql(u8, name, input.?.name)) return respondError(request, request_id, .bad_request, "InvalidIdentity", "names cannot be changed");
     if (method == .GET) {
         if (collection) {
             if (is_group) return respondJson(request, request_id, .ok, .{ .items = items });
@@ -2288,6 +2536,19 @@ fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, a
     }
     if (method == .POST and index != null) return respondError(request, request_id, .conflict, "IdentityAlreadyExists", "name already exists");
     if (method != .POST and index == null) return respondError(request, request_id, .not_found, "IdentityNotFound", "user or group does not exist");
+    if (method == .PATCH) {
+        if (is_group) {
+            const old = items[index.?];
+            const patch = group_patch.?;
+            if (patch.expected_updated_at) |revision| if (revision != old.updated_at) return respondError(request, request_id, .conflict, "RevisionConflict", "group changed; refresh and retry");
+            input = .{ .id = old.id, .name = old.name, .description = patch.description orelse old.description, .enabled = patch.enabled orelse old.enabled, .policies = patch.policies orelse old.policies, .members = patch.members orelse old.members, .tags_json = patch.tags_json orelse old.tags_json, .updated_at = old.updated_at };
+        } else {
+            const old = items[index.?];
+            const patch = user_patch.?;
+            if (patch.expected_updated_at) |revision| if (revision != old.updated_at) return respondError(request, request_id, .conflict, "RevisionConflict", "user changed; refresh and retry");
+            input = .{ .id = old.id, .auth_version = old.auth_version, .updated_at = old.updated_at, .name = old.name, .description = patch.description orelse old.description, .enabled = patch.enabled orelse old.enabled, .policies = patch.policies orelse old.policies, .password = patch.password, .groups = patch.groups, .tags_json = patch.tags_json orelse old.tags_json };
+        }
+    }
     if (!is_group and method == .DELETE) {
         const credentials = app.credentialService() orelse return respondNotReady(request, request_id);
         const keys = credentials.list() catch |err| return respondCredentialError(request, request_id, err);
@@ -2309,6 +2570,7 @@ fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, a
     if (input) |value| {
         if (is_group) {
             prepared = value;
+            prepared.?.id = if (index) |i| items[i].id else try store.newId(a, io);
             prepared.?.updated_at = now;
         } else {
             if (value.groups) |names| store.assignGroups(a, &snapshot, value.name, names, now) catch return respondError(request, request_id, .bad_request, "InvalidGroup", "selected groups are invalid or no longer exist");
@@ -2395,4 +2657,37 @@ fn serveUserAccessKeys(request: *std.http.Server.Request, app: *Application, req
     try json.endArray();
     try json.endObject();
     return respondJsonBytes(request, request_id, .ok, output.written());
+}
+
+fn serveBucketResourcePolicy(request: *std.http.Server.Request, app: *Application, request_id: []const u8, raw_name: []const u8) !std.http.Status {
+    const store = @import("../application/resource_policy_store.zig");
+    const identities = @import("../application/identity_store.zig");
+    const method = request.head.method;
+    if (method != .GET and method != .PUT and method != .DELETE) return respondMethodNotAllowed(request, request_id, "GET, PUT, DELETE");
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const name = decodeComponent(a, raw_name, false) catch return respondError(request, request_id, .bad_request, "InvalidBucketName", "invalid bucket name");
+    const buckets = app.bucketService() orelse return respondNotReady(request, request_id);
+    const bucket = buckets.head(name) catch |err| return respondBucketError(request, request_id, err);
+    defer bucket.deinit(app.allocator);
+    const io = app.io orelse return respondNotReady(request, request_id);
+    const root = app.data_root orelse return respondNotReady(request, request_id);
+    const Input = struct { document: []const u8 };
+    const input = if (method == .PUT) (try parseJsonBody(Input, request, a, request_id) orelse return .bad_request).value else Input{ .document = "" };
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
+    if (method == .GET) {
+        const record = store.load(a, root, io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot read bucket policy");
+        return respondJson(request, request_id, .ok, .{ .document = if (record) |value| if (value.value.deleted) "" else value.value.document else "" });
+    }
+    if (method == .DELETE) {
+        store.remove(a, root, io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot delete bucket policy");
+        return respondNoContent(request, request_id);
+    }
+    const snapshot = identities.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "IdentityStorageUnavailable", "cannot resolve policy principals");
+    const prepared = store.prepare(a, input.document, bucket.name, snapshot.value) catch |err| return respondError(request, request_id, .bad_request, @errorName(err), "invalid bucket policy, resource or principal");
+    store.save(a, root, io, bucket.id, prepared) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot save bucket policy");
+    audit(app, request_id, "put_bucket_policy", name, "updated");
+    return respondJson(request, request_id, .ok, input);
 }

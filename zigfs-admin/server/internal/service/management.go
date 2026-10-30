@@ -41,6 +41,16 @@ func (service *Management) GetBucketUsage(ctx context.Context, name string) (con
 func (service *Management) ListBucketEvents(ctx context.Context, name, cursor, from, to, action, outcome string, limit int) (contract.ListBucketEventsResponse, error) {
 	return service.zig.ListBucketEvents(ctx, name, cursor, from, to, action, outcome, limit)
 }
+func (service *Management) GetBucketPolicy(ctx context.Context, name string) (contract.BucketPolicy, error) {
+	return service.zig.GetBucketPolicy(ctx, name)
+}
+func (service *Management) PutBucketPolicy(ctx context.Context, name string, tags contract.BucketPolicy) (contract.BucketPolicy, error) {
+	return service.zig.PutBucketPolicy(ctx, name, tags)
+}
+func (service *Management) DeleteBucketPolicy(ctx context.Context, name string) error {
+	return service.zig.DeleteBucketPolicy(ctx, name)
+}
+
 func (service *Management) GetBucketTags(ctx context.Context, name string) (contract.BucketTags, error) {
 	return service.zig.GetBucketTags(ctx, name)
 }
@@ -152,6 +162,40 @@ func (service *Management) UpdatePolicy(ctx context.Context, policy contract.Man
 
 func (service *Management) DeletePolicy(ctx context.Context, name string) error {
 	return service.zig.DeletePolicy(ctx, name)
+}
+
+func (service *Management) ListOrganizations(ctx context.Context) (contract.OrganizationList, error) {
+	return service.zig.ListOrganizations(ctx)
+}
+func (service *Management) CreateOrganization(ctx context.Context, value contract.Organization) (contract.Organization, error) {
+	return service.zig.CreateOrganization(ctx, value)
+}
+func (service *Management) UpdateOrganization(ctx context.Context, value contract.Organization) (contract.Organization, error) {
+	return service.zig.UpdateOrganization(ctx, value)
+}
+func (service *Management) DeleteOrganization(ctx context.Context, name string) error {
+	return service.zig.DeleteOrganization(ctx, name)
+}
+func (service *Management) ListRoles(ctx context.Context) (contract.RoleList, error) {
+	return service.zig.ListRoles(ctx)
+}
+func (service *Management) CreateRole(ctx context.Context, value contract.Role) (contract.Role, error) {
+	return service.zig.CreateRole(ctx, value)
+}
+func (service *Management) UpdateRole(ctx context.Context, value contract.Role) (contract.Role, error) {
+	return service.zig.UpdateRole(ctx, value)
+}
+func (service *Management) DeleteRole(ctx context.Context, name string) error {
+	return service.zig.DeleteRole(ctx, name)
+}
+func (service *Management) AssumeRole(ctx context.Context, request contract.AssumeRoleRequest) (contract.AssumeRoleResponse, error) {
+	return service.zig.AssumeRole(ctx, request)
+}
+func (service *Management) ListRoleSessions(ctx context.Context) (contract.RoleSessionList, error) {
+	return service.zig.ListRoleSessions(ctx)
+}
+func (service *Management) RevokeRoleSession(ctx context.Context, accessKey string) error {
+	return service.zig.RevokeRoleSession(ctx, accessKey)
 }
 
 func (service *Management) ListUsers(ctx context.Context) (contract.UserList, error) {

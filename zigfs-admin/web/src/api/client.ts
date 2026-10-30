@@ -1,9 +1,14 @@
-export interface ManagedIdentity { name: string; description: string; enabled: boolean; policies: string[]; updated_at: number }
+export interface ManagedIdentity { name: string; description: string; enabled: boolean; policies: string[]; tags_json?: string; updated_at: number }
 export interface ManagedUser extends ManagedIdentity { groups: string[] }
 export interface ManagedGroup extends ManagedIdentity { members: string[] }
 export interface UserWrite { name: string; description: string; enabled: boolean; policies: string[]; groups?: string[]; password?: string }
 export type GroupWrite = Omit<ManagedGroup, 'updated_at'>
 export interface ManagedPolicy { name: string; document: string }
+export interface Organization { id: string; name: string; enabled: boolean; paths?: string[]; members?: string[] }
+export interface Role { id: string; name: string; organization_id?: string; enabled: boolean; max_session_seconds: number; trust_policy: string; policies?: string[]; permissions_boundary?: string; tags_json?: string }
+export interface AssumeRoleRequest { role_id: string; session_name: string; duration_seconds?: number; external_id?: string; source_identity?: string; session_tags_json?: string; transitive_tag_keys_json?: string; session_policy?: string }
+export interface AssumeRoleResponse { access_key: string; secret_key: string; session_token: string; role_id: string; session_name: string; expires_at: number }
+export interface RoleSession { access_key: string; role_id: string; session_name: string; subject_id: string; expires_at: number; revoked: boolean }
 import type {
   AccessKey,
   AccessKeyCreate,
@@ -76,13 +81,28 @@ export function createApiClient() {
         details: {},
       }
       const body = (await response.json().catch(() => fallback)) as ApiErrorBody
+      if (response.status === 401) window.dispatchEvent(new CustomEvent('zigfs:session-expired'))
       throw new ApiError(response.status, body)
+    }
+    if (init.method && init.method !== 'GET' && init.method !== 'HEAD') {
+      window.dispatchEvent(new CustomEvent('zigfs:permissions-changed', { detail: { path, method: init.method } }))
     }
     if (response.status === 204) return undefined as T
     return (await response.json()) as T
   }
 
   return {
+    listOrganizations: async () => (await request<{ items: Organization[] }>('/api/v1/organizations')).items,
+    createOrganization: (value: Organization) => request<Organization>('/api/v1/organizations', { method: 'POST', body: JSON.stringify(value) }),
+    updateOrganization: (value: Organization) => request<Organization>(`/api/v1/organizations/${encodeURIComponent(value.name)}`, { method: 'PATCH', body: JSON.stringify(value) }),
+    deleteOrganization: (name: string) => request<void>(`/api/v1/organizations/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    listRoles: async () => (await request<{ items: Role[] }>('/api/v1/roles')).items,
+    createRole: (value: Role) => request<Role>('/api/v1/roles', { method: 'POST', body: JSON.stringify(value) }),
+    updateRole: (value: Role) => request<Role>(`/api/v1/roles/${encodeURIComponent(value.name)}`, { method: 'PATCH', body: JSON.stringify(value) }),
+    deleteRole: (name: string) => request<void>(`/api/v1/roles/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    assumeRole: (value: AssumeRoleRequest) => request<AssumeRoleResponse>('/api/v1/sts/assume-role', { method: 'POST', body: JSON.stringify(value) }),
+    listRoleSessions: async () => (await request<{ items: RoleSession[] }>('/api/v1/role-sessions')).items,
+    revokeRoleSession: (accessKey: string) => request<void>(`/api/v1/role-sessions/${encodeURIComponent(accessKey)}/revoke`, { method: 'POST' }),
     listUsers: async () => (await request<{ items: ManagedUser[] }>('/api/v1/users')).items,
     getUser: (name: string) => request<ManagedUser>(`/api/v1/users/${encodeURIComponent(name)}`),
     createUser: (value: UserWrite) => request<ManagedUser>('/api/v1/users', { method: 'POST', body: JSON.stringify(value) }),
@@ -120,6 +140,9 @@ export function createApiClient() {
       }),
     deleteBucket: (name: string) =>
       request<void>(`/api/v1/buckets/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    getBucketPolicy: (name: string) => request<{ document: string }>(`/api/v1/buckets/${encodeURIComponent(name)}/policy`),
+    putBucketPolicy: (name: string, document: string) => request<{ document: string }>(`/api/v1/buckets/${encodeURIComponent(name)}/policy`, { method: 'PUT', body: JSON.stringify({ document }) }),
+    deleteBucketPolicy: (name: string) => request<void>(`/api/v1/buckets/${encodeURIComponent(name)}/policy`, { method: 'DELETE' }),
     getBucketConfiguration: (name: string) =>
       request<BucketConfiguration>(`/api/v1/buckets/${encodeURIComponent(name)}/configuration`),
     getBucketUsage: (name: string) =>
@@ -135,7 +158,7 @@ export function createApiClient() {
     },
     updateBucketConfiguration: (
       name: string,
-      update: { versioning?: 'Enabled' | 'Suspended'; access_policy?: 'Private' | 'Readonly' | 'Public'; tags_json?: string; clear_tags?: boolean; encryption?: 'Disabled' | 'Enabled'; max_bytes?: number; max_objects?: number; retention_enabled?: boolean; retention_duration_seconds?: number; retention_mode?: 'GOVERNANCE' | 'COMPLIANCE'; object_locking?: boolean; replication_enabled?: boolean; lifecycle_configuration?: string; clear_lifecycle?: boolean },
+      update: { versioning?: 'Enabled' | 'Suspended'; access_policy?: 'Private' | 'Readonly' | 'Public'; block_public_access?: boolean; tags_json?: string; clear_tags?: boolean; encryption?: 'Disabled' | 'Enabled'; max_bytes?: number; max_objects?: number; retention_enabled?: boolean; retention_duration_seconds?: number; retention_mode?: 'GOVERNANCE' | 'COMPLIANCE'; object_locking?: boolean; replication_enabled?: boolean; lifecycle_configuration?: string; clear_lifecycle?: boolean },
     ) => request<BucketConfiguration>(`/api/v1/buckets/${encodeURIComponent(name)}/configuration`, {
       method: 'PATCH',
       body: JSON.stringify(update),
@@ -179,6 +202,7 @@ export function createApiClient() {
         uploadId?: string
         partNumber?: number
         versionId?: string
+        tagging?: boolean
         copySource?: { bucket: string; key: string; versionId?: string }
       },
     ) => request<PresignObjectResponse>('/api/v1/objects/presign', {
@@ -191,6 +215,7 @@ export function createApiClient() {
         expires_seconds: expiresSeconds,
         ...(options?.uploadId && options.partNumber ? { upload_id: options.uploadId, part_number: options.partNumber } : {}),
         ...(options?.versionId ? { version_id: options.versionId } : {}),
+        ...(options?.tagging ? { tagging: true } : {}),
         ...(options?.copySource ? {
           copy_source_bucket: options.copySource.bucket,
           copy_source_key: options.copySource.key,

@@ -157,9 +157,9 @@ against the actual S3 request. Identity policy endpoints reject Principal and
 NotPrincipal (resource/trust policies), unknown operators and unavailable context
 keys on save. Existing object tags, TLS version, AWS organization/role/session
 context are not yet provided; this is not full AWS/MinIO IAM compatibility.
-When inheritance is off, explicit coarse credential permissions apply, preserving
-legacy key behavior. API defaults inheritance off; both creation dialogs default
-it on. User enabled status is enforced regardless of inheritance.
+When inheritance is off, the parent user and enabled-group permissions still apply;
+the credential policy/coarse bits can only restrict that parent authorization. User
+enabled status is enforced regardless of the setting.
 
 Credential metadata payload V1.3 atomically stores labels, inheritance, expiry,
 and per-key JSON policy with the encrypted credential. V1.0/V1.1 records remain

@@ -23,6 +23,7 @@ import { ApiError, createApiClient } from './api/client'
 import { useLoading } from './components/LoadingProvider'
 import { AccessKeysView } from './features/access-keys/AccessKeysView'
 import { IdentitiesView } from './features/identities/IdentitiesView'
+import { RolesView } from './features/roles/RolesView'
 import { PoliciesView } from './features/policies/PoliciesView'
 import { LoginView } from './features/auth/LoginView'
 import { BucketDetailView } from './features/buckets/BucketDetailView'
@@ -61,6 +62,8 @@ const navigation: Array<{ label: string; items: NavItem[] }> = [
     { view: 'user-groups', label: 'User Groups', icon: UsersRound },
     { view: 'access-keys', label: 'Access Keys', icon: KeyRound },
     { view: 'policies', label: 'Policies', icon: ShieldCheck },
+    { view: 'roles', label: 'Roles', icon: ShieldCheck },
+    { view: 'organizations', label: 'Organizations', icon: UsersRound },
   ] },
   {
     label: '服务状态',
@@ -84,6 +87,8 @@ const viewMeta: Record<View, { section: string; label: string }> = {
   storage: { section: 'System', label: 'Storage' },
   system: { section: 'System', label: 'Runtime' },
   settings: { section: 'Configuration', label: 'Settings' },
+  roles: { section: 'Access Control', label: 'Roles' },
+  organizations: { section: 'Access Control', label: 'Organizations' },
 }
 
 export default function App() {
@@ -129,6 +134,22 @@ export default function App() {
   }, [api])
 
   useEffect(() => {
+    const expire = () => setSession(null)
+    window.addEventListener('zigfs:session-expired', expire)
+    return () => window.removeEventListener('zigfs:session-expired', expire)
+  }, [])
+
+  useEffect(() => {
+    const invalidate = () => {
+      // Feature views own their server state; this event tells them to drop
+      // cached capability/permission data after any mutating API call.
+      window.dispatchEvent(new CustomEvent('zigfs:capabilities-invalidated'))
+    }
+    window.addEventListener('zigfs:permissions-changed', invalidate)
+    return () => window.removeEventListener('zigfs:permissions-changed', invalidate)
+  }, [])
+
+  useEffect(() => {
     const syncRoute = () => setRoute(parseAppRoute(window.location.pathname, window.location.search))
     window.addEventListener('popstate', syncRoute)
     return () => window.removeEventListener('popstate', syncRoute)
@@ -170,6 +191,8 @@ export default function App() {
   const { view, bucket: selectedBucket, prefix: selectedPrefix } = route
   const meta = viewMeta[view]
   const isBucketsActive = view === 'buckets' || view === 'bucket-detail' || view === 'objects'
+  const visibleNavigation = session.is_root ? navigation : navigation.filter(group => group.label !== '服务状态' && group.label !== '配置')
+  const restrictedView = !session.is_root && (view === 'storage' || view === 'system' || view === 'settings')
 
   return (
     <div className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}${mobileSidebarOpen ? ' sidebar-open' : ''}${darkTheme ? ' theme-dark' : ''}`}>
@@ -181,7 +204,7 @@ export default function App() {
           <button className="mobile-close" type="button" aria-label="关闭导航" onClick={() => setMobileSidebarOpen(false)}><X aria-hidden="true" /></button>
         </div>
         <nav aria-label="Primary navigation">
-          {navigation.map((group) => (
+          {visibleNavigation.map((group) => (
             <div className="nav-group" key={group.label}>
               <span className="nav-section-label">{group.label}</span>
               {group.items.map((item) => {
@@ -234,7 +257,7 @@ export default function App() {
             <details className="user-menu">
               <summary aria-label="用户菜单"><span className="user-avatar">{session.username.slice(0, 1).toUpperCase()}</span><span className="user-name">{session.username}</span><ChevronDown className="user-menu-chevron" aria-hidden="true" /></summary>
               <div className="user-menu-popover">
-                <span>当前管理员</span>
+                <span>当前身份</span>
                 <strong>{session.username}</strong>
                 <button type="button" onClick={() => void logout()}>退出登录</button>
               </div>
@@ -259,13 +282,20 @@ export default function App() {
           {view === 'users' && <IdentitiesView key="users" kind="users" api={api} />}
           {view === 'user-groups' && <IdentitiesView key="groups" kind="groups" api={api} />}
           {view === 'policies' && <PoliciesView api={api} />}
-          {view === 'storage' && <StorageView api={api} />}
-          {view === 'system' && <SystemView api={api} />}
-          {view === 'settings' && <SettingsView api={api} />}
+          {view === 'roles' && <RolesView api={api} kind="roles" />}
+          {view === 'organizations' && <RolesView api={api} kind="organizations" />}
+          {restrictedView && <AccessDeniedView />}
+          {!restrictedView && view === 'storage' && <StorageView api={api} />}
+          {!restrictedView && view === 'system' && <SystemView api={api} />}
+          {!restrictedView && view === 'settings' && <SettingsView api={api} />}
         </main>
       </div>
     </div>
   )
+}
+
+function AccessDeniedView() {
+  return <section className="service-state" aria-live="polite"><h1>无权访问</h1><p>当前身份没有该管理页面所需的权限。</p></section>
 }
 
 function ServiceUnavailable({ state, retry }: { state: 'offline' | 'not-ready'; retry: () => void }) {

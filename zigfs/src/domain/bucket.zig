@@ -20,6 +20,7 @@ pub const AccessPolicy = enum(u8) {
     readonly = 1,
     public = 2,
 };
+pub const ObjectOwnership = enum(u8) { bucket_owner_enforced = 0 };
 
 pub const Encryption = enum(u8) {
     disabled = 0,
@@ -45,6 +46,8 @@ pub const Bucket = struct {
     status: Status,
     versioning: Versioning = .unversioned,
     access_policy: AccessPolicy = .private,
+    object_ownership: ObjectOwnership = .bucket_owner_enforced,
+    block_public_access: bool = true,
     tags_json: ?[]u8 = null,
     encryption: Encryption = .disabled,
     quota: Quota = .{},
@@ -141,7 +144,8 @@ test "accept S3 compatible bucket names" {
 
 test "reject invalid bucket syntax" {
     try std.testing.expectError(error.InvalidLength, validateName("ab"));
-    try std.testing.expectError(error.InvalidLength, validateName(&([_]u8{'a'} ** 64)));
+    var oversized: [64]u8 = @splat('a');
+    try std.testing.expectError(error.InvalidLength, validateName(&oversized));
     try std.testing.expectError(error.InvalidCharacter, validateName("project-Assets"));
     try std.testing.expectError(error.InvalidCharacter, validateName("project_assets"));
     try std.testing.expectError(error.InvalidBoundary, validateName("-project"));

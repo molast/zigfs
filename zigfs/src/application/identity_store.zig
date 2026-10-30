@@ -3,41 +3,72 @@ const durable = @import("../metadata/durable.zig");
 const policy_store = @import("policy_store.zig");
 
 pub const User = struct {
+    id: []const u8 = "",
+    auth_version: u64 = 1,
     name: []const u8,
     description: []const u8 = "",
     enabled: bool = true,
     policies: []const []const u8 = &.{},
+    tags_json: ?[]const u8 = null,
     updated_at: i64 = 0,
     password_hash: []const u8 = "",
 };
 pub const Group = struct {
+    id: []const u8 = "",
     name: []const u8,
     description: []const u8 = "",
     enabled: bool = true,
     policies: []const []const u8 = &.{},
+    tags_json: ?[]const u8 = null,
     members: []const []const u8 = &.{},
     updated_at: i64 = 0,
 };
 pub const UserInput = struct {
+    id: []const u8 = "", // Read-only public fields are accepted, never trusted.
+    auth_version: u64 = 0,
+    updated_at: i64 = 0,
     name: []const u8,
     description: []const u8 = "",
     enabled: bool = true,
     policies: []const []const u8 = &.{},
     password: ?[]const u8 = null,
     groups: ?[]const []const u8 = null,
+    tags_json: ?[]const u8 = null,
 };
+pub const UserPatch = struct {
+    expected_updated_at: ?i64 = null,
+    name: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    enabled: ?bool = null,
+    policies: ?[]const []const u8 = null,
+    password: ?[]const u8 = null,
+    groups: ?[]const []const u8 = null,
+    tags_json: ?[]const u8 = null,
+};
+pub const GroupPatch = struct {
+    expected_updated_at: ?i64 = null,
+    name: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    enabled: ?bool = null,
+    policies: ?[]const []const u8 = null,
+    members: ?[]const []const u8 = null,
+    tags_json: ?[]const u8 = null,
+};
+pub const Revision = struct { updated_at: i64 };
 pub const PublicUser = struct {
+    id: []const u8,
     name: []const u8,
     description: []const u8,
     enabled: bool,
     policies: []const []const u8,
     groups: []const []const u8,
+    tags_json: ?[]const u8,
     updated_at: i64,
 };
 pub fn publicUser(a: std.mem.Allocator, user: User, groups: []const Group) !PublicUser {
     var names: std.ArrayList([]const u8) = .empty;
     for (groups) |group| if (contains(group.members, user.name)) try names.append(a, group.name);
-    return .{ .name = user.name, .description = user.description, .enabled = user.enabled, .policies = user.policies, .groups = try names.toOwnedSlice(a), .updated_at = user.updated_at };
+    return .{ .id = user.id, .name = user.name, .description = user.description, .enabled = user.enabled, .policies = user.policies, .groups = try names.toOwnedSlice(a), .tags_json = user.tags_json, .updated_at = user.updated_at };
 }
 pub fn prepareUser(a: std.mem.Allocator, io: std.Io, value: UserInput, old: ?User, now: i64) !User {
     if (old == null and value.password == null) return error.InvalidPassword;
@@ -48,7 +79,7 @@ pub fn prepareUser(a: std.mem.Allocator, io: std.Io, value: UserInput, old: ?Use
         const encoded = try std.crypto.pwhash.argon2.strHash(password, .{ .allocator = a, .params = .interactive_2id }, &buffer, io);
         hash = try a.dupe(u8, encoded);
     }
-    return .{ .name = value.name, .description = value.description, .enabled = value.enabled, .policies = value.policies, .updated_at = now, .password_hash = hash };
+    return .{ .id = if (old) |user| user.id else try newId(a, io), .auth_version = if (old) |user| user.auth_version + @as(u64, if (value.password != null or value.enabled != user.enabled) 1 else 0) else 1, .name = value.name, .description = value.description, .enabled = value.enabled, .policies = value.policies, .tags_json = value.tags_json orelse if (old) |user| user.tags_json else null, .updated_at = now, .password_hash = hash };
 }
 pub fn assignGroups(a: std.mem.Allocator, snapshot: *Snapshot, name: []const u8, names: []const []const u8, now: i64) !void {
     try validateNames(names);
@@ -68,10 +99,39 @@ pub fn assignGroups(a: std.mem.Allocator, snapshot: *Snapshot, name: []const u8,
     snapshot.groups = groups;
 }
 pub const Snapshot = struct {
+    schema_version: u32 = 1,
     users: []const User = &.{},
     groups: []const Group = &.{},
 };
 pub const path = ".zigfs/system/identities.json";
+
+pub fn newId(a: std.mem.Allocator, io: std.Io) ![]const u8 {
+    const uuid = try @import("../common/id.zig").randomV4(io);
+    return a.dupe(u8, &std.fmt.bytesToHex(uuid, .lower));
+}
+
+// Caller holds policy_mutex; return owned documents for an immutable request snapshot.
+pub fn documentsForUser(a: std.mem.Allocator, user: User, snapshot: Snapshot, policies: []const policy_store.Policy) ![][]u8 {
+    if (!user.enabled) return error.UserDisabled;
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(a);
+    try names.appendSlice(a, user.policies);
+    for (snapshot.groups) |group| if (group.enabled and contains(group.members, user.name)) {
+        for (group.policies) |name| if (!contains(names.items, name)) try names.append(a, name);
+    };
+    var docs: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (docs.items) |doc| a.free(doc);
+        docs.deinit(a);
+    }
+    for (names.items) |name| {
+        const index = find(policies, name) orelse return error.PolicyNotFound;
+        const doc = try a.dupe(u8, policies[index].document);
+        errdefer a.free(doc);
+        try docs.append(a, doc);
+    }
+    return docs.toOwnedSlice(a);
+}
 
 pub fn validName(name: []const u8) bool {
     if (name.len == 0 or name.len > 128) return false;
@@ -127,7 +187,34 @@ pub fn load(root: std.Io.Dir, io: std.Io, allocator: std.mem.Allocator) !std.jso
         else => return err,
     };
     defer allocator.free(bytes);
-    return std.json.parseFromSlice(Snapshot, allocator, bytes, .{ .allocate = .alloc_always });
+    var parsed = try std.json.parseFromSlice(Snapshot, allocator, bytes, .{ .allocate = .alloc_always });
+    errdefer parsed.deinit();
+    if (parsed.value.schema_version != 1) return error.InvalidIdentityVersion;
+    const a = parsed.arena.allocator();
+    var migrated = false;
+    const users = try a.dupe(User, parsed.value.users);
+    for (users) |*user| if (user.id.len == 0) {
+        user.id = try newId(a, io);
+        migrated = true;
+    };
+    const groups = try a.dupe(Group, parsed.value.groups);
+    for (groups) |*group| if (group.id.len == 0) {
+        group.id = try newId(a, io);
+        migrated = true;
+    };
+    parsed.value.users = users;
+    parsed.value.groups = groups;
+    for (parsed.value.users, 0..) |left, i| {
+        if (!validName(left.name) or left.id.len == 0) return error.InvalidIdentityReference;
+        for (parsed.value.users[i + 1 ..]) |right| if (std.mem.eql(u8, left.id, right.id) or std.mem.eql(u8, left.name, right.name)) return error.DuplicateIdentity;
+    }
+    for (parsed.value.groups, 0..) |left, i| {
+        if (!validName(left.name) or left.id.len == 0) return error.InvalidIdentityReference;
+        for (left.members) |member| if (find(parsed.value.users, member) == null) return error.OrphanGroupMember;
+        for (parsed.value.groups[i + 1 ..]) |right| if (std.mem.eql(u8, left.id, right.id) or std.mem.eql(u8, left.name, right.name)) return error.DuplicateIdentity;
+    }
+    if (migrated) try save(root, io, allocator, parsed.value);
+    return parsed;
 }
 
 // Uses the request arena; membership removal and user deletion are one atomic snapshot.
@@ -140,7 +227,7 @@ pub fn withoutUser(allocator: std.mem.Allocator, snapshot: Snapshot, name: []con
         for (group.members) |member| if (!std.mem.eql(u8, member, name)) try members.append(allocator, member);
         group.members = try members.toOwnedSlice(allocator);
     }
-    return .{ .users = try users.toOwnedSlice(allocator), .groups = groups };
+    return .{ .schema_version = snapshot.schema_version, .users = try users.toOwnedSlice(allocator), .groups = groups };
 }
 
 test "identities persist membership and policy references with atomic user cleanup" {

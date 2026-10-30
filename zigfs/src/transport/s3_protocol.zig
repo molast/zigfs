@@ -6,6 +6,9 @@ pub const Operation = enum {
     create_bucket,
     head_bucket,
     get_bucket_location,
+    get_bucket_policy,
+    put_bucket_policy,
+    delete_bucket_policy,
     get_bucket_versioning,
     put_bucket_versioning,
     get_bucket_lifecycle,
@@ -18,6 +21,9 @@ pub const Operation = enum {
     list_multipart_uploads,
     put_object,
     get_object,
+    get_object_tagging,
+    put_object_tagging,
+    delete_object_tagging,
     head_object,
     delete_object,
     create_multipart_upload,
@@ -240,6 +246,12 @@ fn classify(
 ) Operation {
     if (bucket == null) return if (method == .GET) .list_buckets else .unsupported;
     if (key == null) {
+        if (queryShape(parameters, "policy") == .empty and parameters.len == 1) return switch (method) {
+            .GET => .get_bucket_policy,
+            .PUT => .put_bucket_policy,
+            .DELETE => .delete_bucket_policy,
+            else => .unsupported,
+        };
         return switch (method) {
             .PUT => if (parameters.len == 0)
                 .create_bucket
@@ -279,6 +291,13 @@ fn classify(
             else => .unsupported,
         };
     }
+    if (key != null and queryShape(parameters, "tagging") == .empty and parameters.len == 1) return switch (method) {
+        .GET => .get_object_tagging,
+        .PUT => .put_object_tagging,
+        .DELETE => .delete_object_tagging,
+        else => .unsupported,
+    };
+
     const uploads = queryShape(parameters, "uploads");
     const upload_id = queryShape(parameters, "uploadId");
     const part_number = queryShape(parameters, "partNumber");
@@ -403,6 +422,8 @@ fn hexValue(character: u8) ?u8 {
 }
 
 pub const ErrorKind = enum {
+    no_such_bucket_policy,
+    malformed_policy,
     access_denied,
     invalid_access_key_id,
     signature_does_not_match,
@@ -452,6 +473,8 @@ pub const ErrorDescriptor = struct {
 
 pub fn describe(kind: ErrorKind) ErrorDescriptor {
     return switch (kind) {
+        .no_such_bucket_policy => .{ .code = "NoSuchBucketPolicy", .message = "The bucket policy does not exist.", .status = .not_found },
+        .malformed_policy => .{ .code = "MalformedPolicy", .message = "The policy document is invalid.", .status = .bad_request },
         .access_denied => .{ .code = "AccessDenied", .message = "Access Denied.", .status = .forbidden },
         .invalid_access_key_id => .{ .code = "InvalidAccessKeyId", .message = "The AWS access key ID you provided does not exist in our records.", .status = .forbidden },
         .signature_does_not_match => .{ .code = "SignatureDoesNotMatch", .message = "The request signature we calculated does not match the signature you provided.", .status = .forbidden },

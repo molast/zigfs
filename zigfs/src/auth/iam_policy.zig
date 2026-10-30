@@ -1,7 +1,24 @@
 const std = @import("std");
 const time = @import("../common/time.zig");
 pub const Entry = struct { key: []const u8, value: []const u8 };
+pub const PolicyKind = enum { identity, resource, trust, key_restriction, session, permission_boundary };
+pub const Explanation = struct {
+    decision: Decision,
+    policy_kind: PolicyKind,
+    matched_document: ?usize = null,
+    matched_statement: ?usize = null,
+    reason: []const u8,
+};
+pub const ValidationLimits = struct {
+    max_document_bytes: usize = 256 * 1024,
+    max_statements: usize = 1024,
+    max_string_bytes: usize = 64 * 1024,
+};
+pub const PrincipalBinding = struct { arn: []const u8, subject_id: []const u8 };
 pub const Context = struct {
+    kind: PolicyKind = .identity,
+    resource_document: ?[]const u8 = null,
+    principal_bindings: []const PrincipalBinding = &.{},
     entries: []const Entry = &.{},
     defer_conditions: bool = false,
     pub fn single(self: Context, key: []const u8) ?[]const u8 {
@@ -21,34 +38,87 @@ pub fn allows(a: std.mem.Allocator, documents: anytype, action: []const u8, reso
     return allowsWithContext(a, documents, action, resource, .{});
 }
 pub fn allowsWithContext(a: std.mem.Allocator, documents: anytype, action: []const u8, resource: []const u8, context: Context) bool {
+    return decisionWithContext(a, documents, action, resource, context) == .allow;
+}
+pub fn validateDocument(a: std.mem.Allocator, document: []const u8, kind: PolicyKind) error{InvalidPolicy}!void {
+    return validateDocumentWithLimits(a, document, kind, .{});
+}
+pub fn validateDocumentWithLimits(a: std.mem.Allocator, document: []const u8, kind: PolicyKind, limits: ValidationLimits) error{InvalidPolicy}!void {
+    if (document.len == 0 or document.len > limits.max_document_bytes) return error.InvalidPolicy;
+    const parsed = std.json.parseFromSlice(std.json.Value, a, document, .{ .duplicate_field_behavior = .@"error", .max_value_len = limits.max_string_bytes }) catch return error.InvalidPolicy;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidPolicy;
+    var fields = parsed.value.object.iterator();
+    while (fields.next()) |field| {
+        if (!std.mem.eql(u8, field.key_ptr.*, "Version") and !std.mem.eql(u8, field.key_ptr.*, "Statement") and !std.mem.eql(u8, field.key_ptr.*, "Id")) return error.InvalidPolicy;
+    }
+    const version = parsed.value.object.get("Version") orelse return error.InvalidPolicy;
+    if (version != .string or !std.mem.eql(u8, version.string, "2012-10-17")) return error.InvalidPolicy;
+    const statements = parsed.value.object.get("Statement") orelse return error.InvalidPolicy;
+    const count = if (statements == .array) statements.array.items.len else if (statements == .object) 1 else return error.InvalidPolicy;
+    // An empty Statement array is a valid deny-all policy and is useful for
+    // revoking an attached policy without deleting its named record.
+    if (count > limits.max_statements) return error.InvalidPolicy;
+    if (statements == .array) {
+        for (statements.array.items) |statement| try validateStatementKind(statement, kind);
+    } else try validateStatementKind(statements, kind);
+}
+pub fn decisionWithContext(a: std.mem.Allocator, documents: anytype, action: []const u8, resource: []const u8, context: Context) Decision {
     var allowed = false;
     for (documents) |document| {
-        const parsed = std.json.parseFromSlice(std.json.Value, a, document, .{}) catch return false;
+        const parsed = std.json.parseFromSlice(std.json.Value, a, document, .{}) catch return .deny;
         defer parsed.deinit();
-        if (parsed.value != .object) return false;
-        const statements = parsed.value.object.get("Statement") orelse return false;
+        if (parsed.value != .object) return .deny;
+        const statements = parsed.value.object.get("Statement") orelse return .deny;
         if (statements == .array) {
             for (statements.array.items) |statement| {
-                const decision = evaluate(a, statement, action, resource, context) catch return false;
-                if (decision == .deny) return false;
+                const decision = evaluate(a, statement, action, resource, context) catch return .deny;
+                if (decision == .deny) return .deny;
                 if (decision == .allow) allowed = true;
             }
         } else if (statements == .object) {
-            const decision = evaluate(a, statements, action, resource, context) catch return false;
-            if (decision == .deny) return false;
+            const decision = evaluate(a, statements, action, resource, context) catch return .deny;
+            if (decision == .deny) return .deny;
             if (decision == .allow) allowed = true;
-        } else return false;
+        } else return .deny;
     }
-    return allowed;
+    return if (allowed) .allow else .none;
 }
-const Decision = enum { none, allow, deny };
+pub const Decision = enum { none, allow, deny };
+pub fn explain(a: std.mem.Allocator, documents: anytype, action: []const u8, resource: []const u8, context: Context) Explanation {
+    var document_index: usize = 0;
+    var allowed_document: ?usize = null;
+    for (documents) |document| {
+        const parsed = std.json.parseFromSlice(std.json.Value, a, document, .{}) catch return .{ .decision = .deny, .policy_kind = context.kind, .reason = "InvalidPolicyDocument" };
+        defer parsed.deinit();
+        if (parsed.value != .object) return .{ .decision = .deny, .policy_kind = context.kind, .reason = "InvalidPolicyDocument" };
+        const statements = parsed.value.object.get("Statement") orelse return .{ .decision = .deny, .policy_kind = context.kind, .reason = "MissingStatement" };
+        const values = if (statements == .array) statements.array.items else &[_]std.json.Value{statements};
+        for (values, 0..) |statement, statement_index| {
+            const result = evaluate(a, statement, action, resource, context) catch return .{ .decision = .deny, .policy_kind = context.kind, .reason = "InvalidStatement" };
+            if (result == .deny) return .{ .decision = .deny, .policy_kind = context.kind, .matched_document = document_index, .matched_statement = statement_index, .reason = "ExplicitDeny" };
+            if (result == .allow and allowed_document == null) allowed_document = document_index;
+        }
+        document_index += 1;
+    }
+    if (allowed_document) |index| return .{ .decision = .allow, .policy_kind = context.kind, .matched_document = index, .reason = "ExplicitAllow" };
+    return .{ .decision = .none, .policy_kind = context.kind, .reason = "NoMatchingAllow" };
+}
 fn evaluate(a: std.mem.Allocator, statement: std.json.Value, action: []const u8, resource: []const u8, ctx: Context) Error!Decision {
-    try validateStatement(statement);
+    try validateStatementKind(statement, ctx.kind);
     const object = statement.object;
+    // Only resource and trust policies carry principals. Key restrictions,
+    // session policies, and permission boundaries use identity-policy syntax
+    // and must not attempt to unwrap a missing Principal field.
+    if (ctx.kind == .resource or ctx.kind == .trust) {
+        const principal = object.get("Principal") orelse object.get("NotPrincipal").?;
+        const matches = principalMatches(principal, ctx);
+        if (matches == object.contains("NotPrincipal")) return .none;
+    }
     const actions = object.get("Action") orelse object.get("NotAction").?;
     const action_match = try patterns(a, actions, action, .{}, true);
     if (action_match == object.contains("NotAction")) return .none;
-    const resources = object.get("Resource") orelse object.get("NotResource") orelse return .none;
+    const resources = object.get("Resource") orelse object.get("NotResource") orelse std.json.Value{ .string = "*" };
     const resource_match = try patterns(a, resources, resource, ctx, false);
     if (resource_match == object.contains("NotResource")) return .none;
     if (object.get("Condition")) |conditions| {
@@ -62,9 +132,23 @@ fn evaluate(a: std.mem.Allocator, statement: std.json.Value, action: []const u8,
 // These are identity policies. Principal belongs to resource/trust policies and
 // is rejected when saving instead of being silently treated as an identity grant.
 pub fn validateStatement(statement: std.json.Value) error{InvalidPolicy}!void {
+    return validateStatementKind(statement, .identity);
+}
+pub fn validateStatementKind(statement: std.json.Value, kind: PolicyKind) error{InvalidPolicy}!void {
     if (statement != .object) return error.InvalidPolicy;
     const o = statement.object;
-    if (o.contains("Principal") or o.contains("NotPrincipal")) return error.InvalidPolicy;
+    var fields = o.iterator();
+    while (fields.next()) |field| {
+        const key = field.key_ptr.*;
+        if (!std.mem.eql(u8, key, "Sid") and !std.mem.eql(u8, key, "Effect") and !std.mem.eql(u8, key, "Action") and !std.mem.eql(u8, key, "NotAction") and !std.mem.eql(u8, key, "Resource") and !std.mem.eql(u8, key, "NotResource") and !std.mem.eql(u8, key, "Principal") and !std.mem.eql(u8, key, "NotPrincipal") and !std.mem.eql(u8, key, "Condition")) return error.InvalidPolicy;
+    }
+    if (o.get("Sid")) |sid| if (sid != .string or sid.string.len == 0 or sid.string.len > 128) return error.InvalidPolicy;
+    if (kind == .identity or kind == .key_restriction or kind == .session or kind == .permission_boundary) {
+        if (o.contains("Principal") or o.contains("NotPrincipal")) return error.InvalidPolicy;
+    } else {
+        if (o.contains("Principal") == o.contains("NotPrincipal")) return error.InvalidPolicy;
+        try validatePrincipal(o.get("Principal") orelse o.get("NotPrincipal").?);
+    }
     const effect = o.get("Effect") orelse return error.InvalidPolicy;
     if (effect != .string or (!std.mem.eql(u8, effect.string, "Allow") and !std.mem.eql(u8, effect.string, "Deny"))) return error.InvalidPolicy;
     if (o.contains("Action") == o.contains("NotAction")) return error.InvalidPolicy;
@@ -89,6 +173,34 @@ pub fn validateStatement(statement: std.json.Value) error{InvalidPolicy}!void {
         }
     }
 }
+fn validatePrincipal(value: std.json.Value) error{InvalidPolicy}!void {
+    if (value == .string) {
+        if (!std.mem.eql(u8, value.string, "*")) return error.InvalidPolicy;
+        return;
+    }
+    if (value != .object or value.object.count() != 1) return error.InvalidPolicy;
+    const aws = value.object.get("AWS") orelse return error.InvalidPolicy;
+    if (!strings(aws)) return error.InvalidPolicy;
+}
+fn principalMatches(value: std.json.Value, ctx: Context) bool {
+    if (value == .object) return principalMatches(value.object.get("AWS").?, ctx);
+    if (value == .array) {
+        for (value.array.items) |item| if (principalMatches(item, ctx)) return true;
+        return false;
+    }
+    if (value != .string) return false;
+    if (std.mem.eql(u8, value.string, "*")) return true;
+    for (ctx.principal_bindings) |binding| if (std.mem.eql(u8, binding.arn, value.string)) {
+        return std.mem.eql(u8, binding.subject_id, ctx.single("aws:userid") orelse return false);
+    };
+    if (ctx.single("aws:PrincipalArn")) |arn| if (std.mem.eql(u8, arn, value.string)) return true;
+    if (ctx.single("aws:PrincipalAccount")) |account| {
+        if (std.mem.eql(u8, account, value.string)) return true;
+        if (std.mem.startsWith(u8, value.string, "arn:aws:iam::") and std.mem.endsWith(u8, value.string, ":root") and std.mem.eql(u8, value.string[13 .. value.string.len - 5], account)) return true;
+    }
+    return false;
+}
+
 fn strings(value: std.json.Value) bool {
     if (value == .string) return value.string.len > 0;
     if (value != .array or value.array.items.len == 0) return false;
@@ -96,9 +208,9 @@ fn strings(value: std.json.Value) bool {
     return true;
 }
 pub fn supportedKey(key: []const u8) bool {
-    const keys = [_][]const u8{ "aws:username", "aws:userid", "aws:PrincipalType", "aws:SourceIp", "aws:SecureTransport", "aws:CurrentTime", "aws:EpochTime", "aws:UserAgent", "aws:Referer", "aws:RequestedRegion", "s3:authType", "s3:signatureversion", "s3:signatureAge", "s3:prefix", "s3:delimiter", "s3:max-keys", "s3:versionid", "s3:x-amz-copy-source", "s3:x-amz-metadata-directive", "s3:x-amz-content-sha256", "s3:x-amz-acl", "s3:x-amz-server-side-encryption", "s3:x-amz-server-side-encryption-aws-kms-key-id", "s3:x-amz-storage-class", "s3:x-amz-grant-read", "s3:x-amz-grant-write", "s3:x-amz-grant-full-control", "s3:RequestObjectTagKeys" };
+    const keys = [_][]const u8{ "aws:username", "aws:userid", "aws:PrincipalArn", "aws:PrincipalAccount", "aws:PrincipalType", "aws:PrincipalOrgID", "aws:PrincipalOrgPaths", "aws:SourceIp", "aws:SecureTransport", "aws:CurrentTime", "aws:EpochTime", "aws:TokenIssueTime", "aws:UserAgent", "aws:Referer", "aws:RequestedRegion", "sts:ExternalId", "sts:SourceIdentity", "sts:TransitiveTagKeys", "s3:authType", "s3:signatureversion", "s3:signatureAge", "s3:prefix", "s3:delimiter", "s3:max-keys", "s3:versionid", "s3:x-amz-copy-source", "s3:x-amz-metadata-directive", "s3:x-amz-content-sha256", "s3:x-amz-acl", "s3:x-amz-server-side-encryption", "s3:x-amz-server-side-encryption-aws-kms-key-id", "s3:x-amz-storage-class", "s3:x-amz-grant-read", "s3:x-amz-grant-write", "s3:x-amz-grant-full-control", "s3:RequestObjectTagKeys" };
     for (keys) |known| if (std.ascii.eqlIgnoreCase(key, known)) return true;
-    return std.ascii.startsWithIgnoreCase(key, "s3:RequestObjectTag/") and key.len > "s3:RequestObjectTag/".len;
+    return (std.ascii.startsWithIgnoreCase(key, "s3:RequestObjectTag/") and key.len > "s3:RequestObjectTag/".len) or (std.ascii.startsWithIgnoreCase(key, "s3:ExistingObjectTag/") and key.len > "s3:ExistingObjectTag/".len) or (std.ascii.startsWithIgnoreCase(key, "aws:ResourceTag/") and key.len > "aws:ResourceTag/".len) or (std.ascii.startsWithIgnoreCase(key, "aws:PrincipalTag/") and key.len > "aws:PrincipalTag/".len);
 }
 fn parseOperator(raw: []const u8) error{InvalidPolicy}!Operator {
     var op: Operator = .{ .name = raw };
@@ -114,7 +226,7 @@ fn parseOperator(raw: []const u8) error{InvalidPolicy}!Operator {
         op.if_exists = true;
         op.name = op.name[0 .. op.name.len - 8];
     }
-    const names = [_][]const u8{ "StringEquals", "StringNotEquals", "StringEqualsIgnoreCase", "StringNotEqualsIgnoreCase", "StringLike", "StringNotLike", "ArnEquals", "ArnNotEquals", "ArnLike", "ArnNotLike", "NumericEquals", "NumericNotEquals", "NumericLessThan", "NumericLessThanEquals", "NumericGreaterThan", "NumericGreaterThanEquals", "DateEquals", "DateNotEquals", "DateLessThan", "DateLessThanEquals", "DateGreaterThan", "DateGreaterThanEquals", "Bool", "Null", "IpAddress", "NotIpAddress", "BinaryEquals" };
+    const names = [_][]const u8{ "StringEquals", "StringNotEquals", "StringEqualsIgnoreCase", "StringNotEqualsIgnoreCase", "StringLike", "StringNotLike", "StringLikeIgnoreCase", "StringNotLikeIgnoreCase", "ArnEquals", "ArnNotEquals", "ArnLike", "ArnNotLike", "NumericEquals", "NumericNotEquals", "NumericLessThan", "NumericLessThanEquals", "NumericGreaterThan", "NumericGreaterThanEquals", "DateEquals", "DateNotEquals", "DateLessThan", "DateLessThanEquals", "DateGreaterThan", "DateGreaterThanEquals", "Bool", "Null", "IpAddress", "NotIpAddress", "BinaryEquals" };
     var known = false;
     for (names) |name| if (std.mem.eql(u8, op.name, name)) {
         known = true;
@@ -155,6 +267,7 @@ fn validateScalar(op: Operator, v: std.json.Value) error{InvalidPolicy}!void {
     if (std.mem.startsWith(u8, op.name, "Numeric") or std.mem.startsWith(u8, op.name, "Date")) {
         _ = try number(raw, std.mem.startsWith(u8, op.name, "Date"));
     }
+    if (std.mem.startsWith(u8, op.name, "Arn")) try validateArn(raw);
     if (std.mem.endsWith(u8, op.name, "IpAddress")) {
         var parts = std.mem.splitScalar(u8, raw, '/');
         const address = parts.next().?;
@@ -164,6 +277,16 @@ fn validateScalar(op: Operator, v: std.json.Value) error{InvalidPolicy}!void {
         _ = std.base64.standard.Decoder.calcSizeForSlice(raw) catch return error.InvalidPolicy;
         for (raw) |c| if (!(std.ascii.isAlphanumeric(c) or c == '+' or c == '/' or c == '=')) return error.InvalidPolicy;
     }
+}
+fn validateArn(value: []const u8) error{InvalidPolicy}!void {
+    if (value.len < 8 or !std.mem.startsWith(u8, value, "arn:")) return error.InvalidPolicy;
+    var parts = std.mem.splitScalar(u8, value, ':');
+    if (!std.mem.eql(u8, parts.next() orelse "", "arn")) return error.InvalidPolicy;
+    _ = parts.next() orelse return error.InvalidPolicy;
+    _ = parts.next() orelse return error.InvalidPolicy;
+    _ = parts.next() orelse return error.InvalidPolicy;
+    _ = parts.next() orelse return error.InvalidPolicy;
+    _ = parts.next() orelse return error.InvalidPolicy;
 }
 fn conditionMatches(a: std.mem.Allocator, conditions: std.json.Value, ctx: Context) Error!bool {
     var operators = conditions.object.iterator();
@@ -203,11 +326,11 @@ fn expectedMatches(a: std.mem.Allocator, op: Operator, expected: std.json.Value,
 fn compare(a: std.mem.Allocator, op: Operator, value: std.json.Value, actual: []const u8, ctx: Context) Error!bool {
     const raw = try scalar(a, value);
     defer a.free(raw);
-    const pattern = std.mem.indexOf(u8, op.name, "Like") != null or std.mem.startsWith(u8, op.name, "Arn");
+    const pattern = std.mem.indexOf(u8, op.name, "Like") != null;
     const expanded = try expand(a, raw, ctx, pattern) orelse return error.InvalidPolicy;
     defer a.free(expanded);
     if (std.mem.startsWith(u8, op.name, "String") or std.mem.startsWith(u8, op.name, "Arn")) {
-        if (pattern) return wildcard(expanded, actual, false);
+        if (pattern) return wildcard(expanded, actual, std.mem.endsWith(u8, op.name, "IgnoreCase"));
         return if (std.mem.endsWith(u8, op.name, "IgnoreCase")) std.ascii.eqlIgnoreCase(expanded, actual) else std.mem.eql(u8, expanded, actual);
     }
     if (std.mem.eql(u8, op.name, "Bool")) return std.mem.eql(u8, expanded, actual);
@@ -233,7 +356,8 @@ fn compare(a: std.mem.Allocator, op: Operator, value: std.json.Value, actual: []
 }
 fn number(value: []const u8, date: bool) error{InvalidPolicy}!f64 {
     if (date and std.mem.indexOfScalar(u8, value, 'T') != null) {
-        if (value.len < 20) return error.InvalidPolicy;
+        if (value.len < 20 or value[4] != '-' or value[7] != '-' or value[10] != 'T' or value[13] != ':' or value[16] != ':') return error.InvalidPolicy;
+        for ([_]usize{ 0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18 }) |i| if (!std.ascii.isDigit(value[i])) return error.InvalidPolicy;
         var utc: [20]u8 = undefined;
         @memcpy(utc[0..19], value[0..19]);
         utc[19] = 'Z';
@@ -244,7 +368,7 @@ fn number(value: []const u8, date: bool) error{InvalidPolicy}!f64 {
             end += 1;
             const start = end;
             while (end < value.len and std.ascii.isDigit(value[end])) : (end += 1) {}
-            if (end == start) return error.InvalidPolicy;
+            if (end == start or end - start > 9) return error.InvalidPolicy;
             fraction = std.fmt.parseFloat(f64, value[start - 1 .. end]) catch return error.InvalidPolicy;
         }
         const suffix = value[end..];

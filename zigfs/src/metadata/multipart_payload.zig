@@ -247,8 +247,8 @@ fn testValue() Value {
         .parts = &.{.{
             .number = 1,
             .size = 11,
-            .etag_md5 = .{1} ** 16,
-            .checksum_sha256 = .{2} ** 32,
+            .etag_md5 = @as([16]u8, @splat(1)),
+            .checksum_sha256 = @as([32]u8, @splat(2)),
             .data_generation = .{ 2, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 },
             .last_modified_unix_seconds = 1_800_000_001,
         }},

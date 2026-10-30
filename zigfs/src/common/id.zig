@@ -20,7 +20,7 @@ test "uuid v4 sets version and variant" {
 }
 
 test "uuid v4 validation rejects invalid version and variant" {
-    var value = [_]u8{0} ** 16;
+    var value = @as([16]u8, @splat(0));
     value[6] = 0x40;
     value[8] = 0x80;
     try std.testing.expect(isValidV4(value));

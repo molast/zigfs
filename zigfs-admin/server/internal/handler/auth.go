@@ -27,6 +27,7 @@ func NewAuth(service AuthService) *Auth {
 }
 
 func (handler *Auth) Login(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
 	var request contract.LoginRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
 		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "username and password are required")
@@ -37,7 +38,7 @@ func (handler *Auth) Login(ctx *gin.Context) {
 	if err != nil {
 		var statusError *port.StatusError
 		if errors.As(err, &statusError) && statusError.StatusCode == http.StatusUnauthorized {
-			writeError(ctx, http.StatusUnauthorized, "Unauthorized", "invalid administrator username or password")
+			writeError(ctx, http.StatusUnauthorized, "Unauthorized", "invalid username or password")
 			return
 		}
 		writeError(ctx, http.StatusServiceUnavailable, "StorageOffline", "ZigFS authentication is unavailable")
@@ -53,23 +54,27 @@ func (handler *Auth) Login(ctx *gin.Context) {
 	ctx.SetCookie(middleware.AdminSessionCookie, response.Token, maxAge, "/api", "", false, true)
 	ctx.JSON(http.StatusOK, contract.SessionResponse{
 		Authenticated: true,
+		SubjectID:     response.SubjectID,
+		IsRoot:        response.IsRoot,
 		Username:      response.Username,
 		ExpiresAt:     response.ExpiresAt,
 	})
 }
 
 func (handler *Auth) Logout(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
 	ctx.SetSameSite(http.SameSiteStrictMode)
 	ctx.SetCookie(middleware.AdminSessionCookie, "", -1, "/api", "", false, true)
 	ctx.Status(http.StatusNoContent)
 }
 
 func (handler *Auth) Session(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
 	response, err := handler.service.Session(ctx.Request.Context())
 	if err != nil {
 		var statusError *port.StatusError
 		if errors.As(err, &statusError) && statusError.StatusCode == http.StatusUnauthorized {
-			writeError(ctx, http.StatusUnauthorized, "Unauthorized", "administrator session has expired")
+			writeError(ctx, http.StatusUnauthorized, "Unauthorized", "session has expired")
 			return
 		}
 		writeError(ctx, http.StatusServiceUnavailable, "StorageOffline", "ZigFS authentication is unavailable")

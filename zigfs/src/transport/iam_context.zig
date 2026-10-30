@@ -6,11 +6,22 @@ const time = @import("../common/time.zig");
 
 // All strings are copied into the request arena before a body read can reuse
 // HTTP's head buffer. SourceIp comes from the accepted socket, never headers.
-pub fn build(a: std.mem.Allocator, owner: []const u8, headers: []const sigv4.Header, parsed: protocol.ParsedTarget, peer: std.Io.net.IpAddress, now: i64, auth_type: []const u8, signed_at: ?i64, region: []const u8) !iam.Context {
+pub fn build(a: std.mem.Allocator, owner: []const u8, headers: []const sigv4.Header, parsed: protocol.ParsedTarget, peer: std.Io.net.IpAddress, now: i64, auth_type: []const u8, signed_at: ?i64, region: []const u8, subject_id: ?[]const u8) !iam.Context {
     var entries: std.ArrayList(iam.Entry) = .empty;
-    try add(a, &entries, "aws:username", if (std.mem.startsWith(u8, owner, "user:")) owner[5..] else owner);
-    try add(a, &entries, "aws:userid", owner);
-    try add(a, &entries, "aws:PrincipalType", if (std.mem.startsWith(u8, owner, "user:")) "User" else "Account");
+    if (owner.len > 0) {
+        try add(a, &entries, "aws:username", if (std.mem.startsWith(u8, owner, "user:")) owner[5..] else owner);
+        try add(a, &entries, "aws:userid", subject_id orelse owner);
+        try add(a, &entries, "aws:PrincipalAccount", @import("../application/resource_policy_store.zig").account_id);
+        const arn = if (std.mem.startsWith(u8, owner, "role:")) blk: {
+            const role_suffix = owner["role:".len..];
+            const role_name = role_suffix[0 .. (std.mem.indexOfScalar(u8, role_suffix, ':') orelse role_suffix.len)];
+            break :blk try std.fmt.allocPrint(a, "arn:aws:iam::{s}:role/{s}", .{ @import("../application/resource_policy_store.zig").account_id, role_name });
+        } else if (subject_id != null) try std.fmt.allocPrint(a, "arn:aws:iam::{s}:user/{s}", .{ @import("../application/resource_policy_store.zig").account_id, owner[5..] }) else "arn:aws:iam::" ++ @import("../application/resource_policy_store.zig").account_id ++ ":root";
+        try add(a, &entries, "aws:PrincipalArn", arn);
+        try add(a, &entries, "aws:PrincipalType", if (std.mem.startsWith(u8, owner, "role:")) "Role" else if (std.mem.startsWith(u8, owner, "user:")) "User" else "Account");
+    } else {
+        try add(a, &entries, "aws:PrincipalAccount", "anonymous");
+    }
     try add(a, &entries, "aws:SecureTransport", "false"); // Listener is HTTP; no trusted proxy/TLS assertion exists.
     try add(a, &entries, "aws:RequestedRegion", region);
     const address = try std.fmt.allocPrint(a, "{f}", .{peer});
@@ -20,7 +31,7 @@ pub fn build(a: std.mem.Allocator, owner: []const u8, headers: []const sigv4.Hea
     try add(a, &entries, "aws:CurrentTime", try time.formatIso8601(now, &date));
     try add(a, &entries, "aws:EpochTime", try std.fmt.allocPrint(a, "{d}", .{now}));
     try add(a, &entries, "s3:authType", auth_type);
-    try add(a, &entries, "s3:signatureversion", "AWS4-HMAC-SHA256");
+    if (owner.len > 0) try add(a, &entries, "s3:signatureversion", "AWS4-HMAC-SHA256");
     if (signed_at) |stamp| try add(a, &entries, "s3:signatureAge", try std.fmt.allocPrint(a, "{d}", .{@max(0, now - stamp) * 1000}));
     for (headers) |header| {
         if (std.ascii.eqlIgnoreCase(header.name, "user-agent")) try add(a, &entries, "aws:UserAgent", header.value);
@@ -43,6 +54,7 @@ pub fn build(a: std.mem.Allocator, owner: []const u8, headers: []const sigv4.Hea
     }
     return .{ .entries = try entries.toOwnedSlice(a) };
 }
+
 pub fn add(a: std.mem.Allocator, entries: *std.ArrayList(iam.Entry), key: []const u8, value: []const u8) !void {
     try entries.append(a, .{ .key = try a.dupe(u8, key), .value = try a.dupe(u8, value) });
 }

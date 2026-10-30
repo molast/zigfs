@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "zig-0-17": {
+      "source": "zigcc/skills",
+      "sourceType": "github",
+      "skillPath": "zig-0-17/SKILL.md",
+      "computedHash": "874c9ce64aa4c908c9f66b1df98e110d23e79de09c04a4fb14f42ffd1f2015b4"
+    },
+    "tiger-style": {
+      "source": "M64GitHub/tiger-style",
+      "sourceType": "github",
+      "skillPath": "tiger-style/SKILL.md",
+      "computedHash": "bba9ac7784d8fb4f90a5cd08dbc47be7a102c89e1a55b651e8574f684342172f"
+    }
+  }
+}

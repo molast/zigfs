@@ -44,7 +44,7 @@ pub fn loadOrCreate(root: std.Io.Dir, io: std.Io) Error!MasterKey {
 }
 
 pub fn encode(key: secret_box.Key) [encoded_length]u8 {
-    var bytes = [_]u8{0} ** encoded_length;
+    var bytes = @as([encoded_length]u8, @splat(0));
     @memcpy(bytes[0..magic.len], &magic);
     std.mem.writeInt(u16, bytes[4..6], major_version, .little);
     std.mem.writeInt(u16, bytes[6..8], minor_version, .little);

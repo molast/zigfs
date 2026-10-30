@@ -99,7 +99,7 @@ test "repository payload rejects malformed keys" {
     try std.testing.expectError(error.InvalidKey, encode(std.testing.allocator, "", "data"));
     try std.testing.expectError(error.InvalidKey, encode(std.testing.allocator, "a\x00b", "data"));
 
-    var invalid = [_]u8{0} ** header_length;
+    var invalid = @as([header_length]u8, @splat(0));
     @memcpy(invalid[0..magic.len], &magic);
     try std.testing.expectError(error.InvalidKey, decode(&invalid));
 }

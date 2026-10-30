@@ -40,7 +40,7 @@ pub fn parse(value: []const u8) ?Parsed {
 }
 
 test "record key supports the full S3 object key length" {
-    const key = [_]u8{'k'} ** object_domain.max_key_length;
+    const key = @as([object_domain.max_key_length]u8, @splat('k'));
     const encoded = try encode(std.testing.allocator, "project-assets", &key);
     defer std.testing.allocator.free(encoded);
     const parsed = parse(encoded).?;

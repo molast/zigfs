@@ -52,9 +52,9 @@ Header、Query、权限模型或高级存储语义。参数级细节以兼容矩
 | `GetBucketLocation` | `GET /{bucket}?location` | `Implemented` | 返回 ZigFS 配置的 Region。 |
 | `GetBucketAcl` | `GET /{bucket}?acl` | `Not Implemented` | V1 使用 ZigFS Owner/Policy，不提供 S3 ACL 文档模型。 |
 | `PutBucketAcl` | `PUT /{bucket}?acl` | `Not Implemented` | 同上。 |
-| `GetBucketPolicy` | `GET /{bucket}?policy` | `Not Implemented` | 不提供 S3 Bucket Policy 资源。 |
-| `PutBucketPolicy` | `PUT /{bucket}?policy` | `Not Implemented` | 不提供 S3 Bucket Policy 写入。 |
-| `DeleteBucketPolicy` | `DELETE /{bucket}?policy` | `Not Implemented` | 不提供 S3 Bucket Policy 删除。 |
+| `GetBucketPolicy` | `GET /{bucket}?policy` | `Partial` | 支持 ZigFS Bucket Policy 文档读取；完整 AWS ACL/PolicyStatus 语义仍未实现。 |
+| `PutBucketPolicy` | `PUT /{bucket}?policy` | `Partial` | 支持文档校验、持久化和基础 Principal/Resource 授权；完整 AWS 资源策略语义仍未实现。 |
+| `DeleteBucketPolicy` | `DELETE /{bucket}?policy` | `Partial` | 支持策略删除和授权；完整 AWS 公共访问/ACL 语义仍未实现。 |
 | `GetBucketPolicyStatus` | `GET /{bucket}?policyStatus` | `Out of Scope` | 依赖 S3 公共访问策略模型。 |
 
 ### Bucket 配置与云集成

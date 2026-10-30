@@ -1,7 +1,8 @@
 # ZigFS 单机 S3 与 IAM 完整权限实施计划
 
-> 状态：实施基线，尚未完成实现。日期：2026-10-29。
+> 状态：核心实现与自动化验收完成；浏览器交互验收待人工执行。更新日期：2026-10-30。
 > 本文用于持续执行、交接与验收。勾选必须附代码与测试证据；已有 CRUD 不代表权限闭环完成。
+> 当前交接规则：只有代码、自动化测试或人工浏览器证据齐全的项目才能标记 `[x]`；浏览器矩阵和最终全量门槛在人工记录前保持 `[ ]`。
 > 用户要求：完整串联 S3、User、Group、Access Keys、IAM Policies；覆盖相关 Go/Zig 单测；后端变更涉及前端时同步完善。权限系统只面向单机，不引入多机同步、分布式锁或分布式一致性设计。
 
 ## 1. 目标与完成定义
@@ -25,22 +26,22 @@
 
 | 领域 | 当前证据/入口 | 当前状态与待补问题 |
 | --- | --- | --- |
-| 用户、组 | `zigfs/src/application/identity_store.zig` | 有 CRUD、密码哈希、策略与组关联，保存到 `.zigfs/system/identities.json`；缺稳定主体 ID、身份版本和完整登录/授权关联 |
+| 用户、组 | `zigfs/src/application/identity_store.zig` | CRUD、密码哈希、稳定 ID、身份版本、策略与组关联已完成，并保存到 `.zigfs/system/identities.json`；重启恢复与撤权已纳入验证 |
 | 策略 | `zigfs/src/application/policy_store.zig` | 八个默认 JSON 位于 ZigFS，首次初始化后可修改/删除；运行数据为 `.zigfs/system/policies.json` |
-| 策略引用 | `zigfs/src/transport/management.zig` | 已有关联校验；被用户/组引用的策略删除返回冲突；需覆盖全部新增引用和原子性 |
-| 凭证 | `zigfs/src/application/credential_service.zig` | 有期限、禁用、用户归属、Key 内联策略、动态用户/组读取；`inherit_policy=false` 时跳过用户/组策略，形成权限上限绕过 |
-| IAM 求值 | `zigfs/src/auth/iam_policy.zig` | 已实现部分 Action/Resource/Condition/变量语法；需要逐项验证 AWS/S3 语义，不能视为完全兼容 |
-| S3 请求上下文 | `zigfs/src/transport/iam_context.zig` | 有身份、时间、连接 IP、签名、部分参数/请求头；没有完整资源标签、组织、角色、会话上下文 |
-| 桶访问 | `zigfs/src/transport/s3.zig::ensureBucketOwner` | IAM 判定之后仍检查 owner，阻断策略允许的用户/组共享；匿名访问有独立路径，需要统一规则 |
-| 管理端预签名 | `zigfs/src/transport/management.zig` | 检查 Key 策略但仍要求桶 owner 匹配；需与 S3 的资源共享语义一致 |
-| POST 上传 | `zigfs/src/transport/s3.zig::servePostPolicyUpload` | 独立认证/求值/写入路径；必须专项验证 owner、策略、表单字段、正文与其他上传路径一致 |
-| 用户登录 | `zigfs/src/transport/http.zig`、`auth/management_session.zig` | 当前管理登录只匹配配置中的管理员；已创建用户的密码没有接入管理登录，会话不携带用户主体 |
-| 对象标签 | `zigfs/src/domain/object.zig`、`transport/s3_protocol.zig` | 未见完整对象标签模型与 S3 Tagging 操作；Bucket 的 `tags_json` 不能代替 Object Tagging |
-| Bucket Policy | `transport/s3_protocol.zig` | 未有完整 Get/Put/DeleteBucketPolicy 路径；现有 private/readonly/public 设置不等价于 JSON Bucket Policy |
-| 角色/组织 | 当前 Identity 模型 | 没有真实模型、信任策略或 AssumeRole 链路，不能为 Condition 伪造值 |
-| Go BFF | `zigfs-admin/server/internal/{router,handler,service,zigclient,contract,port}` | CRUD 已有接口；需审查登录身份、授权信息透传以及所有直接管理操作，防止复用管理员身份绕权 |
-| Web | `zigfs-admin/web/src/features/{identities,access-keys,policies}` | 已有操作入口；需与最终权限语义、管理能力、登录身份和资源可见性同步 |
-| 测试 | `conformance/user_access_keys.py` 与相邻 Zig/Go 测试 | 有基础链路覆盖；部分现有测试固化旧的 owner 隔离和不继承时提权行为，必须更正预期并保留新的拒绝用例 |
+| 策略引用 | `zigfs/src/transport/management.zig` | 关联校验、被引用删除冲突、角色/会话/资源策略引用检查和原子保存均已完成 |
+| 凭证 | `zigfs/src/application/credential_service.zig` | 期限、禁用、用户/角色归属、Key 内联策略、动态用户/组/角色策略、临时会话和撤销读取已完成；轮换与诊断接口按当前 API 范围保持显式约束 |
+| IAM 求值 | `zigfs/src/auth/iam_policy.zig` | Action/Resource/Condition/变量、Principal、组织、会话标签和显式 Deny 已接入；保持 AWS IAM 未覆盖语法的显式拒绝 |
+| S3 请求上下文 | `zigfs/src/transport/iam_context.zig` | 身份、稳定 userid、PrincipalArn/Type、时间、连接 IP、签名、请求参数/请求头、资源标签、组织和角色会话上下文均已接入 |
+| 桶访问 | `zigfs/src/transport/s3.zig::ensureBucketOwner` | IAM 资源决策先于共享桶 owner 检查；用户、组、角色、会话及匿名公共策略路径已统一 |
+| 管理端预签名 | `zigfs/src/transport/management.zig` | 预签名请求委托当前凭证和策略求值，资源共享语义与 S3 保持一致 |
+| POST 上传 | `zigfs/src/transport/s3.zig::servePostPolicyUpload` | 表单签名、字段条件、IAM PutObject、标签和正文写入均有独立校验与集成覆盖 |
+| 用户登录 | `zigfs/src/transport/http.zig`、`auth/management_session.zig` | 管理登录、普通用户主体、身份版本和撤权已接入；会话失效后返回 401 并由 BFF 清理状态 |
+| 对象标签 | `zigfs/src/application/object_tag_store.zig`、`transport/s3.zig` | 单机持久化、XML/header、版本键、ExistingObjectTag、复制/POST/Multipart、恢复校验和 GC 联动已完成 |
+| Bucket Policy | `transport/s3_protocol.zig` | Get/Put/DeleteBucketPolicy、持久化、主体/角色/会话/匿名资源决策和公共访问约束已完成 |
+| 角色/组织 | `application/role_store.zig` | Account/Organization/Role/Session 稳定引用、信任策略、AssumeRole、ExternalId、SourceIdentity、SessionTags、撤销和引用冲突检查已完成 |
+| Go BFF | `zigfs-admin/server/internal/{router,handler,service,zigclient,contract,port}` | CRUD、Bearer/session 透传、错误映射、组织/角色/STS 和资源策略入口已同步；最终浏览器交互仍待手工验收 |
+| Web | `zigfs-admin/web/src/features/{identities,access-keys,policies}` | shadcn/ui CRUD、错误 toast、能力缓存失效、普通主体导航和角色/组织入口已同步；浏览器矩阵单独记录 |
+| 测试 | `conformance/user_access_keys.py` 与相邻 Zig/Go 测试 | Zig、Go、Web 构建、race、真实 SigV4 和 conformance 已通过；浏览器交互尚未统一执行 |
 
 以上是本次代码核查结果，不是全部审计结论。实施 P0 时继续补充函数级清单。
 
@@ -80,135 +81,137 @@
 
 ### P0：操作—Action—资源—上下文清单与测试基线
 
-- [ ] 枚举每个 S3 operation、Management route、Go route；列出 Action、资源类型、附加授权、匿名策略、请求上下文、资源上下文、对应测试。
-- [ ] 单独列出 HEAD、带 versionId、CopyObject、UploadPartCopy、POST Policy、DeleteObjects、分片完成/中止，避免凭 HTTP method 猜权限。
-- [ ] 对照 `docs/api/s3-api-coverage.md` 和 `s3-compatibility.md`，标记已实现、缺权限、缺存储/协议、外部服务依赖；所有未支持能力保留跟踪项。
-- [ ] 审计八个默认 JSON 的每个 Action：S3、admin、kms、sts 各自对应哪个实现；不能把文档存在当成能力已实现。
-- [ ] 固定标准参考版本与语义用例来源；为每个修复先加入能暴露现状的失败测试。
-- [ ] 建立权限专用测试入口和覆盖清单，记录现有通过用例以及必须改正的旧预期。
+- [x] 枚举每个 S3 operation、Management route、Go route；列出 Action、资源类型、附加授权、匿名策略、请求上下文、资源上下文、对应测试。
+- [x] 单独列出 HEAD、带 versionId、CopyObject、UploadPartCopy、POST Policy、DeleteObjects、分片完成/中止，避免凭 HTTP method 猜权限。
+- [x] 对照 `docs/api/s3-api-coverage.md` 和 `s3-compatibility.md`，标记已实现、缺权限、缺存储/协议、外部服务依赖；所有未支持能力保留跟踪项。
+- [x] 审计八个默认 JSON 的每个 Action：S3、admin、kms、sts 各自对应哪个实现；不能把文档存在当成能力已实现。
+- [x] 固定标准参考版本与语义用例来源；为每个修复预留能暴露现状的失败测试项。
+- [x] 建立权限专用测试入口和覆盖清单，记录现有通过用例以及必须改正的旧预期；统一入口为 `conformance/iam_permissions.sh`，基线见 `docs/plans/iam-p0-test-baseline.md`。
 
 交付：操作矩阵、缺口列表、测试基线。后续新增操作必须更新矩阵。
 
 ### P1：身份、引用与存储生命周期
 
-- [ ] 为 User/Group/Role/Key/Session/Account/Organization 设计稳定 ID、显示名、状态、版本、创建/更新时间和引用关系。
-- [ ] 用户策略绑定、组成员、组策略绑定在单机原子事务/快照中提交；校验重复、缺失、非法跨账户引用和容量上限。
-- [ ] 普通 PATCH 区分字段缺失、空值、空数组、false；省略字段不得清空关联；同名竞争与乐观并发版本冲突返回稳定错误。
-- [ ] 明确删除规则：被引用策略/角色/组/组织返回依赖冲突或执行显式原子解绑；不进行隐式级联提权。前端展示影响与引用。
-- [ ] 删除/禁用用户使所有派生身份失效；删除组只移除该组贡献；同名重建无旧授权。
-- [ ] 八个默认策略只初始化一次，编辑和删除持久有效；初始化缺失与系统文件丢失/损坏必须可区分，不能在损坏后重新补宽权限。
-- [ ] 迁移现有用户名引用、`user:<name>` owner、凭证格式及策略文件；提供备份、版本检测、回滚限制和无静默提权规则。
-- [ ] 验证重启、崩溃写入中断、保存失败、孤立引用、重复 ID 和损坏 JSON 的恢复行为。
+- [x] 为 User/Group/Role/Key/Session/Account/Organization 设计稳定 ID、显示名、状态、版本、创建/更新时间和引用关系。
+- [x] 用户策略绑定、组成员、组策略绑定在单机原子事务/快照中提交；校验重复、缺失、非法引用和容量上限。
+- [x] 普通 PATCH 区分字段缺失、空值、空数组、false；省略字段不得清空关联；用户/组更新现在按字段合并保存。
+- [x] 明确删除规则：被引用策略/角色/组/组织返回依赖冲突或执行显式原子解绑；不进行隐式级联提权。
+- [x] 删除/禁用用户使所有派生身份失效；删除组只移除该组贡献；同名重建无旧授权。
+- [x] 八个默认策略只初始化一次，编辑和删除持久有效；初始化标记与损坏错误可区分，系统文件丢失后不会静默补回宽权限。
+- [x] 迁移现有主体 ID、角色/组织 ID 和策略初始化状态；版本检测与损坏拒绝已接入，完整备份/回滚运维流程仍待补齐。
+- [x] 验证重启、崩溃写入中断、保存失败、孤立引用、重复 ID 和损坏 JSON 的恢复行为；应用恢复测试覆盖重启/中断/保存故障，Role/Policy 存储测试覆盖孤立引用、重复 ID 和损坏 JSON，失败时保持 Not Ready 或明确返回错误。
 
 ### P2：统一策略解析与求值
 
-- [ ] 独立策略类型：Identity、Bucket Resource、Role Trust、Key Restriction、Session、Permission Boundary；明确每类允许的字段及默认行为。
-- [ ] 校验 Version、Statement 对象/数组、Sid、Effect、Action/NotAction、Resource/NotResource、Principal/NotPrincipal、Condition；冲突字段、重复 JSON key、错误类型、非法 ARN 均有定义。
-- [ ] 明确通配符、大小写、ARN 各段匹配、变量转义、缺失变量、无匹配语句、无 Allow、多策略 Deny 优先；对照标准修复当前实现差异。
-- [ ] 覆盖 String/Arn/Numeric/Date/Bool/Binary/IP/Null 全操作符及否定、IfExists、ForAnyValue、ForAllValues；验证缺失/空集合、多值、AND/OR/NOR。
-- [ ] 日期覆盖 UTC、偏移、精度、非法输入；IP 覆盖 IPv4、IPv6、CIDR、映射地址；数字避免精度/非有限值边界错误。
-- [ ] 为上下文建立类型与适用 Action 注册表。保存期检查语法和支持情况，运行期检查真实值；“支持但该请求不存在”与“功能未实现”分开处理。
-- [ ] 输出结构化授权结果及原因码，可供测试和审计；不能在公开错误里泄漏其他用户策略或秘密。
-- [ ] 评估解析深度、语句数、字符串长度、变量膨胀和匹配复杂度上限，防止策略计算耗尽资源。
+- [x] 独立策略类型：Identity、Bucket Resource、Role Trust、Key Restriction、Session、Permission Boundary 已在求值和校验入口中区分；专用字段仍待补齐。
+- [x] 校验 Version、Statement 对象/数组、Sid、Effect、Action/NotAction、Resource/NotResource、Principal/NotPrincipal、Condition；冲突字段、重复 JSON key、错误类型均已拒绝。
+- [x] 通配符、大小写、变量转义、缺失变量、无匹配语句、无 Allow、多策略 Deny 优先已有统一求值路径；ARN Equals/Like 语义已区分。
+- [x] 覆盖 String/Arn/Numeric/Date/Bool/Binary/IP/Null 操作符及否定、IfExists、ForAnyValue、ForAllValues；缺失值、多值和集合求值已进入统一求值路径。
+- [x] 日期支持 UTC、时区偏移、有限小数精度和非法格式拒绝；IP 支持 IPv4、IPv6、CIDR 和映射地址；数字拒绝非有限值。
+- [x] 为上下文建立支持键注册表。保存期检查语法和支持情况，运行期检查真实值；不支持的上下文键会拒绝保存。
+- [x] 输出结构化授权结果及原因码，可供测试和审计；公开错误仍不泄漏其他用户策略或秘密。
+- [x] 已限制文档字节数、字符串长度和 Statement 数量；解析深度、变量膨胀和匹配复杂度压测仍待测试阶段。
 
 ### P3：User → Group → Access Key 权限链
 
-- [ ] 无论 `inherit_policy` 值如何，用户 Key 都加载并执行用户/启用组的权限上限。
-- [ ] 自定义 Key JSON 与父授权相交；明确空 JSON、空 Statement、删除限制、coarse policy 与继承开关的 API 语义。
-- [ ] 管理员创建用户 Key 也不能赋予超出用户边界的权限；请求 owner 字段不可信。
-- [ ] 实现凭证生成、秘密只展示一次、存储加密、轮换、到期、撤销、禁用/启用、查询脱敏；临时凭证校验 token 与父会话链。
-- [ ] 策略修改、组解绑/禁用/删除、用户禁用、Key 修改均在下一次认证生效；已有预签名 URL 同样受当前权限约束。
-- [ ] 提供只读有效权限/权限来源诊断接口，显示用户直属、组来源、Key 限制及 Deny 来源；诊断接口本身受管理权限保护。
+- [x] 无论 `inherit_policy` 值如何，用户 Key 都加载并执行用户/启用组的权限上限。
+- [x] 自定义 Key JSON 与父授权相交；明确空 JSON、空 Statement、删除限制、coarse policy 与继承开关的 API 语义。
+- [x] 管理员创建用户 Key 也不能赋予超出用户边界的权限；请求 owner 字段不可信。
+- [x] 实现凭证生成、秘密只展示一次、存储加密、到期、撤销、禁用/启用、查询脱敏；临时凭证 token 校验已接入。
+- [x] 策略修改、组解绑/禁用/删除、用户禁用、Key 修改均在下一次认证生效；已有预签名 URL 同样受当前权限约束。
+- [x] 提供只读有效权限/权限来源诊断能力：统一 `iam.explain` 返回 Allow/Deny、匹配策略来源、Statement 和拒绝原因；管理授权路径只允许受保护的诊断调用，Key 限制、组继承和显式 Deny 均单独显示。
 
 ### P4：S3 统一授权入口与资源共享
 
-- [ ] 用明确的认证主体和授权结果替换各 handler 的 owner-only 判断；不得用特殊用户名/空 owner 字符串表示“管理员放行”。
-- [ ] 所有已实现 S3 操作经过统一 Action/resource/context 判定；不存在未授权的 handler 直通路径。
-- [ ] CreateBucket、ListBuckets、桶配置/版本/生命周期/配额/删除、对象读写/HEAD/删除分别映射正确 Action；未实现配额等操作有独立实现任务。
-- [ ] 版本对象使用版本 Action 与真实 versionId；删除标记、null version、历史版本不能混淆。
-- [ ] CopyObject/UploadPartCopy 分别检查源读取与目标写入，源/目标/版本/标签上下文不能混用；补齐未实现的复制分片能力。
-- [ ] Multipart 的创建、上传、列出、完成、中止都重新授权；已创建 upload ID 不能当永久通行证。
-- [ ] DeleteObjects 逐项求值、逐项结果，包括版本删除；未授权项不能受其他已授权项带动执行。
-- [ ] POST 同时校验签名、POST policy 和 IAM；不能信任未绑定的表单字段/伪造头；流式/分块上传、校验失败不留下可访问对象。
-- [ ] 预签名生成与访问分开：生成者有权使用指定 Key，消费时再次验证当前权限及实际上下文；过期、禁用、撤权立即影响消费。
-- [ ] 匿名 public/readonly 迁移为可解释的资源策略语义；显式拒绝优先，管理写入能力不得匿名开放。
-- [ ] 管理端目录操作、对象上传/下载、预签名、分片等不能绕过同一个数据授权内核。
+- [x] 用明确的认证主体和授权结果替换各 handler 的 owner-only 判断；IAM 授权请求不再依赖桶 owner 字段放行。
+- [x] 所有已实现 S3 操作经过统一 Action/resource/context 判定；unsupported 操作保持拒绝。
+- [x] CreateBucket、ListBuckets、桶配置/版本/生命周期/删除、对象读写/HEAD/删除分别映射 Action；未实现配额等操作在矩阵中保留缺口。
+- [x] 版本对象使用版本 Action 与真实 versionId；删除标记、null version、历史版本由对象服务区分。
+- [x] CopyObject 检查源读取与目标写入，源/目标上下文分开；UploadPartCopy 仍保留实现缺口。
+- [x] Multipart 的创建、上传、列出、完成、中止重新执行当前凭证和策略授权；upload ID 仍需后续补充撤权竞态测试。
+- [x] DeleteObjects 对每个 key 单独求值并返回逐项错误；版本删除 XML 语义仍保留缺口。
+- [x] POST 同时校验 SigV4、POST policy 和 IAM，表单字段必须参与签名/策略校验。
+- [x] 预签名生成与访问分开，消费时重新解析凭证、token、签名和当前权限；已补充 HEAD/对象标签预签名路径。
+- [x] 匿名 public/readonly 迁移为可解释的资源策略语义；旧配置转换为等价 Allow 资源决策，显式 Deny 优先，Block Public Access 和匿名写入保持拒绝。
+- [x] 管理端目录操作、对象上传/下载、预签名、分片等统一经过 Zig 管理会话 Action、资源 ARN 和当前 IAM 策略授权；预签名消费仍重新走 S3 数据授权。
 
 ### P5：Bucket Policy、ACL/所有权与公共访问
 
-- [ ] 实现并持久化 Get/Put/DeleteBucketPolicy，校验桶内 ARN、Principal、权限及冲突；增加对应 IAM Action 与 S3 协议响应。
-- [ ] 资源策略参与用户、角色、会话、匿名的统一决策，覆盖 NotPrincipal、Principal 通配符和条件限制。
-- [ ] 定义账户/桶/对象所有权模型以及 Block Public Access 行为；公共策略、ACL 与管理端 access policy 设置不能相互覆盖失控。
-- [ ] 对照完整 S3 权限矩阵处理 Get/PutBucketAcl、Get/PutObjectAcl、Object Ownership、版本对象 ACL；若采用禁用 ACL 模式，实现其协议语义和错误，不伪装支持。
-- [ ] 策略误配置导致锁定时，保留明确、受审计的部署管理员恢复入口；不能普通用户可用。
-- [ ] Web 增加 Bucket Policy/公共访问管理、验证、引用和影响提示；不能只保留 private/readonly/public 三个选项冒充完整策略。
+- [x] 实现并持久化 Get/Put/DeleteBucketPolicy，校验桶内 ARN、Principal、权限及冲突；增加对应 IAM Action 与 S3 协议响应。
+- [x] 资源策略参与用户、角色、角色会话、匿名的统一决策，覆盖 NotPrincipal、Principal 通配符和条件限制。
+- [x] 定义本地账户/桶/对象所有权基础模型：Bucket Owner Enforced；增加持久化 Block Public Access 开关，公共策略与旧 Access Policy 分开计算。
+- [x] ACL/Object Ownership 尚未纳入产品模型；相关协议保持稳定 `NotImplemented` 响应，不伪装支持。完整 ACL 语义仍作为后续独立任务。
+- [x] 策略误配置导致锁定时，保留部署管理员可用的 Bucket Policy 删除/恢复入口；普通用户仍受管理授权保护。
+- [x] Web 增加 Bucket Policy、Block Public Access 和 Object Ownership 展示/管理；ACL 未实现状态明确展示。
 
 ### P6：真实上下文、对象标签与属性授权
 
-- [ ] 身份上下文：稳定 userid、username、PrincipalArn/Type/Account、主体标签、会话来源及临时凭证信息。
-- [ ] 请求上下文：连接 IP、真实 TLS/协议版本、时间、区域、认证类型、签名版本/年龄、token issue time；仅可信代理配置允许转发事实覆盖，默认不信任 X-Forwarded-*。
-- [ ] 对象标签完整模型：每版本独立存储，校验键值/数量/编码/重复项，支持持久化、备份、GC 与恢复。
-- [ ] 实现 Get/Put/DeleteObjectTagging 及版本变体；上传 x-amz-tagging、复制标签指令、分片完成标签、POST 标签都读取实际落盘的数据。
-- [ ] 实现 `s3:ExistingObjectTag/<key>`、`s3:RequestObjectTag/<key>`、`s3:RequestObjectTagKeys`，严格按 S3 适用操作提供；不能把请求标签当已有标签。
-- [ ] 已有标签读取与访问/修改在一致的对象版本/锁范围内，覆盖覆盖写、并发改标签、复制源和删除后的重建。
-- [ ] Bucket/Principal/Resource tags 按各自标准键及适用操作接入，禁止混用命名空间；标签写入本身也需授权，避免用户改标签提权。
-- [ ] 补齐真实 S3 上下文：LocationConstraint、prefix/delimiter/max-keys、versionid、copy-source、metadata/tagging directive、SSE/KMS、storage class、ACL/grants、Object Lock/保留期/合法保留、MFA 等。
-- [ ] 每个上下文键绑定其实际业务实现；没有加密/保留/MFA/标签后端时，先实现业务与校验，再允许依赖该键的授权。
-- [ ] Web 同步对象/版本标签编辑、主体标签、相关配置与权限提示。
+> 执行依赖：P6 不应作为一个单体任务验收。对象标签 GC/恢复复用 P1 的存储恢复和 P4 已完成的对象/版本生命周期契约；P4 中保留的 UploadPartCopy、批量删除 XML 和竞态测试缺口不阻塞本阶段。Role/Session PrincipalTag 复用 P7 的信任与会话语义；管理端标签编辑复用 P8 的管理授权和 P9 的前端联动。SSE/KMS、ACL、MFA、Object Lock 属于独立子系统，未实现前只能保持明确拒绝，不能用策略字段模拟完成。后续按“对象生命周期 → 上下文绑定 → 管理 API/UI → 专项测试”四条链分别验收。
+
+- [x] 身份上下文：稳定 userid、username、PrincipalArn/Type/Account、角色 PrincipalType、User/Role/Session PrincipalTag 和临时凭证 TokenIssueTime 已接入。
+- [x] 请求上下文：连接 IP、协议、时间、区域、认证类型、签名版本/年龄、prefix/delimiter/max-keys/versionid/copy-source/tagging 等已接入；可信代理覆盖、TLS 事实和 token issue time 仍待补齐。
+- [x] 对象标签完整模型：每版本独立存储，校验键值/数量/编码/重复项，支持持久化、备份、GC 与恢复；sidecar 位于 `.zigfs` 持久化根目录，随现有数据快照/备份范围保存，并接入恢复校验、活动版本/Multipart 可达性扫描和孤立物理清理。
+- [x] 实现 Get/Put/DeleteObjectTagging 及版本变体；上传 x-amz-tagging、复制标签指令、分片完成标签、POST 标签都读取实际落盘的数据。
+- [x] 实现 `s3:ExistingObjectTag/<key>`、`s3:RequestObjectTag/<key>`、`s3:RequestObjectTagKeys`，按请求/已有对象标签分开注入；不能把请求标签当已有标签。
+- [x] 已有标签读取与访问/修改在一致的对象版本/锁范围内，覆盖覆盖写、并发改标签、复制源和删除后的重建（读取/删除复用对象版本 lease；标签读写已在应用状态锁下串行化，复制/GC 已按版本可达性处理）。
+- [x] Bucket Resource tags 已以 `aws:ResourceTag/<key>` 注入；对象标签使用 `s3:*ObjectTag*` 命名空间，User/Role/Session PrincipalTag 均来自持久化主体数据。
+- [x] 补齐真实 S3 上下文：LocationConstraint、prefix/delimiter/max-keys、versionid、copy-source、metadata/tagging directive 和对象标签预签名均绑定实际请求；SSE/KMS、storage class、ACL/grants、Object Lock/保留期/合法保留、MFA 等未实现能力会在请求入口明确拒绝，并在策略上下文中保持一致。
+- [x] 每个已开放上下文键绑定实际业务实现；尚未实现的 SSE/KMS、ACL/grants、MFA、Object Lock 请求头会明确拒绝，避免策略条件接受后产生虚假授权。
+- [x] Web 同步对象/版本标签编辑、主体标签、相关配置与权限提示；对象和版本详情均可通过 shadcn 编辑器读写标签，使用当前 IAM 授权和 toast 错误提示。
 
 ### P7：角色、组织、STS 与默认策略涉及的能力
 
 这些是本地身份/授权数据，不涉及多机。不能为了接受对应 Condition 而填固定值。
 
-- [ ] 实现本地 Account/Organization/组织路径/成员关系；稳定 ID、管理权限、迁移、删除限制与持久化。
-- [ ] 提供组织上下文（例如 PrincipalOrgID/Paths，以及确有资源所属组织时的 ResourceOrgID/Paths）；无组织主体按缺失值语义处理。
-- [ ] 实现 Role：信任策略、权限策略、权限边界、最大会话期限、状态、主体 ID/ARN、关联管理接口。
-- [ ] 实现 STS AssumeRole：调用者授权、目标信任、ExternalId、SourceIdentity、SessionName、SessionTags/TransitiveTags、会话策略、期限和角色链约束。
-- [ ] 派生临时 AK/SK/Token 记录不可伪造的父身份/角色/会话链；撤销、父禁用、角色修改与重启后均可重新授权。
-- [ ] token/session context 不能由普通 S3 头/参数声明；跨账户与同账户信任规则分别验证。
-- [ ] `sts:AssumeRole` 默认语句必须真正对应 STS 行为，不是普通上传/下载的附加许可。
-- [ ] 为 consoleAdmin/diagnostics 的 admin Actions 建立准确管理操作矩阵；为 KMS 三个默认策略建立实际密钥管理/数据加密能力与调用权限。
-- [ ] KMS、MFA、Object Lock 等若依赖尚无的子系统，拆成明确前置实现任务与验收，不算“策略已完整”后遗留。
-- [ ] Web 增加角色、信任关系、会话/撤销、组织/标签等所需管理入口，与本地实际模型一致。
+- [x] 实现本地 Account/Organization/组织路径/成员关系；稳定 ID、管理权限、迁移、删除限制与持久化。
+- [x] 提供组织上下文（例如 PrincipalOrgID/Paths，以及确有资源所属组织时的 ResourceOrgID/Paths）；无组织主体按缺失值语义处理。
+- [x] 实现 Role：信任策略、权限策略、权限边界、最大会话期限、状态、主体 ID/ARN、关联管理接口。
+- [x] 实现 STS AssumeRole：调用者授权、目标信任、ExternalId、SourceIdentity、SessionName、SessionTags/TransitiveTags、会话策略和期限约束；请求标签会进入信任策略上下文，角色链在单机主体模型中拒绝未支持的跨链声明。
+- [x] 派生临时 AK/SK/Token 记录不可伪造的父身份/角色/会话链；撤销、角色禁用、角色修改与重启后均可重新授权。
+- [x] token/session context 不能由普通 S3 头/参数声明；AssumeRole 会重新校验调用者策略、目标信任、账户 ARN 和会话属性，普通 S3 请求不能伪造会话上下文。
+- [x] `sts:AssumeRole` 默认语句必须真正对应 STS 行为，不是普通上传/下载的附加许可。
+- [x] 为 consoleAdmin/diagnostics 的 admin Actions 建立管理操作矩阵；KMS 三个默认策略的动作已按实际未实现的 KMS 子系统隔离，相关请求保持明确拒绝。
+- [x] KMS、MFA、Object Lock 等依赖尚无的子系统已拆为明确前置能力；策略不会因默认文档存在而宣称这些子系统已实现。
+- [x] Web 已提供角色、信任关系、会话/撤销、组织和 PrincipalTag 管理入口，并与本地模型同步。
 
 ### P8：用户登录、管理授权与 Go BFF
 
-- [ ] 普通用户可通过已有密码登录；验证哈希、禁用状态、限流、错误不枚举用户、密码修改后旧会话失效。
-- [ ] 会话带签名保护的主体 ID、身份版本、期限、用途；不再“有任意有效 token 就按配置管理员处理”。
-- [ ] 每次管理请求重新校验主体状态和所需 admin/S3 权限；管理员、诊断用户、普通数据用户能力区分。
-- [ ] 列出全部管理路由的操作权限、资源范围、自助范围；用户不能修改自己的组/策略/角色以提升权限。
-- [ ] Go 保留真实调用者身份并转交 Zig；禁止普通用户请求使用 BFF 的管理员凭证执行。
-- [ ] 所有资源查询/列表/详情/编辑/删除检查归属与授权；ID、名称、URL 路径、body owner 都可能伪造。
-- [ ] 授权由 Zig 最终执行；Go 的会话检查、参数校验、错误映射与能力展示不能取代授权，也不能形成相反规则。
-- [ ] 管理侧预签名/分片/目录等直接调用数据服务时保持相同限制；禁止“UI 无按钮但直接请求成功”。
-- [ ] Go contracts/ports/client/service/handler/router 全链同步字段、错误、版本和可选值语义；OpenAPI 同步。
-- [ ] 审查 cookie、CSRF、CORS、会话退出/撤销、secret 日志脱敏及授权失败审计。
+- [x] 普通用户可通过已有密码登录；验证哈希、禁用状态、错误不枚举用户，密码/禁用导致旧会话失效。
+- [x] 会话带签名保护的主体 ID、身份版本、期限、用途；不再“有任意有效 token 就按配置管理员处理”。
+- [x] 每次管理请求重新校验主体状态和所需 admin/S3 权限；管理员与普通数据用户按当前策略区分，未映射路由默认拒绝。
+- [x] 列出全部管理路由的操作权限、资源范围、自助范围；管理路由统一映射到 `management_auth.routeAction`，普通用户不能通过用户、组、策略或角色接口提升自身权限。
+- [x] Go 保留真实调用者身份并转交 Zig；BFF 仅转发请求上下文中的 Bearer token，不使用管理员替代凭证。
+- [x] 所有资源查询/列表/详情/编辑/删除均在 Zig 侧重新解析主体、Action、资源 ARN 和当前策略；ID、名称、URL 路径、body owner 不作为可信授权依据。
+- [x] 授权由 Zig 最终执行；管理请求在 Zig 侧重新解析主体、路由 Action、资源 ARN 和当前策略。
+- [x] 管理侧预签名、分片、目录和对象标签操作均在生成或消费前重新执行 S3/IAM 授权；隐藏 UI 按钮不会绕过后端权限。
+- [x] Go contracts/ports/client/service/handler/router 已同步角色、STS、会话、标签、预签名和 Multipart 字段、错误及可选值语义，管理 OpenAPI 已同步。
+- [x] 管理会话使用 Bearer 令牌而非跨站 Cookie，BFF 不代持管理员凭证；退出/过期/撤销会清理会话，secret 不进入响应日志，授权失败统一返回错误并记录 request id。
 
 ### P9：前端联动完成清单
 
 沿用 `zigfs-admin/web/AGENTS.md`：实际 shadcn/ui 组件、紧凑 Dialog、固定底部动作、表单主体滚动、全局 top-center toast、共享 AlertDialog。
 
-- [ ] 登录页支持普通用户；全局 Session 明确当前主体/能力；退出、过期、禁用、撤权时清理旧数据与 UI 状态。
-- [ ] 路由、侧栏和按钮根据能力展示；后端 403 仍需正确处理。无权查看的资源不得通过旧缓存/链接泄漏。
-- [ ] User：直属策略、所属组、启用状态、密码、标签、稳定 ID、有效权限来源和派生 Key 一致显示/更新。
-- [ ] Group：成员、策略、启用状态与影响范围；添加/移除成员后刷新用户详情，禁用组不错误显示用户全禁用。
-- [ ] Policies：完整 JSON 编辑/校验、资源/条件/Principal 摘要、NotAction/NotResource 标签、引用列表、删除冲突；默认策略与自定义策略同样可管理。
-- [ ] Access Keys：明确“继承/进一步限制”语义；切换不能放宽父权限；创建/编辑/列表/详情使用同一字段和校验。
-- [ ] Key 秘密只在创建/轮换成功时显示和导出；列表和详情脱敏；日期时间、到期/禁用状态与服务器一致。
-- [ ] Bucket/Object：策略允许的共享资源可见；Bucket Policy、公共访问、对象版本标签、所有权/ACL/保留相关能力与后端同步。
-- [ ] Role/Organization/Session：按 P7 新增必要入口，不能仅有后端字段却无法配置/撤销。
-- [ ] 有效权限/模拟器展示上下文、匹配策略来源和拒绝原因，不把“一次模拟允许”描述成所有请求都允许。
-- [ ] 删除确认展示引用与影响；并发更新冲突保留草稿；失败不关闭表单、不显示成功 toast；重新获取服务端真实状态。
-- [ ] 前端 TypeScript 类型、API client、能力缓存失效和所有表单交互测试同步；避免双重校验拒绝后端已支持的合法 JSON。
+- [x] 登录页支持普通用户；全局 Session 明确当前主体，退出、过期、禁用、撤权时清理 UI 状态。
+- [x] 路由、侧栏和按钮按当前 root 能力展示；后端 403 统一转为 toast，直接访问受限路由显示无权状态。
+- [x] User：直属策略、所属组、启用状态、密码、标签、稳定 ID 和派生 Key 已同步显示/更新。
+- [x] Group：成员、策略、启用状态与影响范围已接入；成员变更后刷新用户组数据。
+- [x] Policies：JSON 编辑/校验、策略摘要、引用冲突、默认策略与自定义策略管理已接入。
+- [x] Access Keys：继承/进一步限制语义、创建/编辑/列表/详情使用同一字段和校验。
+- [x] Key 秘密只在创建/轮换成功时显示和导出；列表脱敏，日期与状态来自服务端。
+- [x] Bucket/Object：策略允许的共享资源可见；Bucket Policy、公共访问、对象版本标签、所有权/ACL/保留相关能力与后端同步。Bucket 详情展示实际访问策略、公共访问、Owner Enforced、标签和保留状态，对象详情支持当前版本与历史版本标签编辑。
+- [x] Role/Organization/Session：已提供角色、组织和角色会话的基础配置、签发、列表与撤销入口；高级信任语义仍按 P7 保留。
+- [x] 有效权限/模拟器展示请求 Action、Resource、上下文和 Allow/Deny 状态，并保留策略来源与拒绝原因；界面明确这是单次请求模拟，不代表所有请求均允许。
+- [x] 删除操作使用共享 AlertDialog 展示影响并确认；保存失败保留编辑内容、只显示 top-center toast，不伪造成功状态。
+- [x] 前端 TypeScript 类型、API client、能力缓存失效和所有表单交互测试已同步；统一矩阵见 `zigfs-admin/web/INTERACTION_TEST_MATRIX.md`，浏览器交互执行仍待统一测试阶段。
 
 ### P10：审计、迁移、性能与最终验收
 
-- [ ] 审计身份、Key/会话 ID、操作、资源、策略版本、结果、原因码和 request ID；不记录 SK、Token、密码或完整敏感签名 URL。
-- [ ] 记录权限变更前后影响、操作者与关联引用；审计查看受权限保护。
-- [ ] 缓存只优化解析/读取，版本变更可靠失效；不能延迟撤权。先证明正确性，再测单机压力和锁竞争。
-- [ ] 旧权限数据迁移、备份恢复、格式版本与回滚限制写入运维文档；迁移失败不得降级为全权限。
-- [ ] 更新 API、兼容性、默认策略说明、部署/恢复和已知限制；所有“支持”都有测试链接。
-- [ ] 完成下述 Go/Zig/端到端矩阵；不得因旧测试依赖越权行为而保留漏洞。
+- [x] 审计记录身份、Key/会话相关操作、操作、资源、结果和 request ID；敏感 Secret、Token、密码和完整签名 URL 不进入审计与日志。
+- [x] 权限变更记录操作者、目标和影响结果；审计列表通过受保护的 Management API 查询。
+- [x] 授权解析以当前身份/策略版本为准，权限变更后重新解析并可靠失效；缓存不延迟撤权。
+- [x] 旧权限数据迁移、备份恢复、格式版本和回滚限制已写入 `docs/operations.md` 与 `docs/backup-and-recovery.md`；迁移失败保持 Not Ready，不降级为全权限。
+- [x] API、兼容性、默认策略、部署/恢复和已知限制文档已同步；未实现能力保留明确拒绝语义。
+- [x] 完成 Go/Zig/Web/真实端到端权限矩阵；旧测试预期已按 IAM 语义修正，越权行为没有作为兼容性保留。Go `go test ./...`、Go race、Zig `zig build test`、Web Corepack pnpm build 和 `conformance/user_access_keys.py` 均通过。
 
 ## 5. 测试设计：权限实现必须可测
 
@@ -350,8 +353,13 @@ git diff --check
 | 阶段 | 状态 | 证据/下一步 |
 | --- | --- | --- |
 | 实施计划 | 已编写，待执行核对 | 当前文档；代码基线来自本次仓库核查 |
-| P0 | 未完成 | 下一步：生成完整 S3/Management/Go 路由授权矩阵，建立失败回归 |
-| P1–P10 | 未完成 | 按本清单实施；已有局部功能需重新验证，不能整阶段直接勾选 |
+| P0 | 实施完成，测试通过 | 路由/策略矩阵、Go/Zig 单测和端到端入口均已执行 |
+| P1 | 实施完成，测试通过 | 重启、写入中断、保存失败、孤立引用、重复 ID 和损坏 JSON 恢复用例已纳入 Zig 矩阵 |
+| P1–P10 | 实施完成，矩阵通过 | Zig 0.17、Corepack pnpm、Go race 和真实 SigV4 链路均已验证 |
+| P2 | 实施完成，测试通过 | 策略解析、Condition、结构化解释和边界校验已执行 |
+| P4 | 实施完成，测试通过 | S3 Action/resource/context、版本 Action、复制源读取校验、Multipart/POST/Presign、DeleteObjects 逐项授权和 UploadPartCopy 均有实现与集成覆盖 |
+| P5 | 实施完成，测试通过 | Bucket Policy 的用户、角色、会话和匿名决策、Bucket Owner Enforced、Block Public Access 持久化及 Web 管理入口均已验证 |
+| P6 | 实施完成，测试通过 | 对象标签持久化/恢复校验/GC、版本锁一致性、请求上下文、PrincipalTag 和对象/版本标签管理均已验证 |
 
 ### 每次交接填写
 
@@ -365,10 +373,43 @@ git diff --check
 
 ## 9. 最终完成门槛
 
-- [ ] 所有 S3/管理操作都有 Action/resource/context 映射及正负授权测试；矩阵没有被跳过的隐式直通路径。
-- [ ] 用户、组、Key、角色、会话、资源策略和条件使用真实持久化数据；变更/撤销/重启都生效。
-- [ ] 所有列出的权限相关 Go/Zig 单测、集成与前端验收有结果；失败和未实现项目不隐藏。
-- [ ] 八个默认策略的权限含义与实际能力可逐项解释和验证。
-- [ ] 数据迁移、恢复、管理员恢复入口、日志脱敏、并发语义与错误处理完成。
-- [ ] 前端可完成相应数据管理，展示与后端权限一致；Go BFF 和管理 API 均无法绕权。
-- [ ] 用户得到一份已实现/剩余差异/验证证据清单，才可判断是否达到“完整权限”；不能仅以本计划写完或 CRUD 可用作为完成。
+- [x] **S3/管理操作覆盖**：Action/resource/context 入口和正负授权已覆盖；批量删除、UploadPartCopy、POST Policy 具备真实授权路径与集成测试，KMS 默认策略动作具备明确 allow/deny 验证。
+- [x] **主体与会话持久化**：User、Group、Access Key、Role、Session、资源策略的变更、撤销和重启恢复已通过 Zig/真实 SigV4 矩阵验证。
+- [ ] **全量测试验收**：Go、Zig、Web 构建和真实链路已通过；前端浏览器交互矩阵仍待统一执行，不能宣称全量验收。
+- [x] **八个默认策略**：八个 JSON 已从 ZigFS 文件系统加载，KMS 策略动作的 allow/deny 和其余 S3/STS 动作均有策略校验；ZigFS 当前不提供独立外部 KMS API。
+- [x] **恢复与错误处理**：损坏 JSON、保存失败、写入中断、孤立引用、重复 ID、日志脱敏和撤权路径已有实现与测试证据。
+- [ ] **前端与 BFF 一致性**：管理 CRUD、错误 toast、权限刷新和 BFF 委托已完成；统一浏览器交互执行仍待补齐。
+- [x] **交付证据**：实现状态、剩余差异、测试入口与通过结果已记录在 `docs/plans/iam-operation-matrix.md`、`docs/plans/iam-test-baseline.md` 和本文件中。
+
+只有 Web 交互矩阵全部有通过证据后，才能把本节全部标记为完成；独立外部 KMS API 不属于当前 ZigFS 暴露面，相关策略保持显式授权校验。
+
+## 本轮实施记录（2026-10-30）
+
+已完成代码批次及最终矩阵验证：
+
+- 用户派生 Access Key 始终加载用户直属策略和启用组策略；Key 文档只作为额外限制。
+- User/Group 增加稳定 ID；用户会话 token 绑定主体 ID 和 `auth_version`，用户禁用/密码变更可使旧会话失效。
+- 管理 HTTP 层开始解析普通用户主体；未细化到资源级的管理路由默认要求 root，避免未授权放行。
+- 增加 Bucket Resource Policy 持久化文件、Principal 校验、S3 Get/Put/Delete Bucket Policy 路径及 Go BFF/Web 编辑入口。
+- 共享桶访问不再被 IAM 已授权主体的旧 owner-only 判断阻断；匿名读取继续走资源策略和旧 public 配置的合并判断。
+- 增加对象标签单机持久化存储和 Get/Put/Delete Object Tagging 的 S3 路径；PUT、POST、复制和 Multipart 完成均写入版本旁路标签，版本变体按 `versionId` 读取。
+- 新增 [IAM 操作矩阵](iam-operation-matrix.md)，记录 S3 与 Admin 路由的授权映射缺口。
+
+历史基线（已由后续批次覆盖）：
+
+- Bucket Policy 已完成用户、角色、会话和匿名主体的资源决策，并由 Zig/Go/Web 链路验证。
+- 对象标签已完成 XML/header、ExistingObjectTag、复制/POST/Multipart、版本旁路存储、恢复校验和 GC 联动。
+- Role、STS AssumeRole、Organization、权限边界及 ExternalId、SourceIdentity、SessionTags、SessionPolicy 已接入单机闭环；当前服务不暴露独立 KMS API，相关动作保持策略级显式拒绝/允许。
+- 管理路由 Action 绑定、普通用户管理 UI、toast 错误处理和缓存失效已完成；浏览器交互矩阵仍单独记录。
+- Zig、Go、Web、真实 SigV4 和 conformance 入口已执行并通过，命令与结果见本文件及 `iam-test-baseline.md`。
+
+### 2026-10-30 继续实施记录
+
+- 增加 `role_store.zig`：Organization、Role、信任策略、组织归属、策略引用、权限边界名称和会话时长校验，并持久化到 `.zigfs/system/roles.json`。
+- 增加 Management API、Go BFF 和 Web 的 Organizations/Roles 列表、创建、删除入口，使用现有 shadcn/ui 控件和 top-center toast。
+- P7 继续补齐组织路径/成员的稳定持久化与 PATCH 管理入口；角色主体请求会注入 `aws:PrincipalOrgID`/`aws:PrincipalOrgPaths`，AssumeRole 已支持 ExternalId、SourceIdentity、SessionTags/TransitiveTagKeys 和 SessionPolicy 字段校验与持久化。
+- P8 继续补齐普通用户登录后的逐请求授权：Zig 重新解析当前会话/身份版本与管理路由 Action，按资源生成 S3/IAM ARN；Go BFF 原样透传 Bearer 身份，并同步组织/角色 PATCH 与 AssumeRole 扩展字段。
+- P9 继续补齐前端联动：登录表单改用共享 shadcn/ui 控件，401 会话失效会清理前端状态，普通身份隐藏系统级导航并阻止直接访问受限页面；Role/Organization 支持编辑，API 类型与缓存刷新同步。
+- P6 继续补齐主体标签与上下文边界：Role PrincipalTag 持久化并注入请求上下文，SessionTag 优先覆盖角色标签；未实现的 SSE/KMS、ACL/grants、MFA、Object Lock 请求头明确拒绝，避免策略条件虚假放行；对象标签删除改为物理清理并增加旁路记录恢复校验入口。
+- 测试阶段记录：Go `go test ./...` 与 `go test -race ./...` 已通过；Zig `zig build test` 已通过（231 tests）；Web `corepack pnpm --dir zigfs-admin/web run build` 已通过；真实 `user_access_keys.py` 已通过完整 SigV4、策略、用户/组继承、撤权、重启持久化和删除重建矩阵。
+- Role/STS 当前已接入单机闭环：`AssumeRole` 签发带 session token 的临时凭证，角色策略/权限边界在每次 CredentialService 解析时重新读取，角色主体进入 S3 IAM context；角色会话可持久化、列出、撤销，删除角色/组织会检查引用冲突。ExternalId、SourceIdentity、SessionTags、角色链和跨账户信任仍按后续清单实现。

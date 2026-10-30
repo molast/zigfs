@@ -112,8 +112,8 @@ test "metadata credential store persists encrypted payload with CAS" {
         .status = .active,
         .policy = .all,
         .created_at_unix_seconds = 1_800_000_000,
-        .secret_nonce = .{1} ** 12,
-        .secret_tag = .{2} ** 16,
+        .secret_nonce = @as([12]u8, @splat(1)),
+        .secret_tag = @as([16]u8, @splat(2)),
         .encrypted_secret = "0123456789abcdef0123456789abcdef01234567",
     };
     const generation = try store.put(std.testing.allocator, value, .missing);

@@ -394,6 +394,18 @@ pub const Application = struct {
             return;
         };
         self.metadata_index = rebuilt_index;
+        // Object tags are persisted as version-scoped sidecars. Validate them
+        // before advertising readiness so malformed authorization context is
+        // treated as recovery corruption instead of being ignored.
+        _ = object_tag_store.validateAll(self.allocator, self.data_root.?, io) catch |err| {
+            self.recovery_state.markRequired(switch (err) {
+                error.InvalidTag => error.CorruptRecord,
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.Unavailable,
+            });
+            if (!builtin.is_test) std.log.err("ZigFS object tag sidecar validation failed: {t}", .{err});
+            return;
+        };
         self.recovery_state.markReady();
         const now = std.Io.Clock.real.now(io).toSeconds();
         _ = self.multipartService().?.cleanupExpired(
@@ -719,6 +731,7 @@ pub const Application = struct {
         return object_gc.ObjectGcService.init(
             self.allocator,
             io,
+            self.data_root orelse return null,
             object_store,
             data_store,
             multipart_store,
@@ -909,7 +922,7 @@ test "multipart lifecycle streams concurrent parts completes and aborts without 
         "large/archive.bin",
         upload_id,
         &.{
-            .{ .number = 1, .etag_md5 = .{0} ** 16 },
+            .{ .number = 1, .etag_md5 = @as([16]u8, @splat(0)) },
             .{ .number = 2, .etag_md5 = second.etag_md5 },
         },
     ));
@@ -2290,3 +2303,7 @@ test "audit events support bucket filtering, time filtering, and cursor paginati
 test {
     std.testing.refAllDecls(@This());
 }
+
+pub const object_tag_store = @import("object_tag_store.zig");
+
+pub const role_store = @import("role_store.zig");

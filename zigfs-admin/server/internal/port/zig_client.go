@@ -25,6 +25,17 @@ type ZigClient interface {
 	UpdateGroup(ctx context.Context, value contract.ManagedGroup) (contract.ManagedGroup, error)
 	DeleteGroup(ctx context.Context, name string) error
 
+	ListOrganizations(ctx context.Context) (contract.OrganizationList, error)
+	CreateOrganization(ctx context.Context, value contract.Organization) (contract.Organization, error)
+	UpdateOrganization(ctx context.Context, value contract.Organization) (contract.Organization, error)
+	DeleteOrganization(ctx context.Context, name string) error
+	ListRoles(ctx context.Context) (contract.RoleList, error)
+	CreateRole(ctx context.Context, value contract.Role) (contract.Role, error)
+	UpdateRole(ctx context.Context, value contract.Role) (contract.Role, error)
+	DeleteRole(ctx context.Context, name string) error
+	AssumeRole(ctx context.Context, request contract.AssumeRoleRequest) (contract.AssumeRoleResponse, error)
+	ListRoleSessions(ctx context.Context) (contract.RoleSessionList, error)
+	RevokeRoleSession(ctx context.Context, accessKey string) error
 	ListUsers(ctx context.Context) (contract.UserList, error)
 	GetUser(ctx context.Context, name string) (contract.ManagedUser, error)
 	CreateUser(ctx context.Context, value contract.UserWrite) (contract.ManagedUser, error)
@@ -52,6 +63,9 @@ type ZigClient interface {
 	GetBucketConfiguration(ctx context.Context, name string) (contract.BucketConfiguration, error)
 	GetBucketUsage(ctx context.Context, name string) (contract.BucketUsage, error)
 	ListBucketEvents(ctx context.Context, name, cursor, from, to, action, outcome string, limit int) (contract.ListBucketEventsResponse, error)
+	GetBucketPolicy(ctx context.Context, name string) (contract.BucketPolicy, error)
+	PutBucketPolicy(ctx context.Context, name string, policy contract.BucketPolicy) (contract.BucketPolicy, error)
+	DeleteBucketPolicy(ctx context.Context, name string) error
 	GetBucketTags(ctx context.Context, name string) (contract.BucketTags, error)
 	PutBucketTags(ctx context.Context, name string, tags contract.BucketTags) (contract.BucketTags, error)
 	DeleteBucketTags(ctx context.Context, name string) error

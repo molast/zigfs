@@ -43,7 +43,7 @@ pub fn loadOrCreate(dir: std.Io.Dir, io: std.Io) Error!Metadata {
 }
 
 pub fn encode(metadata: Metadata) [encoded_length]u8 {
-    var bytes = [_]u8{0} ** encoded_length;
+    var bytes = @as([encoded_length]u8, @splat(0));
     @memcpy(bytes[0..magic.len], &magic);
     std.mem.writeInt(u16, bytes[8..10], major_version, .little);
     std.mem.writeInt(u16, bytes[10..12], minor_version, .little);

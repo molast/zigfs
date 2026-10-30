@@ -38,7 +38,11 @@ pub const CreateResult = struct {
 
 pub const AuthMaterial = struct {
     inherited_documents: ?[][]u8 = null,
+    boundary_documents: ?[][]u8 = null,
     key_document: ?[]u8 = null,
+    subject_id: ?[]u8 = null,
+    token_issue_time: ?i64 = null,
+    principal_tags: ?[]u8 = null,
 
     owner: []u8,
     policy: credential_domain.Policy,
@@ -58,17 +62,33 @@ pub const AuthMaterial = struct {
         return self.allowsWithContext(allocator, action, bucket, key, .{ .entries = &entries, .defer_conditions = true });
     }
     pub fn allowsWithContext(self: AuthMaterial, allocator: std.mem.Allocator, action: []const u8, bucket: ?[]const u8, key: ?[]const u8, context: @import("../auth/iam_policy.zig").Context) bool {
-        if (self.inherited_documents == null and self.key_document == null) return true;
         const resource = if (bucket) |name| if (key) |object| std.fmt.allocPrint(allocator, "arn:aws:s3:::{s}/{s}", .{ name, object }) catch return false else std.fmt.allocPrint(allocator, "arn:aws:s3:::{s}", .{name}) catch return false else allocator.dupe(u8, "arn:aws:s3:::*") catch return false;
         defer allocator.free(resource);
         const evaluator = @import("../auth/iam_policy.zig");
-        if (self.key_document) |document| if (!evaluator.allowsWithContext(allocator, &[_][]const u8{document}, action, resource, context)) return false;
-        if (self.inherited_documents) |documents| return evaluator.allowsWithContext(allocator, documents, action, resource, context);
-        return true;
+        if (self.key_document) |document| {
+            var key_context = context;
+            key_context.kind = .key_restriction;
+            if (!evaluator.allowsWithContext(allocator, &[_][]const u8{document}, action, resource, key_context)) return false;
+        }
+        const identity_decision = if (self.inherited_documents) |documents| evaluator.decisionWithContext(allocator, documents, action, resource, context) else evaluator.Decision.allow;
+        var boundary_context = context;
+        boundary_context.kind = .permission_boundary;
+        const boundary_decision = if (self.boundary_documents) |documents| evaluator.decisionWithContext(allocator, documents, action, resource, boundary_context) else evaluator.Decision.allow;
+        var resource_context = context;
+        resource_context.kind = .resource;
+        const resource_decision = if (context.resource_document) |document| evaluator.decisionWithContext(allocator, &[_][]const u8{document}, action, resource, resource_context) else evaluator.Decision.none;
+        if (identity_decision == .deny or boundary_decision != .allow or resource_decision == .deny) return false;
+        return identity_decision == .allow or resource_decision == .allow;
     }
     pub fn deinit(self: *AuthMaterial, allocator: std.mem.Allocator) void {
+        if (self.subject_id) |subject| allocator.free(subject);
+        if (self.principal_tags) |tags| allocator.free(tags);
         if (self.key_document) |document| allocator.free(document);
         if (self.inherited_documents) |documents| {
+            for (documents) |document| allocator.free(document);
+            allocator.free(documents);
+        }
+        if (self.boundary_documents) |documents| {
             for (documents) |document| allocator.free(document);
             allocator.free(documents);
         }
@@ -310,11 +330,17 @@ pub const CredentialService = struct {
         const credential = try self.loadActiveLocked(access_key);
         defer credential.deinit(self.allocator);
         if (credential.status == .disabled) return error.CredentialDisabled;
+        var subject_id: ?[]u8 = null;
+        var principal_tags: ?[]u8 = null;
+        errdefer if (subject_id) |subject| self.allocator.free(subject);
+        errdefer if (principal_tags) |tags| self.allocator.free(tags);
         var inherited_documents: ?[][]u8 = null;
         errdefer if (inherited_documents) |documents| {
             for (documents) |document| self.allocator.free(document);
             self.allocator.free(documents);
         };
+        var boundary_documents: ?[][]u8 = null;
+        errdefer if (boundary_documents) |documents| { for (documents) |document| self.allocator.free(document); self.allocator.free(documents); };
         if (std.mem.startsWith(u8, credential.owner, "user:")) {
             const identities = @import("identity_store.zig");
             const root = self.identity_root orelse return error.Unavailable;
@@ -322,30 +348,57 @@ pub const CredentialService = struct {
             defer snapshot.deinit();
             const index = identities.find(snapshot.value.users, credential.owner["user:".len..]) orelse return error.CredentialDisabled;
             if (!snapshot.value.users[index].enabled) return error.CredentialDisabled;
-            if (credential.inherit_policy) {
+            subject_id = self.allocator.dupe(u8, snapshot.value.users[index].id) catch return error.OutOfMemory;
+            if (snapshot.value.users[index].tags_json) |tags| principal_tags = self.allocator.dupe(u8, tags) catch return error.OutOfMemory;
+            if (credential.inherit_policy) { // An inherited key is bounded by its parent authorization.
                 const policy_store = @import("policy_store.zig");
                 const policies = policy_store.load(root, self.io, self.allocator) catch return error.Unavailable;
                 defer policies.deinit();
-                var names: std.ArrayList([]const u8) = .empty;
-                defer names.deinit(self.allocator);
-                names.appendSlice(self.allocator, snapshot.value.users[index].policies) catch return error.OutOfMemory;
-                for (snapshot.value.groups) |group| {
-                    if (group.enabled and identities.contains(group.members, snapshot.value.users[index].name)) names.appendSlice(self.allocator, group.policies) catch return error.OutOfMemory;
+                const documents = identities.documentsForUser(self.allocator, snapshot.value.users[index], snapshot.value, policies.value) catch return error.Unavailable;
+                // An identity with no attached policies has no additional IAM
+                // restriction. Keep the optional unset so the coarse access-key
+                // policy remains effective; an empty document set would be
+                // evaluated as an implicit deny.
+                if (documents.len == 0 and !credential.inherit_policy) {
+                    self.allocator.free(documents);
+                } else {
+                    inherited_documents = documents;
                 }
-                var docs: std.ArrayList([]u8) = .empty;
-                errdefer {
-                    for (docs.items) |doc| self.allocator.free(doc);
-                    docs.deinit(self.allocator);
+            }
+        } else if (std.mem.startsWith(u8, credential.owner, "role:")) {
+            const role_store = @import("role_store.zig");
+            const root = self.identity_root orelse return error.Unavailable;
+            const snapshot = role_store.load(root, self.io, self.allocator) catch return error.Unavailable;
+            defer snapshot.deinit();
+            const suffix = credential.owner["role:".len..];
+            const split = std.mem.indexOfScalar(u8, suffix, ':') orelse return error.CredentialDisabled;
+            const role_id = suffix[0..split];
+            const session = role_store.findSession(snapshot.value, access_key) orelse return error.CredentialDisabled;
+            if (!std.mem.eql(u8, session.role_id, role_id) or session.revoked or session.expires_at <= std.Io.Clock.real.now(self.io).toSeconds()) return error.CredentialExpired;
+            const role = role_store.findRole(snapshot.value, role_id) orelse return error.CredentialDisabled;
+            if (!role.enabled) return error.CredentialDisabled;
+            subject_id = self.allocator.dupe(u8, session.subject_id) catch return error.OutOfMemory;
+            if (session.session_tags_json) |tags| principal_tags = self.allocator.dupe(u8, tags) catch return error.OutOfMemory
+            else if (role.tags_json) |tags| principal_tags = self.allocator.dupe(u8, tags) catch return error.OutOfMemory;
+            const policy_store = @import("policy_store.zig");
+            const policies = policy_store.load(root, self.io, self.allocator) catch return error.Unavailable;
+            defer policies.deinit();
+            var documents: std.ArrayList([]u8) = .empty;
+            for (role.policies) |name| for (policies.value) |policy| if (std.mem.eql(u8, policy.name, name)) try documents.append(self.allocator, try self.allocator.dupe(u8, policy.document));
+            if (role.permissions_boundary) |name| {
+                for (policies.value) |policy| {
+                    if (std.mem.eql(u8, policy.name, name)) {
+                        var boundaries: std.ArrayList([]u8) = .empty;
+                        try boundaries.append(self.allocator, try self.allocator.dupe(u8, policy.document));
+                        boundary_documents = try boundaries.toOwnedSlice(self.allocator);
+                    }
                 }
-                for (names.items) |name| {
-                    const policy_index = identities.find(policies.value, name) orelse return error.Unavailable;
-                    const doc = self.allocator.dupe(u8, policies.value[policy_index].document) catch return error.OutOfMemory;
-                    docs.append(self.allocator, doc) catch {
-                        self.allocator.free(doc);
-                        return error.OutOfMemory;
-                    };
-                }
-                inherited_documents = docs.toOwnedSlice(self.allocator) catch return error.OutOfMemory;
+            }
+            const owned_documents = try documents.toOwnedSlice(self.allocator);
+            if (owned_documents.len == 0 and !credential.inherit_policy) {
+                self.allocator.free(owned_documents);
+            } else {
+                inherited_documents = owned_documents;
             }
         }
 
@@ -380,8 +433,12 @@ pub const CredentialService = struct {
         } else null;
         return .{
             .owner = owner,
-            .policy = if (credential.inherit_policy or credential.policy_document.len > 0) .{ .bypass_governance_retention = true } else credential.policy,
+            .policy = if (credential.inherit_policy) .{ .bypass_governance_retention = true } else credential.policy,
             .inherited_documents = inherited_documents,
+            .boundary_documents = boundary_documents,
+            .subject_id = subject_id,
+            .token_issue_time = if (credential.kind == .temporary) credential.created_at_unix_seconds else null,
+            .principal_tags = principal_tags,
             .key_document = key_document,
             .secret_key = secret_key,
             .session_token = session_token,
@@ -633,7 +690,7 @@ test "credential service encrypts persists disables and deletes access keys" {
     defer index.deinit();
     try index.rebuild(memory.interface());
     var mutex: std.Io.Mutex = .init;
-    const master_key = [_]u8{0x42} ** @sizeOf(secret_box.Key);
+    const master_key = @as([@sizeOf(secret_box.Key)]u8, @splat(0x42));
     const service = CredentialService.init(
         std.testing.allocator,
         std.testing.io,
@@ -676,7 +733,7 @@ test "credential service persists temporary token lists secrets and rejects expi
     defer index.deinit();
     try index.rebuild(memory.interface());
     var mutex: std.Io.Mutex = .init;
-    const master_key = [_]u8{0x24} ** @sizeOf(secret_box.Key);
+    const master_key = @as([@sizeOf(secret_box.Key)]u8, @splat(0x24));
     const service = CredentialService.init(
         std.testing.allocator,
         std.testing.io,
@@ -738,7 +795,7 @@ test "managed user credentials require an enabled existing identity and fail clo
     try index.rebuild(memory.interface());
     var mutex: std.Io.Mutex = .init;
     var identity_mutex: std.Io.Mutex = .init;
-    const master_key = [_]u8{0x42} ** @sizeOf(secret_box.Key);
+    const master_key = @as([@sizeOf(secret_box.Key)]u8, @splat(0x42));
     var service = CredentialService.init(a, io, adapter.interface(), &index, &mutex, &master_key);
     service.identity_root = tmp.dir;
     service.identity_mutex = &identity_mutex;
@@ -777,7 +834,7 @@ test "custom access keys persist metadata reject duplicates and validate absolut
     defer index.deinit();
     try index.rebuild(memory.interface());
     var mutex: std.Io.Mutex = .init;
-    const master_key = [_]u8{0x42} ** @sizeOf(secret_box.Key);
+    const master_key = @as([@sizeOf(secret_box.Key)]u8, @splat(0x42));
     const service = CredentialService.init(a, std.testing.io, adapter.interface(), &index, &mutex, &master_key);
     const expiry = std.Io.Clock.real.now(std.testing.io).toSeconds() + 86400 * 30;
     const options: CreateOptions = .{ .access_key = "CustomMixedKey1234567", .secret_key = "custom-secret-with-32-characters!", .name = "backup", .description = "nightly job", .expires_at = expiry, .inherit_policy = true };

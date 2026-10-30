@@ -143,7 +143,7 @@ fn domainSeparatedAssociatedData(
 }
 
 test "object encryption seals and authenticates DEK and data" {
-    const master_key = [_]u8{0x42} ** @sizeOf(secret_box.Key);
+    const master_key = @as([@sizeOf(secret_box.Key)]u8, @splat(0x42));
     const sealed = try seal(std.testing.allocator, std.testing.io, master_key, "bucket/object/generation", "secret object data");
     defer sealed.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, sealed.ciphertext, "secret object data") == null);
@@ -157,7 +157,7 @@ test "object encryption seals and authenticates DEK and data" {
 }
 
 test "object encryption rejects wrapped DEK tampering" {
-    const master_key = [_]u8{0x11} ** @sizeOf(secret_box.Key);
+    const master_key = @as([@sizeOf(secret_box.Key)]u8, @splat(0x11));
     var sealed = try seal(std.testing.allocator, std.testing.io, master_key, "object-ad", "payload");
     defer sealed.deinit(std.testing.allocator);
     sealed.wrapped_key_tag[0] ^= 0x80;

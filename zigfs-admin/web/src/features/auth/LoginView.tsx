@@ -1,6 +1,10 @@
 import { useErrorToast } from '../../components/ToastProvider'
 import { type FormEvent, useState } from 'react'
 import { useLoading } from '../../components/LoadingProvider'
+import { Button } from '../../components/ui/Button'
+import { Card } from '../../components/ui/Card'
+import { Input } from '../../components/ui/Input'
+import { Field, FieldGroup, FieldLabel } from '../../components/ui/field'
 
 interface LoginViewProps {
   onLogin: (username: string, password: string) => Promise<void>
@@ -38,11 +42,12 @@ export function LoginView({ onLogin }: LoginViewProps) {
         <span className="login-version">ZigFS Admin v0.1.0</span>
       </section>
       <div className="login-form-wrap">
-        <form className="login-panel" onSubmit={submit}>
-          <h2>登录</h2>
-          <p>使用 ZigFS 中配置的管理员账号继续</p>
-          <label htmlFor="admin-username">管理员账号</label>
-          <input
+        <Card className="login-panel">
+          <div className="login-card-header"><h2>登录</h2><p>使用 ZigFS 中配置的账号继续</p></div>
+          <div className="login-card-content">
+          <form onSubmit={submit}>
+          <FieldGroup>
+          <Field><FieldLabel htmlFor="admin-username">账号</FieldLabel><Input
             id="admin-username"
             name="username"
             type="text"
@@ -52,9 +57,8 @@ export function LoginView({ onLogin }: LoginViewProps) {
             onChange={(event) => setUsername(event.target.value)}
             required
             autoFocus
-          />
-          <label htmlFor="admin-password">管理员密码</label>
-          <input
+          /></Field>
+          <Field><FieldLabel htmlFor="admin-password">密码</FieldLabel><Input
             id="admin-password"
             name="password"
             type="password"
@@ -63,11 +67,12 @@ export function LoginView({ onLogin }: LoginViewProps) {
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             required
-          />
-          <button className="primary-button" type="submit" disabled={submitting} aria-busy={submitting}>
-            登录
-          </button>
-        </form>
+          /></Field>
+          <Button className="w-full" type="submit" disabled={submitting} aria-busy={submitting}>登录</Button>
+          </FieldGroup>
+          </form>
+          </div>
+        </Card>
       </div>
     </main>
   )

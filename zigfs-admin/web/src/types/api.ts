@@ -6,6 +6,8 @@ export interface ApiErrorBody {
 }
 
 export interface AdminSession {
+  subject_id: string
+  is_root: boolean
   authenticated: boolean
   username: string
   expires_at: number
@@ -31,6 +33,8 @@ export interface BucketConfiguration {
   name: string
   versioning: 'Unversioned' | 'Enabled' | 'Suspended'
   access_policy: 'Private' | 'Readonly' | 'Public'
+  object_ownership: 'BucketOwnerEnforced'
+  block_public_access: boolean
   tags_json?: string
   encryption: 'Disabled' | 'Enabled'
   max_bytes?: number

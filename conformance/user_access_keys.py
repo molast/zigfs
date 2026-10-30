@@ -146,6 +146,7 @@ admin:
             req('POST', path, {'access_key': 'bad', 'secret_key': 'short'}, 400)
             req('POST', path, {'expires_at': '2000-01-01T00:00:00Z'}, 400)
             # Actual SigV4 access and owner boundaries.
+            # This key explicitly grants bucket read, including listing.
             s3(key)
             s3(key, 'PUT', '/alice-key-test')
             assert b'alice-key-test' in s3(key)
@@ -176,9 +177,11 @@ admin:
             s3(inherited, 'PUT', '/alice-key-test/public.txt', 403)
             group = req('POST', '/groups', dict(name='writers', enabled=True, policies=['readwrite'], members=['alice']), 201)
             s3(inherited, 'PUT', '/alice-key-test/public.txt')
-            req('PATCH', '/groups/writers', dict(group, enabled=False))
+            group_patch = dict(name=group['name'], description=group.get('description', ''), enabled=False, policies=group.get('policies', []), members=group.get('members', []))
+            req('PATCH', '/groups/writers', group_patch)
             s3(inherited, 'PUT', '/alice-key-test/public.txt', 403)
-            req('PATCH', '/groups/writers', dict(group, enabled=True))
+            group_patch['enabled'] = True
+            req('PATCH', '/groups/writers', group_patch)
             deny = dict(Version='2012-10-17', Statement=[dict(Effect='Deny', Action='s3:*', Resource='arn:aws:s3:::alice-key-test/private*')])
             req('POST', '/policies', dict(name='deny-private', document=json.dumps(deny)), 201)
             user = req('GET', '/users/alice')

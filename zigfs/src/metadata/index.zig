@@ -969,8 +969,8 @@ fn putTestObject(
         .bucket_name = parsed.bucket,
         .key = parsed.key,
         .size = 6,
-        .etag_md5 = .{1} ** 16,
-        .checksum_sha256 = .{2} ** 32,
+        .etag_md5 = @as([16]u8, @splat(1)),
+        .checksum_sha256 = @as([32]u8, @splat(2)),
         .content_type = "application/octet-stream",
         .last_modified_unix_seconds = 1_800_000_000,
         .user_metadata = &.{},
@@ -1051,8 +1051,8 @@ test "index rebuild skips tombstones and list objects is stable" {
         .status = .active,
         .policy = .all,
         .created_at_unix_seconds = 1_800_000_000,
-        .secret_nonce = .{1} ** 12,
-        .secret_tag = .{2} ** 16,
+        .secret_nonce = @as([12]u8, @splat(1)),
+        .secret_tag = @as([16]u8, @splat(2)),
         .encrypted_secret = "0123456789abcdef0123456789abcdef01234567",
     });
     defer std.testing.allocator.free(test_credential_payload);

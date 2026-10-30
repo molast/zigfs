@@ -6,6 +6,7 @@ pub const aws_chunked = @import("aws_chunked.zig");
 pub const s3 = @import("s3.zig");
 pub const s3_delete_objects = @import("s3_delete_objects.zig");
 pub const s3_multipart = @import("s3_multipart.zig");
+pub const management_auth = @import("management_auth.zig");
 pub const s3_post_policy = @import("s3_post_policy.zig");
 pub const s3_protocol = @import("s3_protocol.zig");
 

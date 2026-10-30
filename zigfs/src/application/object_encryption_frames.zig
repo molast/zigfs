@@ -59,7 +59,7 @@ pub fn open(
 
 pub fn encodeHeader(frame: Frame) Error![header_length]u8 {
     if (frame.ciphertext.len != frame.plaintext_length or frame.ciphertext.len > std.math.maxInt(u32)) return error.InvalidFrame;
-    var header = [_]u8{0} ** header_length;
+    var header = @as([header_length]u8, @splat(0));
     std.mem.writeInt(u16, header[0..2], frame_version, .little);
     std.mem.writeInt(u64, header[4..12], frame.index, .little);
     std.mem.writeInt(u32, header[12..16], frame.plaintext_length, .little);
@@ -98,7 +98,7 @@ fn frameAssociatedData(allocator: std.mem.Allocator, associated_data: []const u8
 }
 
 test "object encryption frames authenticate index and round trip headers" {
-    const key = [_]u8{0x19} ** @sizeOf(secret_box.Key);
+    const key = @as([@sizeOf(secret_box.Key)]u8, @splat(0x19));
     const frame = try seal(std.testing.allocator, std.testing.io, key, "object-ad", 7, "frame plaintext");
     defer frame.deinit(std.testing.allocator);
     const header = try encodeHeader(frame);
@@ -122,7 +122,7 @@ test "object encryption frames authenticate index and round trip headers" {
 }
 
 test "object encryption frames reject tag tampering" {
-    const key = [_]u8{0x29} ** @sizeOf(secret_box.Key);
+    const key = @as([@sizeOf(secret_box.Key)]u8, @splat(0x29));
     var frame = try seal(std.testing.allocator, std.testing.io, key, "object-ad", 0, "payload");
     defer frame.deinit(std.testing.allocator);
     frame.tag[0] ^= 1;

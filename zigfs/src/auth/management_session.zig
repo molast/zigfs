@@ -138,3 +138,62 @@ test "management session token rejects tampering" {
         validate("0123456789abcdef0123456789abcdef", issued.value(), 1_800_000_001),
     );
 }
+
+pub const UserClaims = struct {
+    subject: [32]u8,
+    version: u64,
+    expires_at: i64,
+};
+pub const UserToken = struct {
+    bytes: [256]u8,
+    len: usize,
+    pub fn value(self: *const UserToken) []const u8 {
+        return self.bytes[0..self.len];
+    }
+};
+
+// Purpose-separated, signed identity claims. Permissions are never embedded:
+// each request resolves the current user and policies from durable storage.
+pub fn issueUser(io: std.Io, secret: []const u8, subject: []const u8, version: u64, ttl: u64, now: i64) !UserToken {
+    if (subject.len != 32) return error.InvalidSubject;
+    var nonce: [16]u8 = undefined;
+    try io.randomSecure(&nonce);
+    const expires = try std.math.add(i64, now, @intCast(ttl));
+    var result: UserToken = .{ .bytes = undefined, .len = 0 };
+    const payload = try std.fmt.bufPrint(&result.bytes, "u1.{s}.{d}.{d}.{s}", .{ subject, version, expires, std.fmt.bytesToHex(nonce, .lower) });
+    var mac: [32]u8 = undefined;
+    HmacSha256.create(&mac, payload, secret);
+    const suffix = try std.fmt.bufPrint(result.bytes[payload.len..], ".{s}", .{std.fmt.bytesToHex(mac, .lower)});
+    result.len = payload.len + suffix.len;
+    return result;
+}
+pub fn validateUser(secret: []const u8, token: []const u8, now: i64) ?UserClaims {
+    var parts = std.mem.splitScalar(u8, token, '.');
+    if (!std.mem.eql(u8, parts.next() orelse return null, "u1")) return null;
+    const subject = parts.next() orelse return null;
+    const version = std.fmt.parseInt(u64, parts.next() orelse return null, 10) catch return null;
+    const expires = std.fmt.parseInt(i64, parts.next() orelse return null, 10) catch return null;
+    const nonce = parts.next() orelse return null;
+    const signature = parts.next() orelse return null;
+    if (parts.next() != null or subject.len != 32 or nonce.len != 32 or signature.len != 64 or expires <= now) return null;
+    var id: [16]u8 = undefined;
+    _ = std.fmt.hexToBytes(&id, subject) catch return null;
+    _ = std.fmt.hexToBytes(&id, nonce) catch return null;
+    var actual: [32]u8 = undefined;
+    _ = std.fmt.hexToBytes(&actual, signature) catch return null;
+    var expected: [32]u8 = undefined;
+    HmacSha256.create(&expected, token[0..std.mem.lastIndexOfScalar(u8, token, '.').?], secret);
+    if (!std.crypto.timing_safe.eql([32]u8, expected, actual)) return null;
+    var claims: UserClaims = .{ .subject = undefined, .version = version, .expires_at = expires };
+    @memcpy(&claims.subject, subject);
+    return claims;
+}
+
+test "user sessions bind purpose identity version and expiration" {
+    const token = try issueUser(std.testing.io, "test-secret", "0123456789abcdef0123456789abcdef", 9, 60, 100);
+    const claims = validateUser("test-secret", token.value(), 159).?;
+    try std.testing.expectEqual(@as(u64, 9), claims.version);
+    try std.testing.expect(validateUser("test-secret", token.value(), 160) == null);
+    try std.testing.expect(validateUser("other-secret", token.value(), 100) == null);
+    try std.testing.expect(validate("test-secret", token.value(), 100) == null);
+}

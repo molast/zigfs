@@ -10,7 +10,7 @@ pub fn run(journal: journal_port.TransactionJournal) !void {
         .record_type = .bucket,
         .generation = 7,
         .previous_generation = null,
-        .key_hash = [_]u8{0x44} ** 32,
+        .key_hash = @as([32]u8, @splat(0x44)),
     };
     try journal.append(base);
     var committed = base;

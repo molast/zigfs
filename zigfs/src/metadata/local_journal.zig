@@ -137,7 +137,7 @@ test "local journal rejects a valid entry under the wrong name" {
         .record_type = .bucket,
         .generation = 1,
         .previous_generation = null,
-        .key_hash = [_]u8{0x22} ** 32,
+        .key_hash = @as([32]u8, @splat(0x22)),
     });
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = ".zigfs/journal/wrong-name.journal",

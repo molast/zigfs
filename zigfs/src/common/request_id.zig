@@ -33,5 +33,6 @@ test "request ID validation rejects unsafe values" {
     try std.testing.expect(!isValid(""));
     try std.testing.expect(!isValid("contains whitespace"));
     try std.testing.expect(!isValid("contains\r\nheader"));
-    try std.testing.expect(!isValid("x" ** (max_length + 1)));
+    var oversized: [max_length + 1]u8 = @splat('x');
+    try std.testing.expect(!isValid(&oversized));
 }

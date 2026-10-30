@@ -137,6 +137,20 @@ func (client *Client) ListBucketEvents(ctx context.Context, name, cursor, from, 
 	err := client.requestJSON(ctx, http.MethodGet, path, nil, &response)
 	return response, err
 }
+func (client *Client) GetBucketPolicy(ctx context.Context, name string) (contract.BucketPolicy, error) {
+	var response contract.BucketPolicy
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/buckets/"+url.PathEscape(name)+"/policy", nil, &response)
+	return response, err
+}
+func (client *Client) PutBucketPolicy(ctx context.Context, name string, tags contract.BucketPolicy) (contract.BucketPolicy, error) {
+	var response contract.BucketPolicy
+	err := client.requestJSON(ctx, http.MethodPut, "/_admin/v1/buckets/"+url.PathEscape(name)+"/policy", tags, &response)
+	return response, err
+}
+func (client *Client) DeleteBucketPolicy(ctx context.Context, name string) error {
+	return client.requestJSON(ctx, http.MethodDelete, "/_admin/v1/buckets/"+url.PathEscape(name)+"/policy", nil, nil)
+}
+
 func (client *Client) GetBucketTags(ctx context.Context, name string) (contract.BucketTags, error) {
 	var response contract.BucketTags
 	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/buckets/"+url.PathEscape(name)+"/tags", nil, &response)
@@ -361,6 +375,56 @@ func (client *Client) DeletePolicy(ctx context.Context, name string) error {
 	return client.requestJSON(ctx, http.MethodDelete, "/_admin/v1/policies/"+url.PathEscape(name), nil, nil)
 }
 
+func (client *Client) ListOrganizations(ctx context.Context) (contract.OrganizationList, error) {
+	var out contract.OrganizationList
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/organizations", nil, &out)
+	return out, err
+}
+func (client *Client) CreateOrganization(ctx context.Context, value contract.Organization) (contract.Organization, error) {
+	var out contract.Organization
+	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/organizations", value, &out)
+	return out, err
+}
+func (client *Client) UpdateOrganization(ctx context.Context, value contract.Organization) (contract.Organization, error) {
+	var out contract.Organization
+	err := client.requestJSON(ctx, http.MethodPatch, "/_admin/v1/organizations/"+url.PathEscape(value.Name), value, &out)
+	return out, err
+}
+func (client *Client) DeleteOrganization(ctx context.Context, name string) error {
+	return client.requestJSON(ctx, http.MethodDelete, "/_admin/v1/organizations/"+url.PathEscape(name), nil, nil)
+}
+func (client *Client) ListRoles(ctx context.Context) (contract.RoleList, error) {
+	var out contract.RoleList
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/roles", nil, &out)
+	return out, err
+}
+func (client *Client) CreateRole(ctx context.Context, value contract.Role) (contract.Role, error) {
+	var out contract.Role
+	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/roles", value, &out)
+	return out, err
+}
+func (client *Client) UpdateRole(ctx context.Context, value contract.Role) (contract.Role, error) {
+	var out contract.Role
+	err := client.requestJSON(ctx, http.MethodPatch, "/_admin/v1/roles/"+url.PathEscape(value.Name), value, &out)
+	return out, err
+}
+func (client *Client) DeleteRole(ctx context.Context, name string) error {
+	return client.requestJSON(ctx, http.MethodDelete, "/_admin/v1/roles/"+url.PathEscape(name), nil, nil)
+}
+func (client *Client) AssumeRole(ctx context.Context, request contract.AssumeRoleRequest) (contract.AssumeRoleResponse, error) {
+	var out contract.AssumeRoleResponse
+	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/sts/assume-role", request, &out)
+	return out, err
+}
+func (client *Client) ListRoleSessions(ctx context.Context) (contract.RoleSessionList, error) {
+	var out contract.RoleSessionList
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/role-sessions", nil, &out)
+	return out, err
+}
+func (client *Client) RevokeRoleSession(ctx context.Context, accessKey string) error {
+	return client.requestJSON(ctx, http.MethodPost, "/_admin/v1/role-sessions/"+url.PathEscape(accessKey)+"/revoke", nil, nil)
+}
+
 func (client *Client) ListUsers(ctx context.Context) (contract.UserList, error) {
 	var response contract.UserList
 	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/users", nil, &response)
@@ -409,7 +473,21 @@ func (client *Client) CreateGroup(ctx context.Context, value contract.ManagedGro
 
 func (client *Client) UpdateGroup(ctx context.Context, value contract.ManagedGroup) (contract.ManagedGroup, error) {
 	var response contract.ManagedGroup
-	err := client.requestJSON(ctx, http.MethodPatch, "/_admin/v1/groups/"+url.PathEscape(value.Name), value, &response)
+	// The ZigFS PATCH endpoint accepts GroupPatch fields only. In particular,
+	// updated_at is a server-owned revision and must never be sent back as an
+	// input field (the strict Zig JSON decoder rejects unknown fields).
+	patch := struct {
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		Enabled     bool     `json:"enabled"`
+		Policies    []string `json:"policies"`
+		Members     []string `json:"members"`
+		TagsJSON    string   `json:"tags_json,omitempty"`
+	}{
+		Name: value.Name, Description: value.Description, Enabled: value.Enabled,
+		Policies: value.Policies, Members: value.Members, TagsJSON: value.TagsJSON,
+	}
+	err := client.requestJSON(ctx, http.MethodPatch, "/_admin/v1/groups/"+url.PathEscape(value.Name), patch, &response)
 	return response, err
 }
 

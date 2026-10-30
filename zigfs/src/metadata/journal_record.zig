@@ -31,7 +31,7 @@ pub const DecodeError = error{
 };
 
 pub fn encode(entry: journal_port.Entry) [encoded_length]u8 {
-    var bytes = [_]u8{0} ** encoded_length;
+    var bytes = @as([encoded_length]u8, @splat(0));
     @memcpy(bytes[0..magic.len], &magic);
     std.mem.writeInt(u16, bytes[4..6], major_version, .little);
     std.mem.writeInt(u16, bytes[6..8], minor_version, .little);
@@ -144,7 +144,7 @@ test "journal record rejects corruption and unknown values" {
         .record_type = .bucket,
         .generation = 1,
         .previous_generation = null,
-        .key_hash = [_]u8{0x11} ** 32,
+        .key_hash = @as([32]u8, @splat(0x11)),
     };
     const valid = encode(entry);
     try std.testing.expectError(error.InvalidLength, decode(valid[0 .. valid.len - 1]));

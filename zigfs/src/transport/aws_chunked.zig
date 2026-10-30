@@ -364,7 +364,7 @@ test "aws chunked source rejects malformed framing before publishing EOF" {
             .scope_date = "20130524",
             .region = "us-east-1",
             .signed_headers = "host;x-amz-content-sha256;x-amz-date",
-            .signature = .{0} ** 32,
+            .signature = @as([32]u8, @splat(0)),
         },
         "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
     );
@@ -381,7 +381,7 @@ test "aws chunked source verifies and decodes a complete signed payload" {
     const scope_date = "20130524";
     const region = "us-east-1";
     const payload = "mc streaming payload\n";
-    const seed_signature = [_]u8{0x5a} ** 32;
+    const seed_signature = @as([32]u8, @splat(0x5a));
     const data_signature = testChunkSignature(
         secret_key,
         amz_date,
@@ -435,7 +435,7 @@ test "aws chunked source verifies a signed CRC64NVME trailer before EOF" {
     const scope_date = "20130524";
     const region = "us-east-1";
     const payload = "signed trailer payload\n";
-    const seed_signature = [_]u8{0x6b} ** 32;
+    const seed_signature = @as([32]u8, @splat(0x6b));
     const data_signature = testChunkSignature(
         secret_key,
         amz_date,
@@ -518,7 +518,7 @@ test "aws chunked source rejects a validly signed wrong trailer checksum" {
     const scope_date = "20130524";
     const region = "us-east-1";
     const payload = "payload";
-    const seed_signature = [_]u8{0x7c} ** 32;
+    const seed_signature = @as([32]u8, @splat(0x7c));
     const data_signature = testChunkSignature(secret_key, amz_date, scope_date, region, seed_signature, payload);
     const final_signature = testChunkSignature(secret_key, amz_date, scope_date, region, data_signature, "");
     var checksum_bytes: [8]u8 = undefined;
@@ -582,7 +582,7 @@ test "aws chunked source verifies every flexible checksum trailer" {
     const payload = "all flexible trailer checksums\n";
     const trailers = [_]Trailer{ .crc32, .crc32c, .crc64nvme, .sha1, .sha256 };
     for (trailers, 0..) |trailer, index| {
-        const seed_signature = [_]u8{@as(u8, @intCast(index + 1))} ** 32;
+        const seed_signature = @as([32]u8, @splat(@as(u8, @intCast(index + 1))));
         const data_signature = testChunkSignature(
             secret_key,
             amz_date,

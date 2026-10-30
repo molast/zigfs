@@ -22,6 +22,8 @@ import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
 import { useErrorToast, useToast } from '../../components/ToastProvider'
 import type { AuditEvent, Bucket, BucketConfiguration } from '../../types/api'
+import { BucketPolicyEditor } from './BucketPolicyEditor'
+import { Button } from '../../components/ui/Button'
 import { LifecycleRulesEditor } from './LifecycleRulesEditor'
 import { parseLifecycleConfiguration, serializeLifecycleConfiguration, type LifecycleRule } from './lifecycle'
 
@@ -543,7 +545,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
             configured={Boolean(configuration?.lifecycle_configuration)}
             loading={loading}
             onSave={saveLifecycle}
-          /> : activeSection === 'Access' ? <AccessOverview bucket={bucket} configuration={configuration} loading={loading} onPolicyChange={updateAccessPolicy} /> : <AnonymousOverview configuration={configuration} />}
+          /> : activeSection === 'Access' ? <><BucketPolicyEditor api={api} bucketName={bucketName} /><AccessOverview api={api} bucketName={bucketName} bucket={bucket} configuration={configuration} loading={loading} onPolicyChange={updateAccessPolicy} /></> : <AnonymousOverview configuration={configuration} />}
         </div>
       </section>
     </section>
@@ -559,7 +561,9 @@ function SettingsSection({ title, children }: { title: string; children: ReactNo
   )
 }
 
-function AccessOverview({ bucket, configuration, loading, onPolicyChange }: {
+function AccessOverview({ api, bucketName, bucket, configuration, loading, onPolicyChange }: {
+  api: ApiClient
+  bucketName: string
   bucket: Bucket | null
   configuration: BucketConfiguration | null
   loading: boolean
@@ -568,6 +572,7 @@ function AccessOverview({ bucket, configuration, loading, onPolicyChange }: {
   const policy = configuration?.access_policy ?? 'Private'
   const anonymousRead = policy === 'Readonly' || policy === 'Public'
   const anonymousList = policy === 'Public'
+  const blockPublic = configuration?.block_public_access ?? true
   return (
     <div className="bucket-access-overview">
       <div className="bucket-access-hero">
@@ -580,8 +585,10 @@ function AccessOverview({ bucket, configuration, loading, onPolicyChange }: {
         <div><dt>Anonymous object read</dt><dd className={anonymousRead ? 'allowed' : 'denied'}>{anonymousRead ? 'Allowed' : 'Denied'}</dd></div>
         <div><dt>Anonymous bucket listing</dt><dd className={anonymousList ? 'allowed' : 'denied'}>{anonymousList ? 'Allowed' : 'Denied'}</dd></div>
         <div><dt>Anonymous write / delete</dt><dd className="denied">Denied</dd></div>
+        <div><dt>Block Public Access</dt><dd><Button size="sm" variant="outline" disabled={loading || !configuration} onClick={() => void api.updateBucketConfiguration(bucketName, { block_public_access: !blockPublic }).then(() => window.location.reload())}>{blockPublic ? 'Blocked' : 'Allowed'}</Button></dd></div>
+        <div><dt>Object Ownership</dt><dd>Bucket owner enforced</dd></div>
       </dl>
-      <p className="bucket-access-note">Access Policy 可在 Summary 中修改。匿名策略只影响读取和列举，写入与删除仍需要授权凭证。</p>
+      <p className="bucket-access-note">以上仅展示旧版 Access Policy 的默认行为。实际请求还会计算 Bucket Policy、身份策略和条件，显式 Deny 优先。</p>
     </div>
   )
 }
@@ -601,7 +608,7 @@ function AnonymousOverview({ configuration }: { configuration: BucketConfigurati
     <div className="bucket-anonymous-overview">
       <div className="bucket-access-hero">
         <Shield aria-hidden="true" />
-        <div><h4>Anonymous Access</h4><p>匿名请求不携带 Access Key，权限由当前 Access Policy 决定。</p></div>
+        <div><h4>Anonymous Access</h4><p>匿名请求不携带 Access Key。下方展示旧版 Access Policy 默认值；实际访问还受 Bucket Policy 和请求条件约束。</p></div>
       </div>
       <div className="bucket-anonymous-policy"><span>Current policy</span><strong>{policy}</strong></div>
       <div className="bucket-anonymous-list">

@@ -124,7 +124,10 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   const [transferTreeOpen, setTransferTreeOpen] = useState(false)
   const [transferring, setTransferring] = useState(false)
   const [detail, setDetail] = useState<ObjectSummary | null>(null)
+  const [detailVersionId, setDetailVersionId] = useState<string | null>(null)
   const [detailUrl, setDetailUrl] = useState<PresignObjectResponse | null>(null)
+  const [detailTags, setDetailTags] = useState('')
+  const [detailTagsSaving, setDetailTagsSaving] = useState(false)
   const [directorySizeSummaries, setDirectorySizeSummaries] = useState<Map<string, FolderSizeSummary>>(new Map())
   const [directorySizeLoading, setDirectorySizeLoading] = useState<Set<string>>(new Set())
   const fileInput = useRef<HTMLInputElement>(null)
@@ -1154,11 +1157,19 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 
   async function openDetail(object: ObjectSummary) {
     setDetail(object)
+    setDetailVersionId(null)
     setDetailUrl(null)
+    setDetailTags('')
     if (!accessKey || !bucket) return
     const stopLoading = startLoading('正在生成预览链接...')
     try {
       setDetailUrl(await api.presignObject(accessKey, bucket, object.key, 'GET', 900))
+      const tagUrl = await api.presignObject(accessKey, bucket, object.key, 'GET', 900, { tagging: true })
+      const tagResponse = await fetch(tagUrl.url)
+      if (!tagResponse.ok) throw new Error(`读取对象标签失败（${tagResponse.status}）`)
+      const xml = new DOMParser().parseFromString(await tagResponse.text(), 'application/xml')
+      const tags = [...xml.querySelectorAll('Tag')].map((tag) => ({ key: tag.querySelector('Key')?.textContent ?? '', value: tag.querySelector('Value')?.textContent ?? '' }))
+      setDetailTags(JSON.stringify(Object.fromEntries(tags.map((tag) => [tag.key, tag.value])), null, 2))
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
@@ -1166,9 +1177,54 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     }
   }
 
+  async function openVersionTagDetail(version: ObjectVersion) {
+    setDetail({ key: version.key, size: version.size, etag: '', last_modified: version.last_modified })
+    setDetailVersionId(version.version_id)
+    setDetailUrl(null)
+    setDetailTags('')
+    if (!accessKey || !bucket) return
+    try {
+      setDetailUrl(await api.presignObject(accessKey, bucket, version.key, 'GET', 900, { versionId: version.version_id }))
+      const tagUrl = await api.presignObject(accessKey, bucket, version.key, 'GET', 900, { versionId: version.version_id, tagging: true })
+      const response = await fetch(tagUrl.url)
+      if (!response.ok) throw new Error(`读取对象版本标签失败（${response.status}）`)
+      const xml = new DOMParser().parseFromString(await response.text(), 'application/xml')
+      setDetailTags(JSON.stringify(Object.fromEntries([...xml.querySelectorAll('Tag')].map((tag) => [tag.querySelector('Key')?.textContent ?? '', tag.querySelector('Value')?.textContent ?? ''])), null, 2))
+    } catch (reason) {
+      notifyError((reason as Error).message)
+    }
+  }
+
+  async function saveDetailTags() {
+    if (!detail || !accessKey || !bucket) return
+    setDetailTagsSaving(true)
+    try {
+      const parsed = JSON.parse(detailTags || '{}') as Record<string, string>
+      const tagEntries = Object.entries(parsed)
+      if (tagEntries.some(([key, value]) => !key || typeof value !== 'string')) throw new Error('对象标签必须是字符串键值 JSON')
+      const signed = await api.presignObject(accessKey, bucket, detail.key, tagEntries.length === 0 ? 'DELETE' : 'PUT', 900, { tagging: true, ...(detailVersionId ? { versionId: detailVersionId } : {}) })
+      if (tagEntries.length === 0) {
+        const response = await fetch(signed.url, { method: 'DELETE', headers: signed.required_headers })
+        if (!response.ok) throw new Error(`删除对象标签失败（${response.status}）`)
+        showToast('对象标签已删除')
+        return
+      }
+      const body = `<Tagging xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><TagSet>${tagEntries.map(([key, value]) => `<Tag><Key>${escapeXml(key)}</Key><Value>${escapeXml(value)}</Value></Tag>`).join('')}</TagSet></Tagging>`
+      const response = await fetch(signed.url, { method: 'PUT', headers: { ...signed.required_headers, 'content-type': 'application/xml' }, body })
+      if (!response.ok) throw new Error(`保存对象标签失败（${response.status}）`)
+      showToast('对象标签已保存')
+    } catch (reason) {
+      notifyError((reason as Error).message)
+    } finally {
+      setDetailTagsSaving(false)
+    }
+  }
+
   function closeDetail() {
     setDetail(null)
+    setDetailVersionId(null)
     setDetailUrl(null)
+    setDetailTags('')
   }
 
   async function removeDirectory(object: ObjectSummary) {
@@ -1532,6 +1588,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                 <td>{new Date(version.last_modified).toLocaleString()}</td>
                 <td className="table-actions sticky-actions-column">
                   <ActionMenu label={`管理 ${version.key} 的版本 ${shortVersionId(version.version_id)}`}>
+                    {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => void openVersionTagDetail(version)} disabled={!accessKey}>编辑对象标签</button>}
                     {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => void downloadVersion(version)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>}
                     {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => openTransfer('copy', { kind: 'version', version })} disabled={!accessKey}><Copy className="button-icon" aria-hidden="true" />复制</button>}
                     {!version.is_delete_marker && <button type="button" role="menuitem" onClick={() => openTransfer('move', { kind: 'version', version })} disabled={!accessKey}><FolderInput className="button-icon" aria-hidden="true" />移动</button>}
@@ -1704,6 +1761,10 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
               <div><dt>Modified</dt><dd>{new Date(detail.last_modified).toLocaleString()}</dd></div>
               {detailUrl && <div><dt>Link expires</dt><dd>{new Date(detailUrl.expires_at).toLocaleString()}</dd></div>}
             </dl>
+            <label className="detail-tags-editor">对象标签（JSON）
+              <textarea value={detailTags} onChange={(event) => setDetailTags(event.target.value)} rows={5} placeholder={'{\n  "team": "blue"\n}'} />
+              <button className="primary-button" type="button" onClick={() => void saveDetailTags()} disabled={detailTagsSaving}>{detailTagsSaving ? '保存中...' : '保存标签'}</button>
+            </label>
             {detailUrl && <div className="drawer-actions"><a className="secondary-button" href={detailUrl.url} target="_blank" rel="noreferrer"><ExternalLink className="button-icon" aria-hidden="true" />打开预览链接</a><button className="secondary-button" type="button" onClick={() => void copyDetailUrl()}><Copy className="button-icon" aria-hidden="true" />复制链接</button></div>}
           </aside>
         </div>
@@ -1818,6 +1879,10 @@ function fileExtension(key: string) {
 
 function shortVersionId(versionId: string) {
   return versionId === 'null' ? 'null' : `${versionId.slice(0, 8)}...${versionId.slice(-6)}`
+}
+
+function escapeXml(value: string) {
+  return value.replace(/[<>&'\"]/g, (character) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[character] ?? character))
 }
 
 function latestObjectSizes(versions: ObjectVersion[]) {

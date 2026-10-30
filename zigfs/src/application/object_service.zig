@@ -286,7 +286,7 @@ pub const ObjectService = struct {
             defer self.allocator.free(associated_data);
             const wrapped = object_encryption.wrapDataKey(self.allocator, self.io, master_key.*, associated_data, dek) catch return error.Unavailable;
             var result = self.data_store.stageEncrypted(data_generation, dek, associated_data, source) catch |err| return mapStageError(err);
-            result.encryption_metadata = .{ .wrapped_key_nonce = wrapped.nonce, .wrapped_key_tag = wrapped.tag, .wrapped_key = wrapped.ciphertext, .data_nonce = [_]u8{0} ** 12, .data_tag = [_]u8{0} ** 16 };
+            result.encryption_metadata = .{ .wrapped_key_nonce = wrapped.nonce, .wrapped_key_tag = wrapped.tag, .wrapped_key = wrapped.ciphertext, .data_nonce = @as([12]u8, @splat(0)), .data_tag = @as([16 ]u8, @splat(0))};
             break :blk result;
         } else self.data_store.stage(data_generation, source) catch |err| return mapStageError(err);
         var staged_pending = true;
@@ -345,7 +345,7 @@ pub const ObjectService = struct {
             defer self.allocator.free(associated_data);
             const wrapped = object_encryption.wrapDataKey(self.allocator, self.io, master_key.*, associated_data, dek) catch return error.Unavailable;
             var staged = self.data_store.stageEncrypted(data_generation, dek, associated_data, source.interface()) catch |err| return mapStageError(err);
-            staged.encryption_metadata = .{ .wrapped_key_nonce = wrapped.nonce, .wrapped_key_tag = wrapped.tag, .wrapped_key = wrapped.ciphertext, .data_nonce = [_]u8{0} ** 12, .data_tag = [_]u8{0} ** 16 };
+            staged.encryption_metadata = .{ .wrapped_key_nonce = wrapped.nonce, .wrapped_key_tag = wrapped.tag, .wrapped_key = wrapped.ciphertext, .data_nonce = @as([12]u8, @splat(0)), .data_tag = @as([16 ]u8, @splat(0))};
             var staged_pending = true;
             defer if (staged_pending) self.data_store.discard(staged.token);
             const put_options: PutOptions = .{ .content_type = options.content_type, .user_metadata = options.user_metadata, .multipart_etag = options.etag };
@@ -488,7 +488,7 @@ pub const ObjectService = struct {
             defer self.allocator.free(associated_data);
             const wrapped = object_encryption.wrapDataKey(self.allocator, self.io, master_key.*, associated_data, dek) catch return error.Unavailable;
             var result = self.data_store.stageEncrypted(data_generation, dek, associated_data, source_stream.interface()) catch |err| return mapStageError(err);
-            result.encryption_metadata = .{ .wrapped_key_nonce = wrapped.nonce, .wrapped_key_tag = wrapped.tag, .wrapped_key = wrapped.ciphertext, .data_nonce = [_]u8{0} ** 12, .data_tag = [_]u8{0} ** 16 };
+            result.encryption_metadata = .{ .wrapped_key_nonce = wrapped.nonce, .wrapped_key_tag = wrapped.tag, .wrapped_key = wrapped.ciphertext, .data_nonce = @as([12]u8, @splat(0)), .data_tag = @as([16 ]u8, @splat(0))};
             break :blk result;
         } else self.data_store.stage(data_generation, source_stream.interface()) catch |err| return mapStageError(err);
         var staged_pending = true;
@@ -1203,7 +1203,7 @@ pub const ObjectService = struct {
                         .is_latest = version_index == 0,
                         .is_delete_marker = true,
                         .size = 0,
-                        .etag_md5 = .{0} ** 16,
+                        .etag_md5 = @as([16]u8, @splat(0)),
                         .etag_part_count = 0,
                         .last_modified_unix_seconds = marker.last_modified_unix_seconds,
                     },
@@ -1545,12 +1545,19 @@ fn validateRequest(
     }
 }
 
-const LeaseSource = struct {
+/// A streaming source backed by an opened object lease. Keeping this adapter
+/// public lets multipart copy reuse the same verified/decrypted read path as
+/// ordinary GET requests without loading the source object into memory.
+pub const LeaseSource = struct {
     lease: *ReadLease,
     size: u64,
     offset: u64,
 
-    fn interface(self: *LeaseSource) byte_stream.Source {
+    pub fn init(lease: *ReadLease, offset: u64, size: u64) LeaseSource {
+        return .{ .lease = lease, .size = offset + size, .offset = offset };
+    }
+
+    pub fn interface(self: *LeaseSource) byte_stream.Source {
         return .{ .context = self, .vtable = &.{ .read = read } };
     }
 
@@ -1998,7 +2005,7 @@ test "object service rejects missing buckets bad checksums and failed sources" {
     try std.testing.expectError(
         error.ChecksumMismatch,
         objects.put("project-assets", "file", checksum_source.interface(), .{
-            .expected_md5 = .{0} ** 16,
+            .expected_md5 = @as([16]u8, @splat(0)),
         }),
     );
     var crc_source = test_streams.SliceSource.init("body");

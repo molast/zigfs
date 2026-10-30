@@ -240,7 +240,7 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
         std.mem.readInt(u16, bytes[manifest_count_offset..manifest_reserved_offset], .little)
     else
         0;
-    var upload_id: id.Uuid = .{0} ** 16;
+    var upload_id: id.Uuid = @as([16]u8, @splat(0));
     if (encoded_minor_version >= 2) @memcpy(&upload_id, bytes[upload_id_offset..164]);
     if ((layout == 0 and (manifest_count != 0 or !allZero(&upload_id))) or
         (layout == 1 and (manifest_count == 0 or manifest_count != etag_part_count or !id.isValidV4(upload_id))))
@@ -418,8 +418,8 @@ fn testValue() Value {
         .bucket_name = "project-assets",
         .key = "images/cover.png",
         .size = 1234,
-        .etag_md5 = .{1} ** 16,
-        .checksum_sha256 = .{2} ** 32,
+        .etag_md5 = @as([16]u8, @splat(1)),
+        .checksum_sha256 = @as([32]u8, @splat(2)),
         .content_type = "image/png",
         .last_modified_unix_seconds = 1_800_000_000,
         .user_metadata = &.{
@@ -456,11 +456,11 @@ test "object payload preserves encryption state and legacy payloads default to u
     var value = testValue();
     value.encryption = .encrypted;
     value.encryption_metadata = .{
-        .wrapped_key_nonce = .{1} ** 12,
-        .wrapped_key_tag = .{2} ** 16,
-        .wrapped_key = .{3} ** 32,
-        .data_nonce = .{4} ** 12,
-        .data_tag = .{5} ** 16,
+        .wrapped_key_nonce = @as([12]u8, @splat(1)),
+        .wrapped_key_tag = @as([16]u8, @splat(2)),
+        .wrapped_key = @as([32]u8, @splat(3)),
+        .data_nonce = @as([12]u8, @splat(4)),
+        .data_tag = @as([16]u8, @splat(5)),
     };
     const bytes = try encode(std.testing.allocator, value);
     defer std.testing.allocator.free(bytes);
@@ -487,13 +487,13 @@ test "object payload round trips multipart manifest" {
         .{
             .number = 1,
             .size = 100,
-            .checksum_sha256 = .{3} ** 32,
+            .checksum_sha256 = @as([32]u8, @splat(3)),
             .data_generation = .{ 4, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 },
         },
         .{
             .number = 3,
             .size = 23,
-            .checksum_sha256 = .{4} ** 32,
+            .checksum_sha256 = @as([32]u8, @splat(4)),
             .data_generation = .{ 5, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 },
         },
     };

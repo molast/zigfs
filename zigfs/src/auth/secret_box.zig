@@ -56,7 +56,7 @@ pub fn open(
 }
 
 test "AES-256-GCM credential secret round trip binds access key" {
-    const key = [_]u8{0x42} ** Aead.key_length;
+    const key = @as([Aead.key_length]u8, @splat(0x42));
     const sealed = try seal(
         std.testing.allocator,
         std.testing.io,
