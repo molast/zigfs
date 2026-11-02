@@ -67,3 +67,19 @@
 - [ ] Storage Usage and Scanner 显示真实文件系统 Used/Available/Total、百分比、Last Completed Scan、Scanner Status、Scan Duration；逻辑对象字节不用于物理容量百分比。
 - [ ] 诊断五行按 Peer Health、Storage Readiness、Usage Freshness、Listing and Metacache、Workload Admission 排列；不适用/未上报状态不能显示 Healthy。
 - [ ] 扫描失败时显示 Failed/Needs attention，保留上一次成功时间；重启后没有扫描记录时不显示伪造时间。
+
+## W11 System Setting（待人工验收）
+
+- [ ] 鼠标和键盘可切换常规、网络、安全、存储、日志和关于 ZigFS 六个分类，选中状态与内容一致。
+- [ ] 配置值与 Settings/System API 响应一致；字段只读，未上报的信息明确标注，不提供无接口支持的保存操作。
+- [ ] 刷新期间按钮禁用；部分接口失败以顶部中央 toast 提示，成功部分仍可查看，刷新可重试。
+- [ ] 桌面左侧分类固定，右侧内容独立滚动，底部刷新操作始终可见。
+- [ ] 窄屏布局无横向溢出，深浅主题下字段、说明和选中状态清晰可读。
+
+### W11 补充：网络、日志、存储和关于
+
+- [ ] 网络页按 S3 API、管理控制台、公网访问、可信代理分组；浏览器访问入口不被标注为服务器监听地址，未上报配置不显示示例值。
+- [ ] 日志页可通过键盘切换日志配置、审计日志、日志管理；返回分类后内容正常，未接入的写入操作有明确说明。
+- [ ] 存储页容量环、容量表与 Storage API 的 physical_used/available/total 一致；缺失容量不显示 0%，扫描失败不显示成功。
+- [ ] 关于页显示实际版本与 Apache 2.0 许可证；CPU、内存、构建信息未上报时不显示虚构数据。
+- [ ] 四个内容页在窄屏与深浅主题下可读；左侧分类不随右侧内容滚动，底部刷新按钮始终可用。

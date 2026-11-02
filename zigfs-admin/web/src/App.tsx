@@ -309,7 +309,7 @@ export default function App() {
           </div>
         </header>
 
-        <main className={`content${view === 'bucket-detail' ? ' content-bucket-detail' : view === 'oidc-settings' ? ' content-oidc' : ''}`}>
+        <main className={`content${view === 'bucket-detail' ? ' content-bucket-detail' : view === 'oidc-settings' ? ' content-oidc' : view === 'settings' ? ' content-system-settings' : ''}`}>
           {view === 'dashboard' && <DashboardView api={api} />}
           {view === 'buckets' && <BucketsView api={api} onOpenBucket={(name) => {
             navigate('bucket-detail', name)
