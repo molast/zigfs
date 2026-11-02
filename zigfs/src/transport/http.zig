@@ -30,6 +30,7 @@ const Route = enum {
     live,
     ready,
     management_login,
+    oidc_auth,
     management_session,
     management,
     s3,
@@ -201,7 +202,7 @@ fn serveConnection(context: *ListenerContext, stream: std.Io.net.Stream) void {
         const duration_ms = started.untilNow(io).raw.toMilliseconds();
         std.log.info(
             "http request method={s} path={s} status={d} request_id={s} duration_ms={d}",
-            .{ @tagName(request.head.method), path, @intFromEnum(status), current_request_id, duration_ms },
+            .{ @tagName(request.head.method), path, @backingInt(status), current_request_id, duration_ms },
         );
         if (!request.head.keep_alive) return;
     }
@@ -261,6 +262,7 @@ fn serveRequest(
     const path = requestPath(request.head.target);
     const route = classifyRoute(context.kind, path);
 
+    if (route == .s3 and @import("oidc_sts.zig").matches(request)) return @import("oidc_sts.zig").serve(request, context.application, current_request_id);
     return switch (route) {
         .live => respondReadOnly(
             request,
@@ -270,6 +272,7 @@ fn serveRequest(
         ),
         .ready => serveReadiness(request, context.application.recoveryState().*, current_request_id),
         .metrics => serveMetrics(request, context.application.recoveryState().*, current_request_id),
+        .oidc_auth => management.serveOidcAuth(request, context.application, current_request_id),
         .management_login => serveManagementLogin(request, context, current_request_id),
         .management_session => serveManagementSession(request, context, current_request_id),
         .management => serveAuthorizedManagement(request, context, current_request_id, peer),
@@ -426,7 +429,7 @@ fn serveManagementSession(
     const a = arena.allocator();
     const token = bearerToken(request) orelse return respondUnauthorized(request, current_request_id);
     const principal = (management_auth.resolve(a, context.application, token, std.Io.Clock.real.now(context.io).toSeconds()) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
-    const response_body = try std.json.Stringify.valueAlloc(a, .{ .authenticated = true, .username = principal.username, .subject_id = principal.id, .is_root = principal.is_root, .expires_at = principal.expires_at }, .{});
+    const response_body = try std.json.Stringify.valueAlloc(a, .{ .authenticated = true, .federated = principal.federated, .display_name = principal.display_name, .email = principal.email, .refreshable = principal.refreshable, .username = principal.username, .subject_id = principal.id, .is_root = principal.is_root, .expires_at = principal.expires_at }, .{});
     return respond(request, response_body, .ok, "application/json; charset=utf-8", current_request_id, null);
 }
 
@@ -453,7 +456,7 @@ fn serveAuthorizedManagement(request: *std.http.Server.Request, context: *const 
         var iterator = request.iterateHeaders();
         while (iterator.next()) |header| try headers.append(a, .{ .name = header.name, .value = header.value });
         const parsed = try @import("s3_protocol.zig").parseTarget(a, .GET, "/");
-        const owner = try std.fmt.allocPrint(a, "user:{s}", .{principal.username});
+        const owner = if (principal.federated) try std.fmt.allocPrint(a, "oidc:{s}", .{principal.id}) else try std.fmt.allocPrint(a, "user:{s}", .{principal.username});
         const conditions = try @import("iam_context.zig").build(a, owner, headers.items, parsed, peer, now, "ManagementSession", null, context.config.s3_region, principal.id);
         const action = management_auth.routeAction(request.head.method, requestPath(request.head.target));
         const resource = managementResource(a, requestPath(request.head.target));
@@ -606,6 +609,8 @@ fn classifyRoute(kind: ListenerKind, path: []const u8) Route {
             .live
         else if (std.mem.eql(u8, path, health_ready_path))
             .ready
+        else if (std.mem.startsWith(u8, path, "/_admin/v1/auth/oidc/"))
+            .oidc_auth
         else if (std.mem.eql(u8, path, "/_admin/v1/auth/login"))
             .management_login
         else if (std.mem.eql(u8, path, "/_admin/v1/auth/session"))
@@ -716,11 +721,14 @@ fn sendTestSignedRequest(
     else
         "";
     var copy_source: ?[]const u8 = null;
+    var copy_range: ?[]const u8 = null;
     var metadata_directive: ?[]const u8 = null;
     var meta_origin: ?[]const u8 = null;
     for (options.extra_headers) |header| {
         if (std.ascii.eqlIgnoreCase(header.name, "x-amz-copy-source")) {
             copy_source = header.value;
+        } else if (std.ascii.eqlIgnoreCase(header.name, "x-amz-copy-source-range")) {
+            copy_range = header.value;
         } else if (std.ascii.eqlIgnoreCase(header.name, "x-amz-metadata-directive")) {
             metadata_directive = header.value;
         } else if (std.ascii.eqlIgnoreCase(header.name, "x-amz-meta-origin")) {
@@ -729,6 +737,8 @@ fn sendTestSignedRequest(
     }
     const signed_headers = if (meta_origin != null)
         "host;x-amz-content-sha256;x-amz-copy-source;x-amz-date;x-amz-meta-origin;x-amz-metadata-directive"
+    else if (copy_range != null)
+        "host;x-amz-content-sha256;x-amz-copy-source;x-amz-copy-source-range;x-amz-date"
     else if (copy_source != null)
         "host;x-amz-content-sha256;x-amz-copy-source;x-amz-date"
     else if (options.session_token != null)
@@ -752,6 +762,12 @@ fn sendTestSignedRequest(
                 signed_headers,
                 payload_hash,
             },
+        )
+    else if (copy_range) |range|
+        try std.fmt.allocPrint(
+            allocator,
+            "{s}\n{s}\n{s}\nhost:{s}\nx-amz-content-sha256:{s}\nx-amz-copy-source:{s}\nx-amz-copy-source-range:{s}\nx-amz-date:{s}\n\n{s}\n{s}",
+            .{ @tagName(options.method), canonical_uri, canonical_query, host, payload_hash, copy_source.?, range, amz_date, signed_headers, payload_hash },
         )
     else if (copy_source) |value|
         try std.fmt.allocPrint(
@@ -1308,7 +1324,7 @@ fn sendTestRawRequestImpl(
     try stream_writer.interface.writeAll(request_bytes);
     try stream_writer.interface.flush();
     if (shutdown_send_after_request) try stream.shutdown(io, .send);
-    const bytes = try stream_reader.interface.allocRemaining(allocator, .limited(2 * 1024 * 1024));
+    const bytes = try stream_reader.interface.allocRemaining(allocator, .limited(8 * 1024 * 1024));
     errdefer allocator.free(bytes);
     const head_end = std.mem.indexOf(u8, bytes, "\r\n\r\n") orelse return error.InvalidHttpResponse;
     const first_line_end = std.mem.indexOf(u8, bytes[0..head_end], "\r\n") orelse {
@@ -1323,7 +1339,7 @@ fn sendTestRawRequestImpl(
     };
     return .{
         .bytes = bytes,
-        .status = @enumFromInt(status_code),
+        .status = @fromBackingInt(@intCast(status_code)),
         .header_bytes = bytes[0..head_end],
         .body = bytes[head_end + 4 ..],
     };
@@ -1828,7 +1844,14 @@ test "ZigFS Management API directly serves the Phase 6 contract" {
     defer storage.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.ok, storage.status);
     try std.testing.expect(std.mem.indexOf(u8, storage.body, "\"used\":17") != null);
-    try std.testing.expect(std.mem.indexOf(u8, storage.body, "\"total\":null") != null);
+    const capacity_json = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, storage.body, .{});
+    defer capacity_json.deinit();
+    if (capacity_json.value.object.get("total").? == .integer) {
+        const total = capacity_json.value.object.get("total").?.integer;
+        try std.testing.expect(total > 0);
+        try std.testing.expect(capacity_json.value.object.get("available").?.integer <= total);
+        try std.testing.expect(capacity_json.value.object.get("physical_used").?.integer <= total);
+    } else try std.testing.expect(capacity_json.value.object.get("physical_used").? == .null);
 
     const system = try sendTestManagementRequest(
         std.testing.allocator,
@@ -3466,7 +3489,9 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
     try std.testing.expect(std.mem.indexOf(u8, active_uploads.body, "<Key>multipart.bin</Key>") != null);
     try std.testing.expect(std.mem.indexOf(u8, active_uploads.body, upload_id) != null);
 
-    const part_body = "one small final part";
+    const part_body = try std.testing.allocator.alloc(u8, 5 * 1024 * 1024);
+    defer std.testing.allocator.free(part_body);
+    @memset(part_body, 'a');
     const upload_target = try std.fmt.allocPrint(
         std.testing.allocator,
         "/project-assets/multipart.bin?partNumber=1&uploadId={s}",
@@ -3579,7 +3604,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
     );
     defer complete.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.ok, complete.status);
-    try std.testing.expect(std.mem.indexOf(u8, complete.body, "-1\"</ETag>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, complete.body, "-2\"</ETag>") != null);
 
     const downloaded = try sendTestSignedRequest(
         std.testing.allocator,
@@ -3594,8 +3619,10 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
     );
     defer downloaded.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.ok, downloaded.status);
-    try std.testing.expectEqualStrings(part_body ++ copy_source_body, downloaded.body);
-    try std.testing.expect(std.mem.endsWith(u8, downloaded.header("etag").?, "-1\""));
+    try std.testing.expectEqual(part_body.len + copy_source_body.len, downloaded.body.len);
+    try std.testing.expectEqualSlices(u8, part_body, downloaded.body[0..part_body.len]);
+    try std.testing.expectEqualStrings(copy_source_body, downloaded.body[part_body.len..]);
+    try std.testing.expect(std.mem.endsWith(u8, downloaded.header("etag").?, "-2\""));
 
     const after_complete = try sendTestSignedRequest(
         std.testing.allocator,

@@ -14,7 +14,7 @@ import (
 func New(auth *handler.Auth, system *handler.System, management *handler.Management, webRoot string) *gin.Engine {
 	engine := gin.New()
 	engine.Use(
-		gin.Logger(),
+		gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/api/v1/auth/oidc/callback"}}),
 		gin.Recovery(),
 		middleware.RequestID(),
 		middleware.SecurityHeaders(),
@@ -25,6 +25,13 @@ func New(auth *handler.Auth, system *handler.System, management *handler.Managem
 
 	api := engine.Group("/api/v1")
 	api.POST("/auth/login", auth.Login)
+	api.GET("/auth/oidc/providers", management.OIDCLoginProviders)
+	api.POST("/auth/oidc/web-identity", management.OIDCWebIdentity)
+	api.GET("/auth/oidc/:id/start", management.OIDCLoginStart)
+	api.GET("/auth/oidc/callback", management.OIDCLoginCallback)
+	api.POST("/auth/oidc/refresh", management.OIDCRefresh)
+	api.POST("/auth/oidc/end-session", management.OIDCEndSession)
+	api.POST("/auth/oidc/:id/backchannel-logout", management.OIDCBackchannelLogout)
 
 	private := api.Group("")
 	private.Use(middleware.RequireAdminSession())
@@ -36,6 +43,11 @@ func New(auth *handler.Auth, system *handler.System, management *handler.Managem
 	private.POST("/storage/gc", management.RunStorageGC)
 	private.GET("/management-health", management.Health)
 	private.GET("/settings", management.Settings)
+	private.POST("/oidc/validate", management.OIDCProviders)
+	private.GET("/oidc/providers", management.OIDCProviders)
+	private.POST("/oidc/providers", management.OIDCProviders)
+	private.PATCH("/oidc/providers/:id", management.OIDCProviders)
+	private.DELETE("/oidc/providers/:id", management.OIDCProviders)
 	private.GET("/users/:name/access-keys", management.ListUserAccessKeys)
 	private.POST("/users/:name/access-keys", management.CreateUserAccessKey)
 	private.PATCH("/users/:name/access-keys/:id", management.UpdateUserAccessKey)

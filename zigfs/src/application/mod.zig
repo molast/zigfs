@@ -49,6 +49,10 @@ pub const StorageScanReport = struct {
 };
 
 pub const StorageScannerSnapshot = struct {
+    running: bool,
+    last_completed_at: ?i64,
+    last_duration_ms: ?u64,
+    last_attempt_succeeded: ?bool,
     next_partition: u8,
     last_scan: ?StorageScanReport,
 };
@@ -115,6 +119,10 @@ pub const Application = struct {
     scanner_state_mutex: std.Io.Mutex = .init,
     scanner_partition: u8 = 0,
     last_scanner_report: ?StorageScanReport = null,
+    scanner_running: bool = false,
+    scanner_completed_at: ?i64 = null,
+    scanner_duration_ms: ?u64 = null,
+    scanner_last_success: ?bool = null,
     policy_mutex: std.Io.Mutex = .init,
     audit_mutex: std.Io.Mutex = .init,
     audit_events: std.ArrayListUnmanaged(AuditEvent) = .empty,
@@ -435,6 +443,12 @@ pub const Application = struct {
         const io = self.io orelse return error.Unavailable;
         self.scanner_mutex.lockUncancelable(io);
         defer self.scanner_mutex.unlock(io);
+        const started = std.Io.Clock.awake.now(io);
+        self.scanner_state_mutex.lockUncancelable(io);
+        self.scanner_running = true;
+        self.scanner_state_mutex.unlock(io);
+        var succeeded = false;
+        defer self.finishScanner(started, succeeded);
 
         self.scanner_state_mutex.lockUncancelable(io);
         const partition = self.scanner_partition;
@@ -460,6 +474,7 @@ pub const Application = struct {
         defer self.scanner_state_mutex.unlock(io);
         self.scanner_partition = (partition + 1) % object_gc.partition_count;
         self.last_scanner_report = report;
+        succeeded = true;
         return report;
     }
 
@@ -467,6 +482,12 @@ pub const Application = struct {
         const io = self.io orelse return error.Unavailable;
         self.scanner_mutex.lockUncancelable(io);
         defer self.scanner_mutex.unlock(io);
+        const started = std.Io.Clock.awake.now(io);
+        self.scanner_state_mutex.lockUncancelable(io);
+        self.scanner_running = true;
+        self.scanner_state_mutex.unlock(io);
+        var succeeded = false;
+        defer self.finishScanner(started, succeeded);
         const now = std.Io.Clock.real.now(io).toSeconds();
         const expired = (self.multipartService() orelse return error.Unavailable).cleanupExpired(
             now,
@@ -487,7 +508,18 @@ pub const Application = struct {
         self.scanner_state_mutex.lockUncancelable(io);
         defer self.scanner_state_mutex.unlock(io);
         self.last_scanner_report = report;
+        succeeded = true;
         return report;
+    }
+
+    fn finishScanner(self: *Application, started: std.Io.Timestamp, succeeded: bool) void {
+        const io = self.io.?;
+        self.scanner_state_mutex.lockUncancelable(io);
+        defer self.scanner_state_mutex.unlock(io);
+        self.scanner_running = false;
+        self.scanner_last_success = succeeded;
+        self.scanner_duration_ms = @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds()));
+        if (succeeded) self.scanner_completed_at = std.Io.Clock.real.now(io).toSeconds();
     }
 
     pub fn storageScannerSnapshot(self: *Application) ?StorageScannerSnapshot {
@@ -495,6 +527,10 @@ pub const Application = struct {
         self.scanner_state_mutex.lockUncancelable(io);
         defer self.scanner_state_mutex.unlock(io);
         return .{
+            .running = self.scanner_running,
+            .last_completed_at = self.scanner_completed_at,
+            .last_duration_ms = self.scanner_duration_ms,
+            .last_attempt_succeeded = self.scanner_last_success,
             .next_partition = self.scanner_partition,
             .last_scan = self.last_scanner_report,
         };
@@ -2009,6 +2045,9 @@ test "storage scanner advances one partition per successful cycle" {
     const initial = app.storageScannerSnapshot().?;
     try std.testing.expectEqual(@as(u8, 0), initial.next_partition);
     try std.testing.expect(initial.last_scan == null);
+    try std.testing.expect(!initial.running);
+    try std.testing.expect(initial.last_completed_at == null);
+    try std.testing.expect(initial.last_duration_ms == null);
 
     for (0..object_gc.partition_count) |partition| {
         const report = try app.runStorageScanner();
@@ -2020,6 +2059,10 @@ test "storage scanner advances one partition per successful cycle" {
             snapshot.next_partition,
         );
         try std.testing.expectEqual(report.partition, snapshot.last_scan.?.partition);
+        try std.testing.expect(!snapshot.running);
+        try std.testing.expect(snapshot.last_completed_at != null);
+        try std.testing.expect(snapshot.last_duration_ms != null);
+        try std.testing.expectEqual(true, snapshot.last_attempt_succeeded.?);
     }
 
     try std.testing.expectEqual(@as(u8, 0), app.storageScannerSnapshot().?.next_partition);
@@ -2307,3 +2350,5 @@ test {
 pub const object_tag_store = @import("object_tag_store.zig");
 
 pub const role_store = @import("role_store.zig");
+pub const oidc_auth = @import("oidc_auth.zig");
+pub const oidc_store = @import("oidc_store.zig");

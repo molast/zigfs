@@ -30,15 +30,29 @@ type authService struct{}
 func (managementService) AssumeRole(context.Context, contract.AssumeRoleRequest) (contract.AssumeRoleResponse, error) {
 	return contract.AssumeRoleResponse{}, nil
 }
-func (managementService) ListOrganizations(context.Context) (contract.OrganizationList, error) { return contract.OrganizationList{}, nil }
-func (managementService) CreateOrganization(context.Context, contract.Organization) (contract.Organization, error) { return contract.Organization{}, nil }
-func (managementService) UpdateOrganization(context.Context, contract.Organization) (contract.Organization, error) { return contract.Organization{}, nil }
+func (managementService) ListOrganizations(context.Context) (contract.OrganizationList, error) {
+	return contract.OrganizationList{}, nil
+}
+func (managementService) CreateOrganization(context.Context, contract.Organization) (contract.Organization, error) {
+	return contract.Organization{}, nil
+}
+func (managementService) UpdateOrganization(context.Context, contract.Organization) (contract.Organization, error) {
+	return contract.Organization{}, nil
+}
 func (managementService) DeleteOrganization(context.Context, string) error { return nil }
-func (managementService) ListRoles(context.Context) (contract.RoleList, error) { return contract.RoleList{}, nil }
-func (managementService) CreateRole(context.Context, contract.Role) (contract.Role, error) { return contract.Role{}, nil }
-func (managementService) UpdateRole(context.Context, contract.Role) (contract.Role, error) { return contract.Role{}, nil }
+func (managementService) ListRoles(context.Context) (contract.RoleList, error) {
+	return contract.RoleList{}, nil
+}
+func (managementService) CreateRole(context.Context, contract.Role) (contract.Role, error) {
+	return contract.Role{}, nil
+}
+func (managementService) UpdateRole(context.Context, contract.Role) (contract.Role, error) {
+	return contract.Role{}, nil
+}
 func (managementService) DeleteRole(context.Context, string) error { return nil }
-func (managementService) ListRoleSessions(context.Context) (contract.RoleSessionList, error) { return contract.RoleSessionList{}, nil }
+func (managementService) ListRoleSessions(context.Context) (contract.RoleSessionList, error) {
+	return contract.RoleSessionList{}, nil
+}
 func (managementService) RevokeRoleSession(context.Context, string) error { return nil }
 
 func (authService) Login(context.Context, contract.LoginRequest) (contract.LoginResponse, error) {
@@ -496,3 +510,13 @@ func (managementService) UpdateUserAccessKey(context.Context, string, string, co
 	return contract.AccessKey{}, nil
 }
 func (managementService) DeleteUserAccessKey(context.Context, string, string) error { return nil }
+
+func (managementService) OIDCProviders(context.Context, string, string, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`{"items":[]}`), nil
+}
+
+func (managementService) OIDCAuth(context.Context, string, string, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`{"items":[]}`), nil
+}
+
+func (authService) Logout(context.Context) error { return nil }

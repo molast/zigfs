@@ -47,7 +47,7 @@ All routes are under `/_admin/v1`. The HTTP layer authenticates the management p
 | `/users/:name/access-keys`, `/:id` | GET/POST/PATCH/DELETE | access key Actions | user key | Implemented |
 | `/groups`, `/groups/:name` | GET/POST/PATCH/DELETE | group CRUD Actions | group | Implemented |
 | `/organizations`, `/organizations/:name` | GET/POST/DELETE | organization CRUD Actions | organization | Implemented |
-| `/roles`, `/roles/:name` | GET/POST/DELETE | role CRUD Actions | role | Implemented |
+| `/roles`, `/roles/:name` | GET/POST/PATCH/DELETE | role federation/STS CRUD Actions | independent role principal | Implemented |
 | `/sts/assume-role` | POST | `sts:AssumeRole` | role ARN | Implemented |
 | `/role-sessions` | GET | session list Action | role session | Implemented |
 | `/role-sessions/:access_key/revoke` | POST | session revoke Action | role session | Implemented |
@@ -63,6 +63,12 @@ All routes are under `/_admin/v1`. The HTTP layer authenticates the management p
 | `/multipart-uploads*` | POST/GET/DELETE | multipart Actions | upload/object | Implemented |
 | `/access-keys` | GET/POST/PATCH/DELETE | access key Actions | account key | Implemented |
 | `/storage*`, `/system`, `/health`, `/settings` | GET/POST | storage/system Actions | system | Implemented |
+
+## OIDC 配置管理（2026-11-02）
+
+`/_admin/v1/oidc/providers` GET/POST 和 `/_admin/v1/oidc/providers/:id` PATCH/DELETE 仅部署管理员可用；BFF 对应 `/api/v1/oidc/providers` 路径并透传调用者会话。普通主体即便拥有 `admin:*` 仍不能配置 OIDC。
+
+配置、Discovery/JWKS、Code + PKCE、state/nonce、九种非对称 JWT 算法校验、Claim/固定 Policy 映射、会话撤销和 S3 临时凭证已接通；`login_supported: true`。公共登录操作不开放 Provider 管理权限。验证入口：`conformance/oidc_providers.py`、`conformance/oidc_login.py`。协议范围与部署步骤见 [oidc-login.md](../oidc-login.md)。
 
 ## Go BFF routes
 
@@ -142,3 +148,5 @@ The grouped tables above are the authorization view. The following inventories a
 - [x] Eight default policy documents audited against implemented capabilities.
 - [x] Reference policy version and operation naming sources fixed.
 - [x] Dedicated permission test entrypoint and coverage baseline are defined in `conformance/iam_permissions.sh` and `docs/plans/iam-p0-test-baseline.md`; execution status is recorded per suite and does not treat blocked toolchains as passes.
+
+OIDC 扩展覆盖资料同步、Refresh Token 轮换、RP/后通道退出、环境管理来源和 STS 托管限制策略。自动回归为 `conformance/oidc_login.py`；签名算法集合及 AWS 本地映射差异见操作文档，浏览器交互见 W09。

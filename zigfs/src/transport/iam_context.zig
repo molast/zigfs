@@ -16,9 +16,9 @@ pub fn build(a: std.mem.Allocator, owner: []const u8, headers: []const sigv4.Hea
             const role_suffix = owner["role:".len..];
             const role_name = role_suffix[0 .. (std.mem.indexOfScalar(u8, role_suffix, ':') orelse role_suffix.len)];
             break :blk try std.fmt.allocPrint(a, "arn:aws:iam::{s}:role/{s}", .{ @import("../application/resource_policy_store.zig").account_id, role_name });
-        } else if (subject_id != null) try std.fmt.allocPrint(a, "arn:aws:iam::{s}:user/{s}", .{ @import("../application/resource_policy_store.zig").account_id, owner[5..] }) else "arn:aws:iam::" ++ @import("../application/resource_policy_store.zig").account_id ++ ":root";
+        } else if (std.mem.startsWith(u8, owner, "oidc:")) try std.fmt.allocPrint(a, "arn:aws:sts::{s}:federated-user/{s}", .{ @import("../application/resource_policy_store.zig").account_id, subject_id orelse owner[5..] }) else if (subject_id != null) try std.fmt.allocPrint(a, "arn:aws:iam::{s}:user/{s}", .{ @import("../application/resource_policy_store.zig").account_id, owner[5..] }) else "arn:aws:iam::" ++ @import("../application/resource_policy_store.zig").account_id ++ ":root";
         try add(a, &entries, "aws:PrincipalArn", arn);
-        try add(a, &entries, "aws:PrincipalType", if (std.mem.startsWith(u8, owner, "role:")) "Role" else if (std.mem.startsWith(u8, owner, "user:")) "User" else "Account");
+        try add(a, &entries, "aws:PrincipalType", if (std.mem.startsWith(u8, owner, "role:")) "Role" else if (std.mem.startsWith(u8, owner, "oidc:")) "FederatedUser" else if (std.mem.startsWith(u8, owner, "user:")) "User" else "Account");
     } else {
         try add(a, &entries, "aws:PrincipalAccount", "anonymous");
     }

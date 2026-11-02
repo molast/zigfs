@@ -11,6 +11,230 @@ servers:
 security:
   - managementBearer: []
 paths:
+  /_admin/v1/auth/oidc/refresh:
+    post:
+      summary: Renew OIDC identity and synchronize profile and policies
+      description: Accepts JSON token containing the opaque OIDC session token; called by BFF.
+      responses:
+        '200':
+          description: Updated public session profile
+        '401':
+          description: Session unavailable or renewal rejected
+  /_admin/v1/auth/oidc/end-session:
+    post:
+      summary: Revoke local session and obtain IdP logout URL
+      description: Accepts JSON token containing the opaque OIDC session token; called by BFF.
+      responses:
+        '200':
+          description: logout_url, empty when IdP logout is unavailable
+        '401':
+          description: Session unavailable or renewal rejected
+  /_admin/v1/auth/oidc/backchannel-logout:
+    post:
+      security: []
+      summary: Verify signed IdP logout token and revoke matching federated sessions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider_id, logout_token]
+              properties:
+                provider_id: { type: string }
+                logout_token: { type: string }
+      responses:
+        '204':
+          description: Matching sessions revoked
+        '400':
+          description: Invalid or replayed logout token
+  /_admin/v1/oidc/validate:
+    post:
+      summary: Validate discovery and JWKS availability (deployment administrator only)
+      description: Does not validate client credentials; complete a login to verify them.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OIDCProvider'
+      responses:
+        '200':
+          description: Discovery and JWKS available
+        '400':
+          description: Invalid provider or discovery response
+        '403':
+          description: Deployment administrator required
+  /_admin/v1/auth/oidc/providers:
+    get:
+      security: []
+      summary: List enabled login choices (provider_id and display_name only)
+      responses:
+        '200':
+          description: Public provider list
+  /_admin/v1/auth/oidc/web-identity:
+    post:
+      security: []
+      summary: Exchange a supported signed web identity JWT for temporary S3 credentials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider_id, web_identity_token]
+              properties:
+                provider_id: { type: string }
+                web_identity_token: { type: string, writeOnly: true }
+                duration_seconds: { type: integer, minimum: 60, maximum: 3600, default: 3600 }
+                session_policy:
+                  type: string
+                  description: Optional IAM JSON restriction; cannot expand inherited permissions.
+      responses:
+        '201':
+          description: One-time credential response; expiration is capped by JWT and provider session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_key: { type: string }
+                  secret_key: { type: string }
+                  session_token: { type: string }
+                  expires_at: { type: integer }
+                  subject_id: { type: string }
+        '400':
+          description: Invalid duration or session policy
+        '401':
+          description: Invalid identity token, expired identity, disabled provider or invalid policy mapping
+  /_admin/v1/auth/oidc/start:
+    post:
+      security: []
+      summary: OIDC start delegated by the BFF
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider_id]
+              properties:
+                provider_id: { type: string }
+      responses:
+        '200':
+          description: Authorization URL and state
+        '401':
+          description: Invalid identity or flow
+  /_admin/v1/auth/oidc/callback:
+    post:
+      security: []
+      summary: OIDC callback delegated by the BFF
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state, code]
+              properties:
+                state: { type: string }
+                code: { type: string }
+      responses:
+        '200':
+          description: Opaque login token and independent federated identity
+        '401':
+          description: Invalid identity or flow
+  /_admin/v1/auth/oidc/logout:
+    post:
+      security: []
+      summary: OIDC logout delegated by the BFF
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        '204':
+          description: Session revoked
+        '401':
+          description: Invalid identity or flow
+  /_admin/v1/oidc/providers:
+    get:
+      summary: List persisted OIDC provider configurations (deployment administrator only)
+      description: Client secrets are always empty in responses; has_secret indicates a stored secret. login_supported is true. Enabled providers support authorization-code login and web-identity credentials.
+      responses:
+        "200":
+          description: Provider list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  login_supported:
+                    type: boolean
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OIDCProvider'
+        "403":
+          description: Deployment administrator required
+        "503":
+          description: OIDC storage unavailable or corrupt
+    post:
+      summary: Create an OIDC provider configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OIDCProvider'
+      responses:
+        "201":
+          description: Created; client_secret is redacted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OIDCProvider'
+        "400":
+          description: Invalid provider, URL, scope, credentials or policy reference
+        "409":
+          description: Provider ID already exists
+  /_admin/v1/oidc/providers/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+    patch:
+      summary: Replace provider configuration; ID is immutable
+      description: An empty client_secret preserves the existing encrypted secret. Other fields replace the configuration. Configuration changes invalidate existing provider sessions and temporary credentials.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OIDCProvider'
+      responses:
+        "200":
+          description: Updated; client_secret is redacted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OIDCProvider'
+        "404":
+          description: Provider not found
+    delete:
+      summary: Delete provider configuration
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Provider not found
   /_admin/v1/users:
     get:
       summary: Get managed users
@@ -903,6 +1127,50 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
   schemas:
+    OIDCProvider:
+      type: object
+      required: [provider_id, configuration_url, client_id, redirect_uri]
+      description: Provider configuration stored encrypted in ZigFS. Role Policy is a comma-separated list of existing policy names, not local User roles. Environment-managed providers are imported at ZigFS startup and are read-only through this API.
+      properties:
+        provider_id:
+          type: string
+        display_name:
+          type: string
+        configuration_url:
+          type: string
+        client_id:
+          type: string
+        client_secret:
+          type: string
+        scopes:
+          type: string
+        audiences:
+          type: string
+        redirect_uri:
+          type: string
+        claim_name:
+          type: string
+        claim_prefix:
+          type: string
+        role_policy:
+          type: string
+        groups_claim:
+          type: string
+        roles_claim:
+          type: string
+        email_claim:
+          type: string
+        username_claim:
+          type: string
+        enabled:
+          type: boolean
+        environment_managed:
+          type: boolean
+          readOnly: true
+        has_secret:
+          type: boolean
+        dynamic_redirect:
+          type: boolean
     UserWrite:
       type: object
       required: [name, enabled, policies]
@@ -1027,6 +1295,10 @@ components:
       additionalProperties: false
       required: [authenticated, username, expires_at]
       properties:
+        display_name: { type: string, description: Display-only external username claim }
+        email: { type: string, description: Display-only external email claim }
+        federated: { type: boolean }
+        refreshable: { type: boolean }
         authenticated:
           type: boolean
           const: true
@@ -1540,10 +1812,15 @@ components:
       additionalProperties: false
       description: >-
         V1 使用 ZigFS 当前可见 Object Metadata 汇总逻辑对象字节数。
-        底层文件系统物理容量不通过不可移植的 Transport 系统调用推测，
-        因此未配置正式容量 Backend 时 total 和 available 为 null。
-      required: [measurement, total, used, available]
+        Linux/macOS 通过容量 Backend 的 fstatvfs 读取数据目录所在文件系统的容量。
+        physical_used 是总块数减空闲块数；available 是调用者可用容量，保留块不算已用。
+        不支持的平台或读取失败返回 null；used 始终为逻辑对象字节数。
+      required: [measurement, total, used, available, physical_used]
       properties:
+        physical_used:
+          type: [integer, "null"]
+          format: int64
+          minimum: 0
         measurement:
           type: string
           const: logical_object_bytes
@@ -1610,6 +1887,17 @@ components:
       additionalProperties: false
       required: [partitions, next_partition, last_scan]
       properties:
+        running:
+          type: boolean
+        last_completed_at:
+          type: [integer, "null"]
+          description: Unix seconds of last successful scan since startup; retained after failed attempts.
+        last_duration_ms:
+          type: [integer, "null"]
+          description: Monotonic duration of last completed attempt, including failure.
+          minimum: 0
+        last_attempt_succeeded:
+          type: [boolean, "null"]
         partitions:
           type: integer
           const: 16

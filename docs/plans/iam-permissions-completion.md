@@ -38,7 +38,8 @@
 | 用户登录 | `zigfs/src/transport/http.zig`、`auth/management_session.zig` | 管理登录、普通用户主体、身份版本和撤权已接入；会话失效后返回 401 并由 BFF 清理状态 |
 | 对象标签 | `zigfs/src/application/object_tag_store.zig`、`transport/s3.zig` | 单机持久化、XML/header、版本键、ExistingObjectTag、复制/POST/Multipart、恢复校验和 GC 联动已完成 |
 | Bucket Policy | `transport/s3_protocol.zig` | Get/Put/DeleteBucketPolicy、持久化、主体/角色/会话/匿名资源决策和公共访问约束已完成 |
-| 角色/组织 | `application/role_store.zig` | Account/Organization/Role/Session 稳定引用、信任策略、AssumeRole、ExternalId、SourceIdentity、SessionTags、撤销和引用冲突检查已完成 |
+| 角色/组织 | `application/role_store.zig` | Account/Organization/Role/Session 是独立于 User/Group 的身份联邦与 STS 模型；信任策略、AssumeRole、ExternalId、SourceIdentity、SessionTags、撤销和引用冲突检查已完成。普通 User 页面不提供 Role 关联 |
+| OIDC Provider | `zigfs-admin/web/src/features/settings/OIDCSettingsView.tsx` | Provider CRUD 已接通 Web → BFF → ZigFS；所有字段加密持久化，Secret 不回传，Role Policy 校验与引用冲突已接入。Discovery/JWKS、PKCE 登录、RS256 校验、Claim 授权、会话及 WebIdentity S3 临时凭证已接通；浏览器验收待用户执行 |
 | Go BFF | `zigfs-admin/server/internal/{router,handler,service,zigclient,contract,port}` | CRUD、Bearer/session 透传、错误映射、组织/角色/STS 和资源策略入口已同步；最终浏览器交互仍待手工验收 |
 | Web | `zigfs-admin/web/src/features/{identities,access-keys,policies}` | shadcn/ui CRUD、错误 toast、能力缓存失效、普通主体导航和角色/组织入口已同步；浏览器矩阵单独记录 |
 | 测试 | `conformance/user_access_keys.py` 与相邻 Zig/Go 测试 | Zig、Go、Web 构建、race、真实 SigV4 和 conformance 已通过；浏览器交互尚未统一执行 |
@@ -60,7 +61,7 @@
 
 ### 3.2 Identity 与资源策略
 
-- Identity Policy 绑定用户、组、角色；Bucket Policy 绑定桶并支持 Principal/NotPrincipal；Role Trust Policy 控制谁能 AssumeRole。
+- Identity Policy 只绑定 User 和 Group；普通 User 没有 Role 字段，也不能通过 User 编辑器获得 Role 权限。Role 是独立的身份联邦/STS 主体：由 OIDC/外部身份映射或 AssumeRole 产生角色会话，再使用角色策略；Bucket Policy 可单独引用 Role Principal。
 - 不把三种策略交给同一个无类型校验器，也不把 Principal 当成无效字段直接忽略。
 - 显式 Deny 在所有适用策略中优先；权限边界、Key 限制、会话策略不能被资源策略绕开。
 - 固定本地账户模型，再按 AWS/S3 规则列出同账户用户、跨账户主体、角色 ARN、角色会话 ARN、匿名 Principal 的决策表。资源策略与身份策略不能一律相交或一律相并。
@@ -92,7 +93,7 @@
 
 ### P1：身份、引用与存储生命周期
 
-- [x] 为 User/Group/Role/Key/Session/Account/Organization 设计稳定 ID、显示名、状态、版本、创建/更新时间和引用关系。
+- [x] 为 User/Group/Role/Key/Session/Account/Organization 设计稳定 ID、显示名、状态、版本、创建/更新时间和引用关系；User/Group 与 Role 的引用边界保持分离。
 - [x] 用户策略绑定、组成员、组策略绑定在单机原子事务/快照中提交；校验重复、缺失、非法引用和容量上限。
 - [x] 普通 PATCH 区分字段缺失、空值、空数组、false；省略字段不得清空关联；用户/组更新现在按字段合并保存。
 - [x] 明确删除规则：被引用策略/角色/组/组织返回依赖冲突或执行显式原子解绑；不进行隐式级联提权。
@@ -165,7 +166,7 @@
 
 - [x] 实现本地 Account/Organization/组织路径/成员关系；稳定 ID、管理权限、迁移、删除限制与持久化。
 - [x] 提供组织上下文（例如 PrincipalOrgID/Paths，以及确有资源所属组织时的 ResourceOrgID/Paths）；无组织主体按缺失值语义处理。
-- [x] 实现 Role：信任策略、权限策略、权限边界、最大会话期限、状态、主体 ID/ARN、关联管理接口。
+- [x] 实现独立 Role：信任策略、权限策略、权限边界、最大会话期限、状态、主体 ID/ARN、关联管理接口；Role 不作为 User/Group 的字段。
 - [x] 实现 STS AssumeRole：调用者授权、目标信任、ExternalId、SourceIdentity、SessionName、SessionTags/TransitiveTags、会话策略和期限约束；请求标签会进入信任策略上下文，角色链在单机主体模型中拒绝未支持的跨链声明。
 - [x] 派生临时 AK/SK/Token 记录不可伪造的父身份/角色/会话链；撤销、角色禁用、角色修改与重启后均可重新授权。
 - [x] token/session context 不能由普通 S3 头/参数声明；AssumeRole 会重新校验调用者策略、目标信任、账户 ARN 和会话属性，普通 S3 请求不能伪造会话上下文。
@@ -413,3 +414,29 @@ git diff --check
 - P6 继续补齐主体标签与上下文边界：Role PrincipalTag 持久化并注入请求上下文，SessionTag 优先覆盖角色标签；未实现的 SSE/KMS、ACL/grants、MFA、Object Lock 请求头明确拒绝，避免策略条件虚假放行；对象标签删除改为物理清理并增加旁路记录恢复校验入口。
 - 测试阶段记录：Go `go test ./...` 与 `go test -race ./...` 已通过；Zig `zig build test` 已通过（231 tests）；Web `corepack pnpm --dir zigfs-admin/web run build` 已通过；真实 `user_access_keys.py` 已通过完整 SigV4、策略、用户/组继承、撤权、重启持久化和删除重建矩阵。
 - Role/STS 当前已接入单机闭环：`AssumeRole` 签发带 session token 的临时凭证，角色策略/权限边界在每次 CredentialService 解析时重新读取，角色主体进入 S3 IAM context；角色会话可持久化、列出、撤销，删除角色/组织会检查引用冲突。ExternalId、SourceIdentity、SessionTags、角色链和跨账户信任仍按后续清单实现。
+
+### 2026-11-02 OIDC Provider 配置接入
+
+- [x] 管理员专用 Provider 列表/新增/编辑/删除 API；固定 ID，重复 ID 返回 409，缺失记录返回 404。
+- [x] `.zigfs/system/oidc-providers.enc` 使用现有凭证主密钥和 AES-256-GCM 加密，原子替换并同步；BFF 不读写文件。
+- [x] Secret 不回传；编辑留空保留原值；引用的 Policy 必须存在且删除时返回冲突。
+- [x] 前端 Save、列表选择、编辑、删除确认、错误 toast、失败保留草稿和列表重试接通。
+- [x] `conformance/oidc_providers.py --admin-bin /tmp/zigfs-admin-oidc-qa` 真实链路通过，覆盖 CRUD、重启、损坏文件、策略引用、401/403/409、加密及脱敏。
+- [x] OIDC Discovery/JWKS、Authorization Code + PKCE、一次性 state/nonce、RS256 JWT issuer/audience/签名/时效验证、Claim 到 Policy 求值、加密持久化登录会话及 WebIdentity STS 已接通。
+- [x] Provider 修改/停用/删除重建后旧会话与 S3 临时凭证失效；策略文档修改即时参与授权；退出登录撤销服务端会话。
+- [x] BFF Cookie/回调拒绝单测、Zig Claim/URL/配置版本单测及本地 IdP → BFF → ZigFS → SigV4 S3 回归通过。
+- [ ] 浏览器人工验收：登录按钮、IdP 跳转、取消/失败 toast、退出、Provider 编辑后会话失效；见 Web 交互矩阵 W08。
+- OIDC 专项 `zig test src/root.zig --test-filter OIDC` 通过（含 6 个 OIDC 专项用例）；`go test ./...`、Web 生产构建通过。
+- 全量 `zig build test` 已通过。修正既有 multipart 测试的漏签 Copy Range、非末片不足 5 MiB、两片 ETag 仍预期 `-1` 等旧预期；没有放宽服务端校验。浏览器验收仍由用户执行。
+- 支持范围及部署说明见 [oidc-login.md](../oidc-login.md)：RS256、Code + PKCE、两种客户端密钥认证；未支持的刷新令牌、其他签名算法、资料同步与 STS 参数明确列出。
+
+
+### 2026-11-02 OIDC 扩展能力
+
+- [x] 外部 Username/Email Claim 读取、登录/续期同步和账号菜单展示；内部主体仍与普通 User 隔离。
+- [x] Refresh Token 加密保存、单次交换与轮换、绝对期限、主体/audience/nonce 校验及失败撤销；网页自动续期。
+- [x] RP 发起退出跳转 IdP；签名后通道 logout_token 验证、sid/sub 撤销和持久化 jti 防重放。
+- [x] RS/PS 256/384/512、ES256/384、Ed25519 的 JWT 验证与真实签名正负用例。
+- [x] `ZIGFS_OIDC_PROVIDERS` 启动导入、来源冲突拒绝、界面只读、配置版本和移除失效。
+- [x] AssumeRoleWithWebIdentity 请求参数（含 PolicyArns/ProviderId）、响应字段、12 小时期限制及托管策略限制接入；本地账户映射和 PackedPolicySize 语义见操作文档。
+- [ ] 浏览器新增交互验收仍由用户执行：资料显示、自动续期、跳转 IdP 退出、环境配置只读。HTTP 协议自动测试不替代浏览器验收。

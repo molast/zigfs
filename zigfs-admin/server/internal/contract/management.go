@@ -255,10 +255,11 @@ type UpdateAccessKeyRequest struct {
 }
 
 type StorageResponse struct {
-	Measurement string `json:"measurement"`
-	Total       *int64 `json:"total"`
-	Used        int64  `json:"used"`
-	Available   *int64 `json:"available"`
+	PhysicalUsed *int64 `json:"physical_used"`
+	Measurement  string `json:"measurement"`
+	Total        *int64 `json:"total"`
+	Used         int64  `json:"used"`
+	Available    *int64 `json:"available"`
 }
 
 type StorageScanReport struct {
@@ -274,9 +275,13 @@ type StorageScanReport struct {
 }
 
 type StorageScannerStatus struct {
-	Partitions    int                `json:"partitions"`
-	NextPartition int                `json:"next_partition"`
-	LastScan      *StorageScanReport `json:"last_scan"`
+	Running              bool               `json:"running"`
+	LastCompletedAt      *int64             `json:"last_completed_at"`
+	LastDurationMs       *int64             `json:"last_duration_ms"`
+	LastAttemptSucceeded *bool              `json:"last_attempt_succeeded"`
+	Partitions           int                `json:"partitions"`
+	NextPartition        int                `json:"next_partition"`
+	LastScan             *StorageScanReport `json:"last_scan"`
 }
 
 type ManagementHealthResponse struct {

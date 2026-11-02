@@ -10,6 +10,10 @@ pub const Principal = struct {
     username: []const u8,
     expires_at: i64,
     is_root: bool = false,
+    federated: bool = false,
+    display_name: []const u8 = "",
+    email: []const u8 = "",
+    refreshable: bool = false,
     documents: []const []const u8 = &.{},
     pub fn allows(self: Principal, a: std.mem.Allocator, action: []const u8, resource: []const u8, context: iam.Context) bool {
         return self.is_root or iam.allowsWithContext(a, self.documents, action, resource, context);
@@ -25,6 +29,16 @@ pub fn resolve(a: std.mem.Allocator, app: *Application, token: []const u8, now: 
         .expires_at = expires,
         .is_root = true,
     };
+    if (std.mem.startsWith(u8, token, "o1.")) {
+        if (token.len != 67) return null;
+        const io = app.io orelse return error.Unavailable;
+        const root = app.data_root orelse return error.Unavailable;
+        app.policy_mutex.lockUncancelable(io);
+        defer app.policy_mutex.unlock(io);
+        const oidc = @import("../application/oidc_auth.zig");
+        const identity = (try oidc.resolve(a, root, io, app.master_key.?.bytes, try oidc.digest(a, token), now)) orelse return null;
+        return .{ .id = identity.subject_id, .federated = true, .display_name = identity.display_name, .email = identity.email, .refreshable = identity.refresh_token.len > 0, .username = identity.username, .expires_at = identity.expires_at, .documents = try oidc.documents(a, root, io, identity) };
+    }
     const claims = session.validateUser(app.config.admin_session_secret, token, now) orelse return null;
     const io = app.io orelse return error.Unavailable;
     const root = app.data_root orelse return error.Unavailable;

@@ -1,3 +1,9 @@
+export interface OIDCProvider {
+  provider_id: string; display_name: string; enabled: boolean; configuration_url: string;
+  client_id: string; client_secret: string; has_secret?: boolean; environment_managed?: boolean; scopes: string; audiences: string;
+  dynamic_redirect: boolean; redirect_uri: string; claim_name: string; claim_prefix: string;
+  role_policy: string; groups_claim: string; roles_claim: string; email_claim: string; username_claim: string;
+}
 export interface ManagedIdentity { name: string; description: string; enabled: boolean; policies: string[]; tags_json?: string; updated_at: number }
 export interface ManagedUser extends ManagedIdentity { groups: string[] }
 export interface ManagedGroup extends ManagedIdentity { members: string[] }
@@ -47,6 +53,7 @@ export class ApiError extends Error {
 }
 
 export function createApiClient() {
+  let oidcRefresh: Promise<AdminSession> | undefined
   async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers)
     headers.set('Accept', 'application/json')
@@ -92,6 +99,12 @@ export function createApiClient() {
   }
 
   return {
+    oidcLoginProviders: () => request<{ items: { provider_id: string; display_name: string }[] }>('/api/v1/auth/oidc/providers'),
+    validateOIDCProvider: (value: OIDCProvider) => request<{ issuer: string; login_verified: boolean }>('/api/v1/oidc/validate', { method: 'POST', body: JSON.stringify(value) }),
+    listOIDCProviders: () => request<{ items: OIDCProvider[]; login_supported: boolean }>('/api/v1/oidc/providers'),
+    createOIDCProvider: (value: OIDCProvider) => request<OIDCProvider>('/api/v1/oidc/providers', { method: 'POST', body: JSON.stringify(value) }),
+    updateOIDCProvider: (value: OIDCProvider) => request<OIDCProvider>(`/api/v1/oidc/providers/${encodeURIComponent(value.provider_id)}`, { method: 'PATCH', body: JSON.stringify(value) }),
+    deleteOIDCProvider: (id: string) => request<void>(`/api/v1/oidc/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     listOrganizations: async () => (await request<{ items: Organization[] }>('/api/v1/organizations')).items,
     createOrganization: (value: Organization) => request<Organization>('/api/v1/organizations', { method: 'POST', body: JSON.stringify(value) }),
     updateOrganization: (value: Organization) => request<Organization>(`/api/v1/organizations/${encodeURIComponent(value.name)}`, { method: 'PATCH', body: JSON.stringify(value) }),
@@ -124,6 +137,11 @@ export function createApiClient() {
         method: 'POST',
         body: JSON.stringify({ username, password }),
       }),
+    refreshOIDC: () => {
+      if (!oidcRefresh) oidcRefresh = request<AdminSession>('/api/v1/auth/oidc/refresh', { method: 'POST' }).finally(() => { oidcRefresh = undefined })
+      return oidcRefresh
+    },
+    endOIDCSession: () => request<{ logout_url: string }>('/api/v1/auth/oidc/end-session', { method: 'POST' }),
     session: () => request<AdminSession>('/api/v1/auth/session'),
     logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
     system: () => request<SystemInfo>('/api/v1/system'),

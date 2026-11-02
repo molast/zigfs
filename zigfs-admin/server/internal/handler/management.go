@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -11,6 +12,8 @@ import (
 )
 
 type ManagementService interface {
+	OIDCAuth(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
+	OIDCProviders(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
 	ListGroups(ctx context.Context) (contract.GroupList, error)
 	GetGroup(ctx context.Context, name string) (contract.ManagedGroup, error)
 	CreateGroup(ctx context.Context, value contract.ManagedGroup) (contract.ManagedGroup, error)

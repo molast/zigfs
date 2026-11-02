@@ -8,6 +8,7 @@ pub fn main(init: std.process.Init) !void {
     var app = zigfs.application.Application.init(config);
     defer app.deinit(init.io);
     try app.initialize(init.io);
+    try zigfs.application.oidc_store.importEnvironment(init.arena.allocator(), app.data_root.?, init.io, app.master_key.?.bytes, init.environ_map.get("ZIGFS_OIDC_PROVIDERS") orelse "[]");
 
     if (std.mem.eql(u8, config.admin_username, "admin") and
         std.mem.eql(u8, config.admin_password, "zigfs-admin"))

@@ -365,6 +365,15 @@ pub const CredentialService = struct {
                     inherited_documents = documents;
                 }
             }
+        } else if (std.mem.startsWith(u8, credential.owner, "oidc:")) {
+            const oidc = @import("oidc_auth.zig");
+            const root = self.identity_root orelse return error.Unavailable;
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const session = (oidc.resolve(a, root, self.io, self.master_key.*, credential.owner["oidc:".len..], std.Io.Clock.real.now(self.io).toSeconds()) catch return error.Unavailable) orelse return error.CredentialDisabled;
+            subject_id = try self.allocator.dupe(u8, session.subject_id);
+            inherited_documents = oidc.documents(self.allocator, root, self.io, session) catch return error.Unavailable;
         } else if (std.mem.startsWith(u8, credential.owner, "role:")) {
             const role_store = @import("role_store.zig");
             const root = self.identity_root orelse return error.Unavailable;

@@ -3,6 +3,7 @@ import {
   Activity,
   ChevronDown,
   FolderOpen,
+  Fingerprint,
   HardDrive,
   KeyRound,
   LayoutDashboard,
@@ -20,10 +21,13 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { ApiError, createApiClient } from './api/client'
+import { useErrorToast } from './components/ToastProvider'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuGroup, DropdownMenuItem } from './components/ui/dropdown-menu'
+import { Button } from './components/ui/Button'
 import { useLoading } from './components/LoadingProvider'
 import { AccessKeysView } from './features/access-keys/AccessKeysView'
 import { IdentitiesView } from './features/identities/IdentitiesView'
-import { RolesView } from './features/roles/RolesView'
+import { OIDCSettingsView } from './features/settings/OIDCSettingsView'
 import { PoliciesView } from './features/policies/PoliciesView'
 import { LoginView } from './features/auth/LoginView'
 import { BucketDetailView } from './features/buckets/BucketDetailView'
@@ -62,17 +66,19 @@ const navigation: Array<{ label: string; items: NavItem[] }> = [
     { view: 'user-groups', label: 'User Groups', icon: UsersRound },
     { view: 'access-keys', label: 'Access Keys', icon: KeyRound },
     { view: 'policies', label: 'Policies', icon: ShieldCheck },
-    { view: 'roles', label: 'Roles', icon: ShieldCheck },
-    { view: 'organizations', label: 'Organizations', icon: UsersRound },
   ] },
   {
     label: '服务状态',
     items: [
       { view: 'storage', label: 'Storage', icon: HardDrive },
-      { view: 'system', label: 'System', icon: Activity },
+      { view: 'system', label: 'Monitoring', icon: Activity },
     ],
   },
-  { label: '配置', items: [{ view: 'settings', label: 'Settings', icon: Settings }] },
+  { label: '配置', items: [
+    { view: 'oidc-settings', label: 'OpenID', icon: Fingerprint },
+    // Keep System Setting as the final item in the navigation list.
+    { view: 'settings', label: 'System Setting', icon: Settings },
+  ] },
 ]
 
 const viewMeta: Record<View, { section: string; label: string }> = {
@@ -85,14 +91,14 @@ const viewMeta: Record<View, { section: string; label: string }> = {
   'access-keys': { section: 'Access Control', label: 'Access Keys' },
   policies: { section: 'Access Control', label: 'Policies' },
   storage: { section: 'System', label: 'Storage' },
-  system: { section: 'System', label: 'Runtime' },
-  settings: { section: 'Configuration', label: 'Settings' },
-  roles: { section: 'Access Control', label: 'Roles' },
-  organizations: { section: 'Access Control', label: 'Organizations' },
+  system: { section: 'Monitoring', label: 'Running Status' },
+  settings: { section: 'Configuration', label: 'System Setting' },
+  'oidc-settings': { section: 'Configuration', label: 'OpenID' },
 }
 
 export default function App() {
   const { withLoading } = useLoading()
+  const notifyError = useErrorToast()
   const [session, setSession] = useState<AdminSession | null>()
   const [route, setRoute] = useState<AppRoute>(() => parseAppRoute(window.location.pathname, window.location.search))
   const [availability, setAvailability] = useState<Availability>('checking')
@@ -119,7 +125,9 @@ export default function App() {
         try {
           setSession(await api.session())
         } catch (reason) {
-          if (reason instanceof ApiError && reason.status === 401) setSession(null)
+          if (reason instanceof ApiError && reason.status === 401) {
+            try { setSession(await api.refreshOIDC()) } catch { setSession(null) }
+          }
           else throw reason
         }
       } catch (reason) {
@@ -134,10 +142,21 @@ export default function App() {
   }, [api])
 
   useEffect(() => {
-    const expire = () => setSession(null)
+    let renewing = false
+    let active = true
+    const expire = async () => {
+      if (!session?.federated) { setSession(null); return }
+      if (renewing) return
+      renewing = true
+      try {
+        const next = await api.refreshOIDC()
+        if (active) setSession(next)
+      } catch { if (active) setSession(null) }
+      finally { renewing = false }
+    }
     window.addEventListener('zigfs:session-expired', expire)
-    return () => window.removeEventListener('zigfs:session-expired', expire)
-  }, [])
+    return () => { active = false; window.removeEventListener('zigfs:session-expired', expire) }
+  }, [api, session?.federated])
 
   useEffect(() => {
     const invalidate = () => {
@@ -154,6 +173,29 @@ export default function App() {
     window.addEventListener('popstate', syncRoute)
     return () => window.removeEventListener('popstate', syncRoute)
   }, [])
+
+  useEffect(() => {
+    if (!session?.federated || !session.refreshable) return
+    let active = true
+    let pending = false
+    const renew = async () => {
+      if (pending) return
+      pending = true
+      try {
+        const next = await api.refreshOIDC()
+        if (active) setSession(next)
+      } catch (error) {
+        if (active) {
+          notifyError(error instanceof Error ? error.message : '操作失败，请重试')
+          if (error instanceof ApiError && error.status === 401) setSession(null)
+        }
+      } finally { pending = false }
+    }
+    const timer = window.setInterval(() => void renew(), 30_000)
+    const onFocus = () => void renew()
+    window.addEventListener('focus', onFocus)
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener('focus', onFocus) }
+  }, [api, session?.federated, session?.refreshable, notifyError])
 
   if (availability === 'offline' || availability === 'not-ready') {
     return <ServiceUnavailable state={availability} retry={() => void bootstrap()} />
@@ -172,10 +214,12 @@ export default function App() {
   async function logout() {
     await withLoading('正在退出登录...', async () => {
       try {
-        await api.logout()
-      } finally {
-        setSession(null)
-      }
+        if (session?.federated) {
+          const result = await api.endOIDCSession()
+          setSession(null)
+          if (result.logout_url) window.location.assign(result.logout_url)
+        } else { await api.logout(); setSession(null) }
+      } catch (error) { notifyError(error instanceof Error ? error.message : '操作失败，请重试') }
     })
   }
 
@@ -192,7 +236,7 @@ export default function App() {
   const meta = viewMeta[view]
   const isBucketsActive = view === 'buckets' || view === 'bucket-detail' || view === 'objects'
   const visibleNavigation = session.is_root ? navigation : navigation.filter(group => group.label !== '服务状态' && group.label !== '配置')
-  const restrictedView = !session.is_root && (view === 'storage' || view === 'system' || view === 'settings')
+  const restrictedView = !session.is_root && (view === 'storage' || view === 'system' || view === 'settings' || view === 'oidc-settings')
 
   return (
     <div className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}${mobileSidebarOpen ? ' sidebar-open' : ''}${darkTheme ? ' theme-dark' : ''}`}>
@@ -254,18 +298,18 @@ export default function App() {
             <button className="topbar-icon" type="button" title={darkTheme ? '切换浅色主题' : '切换深色主题'} aria-label={darkTheme ? '切换浅色主题' : '切换深色主题'} onClick={() => setDarkTheme((current) => !current)}>
               {darkTheme ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}
             </button>
-            <details className="user-menu">
-              <summary aria-label="用户菜单"><span className="user-avatar">{session.username.slice(0, 1).toUpperCase()}</span><span className="user-name">{session.username}</span><ChevronDown className="user-menu-chevron" aria-hidden="true" /></summary>
-              <div className="user-menu-popover">
-                <span>当前身份</span>
-                <strong>{session.username}</strong>
-                <button type="button" onClick={() => void logout()}>退出登录</button>
-              </div>
-            </details>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild><Button variant="ghost" aria-label="用户菜单">{session.display_name || session.username}<ChevronDown data-icon="inline-end" /></Button></DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuLabel><div>{session.display_name || session.username}</div>{session.email && <div>{session.email}</div>}</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuGroup><DropdownMenuItem onSelect={() => void logout()}>退出登录</DropdownMenuItem></DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </header>
 
-        <main className={`content${view === 'bucket-detail' ? ' content-bucket-detail' : ''}`}>
+        <main className={`content${view === 'bucket-detail' ? ' content-bucket-detail' : view === 'oidc-settings' ? ' content-oidc' : ''}`}>
           {view === 'dashboard' && <DashboardView api={api} />}
           {view === 'buckets' && <BucketsView api={api} onOpenBucket={(name) => {
             navigate('bucket-detail', name)
@@ -282,8 +326,7 @@ export default function App() {
           {view === 'users' && <IdentitiesView key="users" kind="users" api={api} />}
           {view === 'user-groups' && <IdentitiesView key="groups" kind="groups" api={api} />}
           {view === 'policies' && <PoliciesView api={api} />}
-          {view === 'roles' && <RolesView api={api} kind="roles" />}
-          {view === 'organizations' && <RolesView api={api} kind="organizations" />}
+          {!restrictedView && view === 'oidc-settings' && <OIDCSettingsView api={api} />}
           {restrictedView && <AccessDeniedView />}
           {!restrictedView && view === 'storage' && <StorageView api={api} />}
           {!restrictedView && view === 'system' && <SystemView api={api} />}

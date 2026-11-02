@@ -1,5 +1,6 @@
+import { createApiClient } from '../../api/client'
 import { useErrorToast } from '../../components/ToastProvider'
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
 import { useLoading } from '../../components/LoadingProvider'
 import { Button } from '../../components/ui/Button'
 import { Card } from '../../components/ui/Card'
@@ -16,6 +17,16 @@ export function LoginView({ onLogin }: LoginViewProps) {
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const notifyError = useErrorToast()
+  const [providers, setProviders] = useState<{ provider_id: string; display_name: string }[]>([])
+  useEffect(() => {
+    let active = true
+    void createApiClient().oidcLoginProviders().then(result => { if (active) setProviders(result.items) }).catch(() => {})
+    if (new URLSearchParams(window.location.search).has('oidc_error')) {
+      notifyError('OIDC 登录失败，请检查身份提供商配置或重试。')
+      window.history.replaceState(null, '', window.location.pathname)
+    }
+    return () => { active = false }
+  }, [notifyError])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -71,6 +82,7 @@ export function LoginView({ onLogin }: LoginViewProps) {
           <Button className="w-full" type="submit" disabled={submitting} aria-busy={submitting}>登录</Button>
           </FieldGroup>
           </form>
+          {providers.length > 0 && <div className="mt-4 flex flex-col gap-2">{providers.map(provider => <Button key={provider.provider_id} variant="outline" disabled={submitting} onClick={() => { window.location.assign(`/api/v1/auth/oidc/${encodeURIComponent(provider.provider_id)}/start`) }}>使用 {provider.display_name || provider.provider_id} 登录</Button>)}</div>}
           </div>
         </Card>
       </div>

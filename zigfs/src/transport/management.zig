@@ -29,6 +29,10 @@ pub const Route = struct {
 
 // Role and organization routes are persisted in the same local authorization root.
 pub const routes = [_]Route{
+    .{ .method = .get, .path = "/_admin/v1/oidc/providers" },
+    .{ .method = .post, .path = "/_admin/v1/oidc/providers" },
+    .{ .method = .patch, .path = "/_admin/v1/oidc/providers/:id" },
+    .{ .method = .delete, .path = "/_admin/v1/oidc/providers/:id" },
     .{ .method = .get, .path = "/_admin/v1/users/:name/access-keys" },
     .{ .method = .post, .path = "/_admin/v1/users/:name/access-keys" },
     .{ .method = .patch, .path = "/_admin/v1/users/:name/access-keys/:id" },
@@ -101,6 +105,8 @@ pub fn serveRequest(
     const target = request.head.target;
     const path = requestPath(target);
 
+    if (std.mem.eql(u8, path, api_prefix ++ "/oidc/providers") or std.mem.startsWith(u8, path, api_prefix ++ "/oidc/providers/")) return serveOidc(request, application, request_id, path, caller);
+    if (std.mem.eql(u8, path, api_prefix ++ "/oidc/validate")) return validateOidcProvider(request, application, request_id, caller);
     if (std.mem.eql(u8, path, api_prefix ++ "/sts/assume-role")) return serveAssumeRole(request, application, request_id, caller);
     if (std.mem.eql(u8, path, api_prefix ++ "/role-sessions") or std.mem.startsWith(u8, path, api_prefix ++ "/role-sessions/")) return serveRoleSessions(request, application, request_id, path);
 
@@ -1462,11 +1468,13 @@ fn serveStorage(
 ) !std.http.Status {
     const service = application.managementService() orelse return respondNotReady(request, request_id);
     const snapshot = service.snapshot() catch |err| return respondManagementError(request, request_id, err);
+    const capacity = if (application.data_root) |root| @import("../backend/filesystem_capacity.zig").read(root) else null;
     return respondJson(request, request_id, .ok, .{
         .measurement = "logical_object_bytes",
-        .total = @as(?u64, null),
+        .total = if (capacity) |value| @as(?u64, value.total) else null,
         .used = snapshot.object_bytes,
-        .available = @as(?u64, null),
+        .available = if (capacity) |value| @as(?u64, value.available) else null,
+        .physical_used = if (capacity) |value| @as(?u64, value.used) else null,
     });
 }
 
@@ -1478,6 +1486,10 @@ fn serveStorageScannerStatus(
     const snapshot = application.storageScannerSnapshot() orelse return respondNotReady(request, request_id);
     return respondJson(request, request_id, .ok, .{
         .partitions = @import("../application/object_gc.zig").partition_count,
+        .running = snapshot.running,
+        .last_completed_at = snapshot.last_completed_at,
+        .last_duration_ms = snapshot.last_duration_ms,
+        .last_attempt_succeeded = snapshot.last_attempt_succeeded,
         .next_partition = snapshot.next_partition,
         .last_scan = snapshot.last_scan,
     });
@@ -2267,6 +2279,14 @@ fn servePolicies(request: *std.http.Server.Request, app: *Application, request_i
         const roles = role_store.load(root, io, app.allocator) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot check role policy attachments");
         defer roles.deinit();
         if (role_store.policyInUse(roles.value, name)) return respondError(request, request_id, .conflict, "PolicyInUse", "detach this policy from roles before deleting it");
+        const oidc = @import("../application/oidc_store.zig");
+        const key = if (app.master_key) |k| k.bytes else return respondNotReady(request, request_id);
+        const providers = oidc.load(root, io, app.allocator, key) catch return respondError(request, request_id, .service_unavailable, "OidcStorageUnavailable", "cannot check provider policy references");
+        defer providers.deinit();
+        for (providers.value.items) |provider| {
+            var names = std.mem.splitScalar(u8, provider.role_policy, ',');
+            while (names.next()) |raw| if (std.mem.eql(u8, std.mem.trim(u8, raw, " \t"), name)) return respondError(request, request_id, .conflict, "PolicyInUse", "detach this policy from OIDC providers before deleting it");
+        }
     }
     var items: std.ArrayList(store.Policy) = .empty;
     defer items.deinit(app.allocator);
@@ -2312,7 +2332,11 @@ fn serveRoles(comptime organization: bool, request: *std.http.Server.Request, ap
             var items: std.ArrayList(role_store.Organization) = .empty;
             var found = false;
             for (snapshot.organizations) |item| {
-                if (std.mem.eql(u8, item.name, raw_name.?)) { found = true; if (!role_store.validName(input.name)) return respondError(request, request_id, .bad_request, "InvalidName", "invalid organization name"); try items.append(a, .{ .id = item.id, .name = input.name, .enabled = input.enabled, .paths = input.paths, .members = input.members }); } else try items.append(a, item);
+                if (std.mem.eql(u8, item.name, raw_name.?)) {
+                    found = true;
+                    if (!role_store.validName(input.name)) return respondError(request, request_id, .bad_request, "InvalidName", "invalid organization name");
+                    try items.append(a, .{ .id = item.id, .name = input.name, .enabled = input.enabled, .paths = input.paths, .members = input.members });
+                } else try items.append(a, item);
             }
             if (!found) return respondError(request, request_id, .not_found, "OrganizationNotFound", "organization does not exist");
             snapshot.organizations = items.items;
@@ -2324,7 +2348,12 @@ fn serveRoles(comptime organization: bool, request: *std.http.Server.Request, ap
         var found = false;
         const policies = try @import("../application/policy_store.zig").load(root, io, a);
         for (snapshot.roles) |item| {
-            if (std.mem.eql(u8, item.name, raw_name.?)) { found = true; if (!role_store.validName(input.name)) return respondError(request, request_id, .bad_request, "InvalidName", "invalid role name"); try role_store.validate(a, .{ .id = item.id, .name = input.name, .organization_id = input.organization_id, .enabled = input.enabled, .max_session_seconds = input.max_session_seconds, .trust_policy = input.trust_policy, .policies = input.policies, .permissions_boundary = input.permissions_boundary, .tags_json = input.tags_json }, snapshot, policies.value); try items.append(a, .{ .id = item.id, .name = input.name, .organization_id = input.organization_id, .enabled = input.enabled, .max_session_seconds = input.max_session_seconds, .trust_policy = input.trust_policy, .policies = input.policies, .permissions_boundary = input.permissions_boundary, .tags_json = input.tags_json }); } else try items.append(a, item);
+            if (std.mem.eql(u8, item.name, raw_name.?)) {
+                found = true;
+                if (!role_store.validName(input.name)) return respondError(request, request_id, .bad_request, "InvalidName", "invalid role name");
+                try role_store.validate(a, .{ .id = item.id, .name = input.name, .organization_id = input.organization_id, .enabled = input.enabled, .max_session_seconds = input.max_session_seconds, .trust_policy = input.trust_policy, .policies = input.policies, .permissions_boundary = input.permissions_boundary, .tags_json = input.tags_json }, snapshot, policies.value);
+                try items.append(a, .{ .id = item.id, .name = input.name, .organization_id = input.organization_id, .enabled = input.enabled, .max_session_seconds = input.max_session_seconds, .trust_policy = input.trust_policy, .policies = input.policies, .permissions_boundary = input.permissions_boundary, .tags_json = input.tags_json });
+            } else try items.append(a, item);
         }
         if (!found) return respondError(request, request_id, .not_found, "RoleNotFound", "role does not exist");
         snapshot.roles = items.items;
@@ -2405,6 +2434,7 @@ fn serveAssumeRole(request: *std.http.Server.Request, app: *Application, request
     if ((input.external_id != null and !role_store.validSessionAttribute(input.external_id.?, 1024)) or (input.source_identity != null and !role_store.validSessionAttribute(input.source_identity.?, 128)) or !role_store.validTagsJson(input.session_tags_json) or !role_store.validTagsJson(input.transitive_tag_keys_json)) return respondError(request, request_id, .bad_request, "InvalidSessionAttributes", "invalid external id, source identity, or session tags");
     if (input.session_policy) |policy| _ = @import("../auth/iam_policy.zig").validateDocument(a, policy, .session) catch return respondError(request, request_id, .bad_request, "InvalidSessionPolicy", "invalid session policy");
     const loaded = role_store.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot read roles");
+    if (caller.federated) return respondError(request, request_id, .forbidden, "AccessDenied", "OIDC identities use web-identity credentials rather than local user role trust");
     const role = role_store.findRole(loaded.value, input.role_id) orelse return respondError(request, request_id, .not_found, "RoleNotFound", "role does not exist");
     if (!role.enabled) return respondError(request, request_id, .forbidden, "RoleDisabled", "role is disabled");
     if (input.duration_seconds < 900 or input.duration_seconds > 43200 or input.duration_seconds > role.max_session_seconds) return respondError(request, request_id, .bad_request, "InvalidDuration", "duration exceeds role limits");
@@ -2426,7 +2456,7 @@ fn serveAssumeRole(request: *std.http.Server.Request, app: *Application, request
                 try entries.append(a, .{ .key = try std.fmt.allocPrint(a, "aws:RequestTag/{s}", .{tag.key_ptr.*}), .value = tag.value_ptr.*.string });
             }
         }
-        const role_resource = try std.fmt.allocPrint(a, "arn:aws:iam::{s}:role/{s}", .{@import("../application/resource_policy_store.zig").account_id, role.name});
+        const role_resource = try std.fmt.allocPrint(a, "arn:aws:iam::{s}:role/{s}", .{ @import("../application/resource_policy_store.zig").account_id, role.name });
         const assume_context: @import("../auth/iam_policy.zig").Context = .{ .entries = entries.items, .kind = .identity };
         if (!caller.allows(a, "sts:AssumeRole", role_resource, assume_context)) return respondError(request, request_id, .forbidden, "AccessDenied", "caller policy does not allow sts:AssumeRole");
         if (!try role_store.canAssume(a, role, .{ .entries = entries.items, .principal_bindings = &.{} }, "sts:AssumeRole", role_resource)) return respondError(request, request_id, .forbidden, "AccessDenied", "trust policy does not allow this principal");
@@ -2690,4 +2720,150 @@ fn serveBucketResourcePolicy(request: *std.http.Server.Request, app: *Applicatio
     store.save(a, root, io, bucket.id, prepared) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot save bucket policy");
     audit(app, request_id, "put_bucket_policy", name, "updated");
     return respondJson(request, request_id, .ok, input);
+}
+
+fn serveOidc(request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8, caller: management_auth.Principal) !std.http.Status {
+    if (!caller.is_root) return respondError(request, request_id, .forbidden, "AccessDenied", "only the deployment administrator may configure OIDC");
+    const store = @import("../application/oidc_store.zig");
+    const root = app.data_root orelse return respondNotReady(request, request_id);
+    const io = app.io orelse return respondNotReady(request, request_id);
+    const key = if (app.master_key) |k| k.bytes else return respondNotReady(request, request_id);
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const prefix = api_prefix ++ "/oidc/providers";
+    const collection = std.mem.eql(u8, route_path, prefix);
+    const id = if (collection) "" else route_path[prefix.len + 1 ..];
+    if (!collection and !store.validId(id)) return respondError(request, request_id, .bad_request, "InvalidProvider", "invalid provider ID");
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
+    const loaded = store.load(root, io, a, key) catch return respondError(request, request_id, .service_unavailable, "OidcStorageUnavailable", "cannot read OIDC configuration");
+    const method = request.head.method;
+    if (method == .GET and collection) {
+        var items: std.ArrayList(store.Provider) = .empty;
+        for (loaded.value.items) |p| try items.append(a, p.redacted());
+        return respondJson(request, request_id, .ok, .{ .items = items.items, .login_supported = true });
+    }
+    if ((method == .POST and !collection) or ((method == .PATCH or method == .DELETE) and collection) or (method != .POST and method != .PATCH and method != .DELETE)) return respondMethodNotAllowed(request, request_id, "GET, POST, PATCH, DELETE");
+    var input: ?store.Provider = null;
+    if (method != .DELETE) input = (try parseJsonBody(store.Provider, request, a, request_id) orelse return .bad_request).value;
+    const lookup = if (method == .POST) input.?.provider_id else id;
+    var found = false;
+    var items: std.ArrayList(store.Provider) = .empty;
+    for (loaded.value.items) |p| {
+        if (!std.mem.eql(u8, p.provider_id, lookup)) {
+            try items.append(a, p);
+            continue;
+        }
+        found = true;
+        if (method == .POST) return respondError(request, request_id, .conflict, "ProviderExists", "provider ID already exists");
+        if (p.environment_managed) return respondError(request, request_id, .conflict, "EnvironmentManaged", "update this provider through ZIGFS_OIDC_PROVIDERS and restart ZigFS");
+        if (method == .PATCH and input.?.client_secret.len == 0) input.?.client_secret = p.client_secret;
+    }
+    if (method != .POST and !found) return respondError(request, request_id, .not_found, "ProviderNotFound", "provider does not exist");
+    if (input != null) input.?.environment_managed = false;
+    if (input != null) input.?.revision = try @import("../application/identity_store.zig").newId(a, io);
+    if (input) |value| {
+        if (!std.mem.eql(u8, value.provider_id, lookup)) return respondError(request, request_id, .bad_request, "InvalidProvider", "provider ID cannot be changed");
+        store.validate(value) catch return respondError(request, request_id, .bad_request, "InvalidProvider", "check provider ID, client credentials, URLs and openid scope");
+        const policies = @import("../application/policy_store.zig");
+        const policy_list = policies.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot validate policy references");
+        var names = std.mem.splitScalar(u8, value.role_policy, ',');
+        while (names.next()) |raw| {
+            const name = std.mem.trim(u8, raw, " \t");
+            if (name.len == 0) continue;
+            var exists = false;
+            for (policy_list.value) |policy| {
+                if (std.mem.eql(u8, policy.name, name)) exists = true;
+            }
+            if (!exists) return respondError(request, request_id, .bad_request, "PolicyNotFound", "Role Policy must reference existing policies");
+        }
+        try items.append(a, value);
+    }
+    store.save(root, io, a, key, .{ .items = items.items, .flows = loaded.value.flows, .sessions = loaded.value.sessions }) catch return respondError(request, request_id, .service_unavailable, "OidcStorageUnavailable", "cannot persist OIDC configuration");
+    audit(app, request_id, "mutate_oidc_provider", lookup, @tagName(method));
+    if (method == .DELETE) return respondNoContent(request, request_id);
+    return respondJson(request, request_id, if (method == .POST) .created else .ok, input.?.redacted());
+}
+
+pub fn serveOidcAuth(request: *std.http.Server.Request, app: *Application, request_id: []const u8) !std.http.Status {
+    const oidc = @import("../application/oidc_auth.zig");
+    const store = @import("../application/oidc_store.zig");
+    const root = app.data_root orelse return respondNotReady(request, request_id);
+    const io = app.io orelse return respondNotReady(request, request_id);
+    const key = if (app.master_key) |k| k.bytes else return respondNotReady(request, request_id);
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const path = requestPath(request.head.target);
+    if (std.mem.eql(u8, path, api_prefix ++ "/auth/oidc/providers") and request.head.method == .GET) {
+        app.policy_mutex.lockUncancelable(io);
+        defer app.policy_mutex.unlock(io);
+        const loaded = store.load(root, io, a, key) catch return respondError(request, request_id, .service_unavailable, "OidcUnavailable", "OIDC configuration unavailable");
+        const Public = struct { provider_id: []const u8, display_name: []const u8 };
+        var items: std.ArrayList(Public) = .empty;
+        for (loaded.value.items) |p| if (p.enabled and p.redirect_uri.len > 0) {
+            try items.append(a, .{ .provider_id = p.provider_id, .display_name = p.display_name });
+        };
+        return respondJson(request, request_id, .ok, .{ .items = items.items });
+    }
+    if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
+    if (std.mem.eql(u8, path, api_prefix ++ "/auth/oidc/start")) {
+        const input = (try parseJsonBody(struct { provider_id: []const u8 }, request, a, request_id) orelse return .bad_request).value;
+        const result = oidc.start(a, app, input.provider_id) catch return respondError(request, request_id, .bad_request, "OidcStartFailed", "provider unavailable or discovery/callback configuration invalid");
+        return respondJson(request, request_id, .ok, result);
+    }
+    if (std.mem.eql(u8, path, api_prefix ++ "/auth/oidc/logout")) {
+        const input = (try parseJsonBody(struct { token: []const u8 }, request, a, request_id) orelse return .bad_request).value;
+        oidc.logout(a, app, input.token) catch return respondError(request, request_id, .service_unavailable, "OidcUnavailable", "cannot revoke session");
+        return respondNoContent(request, request_id);
+    }
+    if (std.mem.eql(u8, path, api_prefix ++ "/auth/oidc/refresh")) {
+        const input = (try parseJsonBody(struct { token: []const u8 }, request, a, request_id) orelse return .bad_request).value;
+        const result = oidc.refresh(a, app, input.token) catch return respondError(request, request_id, .unauthorized, "OidcRefreshFailed", "session could not be renewed");
+        return respondJson(request, request_id, .ok, result);
+    }
+    if (std.mem.eql(u8, path, api_prefix ++ "/auth/oidc/end-session")) {
+        const input = (try parseJsonBody(struct { token: []const u8 }, request, a, request_id) orelse return .bad_request).value;
+        const url = oidc.endSession(a, app, input.token) catch return respondError(request, request_id, .service_unavailable, "OidcUnavailable", "session could not be revoked");
+        return respondJson(request, request_id, .ok, .{ .logout_url = url });
+    }
+    if (std.mem.eql(u8, path, api_prefix ++ "/auth/oidc/backchannel-logout")) {
+        const input = (try parseJsonBody(struct { provider_id: []const u8, logout_token: []const u8 }, request, a, request_id) orelse return .bad_request).value;
+        oidc.backchannelLogout(a, app, input.provider_id, input.logout_token) catch return respondError(request, request_id, .bad_request, "InvalidLogoutToken", "logout token could not be verified");
+        return respondNoContent(request, request_id);
+    }
+    if (std.mem.eql(u8, path, api_prefix ++ "/auth/oidc/web-identity")) {
+        const input = (try parseJsonBody(struct { provider_id: []const u8, web_identity_token: []const u8, duration_seconds: u64 = 3600, session_policy: []const u8 = "" }, request, a, request_id) orelse return .bad_request).value;
+        if (input.duration_seconds < 60 or input.duration_seconds > 3600) return respondError(request, request_id, .bad_request, "InvalidDuration", "duration must be between 60 and 3600 seconds");
+        if (input.session_policy.len > 0) @import("../auth/iam_policy.zig").validateDocument(a, input.session_policy, .session) catch return respondError(request, request_id, .bad_request, "InvalidPolicy", "invalid session restriction policy");
+        const identity = oidc.webIdentity(a, app, input.provider_id, input.web_identity_token) catch return respondError(request, request_id, .unauthorized, "InvalidIdentityToken", "web identity could not be verified");
+        const now = std.Io.Clock.real.now(io).toSeconds();
+        var issued = false;
+        defer if (!issued) oidc.logout(a, app, identity.token) catch {};
+        if (identity.expires_at < now + 60) return respondError(request, request_id, .unauthorized, "ExpiredToken", "identity token expired");
+        const ttl = @min(input.duration_seconds, @as(u64, @intCast(identity.expires_at - now)));
+        const credentials = app.credentialService() orelse return respondNotReady(request, request_id);
+        var result = credentials.createWithOptions(try std.fmt.allocPrint(a, "oidc:{s}", .{try oidc.digest(a, identity.token)}), .all, .{ .ttl_seconds = ttl, .name = "oidc-session", .policy_document = input.session_policy }) catch return respondError(request, request_id, .service_unavailable, "CredentialUnavailable", "cannot issue temporary credentials");
+        defer result.deinit(app.allocator);
+        issued = true;
+        return respondJson(request, request_id, .created, .{ .access_key = result.credential.access_key, .secret_key = result.secret_key, .session_token = result.session_token.?, .expires_at = now + @as(i64, @intCast(ttl)), .subject_id = identity.subject_id });
+    }
+    if (std.mem.eql(u8, path, api_prefix ++ "/auth/oidc/callback")) {
+        const input = (try parseJsonBody(struct { state: []const u8, code: []const u8 }, request, a, request_id) orelse return .bad_request).value;
+        const result = oidc.callback(a, app, input.state, input.code) catch return respondError(request, request_id, .unauthorized, "OidcLoginFailed", "OIDC login could not be verified");
+        return respondJson(request, request_id, .ok, result);
+    }
+    return respondError(request, request_id, .not_found, "NotFound", "unknown OIDC operation");
+}
+
+fn validateOidcProvider(request: *std.http.Server.Request, app: *Application, request_id: []const u8, caller: management_auth.Principal) !std.http.Status {
+    if (!caller.is_root) return respondError(request, request_id, .forbidden, "AccessDenied", "deployment administrator required");
+    if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const p = (try parseJsonBody(@import("../application/oidc_store.zig").Provider, request, a, request_id) orelse return .bad_request).value;
+    const issuer = @import("../application/oidc_auth.zig").validateDiscovery(a, app.io orelse return respondNotReady(request, request_id), p) catch return respondError(request, request_id, .bad_request, "OidcValidationFailed", "discovery or JWKS validation failed; check issuer URL, HTTPS and provider availability");
+    return respondJson(request, request_id, .ok, .{ .issuer = issuer, .discovery_valid = true, .login_verified = false });
 }

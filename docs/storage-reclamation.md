@@ -100,3 +100,21 @@ Full GC 与后台 Scanner 由 Scanner Mutex 串行化，避免两次回收同时
 
 手动 GC 不是 Metadata 修复工具。遇到 `CorruptMetadata` 或可达数据缺失时必须停止
 清理并按备份恢复流程处理，不能通过手工删除数据目录绕过一致性检查。
+
+
+## Monitoring telemetry
+
+`/_admin/v1/storage` keeps `used` as logical object bytes. Linux/macOS report
+`total`, `available`, and `physical_used` for the filesystem containing the
+opened ZigFS data root via `fstatvfs`. This includes other files on that volume;
+reserved capacity can make `used + available` differ from total. Unsupported
+platforms and measurement failures return null, never fabricated zeroes.
+
+Scanner status includes `running`, `last_completed_at` (Unix seconds),
+`last_duration_ms` (monotonic elapsed time), and `last_attempt_succeeded`.
+These are runtime observations, reset after restart. Failed attempts retain the
+last successful completion timestamp/report and expose failure separately.
+
+Use `cd zigfs && zig build test` so the capacity backend C shim and libc are
+linked. Direct `zig test src/root.zig` invocations additionally need
+`src/backend/filesystem_capacity.c -lc`.

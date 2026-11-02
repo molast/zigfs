@@ -6,6 +6,10 @@ export interface ApiErrorBody {
 }
 
 export interface AdminSession {
+  display_name?: string
+  email?: string
+  federated?: boolean
+  refreshable?: boolean
   subject_id: string
   is_root: boolean
   authenticated: boolean
@@ -167,6 +171,7 @@ export interface ListMultipartUploadsResponse {
 }
 
 export interface StorageInfo {
+  physical_used?: number | null
   measurement: 'logical_object_bytes'
   total: number | null
   used: number
@@ -186,6 +191,10 @@ export interface StorageScanReport {
 }
 
 export interface StorageScannerStatus {
+  running?: boolean
+  last_completed_at?: number | null
+  last_duration_ms?: number | null
+  last_attempt_succeeded?: boolean | null
   partitions: number
   next_partition: number
   last_scan: StorageScanReport | null

@@ -14,6 +14,7 @@ import (
 )
 
 type AuthService interface {
+	Logout(context.Context) error
 	Login(context.Context, contract.LoginRequest) (contract.LoginResponse, error)
 	Session(context.Context) (contract.SessionResponse, error)
 }
@@ -62,6 +63,10 @@ func (handler *Auth) Login(ctx *gin.Context) {
 }
 
 func (handler *Auth) Logout(ctx *gin.Context) {
+	if err := handler.service.Logout(ctx.Request.Context()); err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
 	ctx.Header("Cache-Control", "no-store")
 	ctx.SetSameSite(http.SameSiteStrictMode)
 	ctx.SetCookie(middleware.AdminSessionCookie, "", -1, "/api", "", false, true)

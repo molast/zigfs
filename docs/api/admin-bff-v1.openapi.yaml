@@ -11,6 +11,205 @@ servers:
 security:
   - zigfsSessionCookie: []
 paths:
+  /api/v1/auth/oidc/refresh:
+    post:
+      summary: Renew OIDC identity and synchronize profile and policies
+      description: Uses only the HttpOnly browser session cookie. Never returns tokens to JavaScript.
+      responses:
+        '200':
+          description: Updated public session profile
+        '401':
+          description: Session unavailable or renewal rejected
+  /api/v1/auth/oidc/end-session:
+    post:
+      summary: Revoke local session and obtain IdP logout URL
+      description: Uses only the HttpOnly browser session cookie. Never returns tokens to JavaScript.
+      responses:
+        '200':
+          description: logout_url, empty when IdP logout is unavailable
+        '401':
+          description: Session unavailable or renewal rejected
+  /api/v1/auth/oidc/{id}/backchannel-logout:
+    post:
+      security: []
+      summary: Verify signed IdP logout token and revoke matching federated sessions
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [logout_token]
+              properties:
+                logout_token: { type: string }
+      responses:
+        '200':
+          description: Matching sessions revoked
+        '400':
+          description: Invalid or replayed logout token
+  /api/v1/oidc/validate:
+    post:
+      summary: Validate discovery and JWKS availability (deployment administrator only)
+      description: Does not validate client credentials; complete a login to verify them.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OIDCProvider'
+      responses:
+        '200':
+          description: Discovery and JWKS available
+        '400':
+          description: Invalid provider or discovery response
+        '403':
+          description: Deployment administrator required
+  /api/v1/auth/oidc/providers:
+    get:
+      security: []
+      summary: List enabled login choices (provider_id and display_name only)
+      responses:
+        '200':
+          description: Public provider list
+  /api/v1/auth/oidc/web-identity:
+    post:
+      security: []
+      summary: Exchange a supported signed web identity JWT for temporary S3 credentials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider_id, web_identity_token]
+              properties:
+                provider_id: { type: string }
+                web_identity_token: { type: string, writeOnly: true }
+                duration_seconds: { type: integer, minimum: 60, maximum: 3600, default: 3600 }
+                session_policy:
+                  type: string
+                  description: Optional IAM JSON restriction; cannot expand inherited permissions.
+      responses:
+        '201':
+          description: One-time credential response; expiration is capped by JWT and provider session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_key: { type: string }
+                  secret_key: { type: string }
+                  session_token: { type: string }
+                  expires_at: { type: integer }
+                  subject_id: { type: string }
+        '400':
+          description: Invalid duration or session policy
+        '401':
+          description: Invalid identity token, expired identity, disabled provider or invalid policy mapping
+  /api/v1/auth/oidc/{id}/start:
+    get:
+      security: []
+      summary: Start code flow with PKCE and a five-minute HttpOnly state cookie
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '303':
+          description: Redirect to IdP or generic login error
+  /api/v1/auth/oidc/callback:
+    get:
+      security: []
+      summary: Verify state cookie and exchange the code through ZigFS
+      parameters:
+        - in: query
+          name: state
+          schema: { type: string }
+        - in: query
+          name: code
+          schema: { type: string }
+      responses:
+        '303':
+          description: HttpOnly session cookie and redirect home, or generic login error
+  /api/v1/oidc/providers:
+    get:
+      summary: List persisted OIDC provider configurations (deployment administrator only)
+      description: Client secrets are always empty in responses; has_secret indicates a stored secret. login_supported is true. Enabled providers support authorization-code login and web-identity credentials.
+      responses:
+        "200":
+          description: Provider list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  login_supported:
+                    type: boolean
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OIDCProvider'
+        "403":
+          description: Deployment administrator required
+        "503":
+          description: OIDC storage unavailable or corrupt
+    post:
+      summary: Create an OIDC provider configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OIDCProvider'
+      responses:
+        "201":
+          description: Created; client_secret is redacted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OIDCProvider'
+        "400":
+          description: Invalid provider, URL, scope, credentials or policy reference
+        "409":
+          description: Provider ID already exists
+  /api/v1/oidc/providers/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+    patch:
+      summary: Replace provider configuration; ID is immutable
+      description: An empty client_secret preserves the existing encrypted secret. Other fields replace the configuration. Configuration changes invalidate existing provider sessions and temporary credentials.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OIDCProvider'
+      responses:
+        "200":
+          description: Updated; client_secret is redacted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OIDCProvider'
+        "404":
+          description: Provider not found
+    delete:
+      summary: Delete provider configuration
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Provider not found
   /api/v1/users:
     get:
       summary: Get managed users
@@ -804,6 +1003,50 @@ components:
       name: zigfs_admin_session
       description: ZigFS 签发、Admin 仅中转的短期 Management Token。
   schemas:
+    OIDCProvider:
+      type: object
+      required: [provider_id, configuration_url, client_id, redirect_uri]
+      description: Provider configuration stored encrypted in ZigFS. Role Policy is a comma-separated list of existing policy names, not local User roles. Environment-managed providers are imported at ZigFS startup and are read-only through this API.
+      properties:
+        provider_id:
+          type: string
+        display_name:
+          type: string
+        configuration_url:
+          type: string
+        client_id:
+          type: string
+        client_secret:
+          type: string
+        scopes:
+          type: string
+        audiences:
+          type: string
+        redirect_uri:
+          type: string
+        claim_name:
+          type: string
+        claim_prefix:
+          type: string
+        role_policy:
+          type: string
+        groups_claim:
+          type: string
+        roles_claim:
+          type: string
+        email_claim:
+          type: string
+        username_claim:
+          type: string
+        enabled:
+          type: boolean
+        environment_managed:
+          type: boolean
+          readOnly: true
+        has_secret:
+          type: boolean
+        dynamic_redirect:
+          type: boolean
     UserWrite:
       type: object
       required: [name, enabled, policies]
