@@ -75,6 +75,12 @@ Admin 不直接访问数据目录，也不保存 Bucket、Object、版本、AK/S
 ./start.sh
 ```
 
+Windows PowerShell 或命令提示符请使用：
+
+```bat
+start.cmd
+```
+
 顶层菜单包含：
 
 1. 启动本地 ZigFS
