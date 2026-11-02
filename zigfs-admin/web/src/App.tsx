@@ -10,7 +10,6 @@ import {
   Fingerprint,
   HardDrive,
   KeyRound,
-  LayoutDashboard,
   LogOut,
   Menu,
   PanelLeftClose,
@@ -34,7 +33,6 @@ import { PoliciesView } from './features/policies/PoliciesView'
 import { LoginView } from './features/auth/LoginView'
 import { BucketDetailView } from './features/buckets/BucketDetailView'
 import { BucketsView } from './features/buckets/BucketsView'
-import { DashboardView } from './features/dashboard/DashboardView'
 import { ObjectsView } from './features/objects/ObjectsView'
 import { SettingsView } from './features/settings/SettingsView'
 import { StorageView } from './features/storage/StorageView'
@@ -61,8 +59,7 @@ interface NavItem {
 }
 
 const navigation: Array<{ label: string; items: NavItem[] }> = [
-  { get label() { return t('navigation.workspace') }, items: [{ view: 'dashboard', get label() { return t('navigation.overview') }, icon: LayoutDashboard }] },
-  { get label() { return t('navigation.objectStorage') }, items: [{ view: 'buckets', get label() { return t('navigation.buckets') }, icon: FolderOpen }] },
+  { get label() { return t('navigation.objectStorage') }, items: [{ view: 'buckets', get label() { return t('navigation.objectBrowser') }, icon: FolderOpen }] },
   { get label() { return t('navigation.accessControl') }, items: [
     { view: 'users', get label() { return t('navigation.users') }, icon: ContactRound },
     { view: 'user-groups', get label() { return t('navigation.userGroups') }, icon: UsersRound },
@@ -84,8 +81,7 @@ const navigation: Array<{ label: string; items: NavItem[] }> = [
 ]
 
 const viewMeta: Record<View, { section: string; label: string }> = {
-  dashboard: { get section() { return t('common.system') }, get label() { return t('navigation.overview') } },
-  buckets: { get section() { return t('common.buckets') }, get label() { return t('navigation.allBuckets') } },
+  buckets: { get section() { return t('navigation.objectStorage') }, get label() { return t('navigation.objectBrowser') } },
   'bucket-detail': { get section() { return t('common.buckets') }, get label() { return t('navigation.summary') } },
   objects: { get section() { return t('common.buckets') }, get label() { return t('navigation.objects') } },
   users: { get section() { return t('common.accessControl') }, get label() { return t('navigation.users') } },
@@ -290,7 +286,7 @@ export default function App() {
             </button>
             <button className="topbar-icon mobile-sidebar-toggle" type="button" aria-label={t('navigation.openNavigation')} onClick={() => setMobileSidebarOpen(true)}><Menu aria-hidden="true" /></button>
             <div className="breadcrumbs" aria-label={t('navigation.breadcrumb')}>
-              {view === 'objects' && selectedBucket ? <><span>{t('navigation.buckets')}</span><b>/</b><strong>{selectedBucket}</strong></> : <>
+              {view === 'objects' && selectedBucket ? <><span>{t('navigation.objectBrowser')}</span><b>/</b><strong>{selectedBucket}</strong></> : <>
                 <span>{meta.section}</span><b>/</b>
                 {(view === 'bucket-detail' || view === 'objects') && selectedBucket ? <><span>{selectedBucket}</span><b>/</b></> : null}
                 <strong>{meta.label}</strong>
@@ -316,7 +312,6 @@ export default function App() {
         </header>
 
         <main className={`content${view === 'bucket-detail' ? ' content-bucket-detail' : view === 'oidc-settings' ? ' content-oidc' : view === 'settings' ? ' content-system-settings' : ''}`}>
-          {view === 'dashboard' && <DashboardView api={api} />}
           {view === 'buckets' && <BucketsView api={api} onOpenBucket={(name) => {
             navigate('bucket-detail', name)
           }} />}

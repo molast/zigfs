@@ -1,10 +1,11 @@
 import { t } from '@/locales'
 import { useEffect, useId, useState } from 'react'
-import { Plus, Search } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import type { ApiClient, ManagedGroup, ManagedPolicy, ManagedUser } from '../../api/client'
 import { useToast } from '../../components/ToastProvider'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
+import { ToolbarSearch } from '../../components/ui/ToolbarControls'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../../components/ui/Dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/Tabs'
 import { Switch } from '../../components/ui/switch'
@@ -72,7 +73,7 @@ export function GroupEditorDialog({ api, initialGroup, users, policies, onSaved,
             <MultiChoice title={section === 'members' ? t('identities.users') : t('identities.policies')} placeholder={section === 'members' ? t('identities.selectUserGroupMembers') : t('identities.selectPolicies')} options={(section === 'members' ? users : policies).map(item => item.name)} selected={draft} onChange={setDraft} disabled={saving} />
             <div className="flex justify-end gap-2"><Button type="button" variant="outline" disabled={saving} onClick={() => setEditing(false)}>{t('identities.cancel')}</Button><Button type="submit" disabled={saving}>{saving ? t('identities.saving') : t('identities.save')}</Button></div>
           </form> : <>
-            <div className="group-edit-toolbar"><div className="identity-search"><Search aria-hidden="true" /><Input aria-label={section === 'members' ? t('identities.searchUser') : t('identities.searchPolicy')} placeholder={section === 'members' ? t('identities.searchUser') : t('identities.searchPolicy')} value={query} onChange={event => setQuery(event.target.value)} /></div><Button variant="outline" disabled={disabled} onClick={() => { setDraft([...group[section]]); setEditing(true) }}><Plus />{section === 'members' ? t('identities.editUser') : t('identities.editPolicy')}</Button></div>
+            <div className="group-edit-toolbar"><ToolbarSearch label={section === 'members' ? t('identities.searchUser') : t('identities.searchPolicy')} wrapperClassName="identity-search" placeholder={section === 'members' ? t('identities.searchUser') : t('identities.searchPolicy')} value={query} onChange={event => setQuery(event.target.value)} /><Button variant="outline" disabled={disabled} onClick={() => { setDraft([...group[section]]); setEditing(true) }}><Plus />{section === 'members' ? t('identities.editUser') : t('identities.editPolicy')}</Button></div>
             <div className="group-edit-table"><Table><TableHeader><TableRow><TableHead>{t('identities.name')}</TableHead></TableRow></TableHeader><TableBody>
               {!loading && !failed && names.map(name => <TableRow key={name}><TableCell>{name}</TableCell></TableRow>)}
               {(loading || failed || !names.length) && <TableRow><TableCell><Empty><EmptyHeader><EmptyTitle>{loading ? t('identities.loading') : failed ? t('identities.unableToLoadGroup') : t('identities.noDataMessage')}</EmptyTitle><EmptyDescription>{loading ? t('identities.loadingGroupDetails') : failed ? t('identities.pleaseRetry') : query ? t('identities.noMatchingResultsMessage') : t('identities.thereIsNothingToDisplayYet')}</EmptyDescription></EmptyHeader>{failed && <Button variant="outline" onClick={() => setReload(value => value + 1)}>{t('identities.retry')}</Button>}</Empty></TableCell></TableRow>}

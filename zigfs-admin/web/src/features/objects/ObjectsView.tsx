@@ -18,7 +18,6 @@ import {
   Play,
   RefreshCw,
   RotateCcw,
-  Search,
   Trash2,
   Undo2,
   Upload,
@@ -29,6 +28,7 @@ import { ActionMenu } from '../../components/ActionMenu'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
 import { useErrorToast, useToast } from '../../components/ToastProvider'
+import { ToolbarControls, ToolbarRefreshButton, ToolbarSearch } from '../../components/ui/ToolbarControls'
 import type { AccessKey, Bucket, MultipartUpload, MultipartUploadSummary, ObjectSummary, ObjectVersion, PresignObjectResponse } from '../../types/api'
 import {
   choosePartSize,
@@ -1453,30 +1453,26 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
               <span>{t('objects.access')} <b>{t('objects.private')}</b></span>
             </div>
           </div>
-          <label className="search-box">
-            <Search aria-hidden="true" />
-            <input
-              aria-label={t('objects.searchObjectKeys')}
-              placeholder={t('objects.searchObjectKeysPartialMatch')}
-              value={searchInput}
-              onChange={(event) => setSearchInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key !== 'Enter') return
-                event.preventDefault()
-                setSearchQuery(searchInput.trim())
-              }}
-            />
-        </label>
         </div>
-        <div className="toolbar-actions object-toolbar-actions">
+        <ToolbarControls className="object-toolbar-actions">
+          <ToolbarSearch
+            label={t('objects.searchObjectKeys')}
+            placeholder={t('objects.searchObjectKeysPartialMatch')}
+            value={searchInput}
+            onChange={(event) => setSearchInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return
+              event.preventDefault()
+              setSearchQuery(searchInput.trim())
+            }}
+          />
           <button className={`secondary-button rewind-button${viewMode === 'versions' ? ' active' : ''}`} type="button" onClick={openRewind} disabled={!bucket} title={viewMode === 'versions' ? t('objects.backToCurrentObjects') : t('objects.openVersionHistory')} aria-label={viewMode === 'versions' ? t('objects.backToCurrentObjects') : t('objects.openVersionHistory')} aria-pressed={viewMode === 'versions'}>
             <Undo2 className="button-icon" aria-hidden="true" />{t('objects.rewind')}</button>
           <input ref={fileInput} className="hidden-file-input" type="file" multiple onChange={selectFile} aria-label={t('objects.selectFilesToUpload')} disabled={uploading} />
           <button className="primary-button" type="button" onClick={() => fileInput.current?.click()} disabled={!bucket || !accessKey || uploading}>
             <Upload className="button-icon" aria-hidden="true" />{t('objects.uploadFiles')}</button>
-          <button className="secondary-button refresh-action-button" type="button" onClick={() => void load(true)} disabled={!bucket || loading} aria-busy={loading}>
-            <RefreshCw className={`button-icon${loading ? ' spinning' : ''}`} aria-hidden="true" />{t('objects.refresh')}</button>
-        </div>
+          <ToolbarRefreshButton label={t('objects.refresh')} onClick={() => void load(true)} disabled={!bucket} busy={loading} />
+        </ToolbarControls>
       </div>
 
       <div className="object-location" aria-label={t('objects.currentObjectPath')}>

@@ -1,12 +1,13 @@
 import { t } from '@/locales'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ArrowDownUp, ArrowLeft, ChevronLeft, ChevronRight, Copy, Eraser, Plus, RefreshCw, Search, Shield, Trash2 } from 'lucide-react'
+import { ArrowDownUp, ArrowLeft, ChevronLeft, ChevronRight, Copy, Eraser, RefreshCw, Shield, Trash2 } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { Card } from '../../components/ui/Card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/Dialog'
 import { Input } from '../../components/ui/Input'
 import { Textarea } from '../../components/ui/Textarea'
+import { ToolbarControls, ToolbarCreateButton, ToolbarSearch } from '../../components/ui/ToolbarControls'
 import { useConfirm } from '../../components/ConfirmProvider'
 
 import type { ApiClient } from '../../api/client'
@@ -87,10 +88,10 @@ export function PoliciesView({ api }: { api: ApiClient }) {
     <section className="policies-page">
       <header className="page-header policies-header">
         <h2>{t('policies.iamPolicies')}</h2>
-        <div className="policies-header-actions">
-          <label className="search-box" aria-label={t('policies.searchPolicies')}><Search aria-hidden="true" /><Input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1) }} placeholder={t('policies.search')} /></label>
-          <Button type="button" onClick={openCreate}><Plus className="button-icon" aria-hidden="true" />{t('policies.newPolicy')}</Button>
-        </div>
+        <ToolbarControls className="policies-header-actions">
+          <ToolbarSearch label={t('policies.searchPolicies')} value={query} onChange={(event) => { setQuery(event.target.value); setPage(1) }} placeholder={t('policies.search')} />
+          <ToolbarCreateButton label={t('policies.newPolicy')} onClick={openCreate} />
+        </ToolbarControls>
       </header>
       <Card className="panel table-panel policies-panel">
         <div className="table-wrap"><table><thead><tr>
@@ -135,6 +136,9 @@ function CreatePolicy({ onCancel, onSave }: { onCancel: () => void; onSave: (pol
 
 function PolicyDetail({ api, policy, tab, setTab, document, setDocument, onBack, onDelete, onSave, onRefresh }: { api: ApiClient; onSave: () => Promise<void>; onRefresh: () => Promise<void>; policy: Policy; tab: 'summary' | 'users' | 'groups' | 'raw'; setTab: (tab: 'summary' | 'users' | 'groups' | 'raw') => void; document: string; setDocument: (document: string) => void; onBack: () => void; onDelete: () => void | Promise<void> }) {
   const statements = readStatements(document)
+  const [statementQuery, setStatementQuery] = useState('')
+  const normalizedStatementQuery = statementQuery.trim().toLocaleLowerCase()
+  const visibleStatements = normalizedStatementQuery ? statements.filter(statement => JSON.stringify(statement).toLocaleLowerCase().includes(normalizedStatementQuery)) : statements
   const toast = useToast()
   const [saving, setSaving] = useState(false)
   async function save() {
@@ -146,7 +150,7 @@ function PolicyDetail({ api, policy, tab, setTab, document, setDocument, onBack,
     <button className="policy-back-button" type="button" onClick={onBack}><ArrowLeft aria-hidden="true" /> <span>{t('policies.policy')}</span></button>
     <header className="policy-detail-header"><div className="policy-detail-identity"><Shield aria-hidden="true" /><div><h2>{policy.name}</h2><p>{t('policies.iamPolicy')}</p></div></div><div className="policy-detail-actions"><button className="danger-button" type="button" onClick={onDelete}><Trash2 className="button-icon" aria-hidden="true" />{t('policies.deletePolicy')}</button><button className="secondary-button" type="button" onClick={() => void onRefresh()}><RefreshCw className="button-icon" aria-hidden="true" />{t('policies.refresh')}</button></div></header>
     <div className="policy-detail-shell"><nav className="policy-detail-tabs" aria-label={t('policies.policySections')}>{([['summary', t('common.summary')], ['users', t('common.users')], ['groups', t('common.groups')], ['raw', t('common.rawPolicy')]] as const).map(([value, label]) => <button key={value} className={tab === value ? 'active' : ''} type="button" onClick={() => setTab(value)}>{label}</button>)}</nav><main className="policy-detail-content">
-      {tab === 'summary' && <><h3>{t('policies.policySummary')}</h3><div className="policy-statements"><div className="policy-statements-heading"><strong>{t('policies.statements')}</strong><label className="search-box"><Search aria-hidden="true" /><input placeholder={t('policies.search')} /></label></div>{statements.map((statement, index) => <Statement key={index} effect={statement.Effect} actions={statement.Action ?? statement.NotAction ?? []} resources={statement.Resource ?? statement.NotResource} notAction={Boolean(statement.NotAction)} notResource={Boolean(statement.NotResource)} />)}</div></>}
+      {tab === 'summary' && <><h3>{t('policies.policySummary')}</h3><div className="policy-statements"><div className="policy-statements-heading"><strong>{t('policies.statements')}</strong><ToolbarSearch label={t('policies.search')} placeholder={t('policies.search')} value={statementQuery} onChange={event => setStatementQuery(event.target.value)} /></div>{visibleStatements.map((statement, index) => <Statement key={index} effect={statement.Effect} actions={statement.Action ?? statement.NotAction ?? []} resources={statement.Resource ?? statement.NotResource} notAction={Boolean(statement.NotAction)} notResource={Boolean(statement.NotResource)} />)}{normalizedStatementQuery && visibleStatements.length === 0 && <p className="policy-statements-empty">{t('policies.noMatchingStatements')}</p>}</div></>}
       {tab === 'users' && <><h3>{t('policies.users')}</h3><PolicyAssignments api={api} name={policy.name} kind="users" /></>}
       {tab === 'groups' && <><h3>{t('policies.groups')}</h3><PolicyAssignments api={api} name={policy.name} kind="groups" /></>}
       {tab === 'raw' && <><h3>{t('policies.rawPolicy')}</h3><div className="raw-policy-wrap"><Textarea aria-label={t('policies.policyJson')} value={document} onChange={(event) => setDocument(event.target.value)} spellCheck={false} /><button className="icon-button raw-copy" type="button" aria-label={t('policies.copyPolicy')} onClick={() => void navigator.clipboard?.writeText(document)}><Copy aria-hidden="true" /></button></div><Button className="raw-save" type="button" disabled={saving} onClick={() => void save()}>{t('policies.save')}</Button></>}

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const SyncParentError = std.Io.Dir.OpenError || std.Io.File.SyncError;
 
@@ -7,7 +8,12 @@ pub fn syncDirectory(dir: std.Io.Dir, io: std.Io) std.Io.File.SyncError!void {
         .handle = dir.handle,
         .flags = .{ .nonblocking = false },
     };
-    try directory_file.sync(io);
+    directory_file.sync(io) catch |err| {
+        // Windows may report AccessDenied after flushing a directory because it
+        // cannot update its access time. File sync errors remain strict.
+        if (builtin.os.tag == .windows and err == error.AccessDenied) return;
+        return err;
+    };
 }
 
 pub fn syncParent(

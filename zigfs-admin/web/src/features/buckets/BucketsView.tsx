@@ -1,10 +1,14 @@
 import { t, getFormatLocale } from '@/locales'
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
-import { ArrowRight, Folder, FolderPlus, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
+import { ArrowRight, Folder, FolderPlus, Trash2, X } from 'lucide-react'
 import { ApiError, type ApiClient } from '../../api/client'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
 import { useErrorToast, useToast } from '../../components/ToastProvider'
+import { ToolbarControls, ToolbarCreateButton, ToolbarRefreshButton, ToolbarSearch } from '../../components/ui/ToolbarControls'
+import { Button } from '../../components/ui/Button'
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '../../components/ui/empty'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table'
 import type { Bucket } from '../../types/api'
 
 interface BucketsViewProps {
@@ -102,28 +106,14 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
 
   return (
     <section>
-      <header className="page-header">
-        <div>
-          <p className="eyebrow">{t('buckets.buckets')}</p>
-          <h2>{t('buckets.buckets')}</h2>
-          <p className="page-description">{t('buckets.organizeAndBrowseObjectStorageInZigfs')}</p>
-        </div>
-        <span className="count-badge">{buckets.length} {t('buckets.bucketCountUnit')}</span>
+      <header className="page-header buckets-header">
+        <h2>{t('navigation.objectBrowser')}</h2>
+        <ToolbarControls className="buckets-header-actions">
+          <ToolbarSearch label={t('buckets.searchBuckets')} placeholder={t('buckets.searchByBucketOrOwner')} value={query} onChange={(event) => setQuery(event.target.value)} />
+          <ToolbarCreateButton label={t('buckets.createBucket')} onClick={() => setShowCreate(true)} aria-haspopup="dialog" aria-expanded={showCreate} />
+          <ToolbarRefreshButton label={t('buckets.refresh')} onClick={() => void refresh()} busy={refreshing} />
+        </ToolbarControls>
       </header>
-      <div className="page-toolbar">
-        <div className="toolbar-leading">
-          <label className="search-box">
-            <Search aria-hidden="true" />
-            <input aria-label={t('buckets.searchBuckets')} placeholder={t('buckets.searchByBucketOrOwner')} value={query} onChange={(event) => setQuery(event.target.value)} />
-          </label>
-        </div>
-        <div className="toolbar-actions">
-          <button className="primary-button create-action-button" type="button" onClick={() => { setShowCreate(true) }} aria-haspopup="dialog" aria-expanded={showCreate}>
-            <Plus className="button-icon" aria-hidden="true" />{t('buckets.createBucket')}</button>
-          <button className="secondary-button refresh-action-button" type="button" onClick={() => void refresh()} disabled={refreshing} aria-busy={refreshing}>
-            <RefreshCw className={`button-icon${refreshing ? ' spinning' : ''}`} aria-hidden="true" />{t('buckets.refresh')}</button>
-        </div>
-      </div>
       {showCreate && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowCreate(false)}>
           <section className="lifecycle-modal credential-modal bucket-create-modal" role="dialog" aria-modal="true" aria-labelledby="bucket-create-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -144,34 +134,33 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
           </section>
         </div>
       )}
-      <section className="panel table-panel">
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>{t('buckets.bucket')}</th><th>{t('buckets.owner')}</th><th>{t('buckets.creationDate')}</th><th>{t('buckets.actions')}</th></tr></thead>
-            <tbody>
-              {filteredBuckets.map((bucket) => (
-                <tr key={bucket.name}>
-                  <td>
-                    <div className="bucket-cell"><Folder className="bucket-symbol" aria-hidden="true" /><button className="link-button bucket-link" onClick={() => onOpenBucket(bucket.name)}>{bucket.name}</button></div>
-                  </td>
-                  <td>{bucket.owner}</td>
-                  <td>{new Date(bucket.created_at).toLocaleString(getFormatLocale())}</td>
-                  <td className="table-actions">
-                    <button className="secondary-button" onClick={() => onOpenBucket(bucket.name)}><ArrowRight className="button-icon" aria-hidden="true" />{t('buckets.open')}</button>
-                    <button className="danger-button" onClick={() => void remove(bucket.name)}><Trash2 className="button-icon" aria-hidden="true" />{t('buckets.delete')}</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {filteredBuckets.length === 0 && (
-          <div className="empty-state empty-panel">
-            <strong>{buckets.length === 0 ? t('buckets.noBucketsYet') : t('buckets.noMatchingBuckets')}</strong>
-            <span>{buckets.length === 0 ? t('buckets.createYourFirstBucketToSeeItHere') : t('buckets.adjustYourSearchAndTryAgain')}</span>
-          </div>
-        )}
-      </section>
+      <div className="data-table-frame">
+        <Table>
+          <TableHeader><TableRow>
+            <TableHead>{t('buckets.bucket')}</TableHead>
+            <TableHead>{t('buckets.owner')}</TableHead>
+            <TableHead>{t('buckets.creationDate')}</TableHead>
+            <TableHead className="bucket-actions-cell">{t('buckets.actions')}</TableHead>
+          </TableRow></TableHeader>
+          <TableBody>
+            {filteredBuckets.map((bucket) => (
+              <TableRow key={bucket.name}>
+                <TableCell><div className="bucket-cell"><Folder className="bucket-symbol" aria-hidden="true" /><button className="link-button bucket-link" type="button" onClick={() => onOpenBucket(bucket.name)}>{bucket.name}</button></div></TableCell>
+                <TableCell>{bucket.owner}</TableCell>
+                <TableCell>{new Date(bucket.created_at).toLocaleString(getFormatLocale())}</TableCell>
+                <TableCell className="bucket-actions-cell"><div className="flex items-center justify-center gap-2">
+                  <Button variant="outline" size="sm" type="button" onClick={() => onOpenBucket(bucket.name)}><ArrowRight data-icon="inline-start" />{t('buckets.open')}</Button>
+                  <Button variant="destructive" size="sm" type="button" onClick={() => void remove(bucket.name)}><Trash2 data-icon="inline-start" />{t('buckets.delete')}</Button>
+                </div></TableCell>
+              </TableRow>
+            ))}
+            {filteredBuckets.length === 0 && <TableRow><TableCell colSpan={4} className="data-table-empty-cell"><Empty><EmptyHeader>
+              <EmptyTitle>{buckets.length === 0 ? t('buckets.noBucketsYet') : t('buckets.noMatchingBuckets')}</EmptyTitle>
+              <EmptyDescription>{buckets.length === 0 ? t('buckets.createYourFirstBucketToSeeItHere') : t('buckets.adjustYourSearchAndTryAgain')}</EmptyDescription>
+            </EmptyHeader></Empty></TableCell></TableRow>}
+          </TableBody>
+        </Table>
+      </div>
     </section>
   )
 }

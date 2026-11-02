@@ -1,4 +1,4 @@
-export type View = 'dashboard' | 'buckets' | 'bucket-detail' | 'objects' | 'users' | 'user-groups' | 'access-keys' | 'policies' | 'storage' | 'system' | 'settings' | 'oidc-settings'
+export type View = 'buckets' | 'bucket-detail' | 'objects' | 'users' | 'user-groups' | 'access-keys' | 'policies' | 'storage' | 'system' | 'settings' | 'oidc-settings'
 
 export interface AppRoute {
   view: View
@@ -21,7 +21,7 @@ export function parseAppRoute(pathname: string, search = ''): AppRoute {
   const segments = pathname.split('/').filter(Boolean)
   const hasTrailingSlash = pathname.length > 1 && pathname.endsWith('/')
   const query = new URLSearchParams(search)
-  if (segments.length === 0) return { view: 'dashboard', bucket: '', prefix: '' }
+  if (segments.length === 0) return { view: 'buckets', bucket: '', prefix: '' }
 
   if (segments[0] === 'buckets') {
     if (segments.length === 1) return { view: 'buckets', bucket: '', prefix: '' }
@@ -41,7 +41,7 @@ export function parseAppRoute(pathname: string, search = ''): AppRoute {
   }
 
   const view = segments.length === 1 ? staticRoutes[segments[0]] : undefined
-  return { view: view ?? 'dashboard', bucket: '', prefix: '' }
+  return { view: view ?? 'buckets', bucket: '', prefix: '' }
 }
 
 export function createAppRoute(view: View, bucket = '', prefix = ''): AppRoute {
@@ -53,7 +53,6 @@ export function createAppRoute(view: View, bucket = '', prefix = ''): AppRoute {
 
 export function appRoutePath(route: AppRoute): string {
   switch (route.view) {
-    case 'dashboard': return '/'
     case 'buckets': return '/buckets'
     case 'bucket-detail': return route.bucket ? `/buckets/${encodeURIComponent(route.bucket)}?view=configuration` : '/buckets'
     case 'objects': {

@@ -1,12 +1,13 @@
 import { t, getFormatLocale } from '@/locales'
 import { useCallback, useEffect, useId, useMemo, useState, type FormEvent } from 'react'
-import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, Pencil, Plus, Search, Trash2, UsersRound } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, Pencil, Plus, Trash2, UsersRound } from 'lucide-react'
 import type { ApiClient, GroupWrite, ManagedGroup, ManagedPolicy, ManagedUser, UserWrite } from '../../api/client'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useToast } from '../../components/ToastProvider'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
 import { Input } from '../../components/ui/Input'
+import { ToolbarSearch } from '../../components/ui/ToolbarControls'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../../components/ui/Dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/Tabs'
 import { Checkbox } from '../../components/ui/checkbox'
@@ -134,7 +135,7 @@ export function IdentitiesView({ kind, api }: { kind: Kind; api: ApiClient }) {
       <div className="flex items-center gap-2">{current && <Button variant="ghost" size="icon" aria-label={`Back to ${title}`} onClick={() => setSelected(null)}><ArrowLeft /></Button>}<h2>{current?.name ?? title}</h2></div>
       <div className="identity-header-actions">
         {current ? <><Button variant="outline" disabled={busy} onClick={() => setEditor({ value: current })}><Pencil />{t('identities.edit')}</Button><Button variant="destructive" disabled={busy} onClick={() => void remove([current.name])}><Trash2 />{t('identities.delete')}</Button></> : <>
-          <div className="identity-search"><Search aria-hidden="true" /><Input aria-label={`Search ${title}`} placeholder={isGroup ? t('identities.searchUserGroup') : t('identities.searchAccessUser')} value={query} onChange={event => { setQuery(event.target.value); setPage(1); setChecked([]) }} /></div>
+          <ToolbarSearch label={isGroup ? t('identities.searchUserGroup') : t('identities.searchAccessUser')} wrapperClassName="identity-search" placeholder={isGroup ? t('identities.searchUserGroup') : t('identities.searchAccessUser')} value={query} onChange={event => { setQuery(event.target.value); setPage(1); setChecked([]) }} />
           {!isGroup && <Button variant="outline" disabled={busy || !checked.length} onClick={() => void remove(checked)}><Trash2 />{t('identities.deleteSelected')}</Button>}
           <Button variant="outline" disabled={busy || !checked.length} onClick={() => setBatch(isGroup ? 'policies' : 'groups')}><UsersRound />{isGroup ? t('identities.assignPolicy') : t('identities.addToGroup')}</Button>
           <Button variant="outline" disabled={busy || !loaded} onClick={() => setEditor({ value: null })}><Plus />{isGroup ? t('identities.addUserGroup') : t('identities.addUser')}</Button>

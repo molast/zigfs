@@ -8,6 +8,7 @@ import { Button } from '../../components/ui/Button'
 import { Card } from '../../components/ui/Card'
 import { Input } from '../../components/ui/Input'
 import { Field, FieldGroup, FieldLabel } from '../../components/ui/field'
+import { LoginNetwork } from './LoginNetwork'
 
 interface LoginViewProps {
   darkTheme: boolean
@@ -48,10 +49,11 @@ export function LoginView({ onLogin, darkTheme }: LoginViewProps) {
   return (
     <main className="login-shell" style={{ colorScheme: darkTheme ? 'dark' : 'light' }}>
       <section className="login-branding">
+        <LoginNetwork />
         <div className="login-logo"><img className="brand-logo" src="/zigfs-logo.svg" alt="" aria-hidden="true" /><strong>ZigFS</strong></div>
         <div className="login-copy">
-          <h1>{t('auth.objectStorageConsole')}</h1>
-          <p>{t('auth.monitorServiceStatusAndManageBucketsObjectsAndAccess')}</p>
+          <h1>{t('auth.objectStorageOnYourTerms')}</h1>
+          <p>{t('auth.selfHostedStorageDescription')}</p>
         </div>
         <span className="login-version">ZigFS Admin v0.1.0</span>
       </section>
