@@ -1,3 +1,7 @@
+import { Tooltip, TooltipContent, TooltipTrigger } from './components/ui/tooltip'
+import { ThemeSwitcher } from './components/ThemeSwitcher'
+import { LanguageSwitcher } from './components/LanguageSwitcher'
+import { t, useLocale } from '@/locales'
 import { useEffect, useMemo, useState } from 'react'
 import {
   Activity,
@@ -9,12 +13,10 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
-  Moon,
   PanelLeftClose,
   PanelLeftOpen,
   ShieldCheck,
   Settings,
-  Sun,
   ContactRound,
   UsersRound,
   X,
@@ -59,44 +61,45 @@ interface NavItem {
 }
 
 const navigation: Array<{ label: string; items: NavItem[] }> = [
-  { label: '工作台', items: [{ view: 'dashboard', label: 'Overview', icon: LayoutDashboard }] },
-  { label: '对象存储', items: [{ view: 'buckets', label: 'Buckets', icon: FolderOpen }] },
-  { label: '访问控制', items: [
-    { view: 'users', label: 'Users', icon: ContactRound },
-    { view: 'user-groups', label: 'User Groups', icon: UsersRound },
-    { view: 'access-keys', label: 'Access Keys', icon: KeyRound },
-    { view: 'policies', label: 'Policies', icon: ShieldCheck },
+  { get label() { return t('navigation.workspace') }, items: [{ view: 'dashboard', get label() { return t('navigation.overview') }, icon: LayoutDashboard }] },
+  { get label() { return t('navigation.objectStorage') }, items: [{ view: 'buckets', get label() { return t('navigation.buckets') }, icon: FolderOpen }] },
+  { get label() { return t('navigation.accessControl') }, items: [
+    { view: 'users', get label() { return t('navigation.users') }, icon: ContactRound },
+    { view: 'user-groups', get label() { return t('navigation.userGroups') }, icon: UsersRound },
+    { view: 'access-keys', get label() { return t('navigation.accessKeys') }, icon: KeyRound },
+    { view: 'policies', get label() { return t('navigation.policies') }, icon: ShieldCheck },
   ] },
   {
-    label: '服务状态',
+    get label() { return t('navigation.serviceStatus') },
     items: [
-      { view: 'storage', label: 'Storage', icon: HardDrive },
-      { view: 'system', label: 'Monitoring', icon: Activity },
+      { view: 'storage', get label() { return t('navigation.storage') }, icon: HardDrive },
+      { view: 'system', get label() { return t('navigation.monitoring') }, icon: Activity },
     ],
   },
-  { label: '配置', items: [
+  { get label() { return t('navigation.configuration') }, items: [
     { view: 'oidc-settings', label: 'OpenID', icon: Fingerprint },
     // Keep System Setting as the final item in the navigation list.
-    { view: 'settings', label: 'System Setting', icon: Settings },
+    { view: 'settings', get label() { return t('navigation.systemSetting') }, icon: Settings },
   ] },
 ]
 
 const viewMeta: Record<View, { section: string; label: string }> = {
-  dashboard: { section: 'System', label: 'Overview' },
-  buckets: { section: 'Buckets', label: 'All Buckets' },
-  'bucket-detail': { section: 'Buckets', label: 'Summary' },
-  objects: { section: 'Buckets', label: 'Objects' },
-  users: { section: 'Access Control', label: 'Users' },
-  'user-groups': { section: 'Access Control', label: 'User Groups' },
-  'access-keys': { section: 'Access Control', label: 'Access Keys' },
-  policies: { section: 'Access Control', label: 'Policies' },
-  storage: { section: 'System', label: 'Storage' },
-  system: { section: 'Monitoring', label: 'Running Status' },
-  settings: { section: 'Configuration', label: 'System Setting' },
-  'oidc-settings': { section: 'Configuration', label: 'OpenID' },
+  dashboard: { get section() { return t('common.system') }, get label() { return t('navigation.overview') } },
+  buckets: { get section() { return t('common.buckets') }, get label() { return t('navigation.allBuckets') } },
+  'bucket-detail': { get section() { return t('common.buckets') }, get label() { return t('navigation.summary') } },
+  objects: { get section() { return t('common.buckets') }, get label() { return t('navigation.objects') } },
+  users: { get section() { return t('common.accessControl') }, get label() { return t('navigation.users') } },
+  'user-groups': { get section() { return t('common.accessControl') }, get label() { return t('navigation.userGroups') } },
+  'access-keys': { get section() { return t('common.accessControl') }, get label() { return t('navigation.accessKeys') } },
+  policies: { get section() { return t('common.accessControl') }, get label() { return t('navigation.policies') } },
+  storage: { get section() { return t('common.system') }, get label() { return t('navigation.storage') } },
+  system: { get section() { return t('common.monitoring') }, get label() { return t('navigation.runningStatus') } },
+  settings: { get section() { return t('common.configuration') }, get label() { return t('navigation.systemSetting') } },
+  'oidc-settings': { get section() { return t('common.configuration') }, label: 'OpenID' },
 }
 
 export default function App() {
+  useLocale()
   const { withLoading } = useLoading()
   const notifyError = useErrorToast()
   const [session, setSession] = useState<AdminSession | null>()
@@ -117,7 +120,7 @@ export default function App() {
   }, [darkTheme])
 
   async function bootstrap() {
-    await withLoading('正在连接 ZigFS...', async () => {
+    await withLoading(t('navigation.connectingToZigfs'), async () => {
       setAvailability('checking')
       try {
         await api.ready()
@@ -186,7 +189,7 @@ export default function App() {
         if (active) setSession(next)
       } catch (error) {
         if (active) {
-          notifyError(error instanceof Error ? error.message : '操作失败，请重试')
+          notifyError(error instanceof Error ? error.message : t('navigation.operationFailedPleaseTryAgain'))
           if (error instanceof ApiError && error.status === 401) setSession(null)
         }
       } finally { pending = false }
@@ -202,24 +205,24 @@ export default function App() {
   }
 
   if (session === undefined) {
-    return <main className="session-loading" aria-label="正在验证登录状态"><img className="session-logo" src="/zigfs-logo.svg" alt="ZigFS" /></main>
+    return <main className="session-loading" aria-label={t('navigation.verifyingYourSession')}><img className="session-logo" src="/zigfs-logo.svg" alt="ZigFS" /></main>
   }
 
   if (!session) {
-    return <LoginView onLogin={async (username, password) => {
+    return <LoginView darkTheme={darkTheme} onLogin={async (username, password) => {
       setSession(await api.login(username, password))
     }} />
   }
 
   async function logout() {
-    await withLoading('正在退出登录...', async () => {
+    await withLoading(t('navigation.signingOut'), async () => {
       try {
         if (session?.federated) {
           const result = await api.endOIDCSession()
           setSession(null)
           if (result.logout_url) window.location.assign(result.logout_url)
         } else { await api.logout(); setSession(null) }
-      } catch (error) { notifyError(error instanceof Error ? error.message : '操作失败，请重试') }
+      } catch (error) { notifyError(error instanceof Error ? error.message : t('navigation.operationFailedPleaseTryAgain')) }
     })
   }
 
@@ -234,20 +237,21 @@ export default function App() {
 
   const { view, bucket: selectedBucket, prefix: selectedPrefix } = route
   const meta = viewMeta[view]
+  const connectionLabel = t(availability === 'ready' ? 'navigation.fsReady' : 'navigation.connectingToZigfs')
   const isBucketsActive = view === 'buckets' || view === 'bucket-detail' || view === 'objects'
-  const visibleNavigation = session.is_root ? navigation : navigation.filter(group => group.label !== '服务状态' && group.label !== '配置')
+  const visibleNavigation = session.is_root ? navigation : navigation.filter(group => !group.items.some(item => ['storage', 'system', 'settings', 'oidc-settings'].includes(item.view)))
   const restrictedView = !session.is_root && (view === 'storage' || view === 'system' || view === 'settings' || view === 'oidc-settings')
 
   return (
     <div className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}${mobileSidebarOpen ? ' sidebar-open' : ''}${darkTheme ? ' theme-dark' : ''}`}>
-      <button className="sidebar-backdrop" type="button" aria-label="关闭导航" onClick={() => setMobileSidebarOpen(false)} />
+      <button className="sidebar-backdrop" type="button" aria-label={t('navigation.closeNavigation')} onClick={() => setMobileSidebarOpen(false)} />
       <aside className="sidebar">
         <div className="sidebar-brand">
           <img className="brand-logo" src="/zigfs-logo.svg" alt="" aria-hidden="true" />
-          <div className="brand-copy"><strong>ZigFS</strong><span>Object Storage</span></div>
-          <button className="mobile-close" type="button" aria-label="关闭导航" onClick={() => setMobileSidebarOpen(false)}><X aria-hidden="true" /></button>
+          <div className="brand-copy"><strong>ZigFS</strong><span>{t('navigation.objectStorageBrand')}</span></div>
+          <button className="mobile-close" type="button" aria-label={t('navigation.closeNavigation')} onClick={() => setMobileSidebarOpen(false)}><X aria-hidden="true" /></button>
         </div>
-        <nav aria-label="Primary navigation">
+        <nav aria-label={t('navigation.primaryNavigation')}>
           {visibleNavigation.map((group) => (
             <div className="nav-group" key={group.label}>
               <span className="nav-section-label">{group.label}</span>
@@ -273,7 +277,7 @@ export default function App() {
         <div className="sidebar-footer">
           <div className="sidebar-version"><span className="status-dot" /> <span>ZigFS v0.1.0</span></div>
           <button className="logout-button" type="button" onClick={() => void logout()}>
-            <LogOut className="nav-icon" aria-hidden="true" strokeWidth={1.8} /><span className="nav-label">退出登录</span>
+            <LogOut className="nav-icon" aria-hidden="true" strokeWidth={1.8} /><span className="nav-label">{t('navigation.signOut')}</span>
           </button>
         </div>
       </aside>
@@ -281,12 +285,12 @@ export default function App() {
       <div className="workspace">
         <header className="app-topbar">
           <div className="topbar-leading">
-            <button className="topbar-icon desktop-sidebar-toggle" type="button" aria-label={sidebarCollapsed ? '展开导航' : '收起导航'} onClick={() => setSidebarCollapsed((current) => !current)}>
+            <button className="topbar-icon desktop-sidebar-toggle" type="button" aria-label={sidebarCollapsed ? t('navigation.expandNavigation') : t('navigation.collapseNavigation')} onClick={() => setSidebarCollapsed((current) => !current)}>
               {sidebarCollapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
             </button>
-            <button className="topbar-icon mobile-sidebar-toggle" type="button" aria-label="打开导航" onClick={() => setMobileSidebarOpen(true)}><Menu aria-hidden="true" /></button>
-            <div className="breadcrumbs" aria-label="Breadcrumb">
-              {view === 'objects' && selectedBucket ? <><span>Buckets</span><b>/</b><strong>{selectedBucket}</strong></> : <>
+            <button className="topbar-icon mobile-sidebar-toggle" type="button" aria-label={t('navigation.openNavigation')} onClick={() => setMobileSidebarOpen(true)}><Menu aria-hidden="true" /></button>
+            <div className="breadcrumbs" aria-label={t('navigation.breadcrumb')}>
+              {view === 'objects' && selectedBucket ? <><span>{t('navigation.buckets')}</span><b>/</b><strong>{selectedBucket}</strong></> : <>
                 <span>{meta.section}</span><b>/</b>
                 {(view === 'bucket-detail' || view === 'objects') && selectedBucket ? <><span>{selectedBucket}</span><b>/</b></> : null}
                 <strong>{meta.label}</strong>
@@ -294,16 +298,18 @@ export default function App() {
             </div>
           </div>
           <div className="topbar-actions">
-            <span className="connection-state"><span className="status-dot" /> FS Ready</span>
-            <button className="topbar-icon" type="button" title={darkTheme ? '切换浅色主题' : '切换深色主题'} aria-label={darkTheme ? '切换浅色主题' : '切换深色主题'} onClick={() => setDarkTheme((current) => !current)}>
-              {darkTheme ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}
-            </button>
+            <Tooltip>
+              <TooltipTrigger asChild><Button variant="ghost" size="icon-sm" type="button" className="connection-state" data-connection-state={availability} aria-label={connectionLabel}><span className="status-dot" aria-hidden="true" /></Button></TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={8}>{connectionLabel}</TooltipContent>
+            </Tooltip>
+            <ThemeSwitcher dark={darkTheme} onToggle={() => setDarkTheme(current => !current)} />
+            <LanguageSwitcher />
             <DropdownMenu>
-              <DropdownMenuTrigger asChild><Button variant="ghost" aria-label="用户菜单">{session.display_name || session.username}<ChevronDown data-icon="inline-end" /></Button></DropdownMenuTrigger>
+              <DropdownMenuTrigger asChild><Button variant="ghost" className="topbar-user-trigger" aria-label={t('navigation.userMenu')} title={session.display_name || session.username}><span className="topbar-user-label">{session.display_name || session.username}</span><ChevronDown data-icon="inline-end" /></Button></DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuLabel><div>{session.display_name || session.username}</div>{session.email && <div>{session.email}</div>}</DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuGroup><DropdownMenuItem onSelect={() => void logout()}>退出登录</DropdownMenuItem></DropdownMenuGroup>
+                <DropdownMenuGroup><DropdownMenuItem onSelect={() => void logout()}>{t('navigation.signOut')}</DropdownMenuItem></DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -338,7 +344,7 @@ export default function App() {
 }
 
 function AccessDeniedView() {
-  return <section className="service-state" aria-live="polite"><h1>无权访问</h1><p>当前身份没有该管理页面所需的权限。</p></section>
+  return <section className="service-state" aria-live="polite"><h1>{t('navigation.accessDenied')}</h1><p>{t('navigation.yourAccountDoesNotHavePermissionToAccessThis')}</p></section>
 }
 
 function ServiceUnavailable({ state, retry }: { state: 'offline' | 'not-ready'; retry: () => void }) {
@@ -346,9 +352,9 @@ function ServiceUnavailable({ state, retry }: { state: 'offline' | 'not-ready'; 
     <main className="service-state">
       <img className="service-logo" src="/zigfs-logo.svg" alt="ZigFS" />
       <span className={`service-state-dot ${state}`} />
-      <h1>{state === 'offline' ? 'ZigFS Offline' : 'ZigFS Not Ready'}</h1>
-      <p>{state === 'offline' ? '无法连接 ZigFS。' : 'ZigFS 正在恢复存储与元数据。'}</p>
-      <button className="primary-button" type="button" onClick={retry}>重试</button>
+      <h1>{state === 'offline' ? t('navigation.zigfsOffline') : t('navigation.zigfsNotReady')}</h1>
+      <p>{state === 'offline' ? t('navigation.unableToConnectToZigfs') : t('navigation.zigfsIsRecoveringStorageAndMetadata')}</p>
+      <button className="primary-button" type="button" onClick={retry}>{t('navigation.retry')}</button>
     </main>
   )
 }

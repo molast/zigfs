@@ -1,8 +1,10 @@
+import { t } from '@/locales'
 import type { ApiClient, OIDCProvider } from '../../api/client'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useEffect, useState } from 'react'
 import { ChevronRight, Plus } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
+import { Badge } from '../../components/ui/Badge'
 import { Input } from '../../components/ui/Input'
 import { Switch } from '../../components/ui/switch'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '../../components/ui/field'
@@ -31,7 +33,7 @@ export function OIDCSettingsView({ api }: { api: ApiClient }) {
   const [loadFailed, setLoadFailed] = useState(false)
   const [busy, setBusy] = useState(false)
   const readOnly = selected?.environment_managed ?? false
-  const errorMessage = (error: unknown) => error instanceof Error ? error.message : '操作失败'
+  const errorMessage = (error: unknown) => error instanceof Error ? error.message : t('settings.operationFailed')
   async function refresh() {
     setLoadFailed(false)
     try { const result = await api.listOIDCProviders(); setProviders(result.items); setLoaded(true) }
@@ -50,7 +52,7 @@ export function OIDCSettingsView({ api }: { api: ApiClient }) {
   async function validateRemote() {
     if (busy || !validate(false)) return
     setBusy(true)
-    try { const result = await api.validateOIDCProvider(providerValue()); toast(`Discovery 和 JWKS 可用：${result.issuer}。请通过登录验证客户端配置。`) }
+    try { const result = await api.validateOIDCProvider(providerValue()); toast(t('settings.discoveryAndJwksAreAvailableValueSignInTo', { '0': result.issuer })) }
     catch (error) { toast(errorMessage(error), 'error') } finally { setBusy(false) }
   }
   async function save() {
@@ -60,13 +62,13 @@ export function OIDCSettingsView({ api }: { api: ApiClient }) {
     try {
       const saved = await (selected ? api.updateOIDCProvider(value) : api.createOIDCProvider(value))
       setProviders(current => [...current.filter(item => item.provider_id !== saved.provider_id), saved])
-      select(saved); toast('身份提供商配置已保存')
+      select(saved); toast(t('settings.identityProviderConfigurationSaved'))
     } catch (error) { toast(errorMessage(error), 'error') } finally { setBusy(false) }
   }
   async function remove() {
-    if (readOnly || !selected || busy || !await confirm({ title: '删除身份提供商', message: `删除 ${selected.provider_id} 的 OIDC 配置？`, danger: true, confirmLabel: '删除', cancelLabel: '取消' })) return
+    if (readOnly || !selected || busy || !await confirm({ title: t('settings.deleteIdentityProvider'), message: t('settings.deleteTheOidcConfigurationForValue', { '0': selected.provider_id }), danger: true, confirmLabel: t('settings.delete'), cancelLabel: t('settings.cancel') })) return
     setBusy(true)
-    try { await api.deleteOIDCProvider(selected.provider_id); setProviders(current => current.filter(item => item.provider_id !== selected.provider_id)); reset(); toast('身份提供商已删除') }
+    try { await api.deleteOIDCProvider(selected.provider_id); setProviders(current => current.filter(item => item.provider_id !== selected.provider_id)); reset(); toast(t('settings.identityProviderDeleted')) }
     catch (error) { toast(errorMessage(error), 'error') } finally { setBusy(false) }
   }
   function input(key: keyof typeof defaults, label: string, help?: string, placeholder = label, type = 'text') {
@@ -77,52 +79,61 @@ export function OIDCSettingsView({ api }: { api: ApiClient }) {
   }
   function validate(notify = true): boolean {
     const fail = (message: string) => { toast(message, 'error'); return false }
-    if (!/^[A-Za-z0-9_-]+$/.test(draft.providerId)) return fail('提供商 ID 只能包含字母、数字、下划线和连字符。')
-    if (!draft.clientId.trim() || (!draft.clientSecret && !selected?.has_secret)) return fail('请填写 客户端 ID 和 客户端密钥。')
+    if (!/^[A-Za-z0-9_-]+$/.test(draft.providerId)) return fail(t('settings.providerIdMayOnlyContainLettersNumbersUnderscoresAnd'))
+    if (!draft.clientId.trim() || (!draft.clientSecret && !selected?.has_secret)) return fail(t('settings.enterAClientIdAndClientSecret'))
     const validUrl = (value: string) => { try { return ['https:', 'http:'].includes(new URL(value).protocol) } catch { return false } }
-    if (!validUrl(draft.configurationUrl)) return fail('请填写有效的 发现文档 URL。')
-    if (!validUrl(draft.redirectUri)) return fail('请填写有效的 回调地址。')
-    if (!draft.scopes.split(',').map(value => value.trim()).includes('openid')) return fail('Scopes 必须包含 openid。')
-    if (notify) toast('表单格式校验通过；尚未验证身份提供商连接或登录。')
+    if (!validUrl(draft.configurationUrl)) return fail(t('settings.enterAValidDiscoveryDocumentUrl'))
+    if (!validUrl(draft.redirectUri)) return fail(t('settings.enterAValidRedirectUri'))
+    if (!draft.scopes.split(',').map(value => value.trim()).includes('openid')) return fail(t('settings.scopesMustIncludeOpenid'))
+    if (notify) toast(t('settings.formValidationPassedProviderConnectivityAndSignInHave'))
     return true
   }
   return <section className="oidc-page">
-    <header className="page-header"><h2>OpenID Connect 身份提供商</h2></header>
-    <section className="oidc-environment" aria-label="登录配置说明">
-      <strong>登录配置说明</strong>
-      <p>配置用于控制台登录的身份提供商。客户端密钥加密保存，读取配置时不会返回。</p>
-      <p>配置保存后立即生效。启用后将在登录页显示；修改配置会使该提供商已有的登录会话失效。</p>
+    <header className="page-header"><h2>{t('settings.openidConnectIdentityProviders')}</h2></header>
+    <section className="oidc-environment" aria-label={t('settings.signInConfiguration')}>
+      <strong>{t('settings.signInConfiguration')}</strong>
+      <p>{t('settings.configureIdentityProvidersForConsoleSignInClientSecrets')}</p>
+      <p>{t('settings.changesTakeEffectImmediatelyEnabledProvidersAppearOnThe')}</p>
     </section>
     <div className="oidc-layout">
       <aside className="oidc-provider-list">
-        <header className="oidc-list-header"><div><h3>身份提供商</h3><p>查看和管理已配置的身份提供商。</p></div>
-          <Button variant="outline" size="sm" disabled={busy || !loaded} onClick={reset}><Plus data-icon="inline-start" />添加身份提供商</Button>
+        <header className="oidc-list-header"><div><h3>{t('settings.identityProviders')}</h3><p>{t('settings.viewAndManageConfiguredIdentityProviders')}</p></div>
+          <Button variant="outline" size="sm" disabled={busy || !loaded} onClick={reset}><Plus data-icon="inline-start" />{t('settings.addIdentityProvider')}</Button>
         </header>
-        {providers.length ? <div className="flex flex-col gap-1 overflow-y-auto p-2">{providers.map(provider => <Button size="sm" key={provider.provider_id} variant={selected?.provider_id === provider.provider_id ? 'secondary' : 'ghost'} disabled={busy} onClick={() => select(provider)} className="justify-start" aria-pressed={selected?.provider_id === provider.provider_id}>{provider.display_name || provider.provider_id}</Button>)}</div> : <Empty><EmptyHeader><EmptyDescription>{loaded ? '尚未配置身份提供商' : loadFailed ? '无法加载身份提供商' : '正在加载身份提供商…'}</EmptyDescription></EmptyHeader>{loadFailed && <Button variant="outline" onClick={() => void refresh()}>重试</Button>}</Empty>}
+        {providers.length ? <div className="oidc-provider-items">{providers.map(provider => {
+          const isSelected = selected?.provider_id === provider.provider_id
+          return <Button key={provider.provider_id} variant="ghost" disabled={busy} onClick={() => select(provider)} className={`oidc-provider-card${isSelected ? ' is-selected' : ''}`} aria-pressed={isSelected}>
+            <span className="oidc-provider-card-heading"><span className="oidc-provider-card-identity"><strong>{provider.display_name || provider.provider_id}</strong><small>{provider.provider_id}</small></span><Badge className={`oidc-status-badge${provider.enabled ? ' is-enabled' : ''}`}>{provider.enabled ? t('settings.enabled') : t('settings.disabled')}</Badge></span>
+            <span className="oidc-provider-card-badges">
+              <Badge>{provider.environment_managed ? t('settings.environmentManaged') : t('settings.persistedConfiguration')}</Badge>
+              <Badge>{provider.has_secret ? t('settings.secretConfigured') : t('settings.secretNotConfigured')}</Badge>
+            </span>
+          </Button>
+        })}</div> : <Empty><EmptyHeader><EmptyDescription>{loaded ? t('settings.noIdentityProvidersConfiguredYet') : loadFailed ? t('settings.unableToLoadIdentityProviders') : t('settings.loadingIdentityProviders')}</EmptyDescription></EmptyHeader>{loadFailed && <Button variant="outline" onClick={() => void refresh()}>{t('settings.retry')}</Button>}</Empty>}
       </aside>
       <form className="oidc-editor" onSubmit={event => { event.preventDefault(); void save() }}>
-        <header className="oidc-editor-header"><div><h3>{selected ? '编辑身份提供商' : '添加身份提供商'}</h3><p>{readOnly ? '此配置由 ZIGFS_OIDC_PROVIDERS 管理，请修改环境变量后重启 ZigFS。' : '配置身份提供商及其权限策略映射。'}</p></div><div className="flex gap-2">{selected && <Button size="sm" variant="destructive" type="button" disabled={busy || readOnly} onClick={() => void remove()}>删除</Button>}<Button size="sm" variant="outline" type="button" disabled={busy} onClick={() => void validateRemote()}>验证连接</Button><Button size="sm" type="submit" disabled={busy || !loaded || readOnly}>{busy ? '处理中…' : '保存'}</Button></div></header>
+        <header className="oidc-editor-header"><div><h3>{selected ? t('settings.editIdentityProvider') : t('settings.addIdentityProvider')}</h3><p>{readOnly ? t('settings.managedByZigfsOidcProvidersUpdateTheEnvironmentVariable') : t('settings.configureAnIdentityProviderAndItsPolicyMappings')}</p></div><div className="flex gap-2">{selected && <Button size="sm" variant="destructive" type="button" disabled={busy || readOnly} onClick={() => void remove()}>{t('settings.delete')}</Button>}<Button size="sm" variant="outline" type="button" disabled={busy} onClick={() => void validateRemote()}>{t('settings.validateConnection')}</Button><Button size="sm" type="submit" disabled={busy || !loaded || readOnly}>{busy ? t('settings.processing') : t('settings.save')}</Button></div></header>
         <Separator />
         <FieldGroup className="oidc-fields">
-          {input('providerId', '提供商 ID', '只能包含字母、数字、下划线和连字符。')}
-          <Field><FieldLabel htmlFor="oidc-enabled">启用</FieldLabel><div className="flex items-center gap-3"><Switch id="oidc-enabled" disabled={busy || readOnly} checked={enabled} onCheckedChange={setEnabled} /><span>{enabled ? '已启用' : '已禁用'}</span></div></Field>
-          {input('displayName', '显示名称')}
-          {input('configurationUrl', '发现文档 URL', undefined, 'https://idp.example.com/.well-known/openid-configuration')}
-          {input('clientId', '客户端 ID')}
-          {input('clientSecret', '客户端密钥', selected ? '留空保留现有密钥。' : '创建身份提供商时必须填写客户端密钥。', '客户端密钥', 'password')}
-          <div className="oidc-full">{input('scopes', '授权范围（Scopes）', '使用英文逗号分隔，必须包含 openid。')}</div>
-          <div className="oidc-full">{input('audiences', '其他受众（Audiences）', '使用英文逗号分隔受众 ID。', '')}</div>
-          <Field><FieldLabel htmlFor="oidc-dynamic">动态回调地址</FieldLabel><div className="flex items-center gap-3"><Switch id="oidc-dynamic" disabled={busy || readOnly} checked={dynamicRedirect} onCheckedChange={setDynamicRedirect} /><span>{dynamicRedirect ? '已启用' : '已禁用'}</span></div><FieldDescription>关闭动态回调时，需填写完整的回调 URL。</FieldDescription></Field>
-          {input('redirectUri', dynamicRedirect ? '控制台公开地址' : '回调地址', dynamicRedirect ? '使用此可信来源生成回调地址，路径为 /api/v1/auth/oidc/callback。' : '必须填写完整的回调 URL。', 'https://zigfs.example.com/api/v1/auth/oidc/callback')}
+          {input('providerId', t('settings.providerId'), t('settings.onlyLettersNumbersUnderscoresAndHyphensAreAllowed'))}
+          <Field><FieldLabel htmlFor="oidc-enabled">{t('settings.enable')}</FieldLabel><div className="flex items-center gap-3"><Switch id="oidc-enabled" disabled={busy || readOnly} checked={enabled} onCheckedChange={setEnabled} /><span>{enabled ? t('settings.enabled') : t('settings.disabled')}</span></div></Field>
+          {input('displayName', t('settings.displayName'))}
+          {input('configurationUrl', t('settings.discoveryDocumentUrl'), undefined, 'https://idp.example.com/.well-known/openid-configuration')}
+          {input('clientId', t('settings.clientId'))}
+          {input('clientSecret', t('settings.clientSecret'), selected ? t('settings.leaveBlankToKeepTheExistingSecret') : t('settings.aClientSecretIsRequiredWhenCreatingAnIdentity'), t('settings.clientSecret'), 'password')}
+          <div className="oidc-full">{input('scopes', t('settings.scopes'), t('settings.separateScopesWithCommasTheOpenidScopeIsRequired'))}</div>
+          <div className="oidc-full">{input('audiences', t('settings.otherAudiences'), t('settings.separateAudienceIdsWithCommas'), '')}</div>
+          <Field><FieldLabel htmlFor="oidc-dynamic">{t('settings.dynamicRedirectUri')}</FieldLabel><div className="flex items-center gap-3"><Switch id="oidc-dynamic" disabled={busy || readOnly} checked={dynamicRedirect} onCheckedChange={setDynamicRedirect} /><span>{dynamicRedirect ? t('settings.enabled') : t('settings.disabled')}</span></div><FieldDescription>{t('settings.enterAnAbsoluteCallbackUrlWhenDynamicRedirectIs')}</FieldDescription></Field>
+          {input('redirectUri', dynamicRedirect ? t('settings.publicConsoleUrl') : t('settings.redirectUri'), dynamicRedirect ? t('settings.theCallbackUsesThisTrustedOriginWithThePath') : t('settings.enterAnAbsoluteCallbackUrl'), 'https://zigfs.example.com/api/v1/auth/oidc/callback')}
         </FieldGroup>
         <Separator />
         <Collapsible open={advanced} onOpenChange={setAdvanced}>
-          <CollapsibleTrigger asChild><Button size="sm" type="button" variant="ghost" className="oidc-advanced-trigger"><ChevronRight data-icon="inline-start" className={advanced ? 'rotate-90' : ''} />高级设置<span className="text-muted-foreground">策略声明 · 用户组声明 · 角色声明</span></Button></CollapsibleTrigger>
+          <CollapsibleTrigger asChild><Button size="sm" type="button" variant="ghost" className="oidc-advanced-trigger"><ChevronRight data-icon="inline-start" className={advanced ? 'rotate-90' : ''} />{t('settings.advancedSettings')}<span className="text-muted-foreground">{t('settings.policyClaimGroupsClaimRolesClaim')}</span></Button></CollapsibleTrigger>
           <CollapsibleContent><FieldGroup className="oidc-fields oidc-advanced-fields">
-            {input('claimName', '策略声明名')}{input('claimPrefix', '声明值前缀')}
-            {input('rolePolicy', '固定策略', '可选，将此身份提供商映射到已有权限策略。')}{input('groupsClaim', '用户组声明名')}
-            {input('rolesClaim', '角色声明名', '可选，指定读取角色值的声明（例如 roles）；留空仅使用用户组声明。')}{input('emailClaim', '邮箱声明名')}
-            {input('usernameClaim', '用户名声明名')}
+            {input('claimName', t('settings.policyClaimName'))}{input('claimPrefix', t('settings.claimValuePrefix'))}
+            {input('rolePolicy', t('settings.fixedPolicy'), t('settings.optionalMapThisIdentityProviderToExistingPolicies'))}{input('groupsClaim', t('settings.groupsClaimName'))}
+            {input('rolesClaim', t('settings.rolesClaimName'), t('settings.optionalSpecifyTheClaimForRoleValuesForExample'))}{input('emailClaim', t('settings.emailClaimName'))}
+            {input('usernameClaim', t('settings.usernameClaimName'))}
           </FieldGroup></CollapsibleContent>
         </Collapsible>
       </form>

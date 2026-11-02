@@ -1,3 +1,4 @@
+import { t, getFormatLocale } from '@/locales'
 import { useErrorToast } from '../../components/ToastProvider'
 import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
@@ -17,7 +18,7 @@ export function DashboardView({ api }: DashboardViewProps) {
   const [refreshing, setRefreshing] = useState(false)
 
   const refresh = useCallback(async () => {
-    const stopLoading = startLoading('正在加载服务信息...')
+    const stopLoading = startLoading(t('dashboard.loadingServiceInformation'))
     try {
       setRefreshing(true)
       const [systemInfo, healthInfo] = await Promise.all([api.system(), api.managementHealth()])
@@ -39,41 +40,40 @@ export function DashboardView({ api }: DashboardViewProps) {
     <section>
       <header className="page-header">
         <div>
-          <p className="eyebrow">Overview</p>
-          <h2>Server Information</h2>
-          <p className="page-description">ZigFS 当前服务状态、对象规模和运行时间。</p>
+          <p className="eyebrow">{t('dashboard.overview')}</p>
+          <h2>{t('dashboard.serverInformation')}</h2>
+          <p className="page-description">{t('dashboard.currentZigfsServiceStatusObjectCountsAndUptime')}</p>
         </div>
         <button className="secondary-button refresh-action-button" type="button" onClick={() => void refresh()} disabled={refreshing} aria-busy={refreshing}>
-          <RefreshCw className={`button-icon${refreshing ? ' spinning' : ''}`} aria-hidden="true" />同步
-        </button>
+          <RefreshCw className={`button-icon${refreshing ? ' spinning' : ''}`} aria-hidden="true" />{t('dashboard.sync')}</button>
       </header>
       {system && (
         <>
           <div className="metric-grid">
-            <Metric label="Storage Space" value={formatBytes(system.storage_used)} />
-            <Metric label="Objects" value={system.objects.toLocaleString()} />
-            <Metric label="Buckets" value={system.buckets.toLocaleString()} />
-            <Metric label="Uptime" value={formatDuration(system.uptime)} />
+            <Metric label={t('dashboard.storageSpace')} value={formatBytes(system.storage_used)} />
+            <Metric label={t('dashboard.objects')} value={system.objects.toLocaleString(getFormatLocale())} />
+            <Metric label={t('dashboard.buckets')} value={system.buckets.toLocaleString(getFormatLocale())} />
+            <Metric label={t('dashboard.uptime')} value={formatDuration(system.uptime)} />
           </div>
           <div className="server-summary">
             <section className="panel table-panel">
               <div className="section-heading">
-                <div><h3>ZigFS Server</h3><p>由 FS 管理 API 返回的当前服务实例信息。</p></div>
+                <div><h3>{t('dashboard.zigfsServer')}</h3><p>{t('dashboard.currentInstanceInformationFromTheZigfsManagementApi')}</p></div>
                 <span className={`status-indicator status-${health?.status ?? 'recovery'}`}>{health?.status ?? 'checking'}</span>
               </div>
               <dl className="definition-list">
-                <div><dt>Version</dt><dd>{system.version}</dd></div>
-                <div><dt>Stored objects</dt><dd>{system.objects.toLocaleString()}</dd></div>
-                <div><dt>Storage used</dt><dd>{formatBytes(system.storage_used)}</dd></div>
-                <div><dt>Service uptime</dt><dd>{formatDuration(system.uptime)}</dd></div>
+                <div><dt>{t('dashboard.version')}</dt><dd>{system.version}</dd></div>
+                <div><dt>{t('dashboard.storedObjects')}</dt><dd>{system.objects.toLocaleString(getFormatLocale())}</dd></div>
+                <div><dt>{t('dashboard.storageUsed')}</dt><dd>{formatBytes(system.storage_used)}</dd></div>
+                <div><dt>{t('dashboard.serviceUptime')}</dt><dd>{formatDuration(system.uptime)}</dd></div>
               </dl>
             </section>
             <section className="panel health-panel">
-              <div className="health-panel-header"><h3>Service Health</h3><span className="status-dot" /></div>
+              <div className="health-panel-header"><h3>{t('dashboard.serviceHealth')}</h3><span className="status-dot" /></div>
               <dl className="health-list">
-                <div><dt>Status</dt><dd>{health?.status ?? 'checking'}</dd></div>
-                <div><dt>Recovery</dt><dd>{health?.recovery ?? '-'}</dd></div>
-                <div><dt>Reason</dt><dd>{health?.reason || 'Normal'}</dd></div>
+                <div><dt>{t('dashboard.status')}</dt><dd>{health?.status ?? 'checking'}</dd></div>
+                <div><dt>{t('dashboard.recovery')}</dt><dd>{health?.recovery ?? '-'}</dd></div>
+                <div><dt>{t('dashboard.reason')}</dt><dd>{health?.reason || t('dashboard.normal')}</dd></div>
               </dl>
             </section>
           </div>
@@ -108,7 +108,7 @@ function formatDuration(seconds: number) {
   const days = Math.floor(seconds / 86400)
   const hours = Math.floor((seconds % 86400) / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
-  if (days > 0) return `${days}d ${hours}h`
-  if (hours > 0) return `${hours}h ${minutes}m`
+  if (days > 0) return t('dashboard.valuedValueh', { '0': days, '1': hours })
+  if (hours > 0) return t('dashboard.valuehValuem', { '0': hours, '1': minutes })
   return `${minutes}m`
 }

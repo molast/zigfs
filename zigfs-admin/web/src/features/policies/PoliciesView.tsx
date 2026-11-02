@@ -1,3 +1,4 @@
+import { t } from '@/locales'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowDownUp, ArrowLeft, ChevronLeft, ChevronRight, Copy, Eraser, Plus, RefreshCw, Search, Shield, Trash2 } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'
@@ -21,7 +22,7 @@ export function PoliciesView({ api }: { api: ApiClient }) {
   const [policies, setPolicies] = useState<Policy[]>([])
   const refreshList = useCallback(async () => {
     try {
-      setPolicies(await withLoading('正在加载 Policies...', () => api.listPolicies()))
+      setPolicies(await withLoading(t('policies.loadingPolicies'), () => api.listPolicies()))
     } catch (reason) { toast(policyError(reason), 'error') }
   }, [api, withLoading, toast])
   useEffect(() => { void refreshList() }, [refreshList])
@@ -46,17 +47,17 @@ export function PoliciesView({ api }: { api: ApiClient }) {
     setCreating(true)
   }
   async function removePolicy(policy: Policy) {
-    if (!await confirm({ title: 'Delete Policy', message: `Are you sure you want to delete policy ${policy.name}?`, confirmLabel: 'Delete', cancelLabel: 'Cancel', danger: true })) return false
+    if (!await confirm({ title: t('policies.deletePolicy'), message: t('policies.areYouSureYouWantToDeletePolicyValue', { '0': policy.name }), confirmLabel: t('policies.delete'), cancelLabel: t('policies.cancel'), danger: true })) return false
     try {
-      await withLoading('正在删除 Policy...', () => api.deletePolicy(policy.name))
+      await withLoading(t('policies.deletingPolicy'), () => api.deletePolicy(policy.name))
       setPolicies((current) => current.filter((item) => item.name !== policy.name))
-      toast('Policy deleted')
+      toast(t('policies.policyDeleted'))
       return true
     } catch (reason) { toast(policyError(reason), 'error'); return false }
   }
   async function openPolicy(policy: Policy) {
     try {
-      const next = await withLoading('正在加载 Policy...', () => api.getPolicy(policy.name))
+      const next = await withLoading(t('policies.loadingPolicy'), () => api.getPolicy(policy.name))
       setSelected(next)
       setDraftDocument(next.document)
       setDetailTab('summary')
@@ -65,43 +66,43 @@ export function PoliciesView({ api }: { api: ApiClient }) {
   async function savePolicy() {
     if (!selected) return
     validateDocument(draftDocument)
-    const saved = await withLoading('正在保存 Policy...', () => api.updatePolicy({ name: selected.name, document: draftDocument }))
+    const saved = await withLoading(t('policies.savingPolicy'), () => api.updatePolicy({ name: selected.name, document: draftDocument }))
     setSelected(saved)
     setPolicies((items) => items.map((item) => item.name === saved.name ? saved : item))
-    toast('Policy saved')
+    toast(t('policies.policySaved'))
   }
   async function refreshPolicy() {
     if (!selected) return
     try {
-      const saved = await withLoading('正在刷新 Policy...', () => api.getPolicy(selected.name))
+      const saved = await withLoading(t('policies.refreshingPolicy'), () => api.getPolicy(selected.name))
       setSelected(saved)
       setDraftDocument(saved.document)
     } catch (reason) { toast(policyError(reason), 'error') }
   }
 
   if (selected) return <PolicyDetail api={api} policy={selected} tab={detailTab} setTab={setDetailTab} onSave={savePolicy} onRefresh={refreshPolicy} document={draftDocument} setDocument={setDraftDocument} onBack={() => setSelected(null)} onDelete={async () => { if (await removePolicy(selected)) setSelected(null) }} />
-  if (creating) return <CreatePolicy onCancel={() => setCreating(false)} onSave={async (policy) => { const saved = await withLoading('正在创建 Policy...', () => api.createPolicy(policy)); setPolicies((current) => [...current, saved]); setCreating(false); setSelected(saved); setDraftDocument(saved.document); setDetailTab('summary') }} />
+  if (creating) return <CreatePolicy onCancel={() => setCreating(false)} onSave={async (policy) => { const saved = await withLoading(t('policies.creatingPolicy'), () => api.createPolicy(policy)); setPolicies((current) => [...current, saved]); setCreating(false); setSelected(saved); setDraftDocument(saved.document); setDetailTab('summary') }} />
 
   return (
     <section className="policies-page">
       <header className="page-header policies-header">
-        <h2>IAM Policies</h2>
+        <h2>{t('policies.iamPolicies')}</h2>
         <div className="policies-header-actions">
-          <label className="search-box" aria-label="Search policies"><Search aria-hidden="true" /><Input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1) }} placeholder="Search" /></label>
-          <Button type="button" onClick={openCreate}><Plus className="button-icon" aria-hidden="true" />New Policy</Button>
+          <label className="search-box" aria-label={t('policies.searchPolicies')}><Search aria-hidden="true" /><Input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1) }} placeholder={t('policies.search')} /></label>
+          <Button type="button" onClick={openCreate}><Plus className="button-icon" aria-hidden="true" />{t('policies.newPolicy')}</Button>
         </div>
       </header>
       <Card className="panel table-panel policies-panel">
         <div className="table-wrap"><table><thead><tr>
-          <th><button className="policy-sort-button" type="button" onClick={() => setSortAscending((current) => !current)}>Name <ArrowDownUp aria-hidden="true" /></button></th>
-          <th className="policy-actions-heading">Actions</th>
+          <th><button className="policy-sort-button" type="button" onClick={() => setSortAscending((current) => !current)}>{t('policies.name')} <ArrowDownUp aria-hidden="true" /></button></th>
+          <th className="policy-actions-heading">{t('policies.actions')}</th>
         </tr></thead><tbody>
-          {visiblePolicies.map((policy) => <tr key={policy.name} className="policy-row" onClick={() => void openPolicy(policy)}><td>{policy.name}</td><td><div className="table-actions policy-actions"><button className="danger-button" type="button" onClick={(event) => { event.stopPropagation(); void removePolicy(policy) }}><Trash2 className="button-icon" aria-hidden="true" />Delete</button></div></td></tr>)}
-          {visiblePolicies.length === 0 && <tr><td colSpan={2} className="policies-empty">No policies found.</td></tr>}
+          {visiblePolicies.map((policy) => <tr key={policy.name} className="policy-row" onClick={() => void openPolicy(policy)}><td>{policy.name}</td><td><div className="table-actions policy-actions"><button className="danger-button" type="button" onClick={(event) => { event.stopPropagation(); void removePolicy(policy) }}><Trash2 className="button-icon" aria-hidden="true" />{t('policies.delete')}</button></div></td></tr>)}
+          {visiblePolicies.length === 0 && <tr><td colSpan={2} className="policies-empty">{t('policies.noPoliciesFound')}</td></tr>}
         </tbody></table></div>
         <footer className="policies-pagination">
-          <label>Rows per page<select value={rowsPerPage} onChange={(event) => { setRowsPerPage(Number(event.target.value)); setPage(1) }}><option value={10}>10</option><option value={25}>25</option><option value={50}>50</option></select></label>
-          <div className="pagination-controls"><span>Page {currentPage} of {pageCount}</span><button className="icon-button" type="button" aria-label="Previous page" disabled={currentPage === 1} onClick={() => setPage((current) => Math.max(1, current - 1))}><ChevronLeft aria-hidden="true" /></button><button className="icon-button" type="button" aria-label="Next page" disabled={currentPage === pageCount} onClick={() => setPage((current) => Math.min(pageCount, current + 1))}><ChevronRight aria-hidden="true" /></button></div>
+          <label>{t('policies.rowsPerPage')}<select value={rowsPerPage} onChange={(event) => { setRowsPerPage(Number(event.target.value)); setPage(1) }}><option value={10}>10</option><option value={25}>25</option><option value={50}>50</option></select></label>
+          <div className="pagination-controls"><span>{t('policies.page')} {currentPage} {t('policies.of')} {pageCount}</span><button className="icon-button" type="button" aria-label={t('policies.previousPage')} disabled={currentPage === 1} onClick={() => setPage((current) => Math.max(1, current - 1))}><ChevronLeft aria-hidden="true" /></button><button className="icon-button" type="button" aria-label={t('policies.nextPage')} disabled={currentPage === pageCount} onClick={() => setPage((current) => Math.min(pageCount, current + 1))}><ChevronRight aria-hidden="true" /></button></div>
         </footer>
       </Card>
     </section>
@@ -115,7 +116,7 @@ function CreatePolicy({ onCancel, onSave }: { onCancel: () => void; onSave: (pol
   const [saving, setSaving] = useState(false)
   async function save() {
     const trimmedName = name.trim()
-    if (!trimmedName) { toast('Policy 名称不能为空', 'error'); return }
+    if (!trimmedName) { toast(t('policies.policyNameIsRequired'), 'error'); return }
     try { validateDocument(document) } catch (reason) { toast(policyError(reason), 'error'); return }
     setSaving(true)
     try { await onSave({ name: trimmedName, document }) }
@@ -123,11 +124,11 @@ function CreatePolicy({ onCancel, onSave }: { onCancel: () => void; onSave: (pol
     finally { setSaving(false) }
   }
   return <Dialog open onOpenChange={(open) => { if (!open) onCancel() }}><DialogContent className="policy-create-page">
-    <DialogHeader className="policy-create-heading"><div><Shield aria-hidden="true" /><DialogTitle>Create Policy</DialogTitle></div></DialogHeader>
+    <DialogHeader className="policy-create-heading"><div><Shield aria-hidden="true" /><DialogTitle>{t('policies.createPolicy')}</DialogTitle></div></DialogHeader>
     <div className="policy-create-form">
-      <label>Policy Name<Input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label>
-      <label>Write Policy<Textarea value={document} onChange={(event) => setDocument(event.target.value)} spellCheck={false} /></label>
-      <div className="policy-create-actions"><Button variant="outline" type="button" onClick={() => setDocument('')}><Eraser className="button-icon" aria-hidden="true" />Clear</Button><Button type="button" disabled={saving} onClick={() => void save()}>Save</Button></div>
+      <label>{t('policies.policyName')}<Input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label>
+      <label>{t('policies.writePolicy')}<Textarea value={document} onChange={(event) => setDocument(event.target.value)} spellCheck={false} /></label>
+      <div className="policy-create-actions"><Button variant="outline" type="button" onClick={() => setDocument('')}><Eraser className="button-icon" aria-hidden="true" />{t('policies.clear')}</Button><Button type="button" disabled={saving} onClick={() => void save()}>{t('policies.save')}</Button></div>
     </div>
   </DialogContent></Dialog>
 }
@@ -142,13 +143,13 @@ function PolicyDetail({ api, policy, tab, setTab, document, setDocument, onBack,
     finally { setSaving(false) }
   }
   return <section className="policy-detail-page">
-    <button className="policy-back-button" type="button" onClick={onBack}><ArrowLeft aria-hidden="true" /> <span>Policy</span></button>
-    <header className="policy-detail-header"><div className="policy-detail-identity"><Shield aria-hidden="true" /><div><h2>{policy.name}</h2><p>IAM Policy</p></div></div><div className="policy-detail-actions"><button className="danger-button" type="button" onClick={onDelete}><Trash2 className="button-icon" aria-hidden="true" />Delete Policy</button><button className="secondary-button" type="button" onClick={() => void onRefresh()}><RefreshCw className="button-icon" aria-hidden="true" />Refresh</button></div></header>
-    <div className="policy-detail-shell"><nav className="policy-detail-tabs" aria-label="Policy sections">{([['summary', 'Summary'], ['users', 'Users'], ['groups', 'Groups'], ['raw', 'Raw Policy']] as const).map(([value, label]) => <button key={value} className={tab === value ? 'active' : ''} type="button" onClick={() => setTab(value)}>{label}</button>)}</nav><main className="policy-detail-content">
-      {tab === 'summary' && <><h3>Policy Summary</h3><div className="policy-statements"><div className="policy-statements-heading"><strong>Statements</strong><label className="search-box"><Search aria-hidden="true" /><input placeholder="Search" /></label></div>{statements.map((statement, index) => <Statement key={index} effect={statement.Effect} actions={statement.Action ?? statement.NotAction ?? []} resources={statement.Resource ?? statement.NotResource} notAction={Boolean(statement.NotAction)} notResource={Boolean(statement.NotResource)} />)}</div></>}
-      {tab === 'users' && <><h3>Users</h3><PolicyAssignments api={api} name={policy.name} kind="users" /></>}
-      {tab === 'groups' && <><h3>Groups</h3><PolicyAssignments api={api} name={policy.name} kind="groups" /></>}
-      {tab === 'raw' && <><h3>Raw Policy</h3><div className="raw-policy-wrap"><Textarea aria-label="Policy JSON" value={document} onChange={(event) => setDocument(event.target.value)} spellCheck={false} /><button className="icon-button raw-copy" type="button" aria-label="Copy policy" onClick={() => void navigator.clipboard?.writeText(document)}><Copy aria-hidden="true" /></button></div><Button className="raw-save" type="button" disabled={saving} onClick={() => void save()}>Save</Button></>}
+    <button className="policy-back-button" type="button" onClick={onBack}><ArrowLeft aria-hidden="true" /> <span>{t('policies.policy')}</span></button>
+    <header className="policy-detail-header"><div className="policy-detail-identity"><Shield aria-hidden="true" /><div><h2>{policy.name}</h2><p>{t('policies.iamPolicy')}</p></div></div><div className="policy-detail-actions"><button className="danger-button" type="button" onClick={onDelete}><Trash2 className="button-icon" aria-hidden="true" />{t('policies.deletePolicy')}</button><button className="secondary-button" type="button" onClick={() => void onRefresh()}><RefreshCw className="button-icon" aria-hidden="true" />{t('policies.refresh')}</button></div></header>
+    <div className="policy-detail-shell"><nav className="policy-detail-tabs" aria-label={t('policies.policySections')}>{([['summary', t('common.summary')], ['users', t('common.users')], ['groups', t('common.groups')], ['raw', t('common.rawPolicy')]] as const).map(([value, label]) => <button key={value} className={tab === value ? 'active' : ''} type="button" onClick={() => setTab(value)}>{label}</button>)}</nav><main className="policy-detail-content">
+      {tab === 'summary' && <><h3>{t('policies.policySummary')}</h3><div className="policy-statements"><div className="policy-statements-heading"><strong>{t('policies.statements')}</strong><label className="search-box"><Search aria-hidden="true" /><input placeholder={t('policies.search')} /></label></div>{statements.map((statement, index) => <Statement key={index} effect={statement.Effect} actions={statement.Action ?? statement.NotAction ?? []} resources={statement.Resource ?? statement.NotResource} notAction={Boolean(statement.NotAction)} notResource={Boolean(statement.NotResource)} />)}</div></>}
+      {tab === 'users' && <><h3>{t('policies.users')}</h3><PolicyAssignments api={api} name={policy.name} kind="users" /></>}
+      {tab === 'groups' && <><h3>{t('policies.groups')}</h3><PolicyAssignments api={api} name={policy.name} kind="groups" /></>}
+      {tab === 'raw' && <><h3>{t('policies.rawPolicy')}</h3><div className="raw-policy-wrap"><Textarea aria-label={t('policies.policyJson')} value={document} onChange={(event) => setDocument(event.target.value)} spellCheck={false} /><button className="icon-button raw-copy" type="button" aria-label={t('policies.copyPolicy')} onClick={() => void navigator.clipboard?.writeText(document)}><Copy aria-hidden="true" /></button></div><Button className="raw-save" type="button" disabled={saving} onClick={() => void save()}>{t('policies.save')}</Button></>}
     </main></div>
   </section>
 }
@@ -165,24 +166,24 @@ function readStatements(document: string): Array<{ Effect: string; Action?: stri
 
 function Statement({ effect, actions, resources, notAction, notResource }: { effect: string; actions: string | string[]; resources?: string | string[]; notAction: boolean; notResource: boolean }) {
   const actionText = Array.isArray(actions) ? actions.join(', ') : actions
-  const resourceText = resources ? (Array.isArray(resources) ? resources.join(', ') : resources) : 'All resources'
-  return <div className="policy-statement"><div><b>Effect:</b><span><span className={effect === 'Allow' ? 'policy-allow' : 'policy-deny'}>●</span> {effect}</span></div><div><b>{notAction ? 'NotAction:' : 'Actions:'}</b><span>{actionText}</span></div><div><b>{notResource ? 'NotResource:' : 'Resources:'}</b><span>{resourceText}</span></div></div>
+  const resourceText = resources ? (Array.isArray(resources) ? resources.join(', ') : resources) : t('policies.allResources')
+  return <div className="policy-statement"><div><b>{t('policies.effect')}</b><span><span className={effect === 'Allow' ? 'policy-allow' : 'policy-deny'}>●</span> {effect}</span></div><div><b>{notAction ? t('policies.notaction') : t('policies.actionsLabel')}</b><span>{actionText}</span></div><div><b>{notResource ? t('policies.notresource') : t('policies.resources')}</b><span>{resourceText}</span></div></div>
 }
 
 function validateDocument(document: string) {
   const value = JSON.parse(document)
   if (!value || typeof value !== 'object' || value.Version !== '2012-10-17' || (!value.Statement || typeof value.Statement !== 'object')) {
-    throw new Error('Policy 必须包含 Version: "2012-10-17" 和 Statement 对象或数组')
+    throw new Error(t('policies.policyMustIncludeVersion20121017AndA'))
   }
 }
 
 function policyError(reason: unknown): string {
   if (reason instanceof SyntaxError) {
     const location = reason.message.match(/line (\d+) column (\d+)/)
-    const position = location ? `（第 ${location[1]} 行，第 ${location[2]} 列）` : ''
-    return `JSON 格式错误${position}：请检查引号、逗号和字符串内未转义的换行。`
+    const position = location ? t('policies.lineValueColumnValue', { '0': location[1], '1': location[2] }) : ''
+    return t('policies.invalidJsonValueCheckQuotesCommasAndUnescapedNewlines', { '0': position })
   }
-  return reason instanceof Error ? reason.message : '操作失败，请重试'
+  return reason instanceof Error ? reason.message : t('policies.operationFailedPleaseTryAgain')
 }
 
 function PolicyAssignments({ api, name, kind }: { api: ApiClient; name: string; kind: 'users' | 'groups' }) {
@@ -199,8 +200,8 @@ function PolicyAssignments({ api, name, kind }: { api: ApiClient; name: string; 
     }).catch(reason => { if (active) { setFailed(true); toast(policyError(reason), 'error') } })
     return () => { active = false }
   }, [api, name, kind, toast])
-  if (failed) return <p className="policy-muted">Assignments unavailable. Switch tabs to retry.</p>
-  if (!names) return <p className="policy-muted">Loading assignments…</p>
-  if (!names.length) return <p className="policy-muted">No {kind} are directly assigned to this policy.</p>
+  if (failed) return <p className="policy-muted">{t('policies.assignmentsUnavailableSwitchTabsToRetry')}</p>
+  if (!names) return <p className="policy-muted">{t('policies.loadingAssignments')}</p>
+  if (!names.length) return <p className="policy-muted">{t(kind === 'users' ? 'policies.noUserAssignments' : 'policies.noGroupAssignments')}</p>
   return <div className="flex flex-wrap gap-2">{names.map(value => <Badge key={value}>{value}</Badge>)}</div>
 }

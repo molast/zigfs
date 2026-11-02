@@ -1,3 +1,4 @@
+import { t, getFormatLocale, displayValue } from '@/locales'
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import {
   ArrowLeft,
@@ -15,6 +16,7 @@ import {
   Shield,
   Tags,
   Trash2,
+  X,
   type LucideIcon,
 } from 'lucide-react'
 import { ApiError, type ApiClient } from '../../api/client'
@@ -24,6 +26,8 @@ import { useErrorToast, useToast } from '../../components/ToastProvider'
 import type { AuditEvent, Bucket, BucketConfiguration } from '../../types/api'
 import { BucketPolicyEditor } from './BucketPolicyEditor'
 import { Button } from '../../components/ui/Button'
+import { Badge } from '../../components/ui/Badge'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/Dialog'
 import { LifecycleRulesEditor } from './LifecycleRulesEditor'
 import { parseLifecycleConfiguration, serializeLifecycleConfiguration, type LifecycleRule } from './lifecycle'
 
@@ -53,6 +57,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
   const [tags, setTags] = useState<Record<string, string>>({})
   const [tagKey, setTagKey] = useState('')
   const [tagValue, setTagValue] = useState('')
+  const [tagDialogOpen, setTagDialogOpen] = useState(false)
   const [quotaBytes, setQuotaBytes] = useState('')
   const [quotaObjects, setQuotaObjects] = useState('')
   const [usage, setUsage] = useState<BucketUsage>({ bytes: 0, objects: 0 })
@@ -64,7 +69,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
 
   const refresh = useCallback(async () => {
     if (!bucketName) return
-    const stopLoading = startLoading('正在加载 Bucket 配置...')
+    const stopLoading = startLoading(t('buckets.loadingBucketConfiguration'))
     try {
       setLoading(true)
       setBucketContentKnown(false)
@@ -74,7 +79,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
         api.getBucketUsage(bucketName),
       ])
       const current = buckets.find((item) => item.name === bucketName)
-      if (!current) throw new Error(`Bucket “${bucketName}” 不存在`)
+      if (!current) throw new Error(t('buckets.bucketValueDoesNotExist', { '0': bucketName }))
       setBucket(current)
       setConfiguration(bucketConfiguration)
       setQuotaBytes(bucketConfiguration.max_bytes == null ? '' : String(bucketConfiguration.max_bytes))
@@ -116,33 +121,33 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     if (!bucketContentKnown) return
     if (bucketHasContent) {
       await confirm({
-        title: '删除 Bucket',
-        message: `Bucket “${bucketName}”必须为空才能删除。请先删除其中的所有对象和目录，Bucket 内的数据不会被自动删除。`,
-        cancelLabel: '知道了',
+        title: t('buckets.deleteBucket'),
+        message: t('buckets.bucketValueMustBeEmptyBeforeDeletionDeleteIts', { '0': bucketName }),
+        cancelLabel: t('buckets.gotIt'),
         danger: true,
         hideConfirm: true,
       })
       return
     }
     if (!await confirm({
-      title: '删除 Bucket',
-      message: `删除 Bucket “${bucketName}”？此操作不可撤销。`,
-      confirmLabel: '删除',
+      title: t('buckets.deleteBucket'),
+      message: t('buckets.deleteBucketValueThisCannotBeUndone', { '0': bucketName }),
+      confirmLabel: t('buckets.delete'),
       danger: true,
     })) return
-    const stopLoading = startLoading('正在删除 Bucket...')
+    const stopLoading = startLoading(t('buckets.deletingBucket'))
     try {
       setDeleting(true)
       await api.deleteBucket(bucketName)
-      showToast(`已删除 Bucket ${bucketName}`)
+      showToast(t('buckets.deletedBucketValue', { '0': bucketName }))
       onDeleted()
     } catch (reason) {
       if (reason instanceof ApiError && reason.body.code === 'BucketNotEmpty') {
         stopLoading()
         await confirm({
-          title: '无法删除 Bucket',
-          message: `Bucket “${bucketName}”必须为空才能删除。请先删除其中的所有对象和目录，Bucket 内的数据不会被自动删除。`,
-          cancelLabel: '知道了',
+          title: t('buckets.unableToDeleteBucket'),
+          message: t('buckets.bucketValueMustBeEmptyBeforeDeletionDeleteIts', { '0': bucketName }),
+          cancelLabel: t('buckets.gotIt'),
           hideConfirm: true,
         })
       } else {
@@ -155,12 +160,12 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
   }
 
   async function updateVersioning(versioning: 'Enabled' | 'Suspended') {
-    const stopLoading = startLoading('正在更新 Versioning...')
+    const stopLoading = startLoading(t('buckets.updatingVersioning'))
     try {
       setLoading(true)
       setConfiguration(await api.updateBucketConfiguration(bucketName, { versioning }))
       setBucket((current) => current ? { ...current, versioning } : current)
-      showToast(`Versioning 已更新为 ${versioning}`)
+      showToast(t('buckets.versioningUpdatedToValue', { '0': versioning }))
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
@@ -170,12 +175,12 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
   }
 
   async function updateAccessPolicy(access_policy: 'Private' | 'Readonly' | 'Public') {
-    const stopLoading = startLoading('正在更新 Access Policy...')
+    const stopLoading = startLoading(t('buckets.updatingAccessPolicy'))
     try {
       setLoading(true)
       const updated = await api.updateBucketConfiguration(bucketName, { access_policy })
       setConfiguration(updated)
-      showToast(`Access Policy 已更新为 ${access_policy}`)
+      showToast(t('buckets.accessPolicyUpdatedToValue', { '0': access_policy }))
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
@@ -185,12 +190,12 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
   }
 
   async function updateEncryption(encryption: 'Disabled' | 'Enabled') {
-    const stopLoading = startLoading('正在更新 Encryption...')
+    const stopLoading = startLoading(t('buckets.updatingEncryption'))
     try {
       setLoading(true)
       const updated = await api.updateBucketConfiguration(bucketName, { encryption })
       setConfiguration(updated)
-      showToast(`Encryption 已更新为 ${encryption}`)
+      showToast(t('buckets.encryptionUpdatedToValue', { '0': encryption }))
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
@@ -202,21 +207,21 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
   async function enableObjectLocking() {
     if (!configuration || configuration.object_locking) return
     if (configuration.versioning !== 'Enabled') {
-      notifyError('启用 Object Locking 前必须先将 Versioning 设置为 Enabled')
+      notifyError(t('buckets.enableVersioningBeforeEnablingObjectLocking'))
       return
     }
     if (!await confirm({
-      title: '启用 Object Locking',
-      message: '启用后将无法关闭，并会对新写入对象应用 Retention 和 Legal Hold 保护。是否继续？',
-      confirmLabel: '启用',
+      title: t('buckets.enableObjectLocking'),
+      message: t('buckets.objectLockingCannotBeDisabledOnceEnabledRetentionAnd'),
+      confirmLabel: t('buckets.enable'),
       danger: true,
     })) return
-    const stopLoading = startLoading('正在启用 Object Locking...')
+    const stopLoading = startLoading(t('buckets.enablingObjectLocking'))
     try {
       setLoading(true)
       const updated = await api.updateBucketConfiguration(bucketName, { object_locking: true })
       setConfiguration(updated)
-      showToast('Object Locking 已启用')
+      showToast(t('buckets.objectLockingEnabled'))
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
@@ -231,15 +236,15 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       if (!trimmed) return null
       const parsed = Number(trimmed)
       if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-        notifyError(`${label} 必须是大于 0 的整数`)
+        notifyError(t('buckets.valueMustBeAnIntegerGreaterThanZero', { '0': label }))
         return undefined
       }
       return parsed
     }
-    const maxBytes = parseLimit(quotaBytes, '字节配额')
-    const maxObjects = parseLimit(quotaObjects, '对象数配额')
+    const maxBytes = parseLimit(quotaBytes, t('buckets.byteQuota'))
+    const maxObjects = parseLimit(quotaObjects, t('buckets.objectCountQuota'))
     if (maxBytes === undefined || maxObjects === undefined) return
-    const stopLoading = startLoading('正在保存 Quota...')
+    const stopLoading = startLoading(t('buckets.savingQuota'))
     try {
       setLoading(true)
       const updated = await api.updateBucketConfiguration(bucketName, {
@@ -249,7 +254,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       setConfiguration(updated)
       setQuotaBytes(updated.max_bytes == null ? '' : String(updated.max_bytes))
       setQuotaObjects(updated.max_objects == null ? '' : String(updated.max_objects))
-      showToast('Quota 已保存')
+      showToast(t('buckets.quotaSaved'))
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
@@ -274,17 +279,17 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     const isEnabling = !currentEnabled && enabled
     const isModeSwitch = currentEnabled && enabled && mode !== currentMode
     if ((isEnabling || isShortening || isModeSwitch) && !await confirm({
-      title: '确认更新 Retention',
+      title: t('buckets.confirmRetentionUpdate'),
       message: isEnabling
-        ? `启用 Retention 后，新写入对象将在 ${duration} 秒内受到保留限制。是否继续？`
+        ? t('buckets.newObjectsWillBeRetainedForValueSecondsContinue', { '0': duration })
         : isShortening
-          ? `保留期限将从 ${currentDuration} 秒缩短为 ${duration} 秒，可能影响后续对象删除。是否继续？`
-          : `Retention 模式将从 ${currentMode} 切换为 ${mode}。是否继续？`,
-      confirmLabel: '继续更新',
+          ? t('buckets.retentionWillDecreaseFromValueToValueSecondsWhich', { '0': currentDuration, '1': duration })
+          : t('buckets.retentionModeWillChangeFromValueToValueContinue', { '0': currentMode, '1': mode }),
+      confirmLabel: t('buckets.continueUpdate'),
       danger: isShortening || mode === 'COMPLIANCE',
     })) return
 
-    const stopLoading = startLoading('正在更新 Retention...')
+    const stopLoading = startLoading(t('buckets.updatingRetention'))
     try {
       setLoading(true)
       const updated = await api.updateBucketConfiguration(bucketName, {
@@ -293,7 +298,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
         retention_mode: mode,
       })
       setConfiguration(updated)
-      showToast(`Retention 已更新为 ${enabled ? `${duration}s / ${mode}` : 'Disabled'}`)
+      showToast(t('buckets.retentionUpdatedToValue', { '0': enabled ? `${duration}s / ${mode}` : t('buckets.disabled') }))
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
@@ -302,12 +307,26 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     }
   }
 
-  function addTag() {
+  async function addTag() {
     const key = tagKey.trim()
     if (!key) return
-    setTags((current) => ({ ...current, [key]: tagValue.trim() }))
+    const next = { ...tags, [key]: tagValue.trim() }
+    setTags(next)
+    await persistTags(next)
     setTagKey('')
     setTagValue('')
+    setTagDialogOpen(false)
+  }
+
+  async function persistTags(next: Record<string, string>) {
+    const stopLoading = startLoading(t('buckets.savingTags'))
+    try {
+      setLoading(true)
+      const updated = await api.updateBucketConfiguration(bucketName, { tags_json: JSON.stringify(next) })
+      setConfiguration(updated)
+      setTags(parseTags(updated.tags_json))
+      showToast(t('buckets.tagsSaved'))
+    } catch (reason) { notifyError((reason as Error).message) } finally { setLoading(false); stopLoading() }
   }
 
   async function saveTags() {
@@ -316,7 +335,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     const pendingKey = tagKey.trim()
     const pendingValue = tagValue.trim()
     const tagsToSave = pendingKey ? { ...tags, [pendingKey]: pendingValue } : tags
-    const stopLoading = startLoading('正在保存 Tags...')
+    const stopLoading = startLoading(t('buckets.savingTags'))
     try {
       setLoading(true)
       const updated = await api.updateBucketConfiguration(bucketName, Object.keys(tagsToSave).length > 0
@@ -328,7 +347,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
         setTagKey('')
         setTagValue('')
       }
-      showToast('Tags 已保存')
+      showToast(t('buckets.tagsSaved'))
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
@@ -338,7 +357,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
   }
 
   async function saveLifecycle(rules: LifecycleRule[]) {
-    const stopLoading = startLoading('正在保存 Lifecycle 规则...')
+    const stopLoading = startLoading(t('buckets.savingLifecycleRules'))
     try {
       setLoading(true)
       const updated = rules.length > 0
@@ -349,7 +368,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
       setConfiguration(updated)
       setLifecycleRules(rules)
       setBucket((current) => current ? { ...current, lifecycle_enabled: rules.length > 0 } : current)
-      showToast(rules.length > 0 ? 'Lifecycle 规则已保存' : 'Lifecycle 规则已清除')
+      showToast(rules.length > 0 ? t('buckets.lifecycleRulesSaved') : t('buckets.lifecycleRulesCleared'))
     } catch (reason) {
       notifyError((reason as Error).message)
       throw reason
@@ -363,158 +382,151 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
     <section className="bucket-detail-page">
       <header className="bucket-detail-header">
         <div>
-          <button className="back-button" type="button" onClick={onBack}><ArrowLeft className="button-icon" aria-hidden="true" />返回 Buckets</button>
+          <button className="back-button" type="button" onClick={onBack}><ArrowLeft className="button-icon" aria-hidden="true" />{t('buckets.backToBuckets')}</button>
           <div className="bucket-identity">
             <span className="bucket-identity-icon" aria-hidden="true"><Archive /></span>
             <div>
               <h2>{bucket?.name ?? bucketName}</h2>
-              <p>Owner: <strong>{bucket?.owner ?? '-'}</strong><span>Access: <strong>{configuration?.access_policy ?? 'Private'}</strong></span></p>
+              <p>{t('buckets.ownerLabel')} <strong>{bucket?.owner ?? '-'}</strong><span>{t('buckets.access')} <strong>{displayValue(configuration?.access_policy ?? 'Private')}</strong></span></p>
             </div>
           </div>
         </div>
         <div className="bucket-detail-actions">
-          <button className="icon-button bucket-objects-button" type="button" title="浏览 Bucket 对象" aria-label="浏览 Bucket 对象" onClick={onOpenObjects} disabled={!bucket}>
+          <button className="icon-button bucket-objects-button" type="button" title={t('buckets.browseBucketObjects')} aria-label={t('buckets.browseBucketObjects')} onClick={onOpenObjects} disabled={!bucket}>
             <FolderOpen aria-hidden="true" />
           </button>
           <button className="danger-button" type="button" onClick={() => void remove()} disabled={deleting || !bucket || !bucketContentKnown}>
-            <Trash2 className="button-icon" aria-hidden="true" />删除 Bucket
-          </button>
+            <Trash2 className="button-icon" aria-hidden="true" />{t('buckets.deleteBucket')}</button>
           <button className="secondary-button refresh-action-button" type="button" onClick={() => void refresh()} disabled={loading} aria-busy={loading}>
-            <RefreshCw className={`button-icon${loading ? ' spinning' : ''}`} aria-hidden="true" />刷新
-          </button>
+            <RefreshCw className={`button-icon${loading ? ' spinning' : ''}`} aria-hidden="true" />{t('buckets.refresh')}</button>
         </div>
       </header>
 
       <section className="panel bucket-settings-panel">
-        <nav className="bucket-settings-nav" aria-label="Bucket 配置">
+        <nav className="bucket-settings-nav" aria-label={t('buckets.bucketConfiguration')}>
           {sections.map((section) => {
             const available = section === 'Summary' || section === 'Events' || section === 'Lifecycle' || section === 'Access' || section === 'Anonymous'
-            return <button key={section} className={activeSection === section ? 'active' : ''} type="button" disabled={!available} title={available ? undefined : '后续版本开放'} onClick={() => available && setActiveSection(section as 'Summary' | 'Events' | 'Lifecycle' | 'Access' | 'Anonymous')}>
-              {section}
+            return <button key={section} className={activeSection === section ? 'active' : ''} type="button" disabled={!available} title={available ? undefined : t('buckets.availableInAFutureRelease')} onClick={() => available && setActiveSection(section as 'Summary' | 'Events' | 'Lifecycle' | 'Access' | 'Anonymous')}>
+              {displayValue(section)}
             </button>
           })}
         </nav>
 
         <div className="bucket-settings-content">
           <div className="bucket-settings-title">
-            <div><p className="eyebrow">Bucket configuration</p><h3>{activeSection}</h3></div>
-            <span>创建于 {bucket ? new Date(bucket.created_at).toLocaleString() : '-'}</span>
+            <div><p className="eyebrow">{t('buckets.bucketConfiguration')}</p><h3>{displayValue(activeSection)}</h3></div>
+            <span>{t('buckets.createdOn')} {bucket ? new Date(bucket.created_at).toLocaleString(getFormatLocale()) : '-'}</span>
           </div>
 
           {activeSection === 'Summary' ? <>
           <div className="bucket-summary-grid">
             <div className="bucket-setting-item bucket-access-policy-setting">
-              <div className="bucket-setting-label"><Shield aria-hidden="true" /><span>Access Policy</span></div>
+              <div className="bucket-setting-label"><Shield aria-hidden="true" /><span>{t('buckets.accessPolicy')}</span></div>
               <select
-                aria-label="Bucket access policy"
+                aria-label={t('buckets.bucketAccessPolicy')}
                 value={configuration?.access_policy ?? 'Private'}
                 onChange={(event) => void updateAccessPolicy(event.target.value as 'Private' | 'Readonly' | 'Public')}
                 disabled={loading || !configuration}
               >
-                <option value="Private">Private</option>
-                <option value="Readonly">Readonly</option>
-                <option value="Public">Public</option>
+                <option value="Private">{t('buckets.private')}</option>
+                <option value="Readonly">{t('buckets.readonly')}</option>
+                <option value="Public">{t('buckets.public')}</option>
               </select>
-              <small>控制匿名读取和列举权限</small>
+              <small>{t('buckets.controlsAnonymousReadAndListPermissions')}</small>
             </div>
             <div className="bucket-setting-item bucket-encryption-setting">
-              <div className="bucket-setting-label"><LockKeyhole aria-hidden="true" /><span>Encryption</span></div>
-              <select aria-label="Bucket encryption" value={configuration?.encryption ?? 'Disabled'} onChange={(event) => void updateEncryption(event.target.value as 'Disabled' | 'Enabled')} disabled={loading || !configuration}>
-                <option value="Disabled">Disabled</option>
-                <option value="Enabled">Enabled</option>
+              <div className="bucket-setting-label"><LockKeyhole aria-hidden="true" /><span>{t('buckets.encryption')}</span></div>
+              <select aria-label={t('buckets.bucketEncryption')} value={configuration?.encryption ?? 'Disabled'} onChange={(event) => void updateEncryption(event.target.value as 'Disabled' | 'Enabled')} disabled={loading || !configuration}>
+                <option value="Disabled">{t('buckets.disabled')}</option>
+                <option value="Enabled">{t('buckets.enabled')}</option>
               </select>
-              <small>新写入对象使用服务端 AES-256-GCM；历史明文对象保持兼容</small>
+              <small>{t('buckets.newObjectsUseServerSideAes256GcmEncryption')}</small>
             </div>
             <div className="bucket-usage">
               <ChartPie aria-hidden="true" />
-              <div><span>Reported Usage</span><strong>{formatBytes(usage.bytes)}</strong><small>{usage.objects.toLocaleString()} 个对象</small></div>
+              <div><span>{t('buckets.reportedUsage')}</span><strong>{formatBytes(usage.bytes)}</strong><small>{usage.objects.toLocaleString(getFormatLocale())} {t('buckets.objects')}</small></div>
             </div>
             <SettingItem
               icon={CircleX}
-              label="Replication"
-              value={configuration?.replication_status === 'UNAVAILABLE' ? 'Unavailable' : 'Disabled'}
+              label={t('buckets.replication')}
+              value={configuration?.replication_status === 'UNAVAILABLE' ? t('common.unavailable') : t('common.disabled')}
               status="unavailable"
               editable={false}
-              description="当前部署模式未开放，需要第二存储站点"
+              description={t('buckets.unavailableInThisDeploymentASecondStorageSiteIs')}
             />
             <div className="bucket-setting-item bucket-object-locking-setting">
-              <div className="bucket-setting-label"><LockKeyhole aria-hidden="true" /><span>Object Locking</span></div>
+              <div className="bucket-setting-label"><LockKeyhole aria-hidden="true" /><span>{t('buckets.objectLocking')}</span></div>
               <div className="bucket-setting-value">
-                <strong className={configuration?.object_locking ? 'enabled' : 'disabled'}>{configuration?.object_locking ? 'Enabled' : 'Disabled'}</strong>
-                {!configuration?.object_locking && <button className="bucket-setting-edit" type="button" aria-label="启用 Object Locking" title="启用 Object Locking" onClick={() => void enableObjectLocking()} disabled={loading || !configuration}><Pencil aria-hidden="true" /></button>}
+                <strong className={configuration?.object_locking ? 'enabled' : 'disabled'}>{configuration?.object_locking ? t('buckets.enabled') : t('buckets.disabled')}</strong>
+                {!configuration?.object_locking && <button className="bucket-setting-edit" type="button" aria-label={t('buckets.enableObjectLocking')} title={t('buckets.enableObjectLocking')} onClick={() => void enableObjectLocking()} disabled={loading || !configuration}><Pencil aria-hidden="true" /></button>}
               </div>
-              <small>{configuration?.object_locking ? '启用后不可关闭；新对象遵守 Retention 和 Legal Hold' : '启用前需要 Versioning 为 Enabled'}</small>
+              <small>{configuration?.object_locking ? t('buckets.cannotBeDisabledOnceEnabledNewObjectsFollowRetention') : t('buckets.versioningMustBeEnabledFirst')}</small>
             </div>
             <div className="bucket-setting-item bucket-tags-setting">
-              <div className="bucket-setting-label"><Tags aria-hidden="true" /><span>Tags</span></div>
+              <div className="bucket-setting-label bucket-tags-heading"><span><Tags aria-hidden="true" /><span>{t('buckets.tags')}</span></span><button className="secondary-button bucket-tag-add" type="button" onClick={() => setTagDialogOpen(true)} disabled={loading} title={t('buckets.addTag')} aria-label={t('buckets.addTag')}><Plus className="button-icon" aria-hidden="true" /></button></div>
               <div className="bucket-tags-list">
-                {Object.entries(tags).map(([key, value]) => <div className="bucket-tag-row" key={key}>
-                  <span>{key}</span><b>{value}</b>
-                  <button type="button" aria-label={`删除标签 ${key}`} title="删除标签" onClick={() => void (async () => {
-                    if (!await confirm({ title: '删除标签', message: `确认删除标签 “${key}”？`, confirmLabel: '删除', danger: true })) return
-                    setTags((current) => {
-                      const next = { ...current }
-                      delete next[key]
+                {Object.entries(tags).map(([key, value]) => <Badge className="bucket-tag-chip" key={key}>
+                  <span>{key}:{value}</span>
+                  <button type="button" aria-label={t('buckets.deleteTagAction', { '0': key })} title={t('buckets.deleteTag')} onClick={() => void (async () => {
+                    if (!await confirm({ title: t('common.warning'), message: t('buckets.deleteTagConfirmation', { '0': `${key}:${value}` }), confirmLabel: t('buckets.deleteTag'), danger: true })) return
+                    const next = { ...tags }
+                    delete next[key]
+                    setTags(() => {
                       return next
                     })
-                  })()} disabled={loading}><Trash2 aria-hidden="true" /></button>
-                </div>)}
-                {Object.keys(tags).length === 0 && <small>尚未配置</small>}
+                    void persistTags(next)
+                  })()} disabled={loading}><X aria-hidden="true" /></button>
+                </Badge>)}
+                {Object.keys(tags).length === 0 && <small>{t('buckets.notConfigured')}</small>}
               </div>
-              <div className="bucket-tags-editor">
-                <input aria-label="标签 Key" placeholder="Key" value={tagKey} onChange={(event) => setTagKey(event.target.value)} disabled={loading} />
-                <input aria-label="标签 Value" placeholder="Value" value={tagValue} onChange={(event) => setTagValue(event.target.value)} disabled={loading} />
-                <button className="secondary-button bucket-tag-add" type="button" onClick={addTag} disabled={loading || !tagKey.trim()} title="添加标签" aria-label="添加标签"><Plus className="button-icon" aria-hidden="true" /></button>
-              </div>
-              <button className="primary-button bucket-tags-save" type="button" onClick={() => void saveTags()} disabled={loading}>保存 Tags</button>
             </div>
           </div>
 
-          <SettingsSection title="Versioning">
+          <SettingsSection title={t('buckets.versioning')}>
             <div className="bucket-setting-item bucket-versioning-control">
-              <div className="bucket-setting-label"><Archive aria-hidden="true" /><span>Versioning</span></div>
-              <div className="segmented-control" aria-label="Bucket versioning">
-                <button type="button" className={configuration?.versioning === 'Enabled' ? 'active' : ''} onClick={() => void updateVersioning('Enabled')} disabled={loading}>Enabled</button>
-                <button type="button" className={configuration?.versioning === 'Suspended' ? 'active' : ''} onClick={() => void updateVersioning('Suspended')} disabled={loading || configuration?.versioning === 'Unversioned'}>Suspended</button>
+              <div className="bucket-setting-label"><Archive aria-hidden="true" /><span>{t('buckets.versioning')}</span></div>
+              <div className="segmented-control" aria-label={t('buckets.bucketVersioning')}>
+                <button type="button" className={configuration?.versioning === 'Enabled' ? 'active' : ''} onClick={() => void updateVersioning('Enabled')} disabled={loading}>{t('buckets.enabled')}</button>
+                <button type="button" className={configuration?.versioning === 'Suspended' ? 'active' : ''} onClick={() => void updateVersioning('Suspended')} disabled={loading || configuration?.versioning === 'Unversioned'}>{t('buckets.suspended')}</button>
               </div>
-              <small>{configuration?.versioning === 'Unversioned' ? '启用后将为新写入生成版本 ID' : '版本历史由 ZigFS 持久化管理'}</small>
+              <small>{configuration?.versioning === 'Unversioned' ? t('buckets.newWritesReceiveVersionIdsWhenEnabled') : t('buckets.versionHistoryIsPersistedByZigfs')}</small>
             </div>
             <div className="bucket-setting-item bucket-quota-setting">
-              <div className="bucket-setting-label"><Gauge aria-hidden="true" /><span>Quota</span></div>
+              <div className="bucket-setting-label"><Gauge aria-hidden="true" /><span>{t('buckets.quota')}</span></div>
               <div className="bucket-quota-summary">
-                <strong>{configuration?.max_bytes == null ? 'Unlimited' : formatBytes(configuration.max_bytes)}</strong>
+                <strong>{configuration?.max_bytes == null ? t('buckets.unlimited') : formatBytes(configuration.max_bytes)}</strong>
                 <span>/</span>
-                <strong>{configuration?.max_objects == null ? 'Unlimited' : `${configuration.max_objects.toLocaleString()} objects`}</strong>
+                <strong>{configuration?.max_objects == null ? t('buckets.unlimited') : t('buckets.valueObjects', { '0': configuration.max_objects.toLocaleString(getFormatLocale()) })}</strong>
               </div>
               <div className="bucket-quota-editor">
-                <input aria-label="最大字节数" type="number" min="1" step="1" placeholder="字节数上限" value={quotaBytes} onChange={(event) => setQuotaBytes(event.target.value)} disabled={loading || !configuration} />
-                <input aria-label="最大对象数" type="number" min="1" step="1" placeholder="对象数上限" value={quotaObjects} onChange={(event) => setQuotaObjects(event.target.value)} disabled={loading || !configuration} />
-                <button className="secondary-button" type="button" onClick={() => void saveQuota()} disabled={loading || !configuration}>保存</button>
+                <input aria-label={t('buckets.maximumBytes')} type="number" min="1" step="1" placeholder={t('buckets.byteLimit')} value={quotaBytes} onChange={(event) => setQuotaBytes(event.target.value)} disabled={loading || !configuration} />
+                <input aria-label={t('buckets.maximumObjects')} type="number" min="1" step="1" placeholder={t('buckets.objectCountLimit')} value={quotaObjects} onChange={(event) => setQuotaObjects(event.target.value)} disabled={loading || !configuration} />
+                <button className="secondary-button" type="button" onClick={() => void saveQuota()} disabled={loading || !configuration}>{t('buckets.save')}</button>
               </div>
-              <small>留空表示不限制；当前使用量 {formatBytes(usage.bytes)} / {usage.objects.toLocaleString()} objects</small>
+              <small>{t('buckets.leaveBlankForUnlimitedCurrentUsage')} {formatBytes(usage.bytes)} / {usage.objects.toLocaleString(getFormatLocale())} {t('buckets.objects')}</small>
             </div>
           </SettingsSection>
 
-          <SettingsSection title="Retention">
+          <SettingsSection title={t('buckets.retention')}>
             <div className="bucket-setting-item bucket-retention-setting">
-              <div className="bucket-setting-label"><KeyRound aria-hidden="true" /><span>Retention</span></div>
+              <div className="bucket-setting-label"><KeyRound aria-hidden="true" /><span>{t('buckets.retention')}</span></div>
               <label className="bucket-inline-toggle">
                 <input
                   type="checkbox"
-                  aria-label="启用 Retention"
+                  aria-label={t('buckets.enableRetention')}
                   checked={configuration?.retention_enabled ?? false}
                   onChange={(event) => void updateRetention({ enabled: event.target.checked })}
                   disabled={loading || !configuration}
                 />
-                <span>Enabled</span>
+                <span>{t('buckets.enabled')}</span>
               </label>
               <div className="bucket-retention-controls">
                 <label>
-                  <span>Duration</span>
+                  <span>{t('buckets.duration')}</span>
                   <input
                     type="number"
                     min={1}
-                    aria-label="Retention duration seconds"
+                    aria-label={t('buckets.retentionDurationSeconds')}
                     value={configuration?.retention_duration_seconds ?? 86400}
                     onChange={(event) => {
                       const value = Number(event.target.value)
@@ -522,12 +534,12 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
                     }}
                     disabled={loading || !configuration}
                   />
-                  <span>s</span>
+                  <span>{t('buckets.s')}</span>
                 </label>
                 <label>
-                  <span>Mode</span>
+                  <span>{t('buckets.mode')}</span>
                   <select
-                    aria-label="Retention mode"
+                    aria-label={t('buckets.retentionMode')}
                     value={configuration?.retention_mode ?? 'GOVERNANCE'}
                     onChange={(event) => void updateRetention({ mode: event.target.value as 'GOVERNANCE' | 'COMPLIANCE' })}
                     disabled={loading || !configuration}
@@ -537,7 +549,7 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
                   </select>
                 </label>
               </div>
-              <small>{configuration?.retention_enabled ? '新写入对象继承默认保留期限' : '启用后新写入对象将继承保留期限'}</small>
+              <small>{configuration?.retention_enabled ? t('buckets.newObjectsInheritTheDefaultRetentionPeriod') : t('buckets.newObjectsInheritRetentionWhenEnabled')}</small>
             </div>
           </SettingsSection>
           </> : activeSection === 'Events' ? <EventsOverview api={api} bucket={bucket} configuration={configuration} /> : activeSection === 'Lifecycle' ? <LifecycleRulesEditor
@@ -547,6 +559,16 @@ export function BucketDetailView({ api, bucketName, onBack, onOpenObjects, onDel
             onSave={saveLifecycle}
           /> : activeSection === 'Access' ? <><BucketPolicyEditor api={api} bucketName={bucketName} /><AccessOverview api={api} bucketName={bucketName} bucket={bucket} configuration={configuration} loading={loading} onPolicyChange={updateAccessPolicy} /></> : <AnonymousOverview configuration={configuration} />}
         </div>
+        <Dialog open={tagDialogOpen} onOpenChange={setTagDialogOpen}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>{t('buckets.setTag')}</DialogTitle></DialogHeader>
+            <div className="bucket-tag-dialog-fields">
+              <label>{t('buckets.tagKey')}<input autoFocus placeholder={t('buckets.tagKeyPlaceholder')} value={tagKey} onChange={(event) => setTagKey(event.target.value)} /></label>
+              <label>{t('buckets.tagValue')}<input placeholder={t('buckets.tagValuePlaceholder')} value={tagValue} onChange={(event) => setTagValue(event.target.value)} /></label>
+            </div>
+            <div className="ui-dialog-footer"><button type="button" className="secondary-button" onClick={() => setTagDialogOpen(false)}>{t('common.cancel')}</button><button type="button" className="primary-button" onClick={addTag} disabled={!tagKey.trim()}>{t('buckets.addTag')}</button></div>
+          </DialogContent>
+        </Dialog>
       </section>
     </section>
   )
@@ -577,18 +599,18 @@ function AccessOverview({ api, bucketName, bucket, configuration, loading, onPol
     <div className="bucket-access-overview">
       <div className="bucket-access-hero">
         <Shield aria-hidden="true" />
-        <div><h4>Bucket Access</h4><p>访问权限由 ZigFS 持久化配置统一控制。</p></div>
+        <div><h4>{t('buckets.bucketAccess')}</h4><p>{t('buckets.accessIsControlledByConfigurationPersistedInZigfs')}</p></div>
       </div>
       <dl className="bucket-access-list">
-        <div><dt>Owner</dt><dd>{bucket?.owner ?? '-'}</dd></div>
-        <div><dt>Access Policy</dt><dd><select aria-label="Access 页面策略" value={policy} onChange={(event) => onPolicyChange(event.target.value as 'Private' | 'Readonly' | 'Public')} disabled={loading || !configuration}><option value="Private">Private</option><option value="Readonly">Readonly</option><option value="Public">Public</option></select></dd></div>
-        <div><dt>Anonymous object read</dt><dd className={anonymousRead ? 'allowed' : 'denied'}>{anonymousRead ? 'Allowed' : 'Denied'}</dd></div>
-        <div><dt>Anonymous bucket listing</dt><dd className={anonymousList ? 'allowed' : 'denied'}>{anonymousList ? 'Allowed' : 'Denied'}</dd></div>
-        <div><dt>Anonymous write / delete</dt><dd className="denied">Denied</dd></div>
-        <div><dt>Block Public Access</dt><dd><Button size="sm" variant="outline" disabled={loading || !configuration} onClick={() => void api.updateBucketConfiguration(bucketName, { block_public_access: !blockPublic }).then(() => window.location.reload())}>{blockPublic ? 'Blocked' : 'Allowed'}</Button></dd></div>
-        <div><dt>Object Ownership</dt><dd>Bucket owner enforced</dd></div>
+        <div><dt>{t('buckets.owner')}</dt><dd>{bucket?.owner ?? '-'}</dd></div>
+        <div><dt>{t('buckets.accessPolicy')}</dt><dd><select aria-label={t('buckets.accessPagePolicy')} value={policy} onChange={(event) => onPolicyChange(event.target.value as 'Private' | 'Readonly' | 'Public')} disabled={loading || !configuration}><option value="Private">{t('buckets.private')}</option><option value="Readonly">{t('buckets.readonly')}</option><option value="Public">{t('buckets.public')}</option></select></dd></div>
+        <div><dt>{t('buckets.anonymousObjectRead')}</dt><dd className={anonymousRead ? 'allowed' : 'denied'}>{anonymousRead ? t('buckets.allowed') : t('buckets.denied')}</dd></div>
+        <div><dt>{t('buckets.anonymousBucketListing')}</dt><dd className={anonymousList ? 'allowed' : 'denied'}>{anonymousList ? t('buckets.allowed') : t('buckets.denied')}</dd></div>
+        <div><dt>{t('buckets.anonymousWriteDelete')}</dt><dd className="denied">{t('buckets.denied')}</dd></div>
+        <div><dt>{t('buckets.blockPublicAccess')}</dt><dd><Button size="sm" variant="outline" disabled={loading || !configuration} onClick={() => void api.updateBucketConfiguration(bucketName, { block_public_access: !blockPublic }).then(() => window.location.reload())}>{blockPublic ? t('buckets.blocked') : t('buckets.allowed')}</Button></dd></div>
+        <div><dt>{t('buckets.objectOwnership')}</dt><dd>{t('buckets.bucketOwnerEnforced')}</dd></div>
       </dl>
-      <p className="bucket-access-note">以上仅展示旧版 Access Policy 的默认行为。实际请求还会计算 Bucket Policy、身份策略和条件，显式 Deny 优先。</p>
+      <p className="bucket-access-note">{t('buckets.theseAreLegacyAccessPolicyDefaultsRequestsAlsoEvaluate')}</p>
     </div>
   )
 }
@@ -608,13 +630,13 @@ function AnonymousOverview({ configuration }: { configuration: BucketConfigurati
     <div className="bucket-anonymous-overview">
       <div className="bucket-access-hero">
         <Shield aria-hidden="true" />
-        <div><h4>Anonymous Access</h4><p>匿名请求不携带 Access Key。下方展示旧版 Access Policy 默认值；实际访问还受 Bucket Policy 和请求条件约束。</p></div>
+        <div><h4>{t('buckets.anonymousAccess')}</h4><p>{t('buckets.anonymousRequestsHaveNoAccessKeyLegacyAccessPolicy')}</p></div>
       </div>
-      <div className="bucket-anonymous-policy"><span>Current policy</span><strong>{policy}</strong></div>
+      <div className="bucket-anonymous-policy"><span>{t('buckets.currentPolicy')}</span><strong>{policy}</strong></div>
       <div className="bucket-anonymous-list">
-        {permissions.map(([action, allowed]) => <div key={action}><span>{action}</span><b className={allowed ? 'allowed' : 'denied'}>{allowed ? 'Allowed' : 'Denied'}</b></div>)}
+        {permissions.map(([action, allowed]) => <div key={action}><span>{action}</span><b className={allowed ? 'allowed' : 'denied'}>{allowed ? t('buckets.allowed') : t('buckets.denied')}</b></div>)}
       </div>
-      <p className="bucket-access-note">修改匿名权限请前往 Access 页面或 Summary 中的 Access Policy。匿名写入、删除和 Bucket 管理操作始终需要授权凭证。</p>
+      <p className="bucket-access-note">{t('buckets.changeAnonymousPermissionsUnderAccessOrSummaryAccessPolicy')}</p>
     </div>
   )
 }
@@ -639,51 +661,51 @@ function EventsOverview({ api, bucket, configuration }: { api: ApiClient; bucket
       setNextCursor(page.next_cursor ?? '')
       setLoaded(true)
     } catch (reason) {
-      showToast(reason instanceof Error ? reason.message : '加载审计事件失败', 'error')
+      showToast(reason instanceof Error ? reason.message : t('buckets.failedToLoadAuditEvents'), 'error')
     } finally {
       setLoading(false)
     }
   }, [action, api, bucket, from, outcome, showToast, to])
   useEffect(() => { void loadEvents() }, [loadEvents])
   const configurationEvents = [
-    ['Bucket loaded', bucket ? `Owner ${bucket.owner}` : 'Loading'],
-    ['Access Policy', configuration?.access_policy ?? 'Unknown'],
-    ['Encryption', configuration?.encryption ?? 'Unknown'],
-    ['Retention', configuration?.retention_enabled ? `${configuration.retention_duration_seconds ?? 0}s / ${configuration.retention_mode ?? 'GOVERNANCE'}` : 'Disabled'],
-    ['Object Locking', configuration?.object_locking ? 'Enabled' : 'Disabled'],
-    ['Replication', configuration?.replication_status ?? 'Unknown'],
+    [t('common.bucketLoaded'), bucket ? t('buckets.ownerValue', { '0': bucket.owner }) : t('buckets.loading')],
+    [t('common.accessPolicy'), configuration?.access_policy ?? t('buckets.unknown')],
+    [t('common.encryption'), configuration?.encryption ?? t('buckets.unknown')],
+    [t('common.retention'), configuration?.retention_enabled ? t('buckets.valuesValue', { '0': configuration.retention_duration_seconds ?? 0, '1': configuration.retention_mode ?? 'GOVERNANCE' }) : t('buckets.disabled')],
+    [t('common.objectLocking'), configuration?.object_locking ? t('buckets.enabled') : t('buckets.disabled')],
+    [t('common.replication'), configuration?.replication_status ?? t('buckets.unknown')],
   ] as const
   return (
     <div className="bucket-events-overview">
       <div className="bucket-access-hero">
         <Activity aria-hidden="true" />
-        <div><h4>Configuration Events</h4><p>当前配置状态来自 ZigFS；审计时间线支持持久化查询和时间范围筛选。</p></div>
+        <div><h4>{t('buckets.configurationEvents')}</h4><p>{t('buckets.configurationComesFromZigfsPersistedAuditEventsSupportTime')}</p></div>
       </div>
       <div className="bucket-events-list">
         {configurationEvents.map(([event, value]) => <div key={event}><span>{event}</span><b>{value}</b></div>)}
       </div>
-      <h4>Audit timeline</h4>
+      <h4>{t('buckets.auditTimeline')}</h4>
       <div className="bucket-events-filters">
-        <label>From <input type="datetime-local" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
-        <label>To <input type="datetime-local" value={to} onChange={(event) => setTo(event.target.value)} /></label>
-        <label>Action <input value={action} placeholder="update_retention" onChange={(event) => setAction(event.target.value)} /></label>
-        <label>Outcome <input value={outcome} placeholder="updated" onChange={(event) => setOutcome(event.target.value)} /></label>
-        <button type="button" className="secondary-button" onClick={() => void loadEvents()} disabled={loading}>Apply</button>
+        <label>{t('buckets.from')} <input type="datetime-local" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
+        <label>{t('buckets.to')} <input type="datetime-local" value={to} onChange={(event) => setTo(event.target.value)} /></label>
+        <label>{t('buckets.action')} <input value={action} placeholder="update_retention" onChange={(event) => setAction(event.target.value)} /></label>
+        <label>{t('buckets.outcome')} <input value={outcome} placeholder="updated" onChange={(event) => setOutcome(event.target.value)} /></label>
+        <button type="button" className="secondary-button" onClick={() => void loadEvents()} disabled={loading}>{t('buckets.apply')}</button>
       </div>
       <div className="bucket-events-list">
-        {events.map((event) => <div key={`${event.request_id}-${event.timestamp_unix_seconds}`}><span>{new Date(event.timestamp_unix_seconds * 1000).toLocaleString()}</span><b>{event.action} · {event.outcome}</b></div>)}
+        {events.map((event) => <div key={`${event.request_id}-${event.timestamp_unix_seconds}`}><span>{new Date(event.timestamp_unix_seconds * 1000).toLocaleString(getFormatLocale())}</span><b>{event.action} · {event.outcome}</b></div>)}
       </div>
-      {loaded && events.length === 0 && <p className="bucket-access-note">当前筛选范围暂无审计事件。</p>}
+      {loaded && events.length === 0 && <p className="bucket-access-note">{t('buckets.noAuditEventsMatchTheCurrentFilters')}</p>}
       <div className="bucket-events-actions">
-        <button type="button" className="secondary-button" onClick={() => void loadEvents()} disabled={loading}>{loading ? '加载中…' : '刷新事件'}</button>
-        {nextCursor && <button type="button" className="secondary-button" onClick={() => void loadEvents(nextCursor, true)} disabled={loading}>加载更多</button>}
+        <button type="button" className="secondary-button" onClick={() => void loadEvents()} disabled={loading}>{loading ? t('buckets.loadingProgress') : t('buckets.refreshEvents')}</button>
+        {nextCursor && <button type="button" className="secondary-button" onClick={() => void loadEvents(nextCursor, true)} disabled={loading}>{t('buckets.loadMore')}</button>}
       </div>
-      <p className="bucket-access-note">当前配置快照与审计时间线分开展示；历史事件会自动从归档文件合并查询。</p>
+      <p className="bucket-access-note">{t('buckets.theConfigurationSnapshotIsSeparateFromTheAuditTimeline')}</p>
     </div>
   )
 }
 
-function SettingItem({ icon: Icon, label, value, status = 'unavailable', editable = true, description = '当前版本暂未开放配置' }: {
+function SettingItem({ icon: Icon, label, value, status = 'unavailable', editable = true, description = t('buckets.configurationIsNotAvailableInThisVersion') }: {
   icon: LucideIcon
   label: string
   value: string
@@ -696,7 +718,7 @@ function SettingItem({ icon: Icon, label, value, status = 'unavailable', editabl
       <div className="bucket-setting-label"><Icon aria-hidden="true" /><span>{label}</span></div>
       <div className="bucket-setting-value">
         <strong className={status}>{value}</strong>
-        {editable && <button className="bucket-setting-edit" type="button" aria-label={`编辑 ${label}`} title="后续版本开放" disabled><Pencil aria-hidden="true" /></button>}
+        {editable && <button className="bucket-setting-edit" type="button" aria-label={t('buckets.editValue', { '0': label })} title={t('buckets.availableInAFutureRelease')} disabled><Pencil aria-hidden="true" /></button>}
       </div>
       <small>{description}</small>
     </div>

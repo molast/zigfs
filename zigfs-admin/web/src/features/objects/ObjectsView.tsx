@@ -1,3 +1,4 @@
+import { t, getFormatLocale } from '@/locales'
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft,
@@ -164,7 +165,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   useEffect(() => {
     if (accessKeysLoaded.current) return
     accessKeysLoaded.current = true
-    withLoading('正在加载 Access Keys...', () => api.listAccessKeys())
+    withLoading(t('objects.loadingAccessKeys'), () => api.listAccessKeys())
       .then((keyItems) => {
         const enabledKeys = keyItems.filter((item) => item.enabled)
         setAccessKeys(enabledKeys)
@@ -179,7 +180,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   useEffect(() => {
     if (!bucket || bucketInfoLoaded.current === bucket) return
     bucketInfoLoaded.current = bucket
-    withLoading('正在加载 Bucket 信息...', () => api.listBuckets())
+    withLoading(t('objects.loadingBucketInformation'), () => api.listBuckets())
       .then((items) => {
         setBuckets(items)
         setBucketInfo(items.find((item) => item.name === bucket) ?? null)
@@ -195,7 +196,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     if (!reset && (listLoading.current || !nextToken || viewMode !== 'current' || requestedShowDeleted)) return
     const requestId = ++listRequestId.current
     listLoading.current = true
-    const stopLoading = startLoading(`正在加载${viewMode === 'versions' ? '对象版本' : '对象'}...`)
+    const stopLoading = startLoading(t('objects.loadingValue', { '0': viewMode === 'versions' ? t('objects.objectVersion') : t('common.objects') }))
     try {
       if (reset) {
         setSelectedObjectKeys(new Set())
@@ -478,7 +479,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const path = displayObjectPath(prefix)
     try {
       await navigator.clipboard.writeText(path ? `${bucket}/${path}` : bucket)
-      showToast('当前路径已复制')
+      showToast(t('objects.currentPathCopied'))
     } catch (reason) {
       notifyError((reason as Error).message)
     }
@@ -486,7 +487,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 
   async function loadMultipartUploads() {
     if (!bucket) return
-    const stopLoading = startLoading('正在同步分片上传任务...')
+    const stopLoading = startLoading(t('objects.syncingMultipartUploads'))
     try {
       uploadsHydrated.current = false
       setUploadsLoading(true)
@@ -579,7 +580,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       }
     }
     if (tasks.length > 0) setUploadTasks((current) => [...tasks, ...current])
-    if (failures.length > 0) notifyError(`以下文件未能创建上传任务：${failures.join('；')}`)
+    if (failures.length > 0) notifyError(t('objects.unableToCreateUploadsForValue', { '0': failures.join('；') }))
     for (const task of tasks) {
       if (task.file) await runUpload(task, task.file)
     }
@@ -590,11 +591,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const name = pathName.trim().replace(/^\/+|\/+$/g, '')
     if (!name || !bucket || !accessKey) return
     if (name.includes('/')) {
-      notifyError('目录名称只能创建一级目录，不能包含“/”。')
+      notifyError(t('objects.enterASingleDirectoryNameWithout'))
       return
     }
     const key = `${joinObjectPath(prefix, name)}/`
-    const stopLoading = startLoading('正在创建路径...')
+    const stopLoading = startLoading(t('objects.creatingPath'))
     try {
       await api.createDirectory(bucket, key)
       setShowCreatePath(false)
@@ -602,7 +603,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       setShowDeleted(false)
       setShowDeletedVersions(false)
       setViewMode('current')
-      showToast(`已创建路径 ${displayDirectoryKey(key)}`)
+      showToast(t('objects.createdPathValue', { '0': displayDirectoryKey(key) }))
       setPrefix(key)
       onNavigatePath(key)
     } catch (reason) {
@@ -681,7 +682,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
             if (attempt < 3) await delay(attempt * 300)
           }
         }
-        if (!etag) throw lastError ?? new Error(`第 ${partNumber} 分片上传失败`)
+        if (!etag) throw lastError ?? new Error(t('objects.partValueFailedToUpload', { '0': partNumber }))
         completed.set(partNumber, {
           part_number: partNumber,
           size: body.size,
@@ -736,7 +737,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
           status: 'paused',
           error: undefined,
         })
-        showToast(`已暂停 ${displayFileName(task.key)}`)
+        showToast(t('objects.pausedValue', { '0': displayFileName(task.key) }))
       } else {
         const message = (reason as Error).message
         updateUploadTask(task.uploadId, { status: 'failed', error: message })
@@ -758,14 +759,14 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 
   async function abortUpload(task: UploadTask) {
     if (!await confirm({
-      title: '取消分片上传',
-      message: `取消上传“${task.key}”并删除已上传的分片？`,
-      confirmLabel: '取消上传',
+      title: t('objects.cancelMultipartUpload'),
+      message: t('objects.cancelUploadValueAndDeleteItsUploadedParts', { '0': task.key }),
+      confirmLabel: t('objects.cancelUpload'),
       danger: true,
     })) return
     const control = uploadControl.current
     if (control?.uploadId === task.uploadId && control.completing) {
-      showToast(`正在完成 ${displayFileName(task.key)}`)
+      showToast(t('objects.completingValue', { '0': displayFileName(task.key) }))
       return
     }
     if (control?.uploadId === task.uploadId) {
@@ -773,11 +774,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       control.cancelled = true
       control.request?.abort()
     }
-    const stopLoading = startLoading('正在取消分片上传...')
+    const stopLoading = startLoading(t('objects.cancellingMultipartUpload'))
     try {
       await api.abortMultipartUpload(task.uploadId, task.bucket, task.key)
       setUploadTasks((current) => current.filter((item) => item.uploadId !== task.uploadId))
-      showToast(`已取消 ${displayFileName(task.key)}`)
+      showToast(t('objects.cancelledValue', { '0': displayFileName(task.key) }))
     } catch (reason) {
       const message = (reason as Error).message
       updateUploadTask(task.uploadId, { status: 'failed', error: message })
@@ -793,7 +794,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     if (!selected) return
     if ((task.fileSize > 0 && task.fileSize !== selected.size) ||
         (task.lastModified > 0 && task.lastModified !== selected.lastModified)) {
-      updateUploadTask(task.uploadId, { status: 'failed', error: '文件大小或修改时间与原上传任务不一致' })
+      updateUploadTask(task.uploadId, { status: 'failed', error: t('objects.fileSizeOrModificationTimeDoesNotMatchThe') })
       return
     }
     updateUploadTask(task.uploadId, {
@@ -834,11 +835,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 
   async function download(object: ObjectSummary) {
     if (!accessKey || !bucket) return false
-    const stopLoading = startLoading('正在下载对象...')
+    const stopLoading = startLoading(t('objects.downloadingObject'))
     try {
       const presigned = await api.presignObject(accessKey, bucket, object.key, 'GET', 900)
       const response = await fetch(presigned.url)
-      if (!response.ok) throw new Error(`下载失败（${response.status}）`)
+      if (!response.ok) throw new Error(t('objects.downloadFailedValue', { '0': response.status }))
       const blob = await response.blob()
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
@@ -848,7 +849,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       link.click()
       link.remove()
       window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-      showToast(`已下载 ${displayFileName(object.key)}`)
+      showToast(t('objects.downloadedValue', { '0': displayFileName(object.key) }))
       return true
     } catch (reason) {
       notifyError((reason as Error).message)
@@ -860,11 +861,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 
   async function downloadVersion(version: ObjectVersion) {
     if (!accessKey || !bucket || version.is_delete_marker) return false
-    const stopLoading = startLoading('正在下载对象版本...')
+    const stopLoading = startLoading(t('objects.downloadingObjectVersion'))
     try {
       const presigned = await api.presignObject(accessKey, bucket, version.key, 'GET', 900, { versionId: version.version_id })
       const response = await fetch(presigned.url)
-      if (!response.ok) throw new Error(`下载失败（${response.status}）`)
+      if (!response.ok) throw new Error(t('objects.downloadFailedValue', { '0': response.status }))
       const blob = await response.blob()
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
@@ -874,7 +875,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       link.click()
       link.remove()
       window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-      showToast(`已下载 ${displayFileName(version.key)} 的版本 ${shortVersionId(version.version_id)}`)
+      showToast(t('objects.downloadedVersionValueOfValue', { '0': displayFileName(version.key), '1': shortVersionId(version.version_id) }))
       return true
     } catch (reason) {
       notifyError((reason as Error).message)
@@ -901,7 +902,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   async function copyObjectKey(sourceKey: string, destinationBucket: string, destinationKey: string, versionId?: string) {
     if (!accessKey || !bucket) return
     if (destinationBucket === bucket && destinationKey === sourceKey) {
-      throw new Error(`目标路径与源对象相同：${displayKeyForMessage(sourceKey)}`)
+      throw new Error(t('objects.destinationMatchesTheSourceValue', { '0': displayKeyForMessage(sourceKey) }))
     }
     const presigned = await api.presignObject(accessKey, destinationBucket, destinationKey, 'PUT', 900, {
       copySource: { bucket, key: sourceKey, ...(versionId ? { versionId } : {}) },
@@ -910,23 +911,23 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       method: 'PUT',
       headers: presigned.required_headers,
     })
-    if (!response.ok) throw new Error(`复制 ${displayKeyForMessage(sourceKey)} 失败（${response.status}）`)
+    if (!response.ok) throw new Error(t('objects.failedToCopyValueValue', { '0': displayKeyForMessage(sourceKey), '1': response.status }))
   }
 
   async function deleteObjectKey(key: string, versionId?: string) {
     if (!accessKey || !bucket) return
     const presigned = await api.presignObject(accessKey, bucket, key, 'DELETE', 900, versionId ? { versionId } : undefined)
     const response = await fetch(presigned.url, { method: 'DELETE' })
-    if (!response.ok) throw new Error(`删除 ${key} 失败（${response.status}）`)
+    if (!response.ok) throw new Error(t('objects.failedToDeleteValueValue', { '0': key, '1': response.status }))
   }
 
   async function copyDirectory(sourceKey: string, destinationBucket: string, destinationPath: string) {
     const sourcePrefix = sourceKey.endsWith('/') ? sourceKey : `${sourceKey}/`
     const directoryName = sourcePrefix.slice(0, -1).split('/').pop()
-    if (!directoryName) throw new Error(`无法确定目录名称：${displayDirectoryKey(sourceKey)}`)
+    if (!directoryName) throw new Error(t('objects.unableToDetermineDirectoryNameValue', { '0': displayDirectoryKey(sourceKey) }))
     const destinationPrefix = `${joinObjectPath(destinationPath, directoryName)}/`
     if (destinationBucket === bucket && (destinationPrefix === sourcePrefix || destinationPrefix.startsWith(sourcePrefix))) {
-      throw new Error(`目标路径不能位于源目录内：${displayDirectoryKey(sourcePrefix)}`)
+      throw new Error(t('objects.destinationCannotBeInsideTheSourceDirectoryValue', { '0': displayDirectoryKey(sourcePrefix) }))
     }
     const listed = await listAllObjectsForPrefix(sourcePrefix)
     const sourceKeys = [...new Set(listed.map((object) => object.key).filter((key) => key.startsWith(sourcePrefix)))]
@@ -960,7 +961,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     if (!isDirectoryKey(key)) return true
     if (!bucket) return false
 
-    const stopLoading = startLoading('正在检查目录...')
+    const stopLoading = startLoading(t('objects.checkingDirectory'))
     let hasChildren = false
     try {
       const [page, versions] = await Promise.all([
@@ -980,9 +981,9 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 
     if (!hasChildren) return true
     await confirm({
-      title: '删除目录',
-      message: `删除目录“${displayDirectoryKey(key)}”？目录必须为空，目录下的对象不会被删除。`,
-      cancelLabel: '知道了',
+      title: t('objects.deleteDirectory'),
+      message: t('objects.deleteDirectoryValueItMustBeEmptyItsObjects', { '0': displayDirectoryKey(key) }),
+      cancelLabel: t('objects.gotIt'),
       danger: true,
       hideConfirm: true,
     })
@@ -998,12 +999,12 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       }
       const presigned = await api.presignObject(accessKey, bucket, item.object.key, 'DELETE', 900)
       const response = await fetch(presigned.url, { method: 'DELETE' })
-      if (!response.ok) throw new Error(`删除 ${displayKeyForMessage(item.object.key)} 失败（${response.status}）`)
+      if (!response.ok) throw new Error(t('objects.failedToDeleteValueValue', { '0': displayKeyForMessage(item.object.key), '1': response.status }))
       return
     }
     const presigned = await api.presignObject(accessKey, bucket, item.version.key, 'DELETE', 900, { versionId: item.version.version_id })
     const response = await fetch(presigned.url, { method: 'DELETE' })
-    if (!response.ok) throw new Error(`删除版本 ${shortVersionId(item.version.version_id)} 失败（${response.status}）`)
+    if (!response.ok) throw new Error(t('objects.failedToDeleteVersionValueValue', { '0': shortVersionId(item.version.version_id), '1': response.status }))
   }
 
   async function purgeObject(key: string) {
@@ -1021,17 +1022,17 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     if (!accessKey || !bucket || !version.is_delete_marker) return
     if (!await ensureDirectoryCanBeDeleted(version.key)) return
     if (!await confirm({
-      title: '永久删除对象',
-      message: `永久删除对象“${version.key}”？该对象的全部版本和 DeleteMarker 都会被清除，且无法恢复。`,
-      confirmLabel: '永久删除',
+      title: t('objects.permanentlyDeleteObject'),
+      message: t('objects.permanentlyDeleteValueIncludingAllVersionsAndDeleteMarkers', { '0': version.key }),
+      confirmLabel: t('objects.permanentlyDelete'),
       danger: true,
     })) return
     const identity = versionIdentity(version)
-    const stopLoading = startLoading('正在永久删除对象...')
+    const stopLoading = startLoading(t('objects.permanentlyDeletingObjects'))
     try {
       setDeletingVersion(identity)
       await purgeObject(version.key)
-      showToast(`已永久删除 ${displayFileName(version.key)}`)
+      showToast(t('objects.permanentlyDeletedValue', { '0': displayFileName(version.key) }))
       await load(true)
     } catch (reason) {
       notifyError((reason as Error).message)
@@ -1057,7 +1058,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       setSelectedDeletedIds(new Set())
       setSelectedVersionIds(new Set())
     } else {
-      notifyError('部分对象下载失败，请重试。')
+      notifyError(t('objects.someObjectsFailedToDownloadPleaseRetry'))
     }
   }
 
@@ -1071,18 +1072,18 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const deleteMarkers = items.filter((item): item is Extract<SelectedObject, { kind: 'version' }> => item.kind === 'version' && item.version.is_delete_marker)
     const purgingDeletedObjects = deleteMarkers.length === items.length
     const permanent = viewMode === 'versions' || items.some((item) => item.kind === 'version')
-    const label = permanent ? '永久删除选中的对象版本' : '删除选中的对象'
+    const label = permanent ? t('objects.permanentlyDeleteSelectedVersions') : t('objects.deleteSelectedObjects')
     if (!await confirm({
-      title: purgingDeletedObjects ? '永久删除对象' : label,
+      title: purgingDeletedObjects ? t('objects.permanentlyDeleteObject') : label,
       message: purgingDeletedObjects
-        ? `确定永久删除 ${new Set(deleteMarkers.map((item) => item.version.key)).size} 个对象？对象的全部版本和 DeleteMarker 都会被清除，且无法恢复。`
+        ? t('objects.permanentlyDeleteValueObjectsIncludingAllVersionsAndDelete', { '0': new Set(deleteMarkers.map((item) => item.version.key)).size })
         : permanent
-        ? `确定永久删除 ${items.length} 个对象版本？此操作无法恢复。`
-        : `确定删除 ${items.length} 个对象？启用版本管理时会创建 DeleteMarker。`,
-      confirmLabel: permanent ? '永久删除' : '删除',
+        ? t('objects.permanentlyDeleteValueObjectVersionsThisCannotBeUndone', { '0': items.length })
+        : t('objects.deleteValueObjectsADeleteMarkerIsCreatedWhen', { '0': items.length }),
+      confirmLabel: permanent ? t('objects.permanentlyDelete') : t('objects.delete'),
       danger: true,
     })) return
-    const stopLoading = startLoading(permanent ? '正在永久删除对象版本...' : '正在删除对象...')
+    const stopLoading = startLoading(permanent ? t('objects.permanentlyDeletingObjectVersions') : t('objects.deletingObjects'))
     try {
       if (purgingDeletedObjects) {
         for (const key of new Set(deleteMarkers.map((item) => item.version.key))) await purgeObject(key)
@@ -1092,7 +1093,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       setSelectedObjectKeys(new Set())
       setSelectedDeletedIds(new Set())
       setSelectedVersionIds(new Set())
-      showToast(`已处理 ${items.length} 个对象`)
+      showToast(t('objects.processedValueObjects', { '0': items.length }))
       await load(true)
     } catch (reason) {
       notifyError((reason as Error).message)
@@ -1105,11 +1106,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const items = selectedItems().filter((item): item is Extract<SelectedObject, { kind: 'version' }> => item.kind === 'version' && item.version.is_delete_marker && item.version.is_latest)
     if (items.length === 0) return
     if (!await confirm({
-      title: '恢复已删除对象',
-      message: `确定恢复 ${items.length} 个已删除对象？将删除对应的最新 DeleteMarker。`,
-      confirmLabel: '恢复对象',
+      title: t('objects.restoreDeletedObjects'),
+      message: t('objects.restoreValueDeletedObjectsByRemovingTheirLatestDelete', { '0': items.length }),
+      confirmLabel: t('objects.restoreObjects'),
     })) return
-    const stopLoading = startLoading('正在恢复对象...')
+    const stopLoading = startLoading(t('objects.restoringObjects'))
     try {
       for (const item of items) await deleteItem(item)
       setSelectedObjectKeys(new Set())
@@ -1117,7 +1118,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       setSelectedVersionIds(new Set())
       initialLoadKey.current = ''
       setShowDeleted(false)
-      showToast(`已恢复 ${items.length} 个对象`)
+      showToast(t('objects.restoredValueObjects', { '0': items.length }))
       await load(true, prefix, false)
     } catch (reason) {
       notifyError((reason as Error).message)
@@ -1132,7 +1133,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const destinationPath = transferPath.trim().replace(/^\/+|\/+$/g, '')
     const { mode, items } = transferDialog
     setTransferring(true)
-    const stopLoading = startLoading(mode === 'copy' ? '正在复制对象...' : '正在移动对象...')
+    const stopLoading = startLoading(mode === 'copy' ? t('objects.copyingObjects') : t('objects.movingObjects'))
     try {
       for (const item of items) await copyItem(item, transferBucket, destinationPath)
       if (mode === 'move') {
@@ -1145,7 +1146,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       setSelectedObjectKeys(new Set())
       setSelectedDeletedIds(new Set())
       setSelectedVersionIds(new Set())
-      showToast(`${mode === 'copy' ? '已复制' : '已移动'} ${items.length} 个对象`)
+      showToast(t('objects.valueValueObjects', { '0': mode === 'copy' ? t('common.copied') : t('common.moved'), '1': items.length }))
       await load(true)
     } catch (reason) {
       notifyError((reason as Error).message)
@@ -1161,12 +1162,12 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     setDetailUrl(null)
     setDetailTags('')
     if (!accessKey || !bucket) return
-    const stopLoading = startLoading('正在生成预览链接...')
+    const stopLoading = startLoading(t('objects.generatingPreviewLink'))
     try {
       setDetailUrl(await api.presignObject(accessKey, bucket, object.key, 'GET', 900))
       const tagUrl = await api.presignObject(accessKey, bucket, object.key, 'GET', 900, { tagging: true })
       const tagResponse = await fetch(tagUrl.url)
-      if (!tagResponse.ok) throw new Error(`读取对象标签失败（${tagResponse.status}）`)
+      if (!tagResponse.ok) throw new Error(t('objects.failedToReadObjectTagsValue', { '0': tagResponse.status }))
       const xml = new DOMParser().parseFromString(await tagResponse.text(), 'application/xml')
       const tags = [...xml.querySelectorAll('Tag')].map((tag) => ({ key: tag.querySelector('Key')?.textContent ?? '', value: tag.querySelector('Value')?.textContent ?? '' }))
       setDetailTags(JSON.stringify(Object.fromEntries(tags.map((tag) => [tag.key, tag.value])), null, 2))
@@ -1187,7 +1188,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       setDetailUrl(await api.presignObject(accessKey, bucket, version.key, 'GET', 900, { versionId: version.version_id }))
       const tagUrl = await api.presignObject(accessKey, bucket, version.key, 'GET', 900, { versionId: version.version_id, tagging: true })
       const response = await fetch(tagUrl.url)
-      if (!response.ok) throw new Error(`读取对象版本标签失败（${response.status}）`)
+      if (!response.ok) throw new Error(t('objects.failedToReadVersionTagsValue', { '0': response.status }))
       const xml = new DOMParser().parseFromString(await response.text(), 'application/xml')
       setDetailTags(JSON.stringify(Object.fromEntries([...xml.querySelectorAll('Tag')].map((tag) => [tag.querySelector('Key')?.textContent ?? '', tag.querySelector('Value')?.textContent ?? ''])), null, 2))
     } catch (reason) {
@@ -1201,18 +1202,18 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     try {
       const parsed = JSON.parse(detailTags || '{}') as Record<string, string>
       const tagEntries = Object.entries(parsed)
-      if (tagEntries.some(([key, value]) => !key || typeof value !== 'string')) throw new Error('对象标签必须是字符串键值 JSON')
+      if (tagEntries.some(([key, value]) => !key || typeof value !== 'string')) throw new Error(t('objects.objectTagsMustBeAJsonObjectOfString'))
       const signed = await api.presignObject(accessKey, bucket, detail.key, tagEntries.length === 0 ? 'DELETE' : 'PUT', 900, { tagging: true, ...(detailVersionId ? { versionId: detailVersionId } : {}) })
       if (tagEntries.length === 0) {
         const response = await fetch(signed.url, { method: 'DELETE', headers: signed.required_headers })
-        if (!response.ok) throw new Error(`删除对象标签失败（${response.status}）`)
-        showToast('对象标签已删除')
+        if (!response.ok) throw new Error(t('objects.failedToDeleteObjectTagsValue', { '0': response.status }))
+        showToast(t('objects.objectTagsDeleted'))
         return
       }
       const body = `<Tagging xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><TagSet>${tagEntries.map(([key, value]) => `<Tag><Key>${escapeXml(key)}</Key><Value>${escapeXml(value)}</Value></Tag>`).join('')}</TagSet></Tagging>`
       const response = await fetch(signed.url, { method: 'PUT', headers: { ...signed.required_headers, 'content-type': 'application/xml' }, body })
-      if (!response.ok) throw new Error(`保存对象标签失败（${response.status}）`)
-      showToast('对象标签已保存')
+      if (!response.ok) throw new Error(t('objects.failedToSaveObjectTagsValue', { '0': response.status }))
+      showToast(t('objects.objectTagsSaved'))
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
@@ -1231,24 +1232,24 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     if (!accessKey || !bucket || !isDirectoryKey(object.key)) return
     if (!await ensureDirectoryCanBeDeleted(object.key)) return
     if (!await confirm({
-      title: '删除目录',
-      message: `删除目录“${displayDirectoryKey(object.key)}”？目录必须为空，目录下的对象不会被删除。`,
-      confirmLabel: '删除目录',
+      title: t('objects.deleteDirectory'),
+      message: t('objects.deleteDirectoryValueItMustBeEmptyItsObjects', { '0': displayDirectoryKey(object.key) }),
+      confirmLabel: t('objects.deleteDirectory'),
       danger: true,
     })) return
-    const stopLoading = startLoading('正在删除目录...')
+    const stopLoading = startLoading(t('objects.deletingDirectory'))
     try {
       setDeletingKey(object.key)
       await api.deleteDirectory(bucket, object.key)
-      showToast(`已删除目录 ${displayDirectoryKey(object.key)}`)
+      showToast(t('objects.deletedDirectoryValue', { '0': displayDirectoryKey(object.key) }))
       await load(true)
     } catch (reason) {
       if (reason instanceof ApiError && reason.body.code === 'DirectoryNotEmpty') {
         stopLoading()
         await confirm({
-          title: '无法删除目录',
-          message: `目录“${displayDirectoryKey(object.key)}”必须为空才能删除。请先删除目录下的所有对象和子目录。`,
-          cancelLabel: '知道了',
+          title: t('objects.unableToDeleteDirectory'),
+          message: t('objects.directoryValueMustBeEmptyDeleteAllObjectsAnd', { '0': displayDirectoryKey(object.key) }),
+          cancelLabel: t('objects.gotIt'),
           hideConfirm: true,
         })
       } else {
@@ -1268,19 +1269,19 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     }
     if (!await ensureDirectoryCanBeDeleted(object.key)) return
     if (!await confirm({
-      title: '删除对象',
-      message: `删除对象“${object.key}”？如果 Bucket 启用了版本管理，ZigFS 会创建 DeleteMarker。`,
-      confirmLabel: '删除',
+      title: t('objects.deleteObject'),
+      message: t('objects.deleteObjectValueZigfsCreatesADeleteMarkerIf', { '0': object.key }),
+      confirmLabel: t('objects.delete'),
       danger: true,
     })) return
-    const stopLoading = startLoading('正在删除对象...')
+    const stopLoading = startLoading(t('objects.deletingObjects'))
     try {
       setDeletingKey(object.key)
       const presigned = await api.presignObject(accessKey, bucket, object.key, 'DELETE', 900)
       const response = await fetch(presigned.url, { method: 'DELETE' })
-      if (!response.ok) throw new Error(`删除失败（${response.status}）`)
+      if (!response.ok) throw new Error(t('objects.deletionFailedValue', { '0': response.status }))
       if (detail?.key === object.key) closeDetail()
-      showToast(`已删除 ${displayFileName(object.key)}`)
+      showToast(t('objects.deletedValue', { '0': displayFileName(object.key) }))
       await load(true)
     } catch (reason) {
       notifyError((reason as Error).message)
@@ -1291,23 +1292,23 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   }
 
   async function removeVersion(version: ObjectVersion) {
-    const target = version.is_delete_marker ? 'DeleteMarker' : '对象版本'
+    const target = version.is_delete_marker ? t('objects.deletemarker') : t('objects.objectVersion')
     if (!accessKey || !bucket) return
     if (!await ensureDirectoryCanBeDeleted(version.key)) return
     if (!await confirm({
-      title: '永久删除版本',
-      message: `永久删除“${version.key}”的${target} ${shortVersionId(version.version_id)}？此操作不会创建新的 DeleteMarker，且无法恢复。`,
-      confirmLabel: '永久删除',
+      title: t('objects.permanentlyDeleteVersion'),
+      message: t('objects.permanentlyDeleteValueValueOfValueNoNewDelete', { '0': version.key, '1': target, '2': shortVersionId(version.version_id) }),
+      confirmLabel: t('objects.permanentlyDelete'),
       danger: true,
     })) return
-    const stopLoading = startLoading('正在永久删除对象版本...')
+    const stopLoading = startLoading(t('objects.permanentlyDeletingObjectVersions'))
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setDeletingVersion(identity)
       const presigned = await api.presignObject(accessKey, bucket, version.key, 'DELETE', 900, { versionId: version.version_id })
       const response = await fetch(presigned.url, { method: 'DELETE' })
-      if (!response.ok) throw new Error(`删除版本失败（${response.status}）`)
-      showToast(`已永久删除 ${displayFileName(version.key)} 的${target} ${shortVersionId(version.version_id)}`)
+      if (!response.ok) throw new Error(t('objects.versionDeletionFailedValue', { '0': response.status }))
+      showToast(t('objects.permanentlyDeletedValueValueOfValue', { '0': displayFileName(version.key), '1': target, '2': shortVersionId(version.version_id) }))
       await load(true)
     } catch (reason) {
       notifyError((reason as Error).message)
@@ -1320,20 +1321,20 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   async function restoreDeletedObject(version: ObjectVersion) {
     if (!accessKey || !bucket || !version.is_delete_marker || !version.is_latest) return
     if (!await confirm({
-      title: '恢复已删除对象',
-      message: `删除最新 DeleteMarker 并恢复对象“${version.key}”？`,
-      confirmLabel: '恢复对象',
+      title: t('objects.restoreDeletedObjects'),
+      message: t('objects.removeTheLatestDeleteMarkerAndRestoreValue', { '0': version.key }),
+      confirmLabel: t('objects.restoreObjects'),
     })) return
-    const stopLoading = startLoading('正在恢复对象...')
+    const stopLoading = startLoading(t('objects.restoringObjects'))
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setRestoringVersion(identity)
       const presigned = await api.presignObject(accessKey, bucket, version.key, 'DELETE', 900, { versionId: version.version_id })
       const response = await fetch(presigned.url, { method: 'DELETE' })
-      if (!response.ok) throw new Error(`恢复对象失败（${response.status}）`)
+      if (!response.ok) throw new Error(t('objects.objectRestorationFailedValue', { '0': response.status }))
       initialLoadKey.current = ''
       setShowDeleted(false)
-      showToast(`已恢复 ${displayFileName(version.key)}`)
+      showToast(t('objects.restoredValue', { '0': displayFileName(version.key) }))
       await load(true, prefix, false)
     } catch (reason) {
       notifyError((reason as Error).message)
@@ -1346,11 +1347,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   async function rewindVersion(version: ObjectVersion) {
     if (!accessKey || !bucket || version.is_delete_marker || version.is_latest) return
     if (!await confirm({
-      title: '回溯对象版本',
-      message: `将“${version.key}”回溯到版本 ${shortVersionId(version.version_id)}？ZigFS 会创建一个新的当前版本。`,
-      confirmLabel: '回溯版本',
+      title: t('objects.rewindObjectVersion'),
+      message: t('objects.rewindValueToVersionValueZigfsWillCreateA', { '0': version.key, '1': shortVersionId(version.version_id) }),
+      confirmLabel: t('objects.rewindVersion'),
     })) return
-    const stopLoading = startLoading('正在回溯对象版本...')
+    const stopLoading = startLoading(t('objects.rewindingObjectVersion'))
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setRestoringVersion(identity)
@@ -1361,8 +1362,8 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         method: 'PUT',
         headers: presigned.required_headers,
       })
-      if (!response.ok) throw new Error(`回溯版本失败（${response.status}）`)
-      showToast(`已将 ${displayFileName(version.key)} 回溯到版本 ${shortVersionId(version.version_id)}`)
+      if (!response.ok) throw new Error(t('objects.versionRewindFailedValue', { '0': response.status }))
+      showToast(t('objects.rewoundValueToVersionValue', { '0': displayFileName(version.key), '1': shortVersionId(version.version_id) }))
       await load(true)
     } catch (reason) {
       notifyError((reason as Error).message)
@@ -1377,11 +1378,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const deleted = versions.some((item) => item.key === version.key && item.is_delete_marker && item.is_latest)
     if (!deleted) return
     if (!await confirm({
-      title: '恢复对象版本',
-      message: `将“${version.key}”恢复为版本 ${shortVersionId(version.version_id)}？该版本会成为新的当前版本，对象将恢复可见。`,
-      confirmLabel: '恢复',
+      title: t('objects.restoreObjectVersion'),
+      message: t('objects.restoreValueAsVersionValueThisBecomesTheNew', { '0': version.key, '1': shortVersionId(version.version_id) }),
+      confirmLabel: t('objects.restore'),
     })) return
-    const stopLoading = startLoading('正在恢复对象版本...')
+    const stopLoading = startLoading(t('objects.restoringObjectVersion'))
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setRestoringVersion(identity)
@@ -1392,8 +1393,8 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         method: 'PUT',
         headers: presigned.required_headers,
       })
-      if (!response.ok) throw new Error(`恢复对象版本失败（${response.status}）`)
-      showToast(`已恢复 ${displayFileName(version.key)}，当前版本为 ${shortVersionId(version.version_id)}`)
+      if (!response.ok) throw new Error(t('objects.versionRestorationFailedValue', { '0': response.status }))
+      showToast(t('objects.restoredValueCurrentVersionIsValue', { '0': displayFileName(version.key), '1': shortVersionId(version.version_id) }))
       await load(true)
     } catch (reason) {
       notifyError((reason as Error).message)
@@ -1406,7 +1407,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   async function copyDetailUrl() {
     if (!detailUrl) return
     await navigator.clipboard.writeText(detailUrl.url)
-    showToast('预览链接已复制')
+    showToast(t('objects.previewLinkCopied'))
   }
 
   const visibleObjectCount = viewMode === 'current' ? (showDeleted ? filteredDeletedObjects.length : filteredObjects.length) : filteredVersions.length
@@ -1435,11 +1436,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     <section>
       <header className="page-header">
         <div>
-          <button className="back-button" type="button" onClick={onBack}><ArrowLeft className="button-icon" aria-hidden="true" />返回 Bucket</button>
-          <h2>Object Browser</h2>
-          <p className="page-description">浏览、上传、下载和管理 Bucket 中的对象。</p>
+          <button className="back-button" type="button" onClick={onBack}><ArrowLeft className="button-icon" aria-hidden="true" />{t('objects.backToBucket')}</button>
+          <h2>{t('objects.objectBrowser')}</h2>
+          <p className="page-description">{t('objects.browseUploadDownloadAndManageObjectsInThisBucket')}</p>
         </div>
-        <span className="count-badge">{viewMode === 'current' ? `${visibleObjectCount}${!showDeleted && nextToken ? '+' : ''} 个对象` : `${visibleObjectCount} 条版本记录`}</span>
+        <span className="count-badge">{viewMode === 'current' ? t('objects.valuevalueObjects', { '0': visibleObjectCount, '1': !showDeleted && nextToken ? '+' : '' }) : t('objects.valueVersions', { '0': visibleObjectCount })}</span>
       </header>
 
       <div className="page-toolbar">
@@ -1447,16 +1448,16 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
           <div className="object-bucket-summary">
             <span className="object-bucket-summary-icon" aria-hidden="true"><Archive /></span>
             <div className="object-bucket-summary-copy">
-              <strong>{bucketInfo?.name ?? (bucket || '未选择 Bucket')}</strong>
-              <span>Created on: {bucketInfo ? new Date(bucketInfo.created_at).toLocaleString() : '-'}</span>
-              <span>Access: <b>PRIVATE</b></span>
+              <strong>{bucketInfo?.name ?? (bucket || t('objects.noBucketSelected'))}</strong>
+              <span>{t('objects.createdOn')} {bucketInfo ? new Date(bucketInfo.created_at).toLocaleString(getFormatLocale()) : '-'}</span>
+              <span>{t('objects.access')} <b>{t('objects.private')}</b></span>
             </div>
           </div>
           <label className="search-box">
             <Search aria-hidden="true" />
             <input
-              aria-label="搜索对象 Key"
-              placeholder="搜索对象 Key（模糊查询）"
+              aria-label={t('objects.searchObjectKeys')}
+              placeholder={t('objects.searchObjectKeysPartialMatch')}
               value={searchInput}
               onChange={(event) => setSearchInput(event.target.value)}
               onKeyDown={(event) => {
@@ -1468,33 +1469,30 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         </label>
         </div>
         <div className="toolbar-actions object-toolbar-actions">
-          <button className={`secondary-button rewind-button${viewMode === 'versions' ? ' active' : ''}`} type="button" onClick={openRewind} disabled={!bucket} title={viewMode === 'versions' ? '返回当前对象' : '打开版本回溯'} aria-label={viewMode === 'versions' ? '返回当前对象' : '打开版本回溯'} aria-pressed={viewMode === 'versions'}>
-            <Undo2 className="button-icon" aria-hidden="true" />rewind
-          </button>
-          <input ref={fileInput} className="hidden-file-input" type="file" multiple onChange={selectFile} aria-label="选择要上传的文件" disabled={uploading} />
+          <button className={`secondary-button rewind-button${viewMode === 'versions' ? ' active' : ''}`} type="button" onClick={openRewind} disabled={!bucket} title={viewMode === 'versions' ? t('objects.backToCurrentObjects') : t('objects.openVersionHistory')} aria-label={viewMode === 'versions' ? t('objects.backToCurrentObjects') : t('objects.openVersionHistory')} aria-pressed={viewMode === 'versions'}>
+            <Undo2 className="button-icon" aria-hidden="true" />{t('objects.rewind')}</button>
+          <input ref={fileInput} className="hidden-file-input" type="file" multiple onChange={selectFile} aria-label={t('objects.selectFilesToUpload')} disabled={uploading} />
           <button className="primary-button" type="button" onClick={() => fileInput.current?.click()} disabled={!bucket || !accessKey || uploading}>
-            <Upload className="button-icon" aria-hidden="true" />上传文件
-          </button>
+            <Upload className="button-icon" aria-hidden="true" />{t('objects.uploadFiles')}</button>
           <button className="secondary-button refresh-action-button" type="button" onClick={() => void load(true)} disabled={!bucket || loading} aria-busy={loading}>
-            <RefreshCw className={`button-icon${loading ? ' spinning' : ''}`} aria-hidden="true" />刷新
-          </button>
+            <RefreshCw className={`button-icon${loading ? ' spinning' : ''}`} aria-hidden="true" />{t('objects.refresh')}</button>
         </div>
       </div>
 
-      <div className="object-location" aria-label="当前对象路径">
-        <button className="icon-button path-back-button" type="button" onClick={goToParentPath} disabled={!bucket || !prefix.trim()} title="返回上一级路径" aria-label="返回上一级路径">
+      <div className="object-location" aria-label={t('objects.currentObjectPath')}>
+        <button className="icon-button path-back-button" type="button" onClick={goToParentPath} disabled={!bucket || !prefix.trim()} title={t('objects.goToParentDirectory')} aria-label={t('objects.goToParentDirectory')}>
           <ArrowLeft aria-hidden="true" />
         </button>
         <FolderOpen className="object-location-icon" aria-hidden="true" />
         <div className="object-location-path">
-          <button className="object-location-link" type="button" onClick={() => onNavigatePath('')} disabled={!bucket}>{bucket || '未选择 Bucket'}</button>
+          <button className="object-location-link" type="button" onClick={() => onNavigatePath('')} disabled={!bucket}>{bucket || t('objects.noBucketSelected')}</button>
           {prefix.trim() && prefix.split('/').filter(Boolean).map((segment, index, segments) => {
             const target = `${segments.slice(0, index + 1).join('/')}/`
             return <span className="object-location-crumb" key={target}><b>/</b><button className="object-location-link" type="button" onClick={() => onNavigatePath(target)}>{segment}</button></span>
           })}
         </div>
         <div className="object-location-actions">
-          <button className="icon-button copy-path-button" type="button" onClick={() => void copyCurrentPath()} disabled={!bucket} title="复制当前路径" aria-label="复制当前路径">
+          <button className="icon-button copy-path-button" type="button" onClick={() => void copyCurrentPath()} disabled={!bucket} title={t('objects.copyCurrentPath')} aria-label={t('objects.copyCurrentPath')}>
             <Copy aria-hidden="true" />
           </button>
           {viewMode !== 'versions' && <label className="deleted-toggle">
@@ -1504,26 +1502,25 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
               setSelectedVersionIds(new Set())
               setShowDeleted(event.target.checked)
             }} disabled={!bucket} />
-            <span>显示已删除对象</span>
+            <span>{t('objects.showDeletedObjects')}</span>
           </label>}
           {viewMode === 'current' && !showDeleted && <button className="secondary-button create-path-button" type="button" onClick={() => { setPathName(''); setShowCreatePath(true) }} disabled={!bucket || !accessKey}>
-            <FolderPlus className="button-icon" aria-hidden="true" />Create new path
-          </button>}
+            <FolderPlus className="button-icon" aria-hidden="true" />{t('objects.createNewPath')}</button>}
         </div>
       </div>
 
       {selectedCount > 0 && (
-        <div className="selection-toolbar" role="toolbar" aria-label="批量对象操作">
-          <strong>已选择 {selectedCount} 个对象</strong>
+        <div className="selection-toolbar" role="toolbar" aria-label={t('objects.bulkObjectActions')}>
+          <strong>{t('objects.selected')} {selectedCount} {t('objects.objects')}</strong>
           <div className="selection-toolbar-actions">
             {selectedFiles.length > 0 && <>
-              <button className="secondary-button" type="button" onClick={() => void downloadSelected()} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>
-              <button className="secondary-button" type="button" onClick={() => openTransfer('copy')} disabled={!accessKey}><Copy className="button-icon" aria-hidden="true" />复制</button>
+              <button className="secondary-button" type="button" onClick={() => void downloadSelected()} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />{t('objects.download')}</button>
+              <button className="secondary-button" type="button" onClick={() => openTransfer('copy')} disabled={!accessKey}><Copy className="button-icon" aria-hidden="true" />{t('objects.copy')}</button>
             </>}
-            {selectedData.length > 0 && <button className="secondary-button" type="button" onClick={() => openTransfer('move')} disabled={!accessKey}><FolderInput className="button-icon" aria-hidden="true" />移动</button>}
-            {selectedDeleted.length > 0 && <button className="secondary-button" type="button" onClick={() => void restoreSelected()} disabled={!accessKey}><RotateCcw className="button-icon" aria-hidden="true" />恢复</button>}
-            <button className="danger-button" type="button" onClick={() => void removeSelected()} disabled={!accessKey}><Trash2 className="button-icon" aria-hidden="true" />{permanentDeleteOnly ? '永久删除' : '删除'}</button>
-            <button className="icon-button" type="button" onClick={() => { setSelectedObjectKeys(new Set()); setSelectedDeletedIds(new Set()); setSelectedVersionIds(new Set()) }} title="清除选择" aria-label="清除选择"><X aria-hidden="true" /></button>
+            {selectedData.length > 0 && <button className="secondary-button" type="button" onClick={() => openTransfer('move')} disabled={!accessKey}><FolderInput className="button-icon" aria-hidden="true" />{t('objects.move')}</button>}
+            {selectedDeleted.length > 0 && <button className="secondary-button" type="button" onClick={() => void restoreSelected()} disabled={!accessKey}><RotateCcw className="button-icon" aria-hidden="true" />{t('objects.restore')}</button>}
+            <button className="danger-button" type="button" onClick={() => void removeSelected()} disabled={!accessKey}><Trash2 className="button-icon" aria-hidden="true" />{permanentDeleteOnly ? t('objects.permanentlyDelete') : t('objects.delete')}</button>
+            <button className="icon-button" type="button" onClick={() => { setSelectedObjectKeys(new Set()); setSelectedDeletedIds(new Set()); setSelectedVersionIds(new Set()) }} title={t('objects.clearSelection')} aria-label={t('objects.clearSelection')}><X aria-hidden="true" /></button>
           </div>
         </div>
       )}
@@ -1531,26 +1528,26 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       <section className="panel table-panel">
         <div className="table-wrap">
           {viewMode === 'current' ? <table className={`object-table${showDeleted ? ' deleted-object-table' : ''}`}>
-            <thead><tr><th className="selection-column"><input type="checkbox" checked={allCurrentSelected} onChange={(event) => toggleAllCurrent(event.target.checked)} aria-label="选择全部对象" /></th><th className="object-column-title">Object</th>{showDeleted && <th>状态</th>}<th>Size</th><th>Last Modified</th><th className="sticky-actions-column">Actions</th></tr></thead>
+            <thead><tr><th className="selection-column"><input type="checkbox" checked={allCurrentSelected} onChange={(event) => toggleAllCurrent(event.target.checked)} aria-label={t('objects.selectAllObjects')} /></th><th className="object-column-title">{t('objects.object')}</th>{showDeleted && <th>{t('objects.status')}</th>}<th>{t('objects.size')}</th><th>{t('objects.lastModified')}</th><th className="sticky-actions-column">{t('objects.actions')}</th></tr></thead>
             <tbody>{!showDeleted && filteredObjects.map((object) => (
                 <tr key={object.key}>
-                  <td className="selection-column"><input type="checkbox" checked={selectedObjectKeys.has(object.key)} onChange={(event) => toggleObjectSelection(object.key, event.target.checked)} aria-label={`选择 ${object.key}`} /></td>
-                  <td className="object-key"><div className="file-cell object-tree-cell object-key-trigger" role="button" tabIndex={0} onClick={() => openObject(object)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openObject(object) } }} title={isDirectoryKey(object.key) ? '打开目录' : '查看对象详情'}><ObjectTreeIndent depth={objectTreeDepth(object.key, prefix)} />{isDirectoryKey(object.key) ? <Folder className="file-symbol" aria-hidden="true" /> : <File className="file-symbol" aria-hidden="true" />}<span>{displayObjectKey(object.key, prefix)}</span>{object.legal_hold && <span className="status-badge locked">Legal Hold</span>}{object.retention_until_unix_seconds && <span className="status-badge locked">{object.retention_mode ?? 'Retention'} · 到 {new Date(object.retention_until_unix_seconds * 1000).toLocaleDateString()}</span>}</div></td>
+                  <td className="selection-column"><input type="checkbox" checked={selectedObjectKeys.has(object.key)} onChange={(event) => toggleObjectSelection(object.key, event.target.checked)} aria-label={t('objects.selectValue', { '0': object.key })} /></td>
+                  <td className="object-key"><div className="file-cell object-tree-cell object-key-trigger" role="button" tabIndex={0} onClick={() => openObject(object)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openObject(object) } }} title={isDirectoryKey(object.key) ? t('objects.openDirectory') : t('objects.viewObjectDetails')}><ObjectTreeIndent depth={objectTreeDepth(object.key, prefix)} />{isDirectoryKey(object.key) ? <Folder className="file-symbol" aria-hidden="true" /> : <File className="file-symbol" aria-hidden="true" />}<span>{displayObjectKey(object.key, prefix)}</span>{object.legal_hold && <span className="status-badge locked">{t('objects.legalHold')}</span>}{object.retention_until_unix_seconds && <span className="status-badge locked">{object.retention_mode ?? t('objects.retention')} {t('objects.until')} {new Date(object.retention_until_unix_seconds * 1000).toLocaleDateString(getFormatLocale())}</span>}</div></td>
                   <td>{isDirectoryKey(object.key) ? (() => {
                     const summary = directorySizeSummaries.get(object.key)
                     const calculating = directorySizeLoading.has(object.key)
-                    return <div className="directory-size-cell" title={summary ? `数据生成时间：${new Date(summary.generatedAt).toLocaleString('zh-CN')}` : '统计该目录及所有子目录中的文件大小'}>
-                      <span>{summary ? formatBytes(summary.bytes) : '未统计'}</span>
-                      <button className="icon-button directory-size-refresh" type="button" onClick={() => void refreshDirectorySize(object.key)} disabled={calculating} aria-label={`刷新目录 ${displayObjectKey(object.key, prefix)} 大小`} title="刷新目录大小"><RefreshCw className={calculating ? 'spinning' : ''} aria-hidden="true" /></button>
+                    return <div className="directory-size-cell" title={summary ? t('objects.generatedAtValue', { '0': new Date(summary.generatedAt).toLocaleString(getFormatLocale()) }) : t('objects.calculateFileSizesInThisDirectoryAndItsSubdirectories')}>
+                      <span>{summary ? formatBytes(summary.bytes) : t('objects.notCalculated')}</span>
+                      <button className="icon-button directory-size-refresh" type="button" onClick={() => void refreshDirectorySize(object.key)} disabled={calculating} aria-label={t('objects.refreshSizeOfDirectoryValue', { '0': displayObjectKey(object.key, prefix) })} title={t('objects.refreshDirectorySize')}><RefreshCw className={calculating ? 'spinning' : ''} aria-hidden="true" /></button>
                     </div>
                   })() : formatBytes(object.size)}</td>
-                  <td>{object.last_modified ? new Date(object.last_modified).toLocaleString() : '-'}</td>
+                  <td>{object.last_modified ? new Date(object.last_modified).toLocaleString(getFormatLocale()) : '-'}</td>
                   <td className="table-actions sticky-actions-column">
-                    <ActionMenu label={`${isDirectoryKey(object.key) ? '管理目录' : '管理'} ${displayKeyForMessage(object.key)}`}>
-                      {!isDirectoryKey(object.key) && <button type="button" role="menuitem" onClick={() => void download(object)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>}
-                      {!isDirectoryKey(object.key) && <button type="button" role="menuitem" onClick={() => openTransfer('copy', { kind: 'current', object })} disabled={!accessKey}><Copy className="button-icon" aria-hidden="true" />复制</button>}
-                      <button type="button" role="menuitem" onClick={() => openTransfer('move', { kind: 'current', object })} disabled={!accessKey}><FolderInput className="button-icon" aria-hidden="true" />移动</button>
-                      <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeObject(object)} disabled={!accessKey || deletingKey === object.key || (isDirectoryKey(object.key) && objects.some((item) => item.key !== object.key && item.key.startsWith(object.key)))}><Trash2 className="button-icon" aria-hidden="true" />{isDirectoryKey(object.key) ? '删除目录' : '删除'}</button>
+                    <ActionMenu label={`${isDirectoryKey(object.key) ? t('objects.manageDirectory') : t('objects.manage')} ${displayKeyForMessage(object.key)}`}>
+                      {!isDirectoryKey(object.key) && <button type="button" role="menuitem" onClick={() => void download(object)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />{t('objects.download')}</button>}
+                      {!isDirectoryKey(object.key) && <button type="button" role="menuitem" onClick={() => openTransfer('copy', { kind: 'current', object })} disabled={!accessKey}><Copy className="button-icon" aria-hidden="true" />{t('objects.copy')}</button>}
+                      <button type="button" role="menuitem" onClick={() => openTransfer('move', { kind: 'current', object })} disabled={!accessKey}><FolderInput className="button-icon" aria-hidden="true" />{t('objects.move')}</button>
+                      <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeObject(object)} disabled={!accessKey || deletingKey === object.key || (isDirectoryKey(object.key) && objects.some((item) => item.key !== object.key && item.key.startsWith(object.key)))}><Trash2 className="button-icon" aria-hidden="true" />{isDirectoryKey(object.key) ? t('objects.deleteDirectory') : t('objects.delete')}</button>
                     </ActionMenu>
                   </td>
                 </tr>
@@ -1559,65 +1556,65 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                 const identity = `${version.key}\u0000${version.version_id}`
                 const restoring = restoringVersion === identity
                 return <tr key={identity} className="delete-marker-row">
-                  <td className="selection-column"><input type="checkbox" checked={selectedDeletedIds.has(identity)} onChange={(event) => toggleDeletedSelection(version, event.target.checked)} aria-label={`选择已删除对象 ${version.key}`} /></td>
+                  <td className="selection-column"><input type="checkbox" checked={selectedDeletedIds.has(identity)} onChange={(event) => toggleDeletedSelection(version, event.target.checked)} aria-label={t('objects.selectDeletedObjectValue', { '0': version.key })} /></td>
                   <td className="object-key"><div className="file-cell object-tree-cell"><ObjectTreeIndent depth={objectTreeDepth(version.key, prefix)} /><Trash2 className="file-symbol" aria-hidden="true" /><span>{displayObjectKey(version.key, prefix)}</span></div></td>
-                  <td><span className="status-badge delete-marker">已删除</span></td>
+                  <td><span className="status-badge delete-marker">{t('objects.deleted')}</span></td>
                   <td>{deletedObjectSizes.has(version.key) ? formatBytes(deletedObjectSizes.get(version.key)!) : '-'}</td>
-                  <td>{new Date(version.last_modified).toLocaleString()}</td>
+                  <td>{new Date(version.last_modified).toLocaleString(getFormatLocale())}</td>
                   <td className="table-actions sticky-actions-column">
-                    <ActionMenu label={`管理已删除对象 ${version.key}`}>
-                      <button type="button" role="menuitem" onClick={() => void restoreDeletedObject(version)} disabled={!accessKey || restoring}><RotateCcw className="button-icon" aria-hidden="true" />恢复对象</button>
-                      <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeDeletedObject(version)} disabled={!accessKey || deletingVersion === identity}><Trash2 className="button-icon" aria-hidden="true" />永久删除</button>
+                    <ActionMenu label={t('objects.manageDeletedObjectValue', { '0': version.key })}>
+                      <button type="button" role="menuitem" onClick={() => void restoreDeletedObject(version)} disabled={!accessKey || restoring}><RotateCcw className="button-icon" aria-hidden="true" />{t('objects.restoreObjects')}</button>
+                      <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeDeletedObject(version)} disabled={!accessKey || deletingVersion === identity}><Trash2 className="button-icon" aria-hidden="true" />{t('objects.permanentlyDelete')}</button>
                     </ActionMenu>
                   </td>
                 </tr>
               })}</tbody>
           </table> : <table className="object-table version-table">
-            <thead><tr><th className="selection-column"><input type="checkbox" checked={allVersionsSelected} onChange={(event) => toggleAllVersions(event.target.checked)} aria-label="选择全部对象版本" /></th><th className="object-column-title">Object</th><th>State</th><th>Size</th><th>Last Modified</th><th className="sticky-actions-column">Actions</th></tr></thead>
+            <thead><tr><th className="selection-column"><input type="checkbox" checked={allVersionsSelected} onChange={(event) => toggleAllVersions(event.target.checked)} aria-label={t('objects.selectAllObjectVersions')} /></th><th className="object-column-title">{t('objects.object')}</th><th>{t('objects.state')}</th><th>{t('objects.size')}</th><th>{t('objects.lastModified')}</th><th className="sticky-actions-column">{t('objects.actions')}</th></tr></thead>
             <tbody>{filteredVersions.map((version) => {
               const identity = `${version.key}\u0000${version.version_id}`
               const restoring = restoringVersion === identity
               const objectDeleted = deletedObjectKeys.has(version.key)
               return <tr key={identity} className={version.is_delete_marker ? 'delete-marker-row' : ''}>
-                <td className="selection-column"><input type="checkbox" checked={selectedVersionIds.has(identity)} onChange={(event) => toggleVersionSelection(version, event.target.checked)} aria-label={`选择 ${version.key} 的版本`} /></td>
+                <td className="selection-column"><input type="checkbox" checked={selectedVersionIds.has(identity)} onChange={(event) => toggleVersionSelection(version, event.target.checked)} aria-label={t('objects.selectVersionOfValue', { '0': version.key })} /></td>
                 <td className="object-key"><div className="file-cell object-tree-cell"><ObjectTreeIndent depth={objectTreeDepth(version.key, prefix)} />{version.is_delete_marker ? <Trash2 className="file-symbol" aria-hidden="true" /> : isDirectoryKey(version.key) ? <Folder className="file-symbol" aria-hidden="true" /> : <File className="file-symbol" aria-hidden="true" />}<span>{displayObjectKey(version.key, prefix)}</span></div></td>
-                <td><div className="version-badges">{version.is_latest && <span className="status-badge latest">Latest</span>}{version.is_delete_marker && <span className="status-badge delete-marker">DeleteMarker</span>}{!version.is_latest && !version.is_delete_marker && <span className="status-badge">Previous</span>}{version.legal_hold && <span className="status-badge locked">Legal Hold</span>}{version.retention_until_unix_seconds && <span className="status-badge locked">{version.retention_mode ?? 'Retention'} · 到 {new Date(version.retention_until_unix_seconds * 1000).toLocaleDateString()}</span>}</div></td>
+                <td><div className="version-badges">{version.is_latest && <span className="status-badge latest">{t('objects.latest')}</span>}{version.is_delete_marker && <span className="status-badge delete-marker">{t('objects.deletemarker')}</span>}{!version.is_latest && !version.is_delete_marker && <span className="status-badge">{t('objects.previous')}</span>}{version.legal_hold && <span className="status-badge locked">{t('objects.legalHold')}</span>}{version.retention_until_unix_seconds && <span className="status-badge locked">{version.retention_mode ?? t('objects.retention')} {t('objects.until')} {new Date(version.retention_until_unix_seconds * 1000).toLocaleDateString(getFormatLocale())}</span>}</div></td>
                 <td>{version.is_delete_marker
                   ? (deletedVersionSizes.has(version.key) ? formatBytes(deletedVersionSizes.get(version.key)!) : '-')
                   : isDirectoryKey(version.key) ? '-' : formatBytes(version.size)}</td>
-                <td>{new Date(version.last_modified).toLocaleString()}</td>
+                <td>{new Date(version.last_modified).toLocaleString(getFormatLocale())}</td>
                 <td className="table-actions sticky-actions-column">
-                  <ActionMenu label={`管理 ${version.key} 的版本 ${shortVersionId(version.version_id)}`}>
-                    {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => void openVersionTagDetail(version)} disabled={!accessKey}>编辑对象标签</button>}
-                    {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => void downloadVersion(version)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />下载</button>}
-                    {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => openTransfer('copy', { kind: 'version', version })} disabled={!accessKey}><Copy className="button-icon" aria-hidden="true" />复制</button>}
-                    {!version.is_delete_marker && <button type="button" role="menuitem" onClick={() => openTransfer('move', { kind: 'version', version })} disabled={!accessKey}><FolderInput className="button-icon" aria-hidden="true" />移动</button>}
-                    {version.is_delete_marker && version.is_latest && <button type="button" role="menuitem" onClick={() => void restoreDeletedObject(version)} disabled={!accessKey || restoring}><RotateCcw className="button-icon" aria-hidden="true" />恢复对象</button>}
-                    {!version.is_delete_marker && !version.is_latest && <button type="button" role="menuitem" onClick={() => void rewindVersion(version)} disabled={!accessKey || restoring}><History className="button-icon" aria-hidden="true" />回溯到此版本</button>}
-                    {!version.is_delete_marker && !version.is_latest && objectDeleted && <button type="button" role="menuitem" onClick={() => void restoreVersion(version)} disabled={!accessKey || restoring}><RotateCcw className="button-icon" aria-hidden="true" />恢复</button>}
+                  <ActionMenu label={t('objects.manageVersionValueOfValue', { '0': version.key, '1': shortVersionId(version.version_id) })}>
+                    {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => void openVersionTagDetail(version)} disabled={!accessKey}>{t('objects.editObjectTags')}</button>}
+                    {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => void downloadVersion(version)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />{t('objects.download')}</button>}
+                    {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => openTransfer('copy', { kind: 'version', version })} disabled={!accessKey}><Copy className="button-icon" aria-hidden="true" />{t('objects.copy')}</button>}
+                    {!version.is_delete_marker && <button type="button" role="menuitem" onClick={() => openTransfer('move', { kind: 'version', version })} disabled={!accessKey}><FolderInput className="button-icon" aria-hidden="true" />{t('objects.move')}</button>}
+                    {version.is_delete_marker && version.is_latest && <button type="button" role="menuitem" onClick={() => void restoreDeletedObject(version)} disabled={!accessKey || restoring}><RotateCcw className="button-icon" aria-hidden="true" />{t('objects.restoreObjects')}</button>}
+                    {!version.is_delete_marker && !version.is_latest && <button type="button" role="menuitem" onClick={() => void rewindVersion(version)} disabled={!accessKey || restoring}><History className="button-icon" aria-hidden="true" />{t('objects.rewindToThisVersion')}</button>}
+                    {!version.is_delete_marker && !version.is_latest && objectDeleted && <button type="button" role="menuitem" onClick={() => void restoreVersion(version)} disabled={!accessKey || restoring}><RotateCcw className="button-icon" aria-hidden="true" />{t('objects.restore')}</button>}
                     {version.is_delete_marker
-                      ? <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeDeletedObject(version)} disabled={!accessKey || deletingVersion === identity || (isDirectoryKey(version.key) && versions.some((item) => item.key !== version.key && item.key.startsWith(version.key)))}><Trash2 className="button-icon" aria-hidden="true" />永久删除</button>
-                      : <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeVersion(version)} disabled={!accessKey || deletingVersion === identity || (isDirectoryKey(version.key) && versions.some((item) => item.key !== version.key && item.key.startsWith(version.key)))}><Trash2 className="button-icon" aria-hidden="true" />永久删除</button>}
+                      ? <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeDeletedObject(version)} disabled={!accessKey || deletingVersion === identity || (isDirectoryKey(version.key) && versions.some((item) => item.key !== version.key && item.key.startsWith(version.key)))}><Trash2 className="button-icon" aria-hidden="true" />{t('objects.permanentlyDelete')}</button>
+                      : <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeVersion(version)} disabled={!accessKey || deletingVersion === identity || (isDirectoryKey(version.key) && versions.some((item) => item.key !== version.key && item.key.startsWith(version.key)))}><Trash2 className="button-icon" aria-hidden="true" />{t('objects.permanentlyDelete')}</button>}
                   </ActionMenu>
                 </td>
               </tr>
             })}</tbody>
           </table>}
         </div>
-        {viewMode === 'current' && (showDeleted ? filteredDeletedObjects.length === 0 : filteredObjects.length === 0) && !loading && <div className="empty-state empty-panel"><strong>{normalizedSearchQuery ? '没有匹配对象' : showDeleted ? '没有已删除对象' : '这个 Bucket 还是空的'}</strong><span>{normalizedSearchQuery ? '没有找到匹配当前搜索的对象 Key。' : showDeleted ? '当前路径下没有 DeleteMarker。' : '上传文件后，对象会显示在这里。'}</span></div>}
-        {viewMode === 'versions' && filteredVersions.length === 0 && !loading && <div className="empty-state empty-panel"><strong>{normalizedSearchQuery ? '没有匹配版本' : showDeleted ? '没有删除标记' : '没有对象版本'}</strong><span>{normalizedSearchQuery ? '没有找到匹配当前搜索的对象 Key。' : showDeleted ? '当前没有可查看的 DeleteMarker。' : '启用 Versioning 后，新写入和删除会记录在这里。'}</span></div>}
+        {viewMode === 'current' && (showDeleted ? filteredDeletedObjects.length === 0 : filteredObjects.length === 0) && !loading && <div className="empty-state empty-panel"><strong>{normalizedSearchQuery ? t('objects.noMatchingObjects') : showDeleted ? t('objects.noDeletedObjects') : t('objects.thisBucketIsEmpty')}</strong><span>{normalizedSearchQuery ? t('objects.noObjectKeysMatchYourSearch') : showDeleted ? t('objects.noDeleteMarkersInThisPath') : t('objects.uploadFilesToSeeObjectsHere')}</span></div>}
+        {viewMode === 'versions' && filteredVersions.length === 0 && !loading && <div className="empty-state empty-panel"><strong>{normalizedSearchQuery ? t('objects.noMatchingVersions') : showDeleted ? t('objects.noDeleteMarkers') : t('objects.noObjectVersions')}</strong><span>{normalizedSearchQuery ? t('objects.noObjectKeysMatchYourSearch') : showDeleted ? t('objects.noDeleteMarkersAreAvailable') : t('objects.enableVersioningToTrackNewWritesAndDeletesHere')}</span></div>}
       </section>
-      {viewMode === 'current' && !showDeleted && nextToken && <div ref={loadMoreSentinel} className="list-load-sentinel" aria-live="polite">{loading ? '正在加载更多...' : '继续下拉加载更多'}</div>}
+      {viewMode === 'current' && !showDeleted && nextToken && <div ref={loadMoreSentinel} className="list-load-sentinel" aria-live="polite">{loading ? t('objects.loadingMore') : t('objects.scrollDownToLoadMore')}</div>}
 
       {uploadsPanelOpen && (
         <aside className="uploads-drawer" role="dialog" aria-modal="false" aria-labelledby="uploads-drawer-title">
           <header className="uploads-drawer-header">
-            <div className="uploads-drawer-title"><List aria-hidden="true" /><div><p className="eyebrow">Transfers</p><h3 id="uploads-drawer-title">Downloads / Uploads</h3></div></div>
-            <button className="icon-button" type="button" aria-label="关闭上传面板" title="关闭" onClick={() => setUploadsPanelOpen(false)}><X aria-hidden="true" /></button>
+            <div className="uploads-drawer-title"><List aria-hidden="true" /><div><p className="eyebrow">{t('objects.transfers')}</p><h3 id="uploads-drawer-title">{t('objects.downloadsUploads')}</h3></div></div>
+            <button className="icon-button" type="button" aria-label={t('objects.closeTransferPanel')} title={t('objects.close')} onClick={() => setUploadsPanelOpen(false)}><X aria-hidden="true" /></button>
           </header>
           <div className="uploads-drawer-body" aria-live="polite">
-            {uploadsLoading && <p className="uploads-drawer-status">正在同步分片上传任务...</p>}
-            {!uploadsLoading && uploadTasks.length === 0 && completedUploads.length === 0 && <p className="uploads-drawer-status">当前没有上传任务。</p>}
+            {uploadsLoading && <p className="uploads-drawer-status">{t('objects.syncingMultipartUploads')}</p>}
+            {!uploadsLoading && uploadTasks.length === 0 && completedUploads.length === 0 && <p className="uploads-drawer-status">{t('objects.noActiveUploads')}</p>}
             {uploadTasks.map((task) => {
               const active = task.status === 'uploading' || task.status === 'completing'
               const taskProgress = active && uploadProgress
@@ -1630,34 +1627,33 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
               return (
                 <article className="upload-task" key={task.uploadId}>
                   <div className="upload-task-main">
-                    <div className="upload-task-title"><strong>{displayFileName(task.key)}</strong><span className={`upload-status ${task.status}`}>{task.status === 'uploading' ? '上传中' : task.status === 'completing' ? '完成中' : task.status === 'failed' ? '失败' : '已暂停'}</span></div>
-                    <span>{task.fileName} · {task.fileSize > 0 ? `${formatBytes(taskProgress.loaded)} / ${formatBytes(task.fileSize)}` : formatBytes(task.uploadedBytes)} · {task.completedParts} 个分片</span>
-                    {task.status === 'completing' && <span>ZigFS 正在完成对象</span>}
+                    <div className="upload-task-title"><strong>{displayFileName(task.key)}</strong><span className={`upload-status ${task.status}`}>{task.status === 'uploading' ? t('objects.uploading') : task.status === 'completing' ? t('objects.completing') : task.status === 'failed' ? t('objects.failed') : t('objects.paused')}</span></div>
+                    <span>{task.fileName} · {task.fileSize > 0 ? `${formatBytes(taskProgress.loaded)} / ${formatBytes(task.fileSize)}` : formatBytes(task.uploadedBytes)} · {task.completedParts} {t('objects.parts')}</span>
+                    {task.status === 'completing' && <span>{t('objects.zigfsIsCompletingTheObject')}</span>}
                     {task.error && <span className="upload-task-error">{task.error}</span>}
-                    {!task.file && task.status !== 'uploading' && <span>需要重新选择本地文件</span>}
+                    {!task.file && task.status !== 'uploading' && <span>{t('objects.selectTheLocalFileAgain')}</span>}
                   </div>
                   <div className="upload-task-actions">
                     {task.status === 'uploading' ? (
-                      <button className="secondary-button" type="button" onClick={() => pauseUpload(task)}><Pause className="button-icon" aria-hidden="true" />暂停</button>
+                      <button className="secondary-button" type="button" onClick={() => pauseUpload(task)}><Pause className="button-icon" aria-hidden="true" />{t('objects.pause')}</button>
                     ) : task.status === 'completing' ? (
-                      <button className="secondary-button" type="button" disabled><RefreshCw className="button-icon spinning" aria-hidden="true" />完成中</button>
+                      <button className="secondary-button" type="button" disabled><RefreshCw className="button-icon spinning" aria-hidden="true" />{t('objects.completing')}</button>
                     ) : task.file ? (
                       <button className="secondary-button" type="button" disabled={uploading || !accessKey} onClick={() => void runUpload(task, task.file!)}>
                         {task.status === 'failed' ? <RotateCcw className="button-icon" aria-hidden="true" /> : <Play className="button-icon" aria-hidden="true" />}
-                        {task.status === 'failed' ? '重试' : '继续'}
+                        {task.status === 'failed' ? t('objects.retry') : t('objects.resume')}
                       </button>
                     ) : (
                       <label className={`secondary-button file-picker-button${uploading ? ' disabled' : ''}`}>
-                        <Upload className="button-icon" aria-hidden="true" />选择原文件
-                        <input type="file" disabled={uploading} onChange={(event) => attachResumeFile(task, event)} />
+                        <Upload className="button-icon" aria-hidden="true" />{t('objects.selectOriginalFile')}<input type="file" disabled={uploading} onChange={(event) => attachResumeFile(task, event)} />
                       </label>
                     )}
-                    <button className="danger-button" type="button" disabled={task.status === 'completing' || (uploading && !active)} onClick={() => void abortUpload(task)}><Trash2 className="button-icon" aria-hidden="true" />取消</button>
+                    <button className="danger-button" type="button" disabled={task.status === 'completing' || (uploading && !active)} onClick={() => void abortUpload(task)}><Trash2 className="button-icon" aria-hidden="true" />{t('objects.cancel')}</button>
                   </div>
                   <div
                     className="upload-progress-track"
                     role="progressbar"
-                    aria-label={`${task.fileName}上传进度`}
+                    aria-label={t('objects.uploadProgressForValue', { '0': task.fileName })}
                     aria-valuemin={0}
                     aria-valuemax={100}
                     aria-valuenow={taskProgress.percent}
@@ -1670,11 +1666,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
             {completedUploads.map((item) => (
               <article className="upload-task upload-task-completed" key={item.uploadId}>
                 <div className="upload-task-main">
-                  <div className="upload-task-title"><CheckCircle2 className="upload-complete-icon" aria-hidden="true" /><strong>{displayFileName(item.key)}</strong><span className="upload-status completed">已完成</span></div>
-                  <span>{item.fileName} · {formatBytes(item.fileSize)} · {new Date(item.completedAt).toLocaleTimeString()}</span>
+                  <div className="upload-task-title"><CheckCircle2 className="upload-complete-icon" aria-hidden="true" /><strong>{displayFileName(item.key)}</strong><span className="upload-status completed">{t('objects.completed')}</span></div>
+                  <span>{item.fileName} · {formatBytes(item.fileSize)} · {new Date(item.completedAt).toLocaleTimeString(getFormatLocale())}</span>
                 </div>
                 <strong className="upload-complete-percent">100%</strong>
-                <div className="upload-progress-track" role="progressbar" aria-label={`${item.fileName}上传进度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={100}><span style={{ width: '100%' }} /></div>
+                <div className="upload-progress-track" role="progressbar" aria-label={t('objects.uploadProgressForValue', { '0': item.fileName })} aria-valuemin={0} aria-valuemax={100} aria-valuenow={100}><span style={{ width: '100%' }} /></div>
               </article>
             ))}
           </div>
@@ -1685,17 +1681,17 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowCreatePath(false)}>
           <section className="lifecycle-modal credential-modal create-path-modal" role="dialog" aria-modal="true" aria-labelledby="create-path-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="lifecycle-modal-header">
-              <div className="lifecycle-modal-title"><FolderPlus aria-hidden="true" /><h3 id="create-path-dialog-title">Create new path</h3></div>
-              <button className="icon-button" type="button" aria-label="关闭" onClick={() => setShowCreatePath(false)}><X aria-hidden="true" /></button>
+              <div className="lifecycle-modal-title"><FolderPlus aria-hidden="true" /><h3 id="create-path-dialog-title">{t('objects.createNewPath')}</h3></div>
+              <button className="icon-button" type="button" aria-label={t('objects.close')} onClick={() => setShowCreatePath(false)}><X aria-hidden="true" /></button>
             </header>
             <form className="credential-modal-form" onSubmit={createPath}>
-              <p className="credential-modal-description">将在当前路径下创建一级目录。当前路径：<strong>{prefix.trim() || '/'}</strong></p>
+              <p className="credential-modal-description">{t('objects.createADirectoryUnderTheCurrentPath')}<strong>{prefix.trim() || '/'}</strong></p>
               <div className="credential-modal-fields create-path-fields">
-                <label>目录名称<input aria-label="目录名称" placeholder="例如 images" value={pathName} onChange={(event) => setPathName(event.target.value)} required autoFocus /></label>
+                <label>{t('objects.directoryName')}<input aria-label={t('objects.directoryName')} placeholder={t('objects.forExampleImages')} value={pathName} onChange={(event) => setPathName(event.target.value)} required autoFocus /></label>
               </div>
               <footer className="lifecycle-modal-actions">
-                <button className="secondary-button" type="button" onClick={() => setShowCreatePath(false)}>取消</button>
-                <button className="primary-button" type="submit">创建路径</button>
+                <button className="secondary-button" type="button" onClick={() => setShowCreatePath(false)}>{t('objects.cancel')}</button>
+                <button className="primary-button" type="submit">{t('objects.createPath')}</button>
               </footer>
             </form>
           </section>
@@ -1706,25 +1702,23 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         <div className="modal-backdrop" role="presentation" onMouseDown={() => { if (!transferring) setTransferDialog(null) }}>
           <section className="lifecycle-modal credential-modal transfer-modal" role="dialog" aria-modal="true" aria-labelledby="transfer-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="lifecycle-modal-header">
-              <div className="lifecycle-modal-title"><TransferIcon aria-hidden="true" /><h3 id="transfer-dialog-title">{transferDialog.mode === 'copy' ? '复制对象' : '移动对象'}</h3></div>
-              <button className="icon-button" type="button" aria-label="关闭" onClick={() => { if (!transferring) setTransferDialog(null) }}><X aria-hidden="true" /></button>
+              <div className="lifecycle-modal-title"><TransferIcon aria-hidden="true" /><h3 id="transfer-dialog-title">{transferDialog.mode === 'copy' ? t('objects.copyObjects') : t('objects.moveObjects')}</h3></div>
+              <button className="icon-button" type="button" aria-label={t('objects.close')} onClick={() => { if (!transferring) setTransferDialog(null) }}><X aria-hidden="true" /></button>
             </header>
             <form className="credential-modal-form" onSubmit={submitTransfer}>
-              <p className="credential-modal-description">已选择 {transferDialog.items.length} 项。目标路径填写父目录，文件名保持不变，目录会保留目录名及其全部内容。</p>
+              <p className="credential-modal-description">{t('objects.selected')} {transferDialog.items.length} {t('objects.itemsEnterTheDestinationParentPathFileNamesAnd')}</p>
               <div className="credential-modal-fields transfer-fields">
-                <label>目标 Bucket
-                  <select value={transferBucket} onChange={(event) => { setTransferBucket(event.target.value); setTransferPath(''); setTransferTreeOpen(false) }} required disabled={transferring}>
-                    <option value="" disabled>选择 Bucket</option>
+                <label>{t('objects.destinationBucket')}<select value={transferBucket} onChange={(event) => { setTransferBucket(event.target.value); setTransferPath(''); setTransferTreeOpen(false) }} required disabled={transferring}>
+                    <option value="" disabled>{t('objects.selectBucket')}</option>
                     {buckets.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
                   </select>
                 </label>
-                <label className="transfer-tree-field">目标路径
-                  <button className="transfer-tree-trigger" type="button" onClick={() => setTransferTreeOpen((open) => !open)} disabled={transferring} aria-haspopup="listbox" aria-expanded={transferTreeOpen}>
-                    {transferPath ? `${transferBucket}/${transferPath.replace(/\/+$/, '')}` : `${transferBucket || 'Bucket'}（根目录）`}
+                <label className="transfer-tree-field">{t('objects.destinationPath')}<button className="transfer-tree-trigger" type="button" onClick={() => setTransferTreeOpen((open) => !open)} disabled={transferring} aria-haspopup="listbox" aria-expanded={transferTreeOpen}>
+                    {transferPath ? `${transferBucket}/${transferPath.replace(/\/+$/, '')}` : t('objects.valueRoot', { '0': transferBucket || t('objects.bucket') })}
                     <span aria-hidden="true">⌄</span>
                   </button>
                   {transferTreeOpen && <div className="transfer-tree-menu" role="listbox">
-                    <button type="button" role="option" aria-selected={!transferPath} onClick={() => { setTransferPath(''); setTransferTreeOpen(false) }}>⌂ <span>根目录</span></button>
+                    <button type="button" role="option" aria-selected={!transferPath} onClick={() => { setTransferPath(''); setTransferTreeOpen(false) }}>⌂ <span>{t('objects.rootDirectory')}</span></button>
                     {transferDirectories.map((directory) => {
                       const value = directory.replace(/\/+$/, '')
                       const depth = value ? value.split('/').length - 1 : 0
@@ -1734,8 +1728,8 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                 </label>
               </div>
               <footer className="lifecycle-modal-actions">
-                <button className="secondary-button" type="button" onClick={() => setTransferDialog(null)} disabled={transferring}>取消</button>
-                <button className="primary-button" type="submit" disabled={transferring || !transferBucket}>{transferring ? '处理中...' : transferDialog.mode === 'copy' ? '开始复制' : '开始移动'}</button>
+                <button className="secondary-button" type="button" onClick={() => setTransferDialog(null)} disabled={transferring}>{t('objects.cancel')}</button>
+                <button className="primary-button" type="submit" disabled={transferring || !transferBucket}>{transferring ? t('objects.processing') : transferDialog.mode === 'copy' ? t('objects.startCopy') : t('objects.startMove')}</button>
               </footer>
             </form>
           </section>
@@ -1744,28 +1738,27 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 
       {detail && (
         <div className="drawer-backdrop" role="presentation" onClick={closeDetail}>
-          <aside className="detail-drawer" role="dialog" aria-modal="true" aria-label="对象详情" onClick={(event) => event.stopPropagation()}>
+          <aside className="detail-drawer" role="dialog" aria-modal="true" aria-label={t('objects.objectDetails')} onClick={(event) => event.stopPropagation()}>
             <header className="drawer-header">
-              <div><p className="eyebrow">Object details</p><h3>{detail.key}</h3></div>
-              <button className="icon-button" type="button" aria-label="关闭详情" onClick={closeDetail}><X aria-hidden="true" /></button>
+              <div><p className="eyebrow">{t('objects.objectDetails')}</p><h3>{detail.key}</h3></div>
+              <button className="icon-button" type="button" aria-label={t('objects.closeDetails')} onClick={closeDetail}><X aria-hidden="true" /></button>
             </header>
             <div className="preview-frame">
-              {isImageKey(detail.key) && detailUrl ? <img src={detailUrl.url} alt={detail.key} /> : <div className="format-icon" aria-label={`${fileExtension(detail.key)} 文件`}>{fileExtension(detail.key)}</div>}
-              {!isImageKey(detail.key) && <span>暂不支持此格式预览</span>}
+              {isImageKey(detail.key) && detailUrl ? <img src={detailUrl.url} alt={detail.key} /> : <div className="format-icon" aria-label={t('objects.valueFile', { '0': fileExtension(detail.key) })}>{fileExtension(detail.key)}</div>}
+              {!isImageKey(detail.key) && <span>{t('objects.previewIsNotAvailableForThisFormat')}</span>}
             </div>
             <dl className="detail-list">
-              <div><dt>Object Key</dt><dd>{detail.key}</dd></div>
-              <div><dt>Format</dt><dd>{fileExtension(detail.key)}</dd></div>
-              <div><dt>Size</dt><dd>{formatBytes(detail.size)}</dd></div>
+              <div><dt>{t('objects.objectKey')}</dt><dd>{detail.key}</dd></div>
+              <div><dt>{t('objects.format')}</dt><dd>{fileExtension(detail.key)}</dd></div>
+              <div><dt>{t('objects.size')}</dt><dd>{formatBytes(detail.size)}</dd></div>
               <div><dt>ETag</dt><dd><code>{detail.etag}</code></dd></div>
-              <div><dt>Modified</dt><dd>{new Date(detail.last_modified).toLocaleString()}</dd></div>
-              {detailUrl && <div><dt>Link expires</dt><dd>{new Date(detailUrl.expires_at).toLocaleString()}</dd></div>}
+              <div><dt>{t('objects.modified')}</dt><dd>{new Date(detail.last_modified).toLocaleString(getFormatLocale())}</dd></div>
+              {detailUrl && <div><dt>{t('objects.linkExpires')}</dt><dd>{new Date(detailUrl.expires_at).toLocaleString(getFormatLocale())}</dd></div>}
             </dl>
-            <label className="detail-tags-editor">对象标签（JSON）
-              <textarea value={detailTags} onChange={(event) => setDetailTags(event.target.value)} rows={5} placeholder={'{\n  "team": "blue"\n}'} />
-              <button className="primary-button" type="button" onClick={() => void saveDetailTags()} disabled={detailTagsSaving}>{detailTagsSaving ? '保存中...' : '保存标签'}</button>
+            <label className="detail-tags-editor">{t('objects.objectTagsJson')}<textarea value={detailTags} onChange={(event) => setDetailTags(event.target.value)} rows={5} placeholder={'{\n  "team": "blue"\n}'} />
+              <button className="primary-button" type="button" onClick={() => void saveDetailTags()} disabled={detailTagsSaving}>{detailTagsSaving ? t('objects.saving') : t('objects.saveTags')}</button>
             </label>
-            {detailUrl && <div className="drawer-actions"><a className="secondary-button" href={detailUrl.url} target="_blank" rel="noreferrer"><ExternalLink className="button-icon" aria-hidden="true" />打开预览链接</a><button className="secondary-button" type="button" onClick={() => void copyDetailUrl()}><Copy className="button-icon" aria-hidden="true" />复制链接</button></div>}
+            {detailUrl && <div className="drawer-actions"><a className="secondary-button" href={detailUrl.url} target="_blank" rel="noreferrer"><ExternalLink className="button-icon" aria-hidden="true" />{t('objects.openPreviewLink')}</a><button className="secondary-button" type="button" onClick={() => void copyDetailUrl()}><Copy className="button-icon" aria-hidden="true" />{t('objects.copyLink')}</button></div>}
           </aside>
         </div>
       )}
@@ -1774,7 +1767,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 }
 
 function abortError() {
-  const error = new Error('上传已暂停')
+  const error = new Error(t('objects.uploadPaused'))
   error.name = 'AbortError'
   return error
 }

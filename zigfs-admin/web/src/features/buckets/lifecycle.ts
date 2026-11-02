@@ -1,3 +1,4 @@
+import { t } from '@/locales'
 export type LifecycleAction = 'current-days' | 'current-date' | 'noncurrent-days' | 'delete-marker'
 
 export interface LifecycleRule {
@@ -23,7 +24,7 @@ export function createLifecycleRule(id: string): LifecycleRule {
 
 export function parseLifecycleConfiguration(xml: string): LifecycleRule[] {
   const document = new DOMParser().parseFromString(xml, 'application/xml')
-  if (document.querySelector('parsererror')) throw new Error('Lifecycle XML 无法解析')
+  if (document.querySelector('parsererror')) throw new Error(t('buckets.unableToParseLifecycleXml'))
 
   const rules: LifecycleRule[] = []
   const sourceRules = Array.from(document.getElementsByTagNameNS('*', 'Rule'))
@@ -53,7 +54,7 @@ export function parseLifecycleConfiguration(xml: string): LifecycleRule[] {
         ...(newer ? { newerNoncurrentVersions: positiveInteger(newer, 'NewerNoncurrentVersions') } : {}),
       })
     }
-    if (actions.length === 0) throw new Error(`Lifecycle 规则“${baseId}”没有 ZigFS 支持的过期动作`)
+    if (actions.length === 0) throw new Error(t('buckets.lifecycleRuleValueHasNoSupportedExpirationAction', { '0': baseId }))
 
     actions.forEach((action, actionIndex) => {
       const proposedId = actions.length === 1 ? baseId : `${baseId}-${actionSuffix(action.action)}`
@@ -85,26 +86,26 @@ export function serializeLifecycleConfiguration(rules: LifecycleRule[]): string 
 }
 
 export function validateLifecycleRules(rules: LifecycleRule[]) {
-  if (rules.length > 1000) throw new Error('Lifecycle 规则不能超过 1000 条')
+  if (rules.length > 1000) throw new Error(t('buckets.aMaximumOf1000LifecycleRulesIsAllowed'))
   const ids = new Set<string>()
   for (const rule of rules) {
     const id = rule.id.trim()
-    if (!id) throw new Error('规则 ID 不能为空')
-    if (id.length > 255) throw new Error(`规则 ID“${id}”不能超过 255 个字符`)
-    if (ids.has(id)) throw new Error(`规则 ID“${id}”重复`)
+    if (!id) throw new Error(t('buckets.ruleIdIsRequired'))
+    if (id.length > 255) throw new Error(t('buckets.ruleIdValueMustNotExceed255Characters', { '0': id }))
+    if (ids.has(id)) throw new Error(t('buckets.duplicateRuleIdValue', { '0': id }))
     ids.add(id)
     if (rule.action === 'current-date') {
       const parsedDate = new Date(`${rule.expirationDate}T00:00:00Z`)
       if (!/^\d{4}-\d{2}-\d{2}$/.test(rule.expirationDate) || Number.isNaN(parsedDate.valueOf()) ||
         parsedDate.toISOString().slice(0, 10) !== rule.expirationDate) {
-        throw new Error(`规则“${id}”的过期日期无效`)
+        throw new Error(t('buckets.ruleValueHasAnInvalidExpirationDate', { '0': id }))
       }
     } else if (rule.action !== 'delete-marker' && (!Number.isInteger(rule.days) || rule.days < 1)) {
-      throw new Error(`规则“${id}”的天数必须为正整数`)
+      throw new Error(t('buckets.daysForRuleValueMustBeAPositiveInteger', { '0': id }))
     }
     if (rule.newerNoncurrentVersions !== undefined &&
       (!Number.isInteger(rule.newerNoncurrentVersions) || rule.newerNoncurrentVersions < 1)) {
-      throw new Error(`规则“${id}”保留的新版本数必须为正整数`)
+      throw new Error(t('buckets.retainedNewerVersionsForRuleValueMustBeA', { '0': id }))
     }
   }
 }
@@ -139,7 +140,7 @@ function childText(parent: Element, localName: string) {
 
 function positiveInteger(value: string, field: string) {
   const parsed = Number(value)
-  if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${field} 必须为正整数`)
+  if (!Number.isInteger(parsed) || parsed < 1) throw new Error(t('buckets.valueMustBeAPositiveInteger', { '0': field }))
   return parsed
 }
 

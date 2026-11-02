@@ -1,3 +1,4 @@
+import { t } from '@/locales'
 import type { MultipartUpload } from '../../types/api'
 
 export const DEFAULT_PART_SIZE = 8 * 1024 * 1024
@@ -44,21 +45,21 @@ export function inferPartSize(upload: MultipartUpload, fileSize: number, persist
 
 export function validateResumeFile(task: UploadTask, upload: MultipartUpload, file: File, partSize: number) {
   if (task.fileSize > 0 && task.fileSize !== file.size) {
-    throw new Error(`文件大小不一致，需要选择原文件（${formatBytes(task.fileSize)}）`)
+    throw new Error(t('objects.fileSizeDoesNotMatchSelectTheOriginalFile', { '0': formatBytes(task.fileSize) }))
   }
   if (task.lastModified > 0 && task.lastModified !== file.lastModified) {
-    throw new Error('文件修改时间不一致，需要选择原文件')
+    throw new Error(t('objects.modificationTimeDoesNotMatchSelectTheOriginalFile'))
   }
   const partCount = Math.max(1, Math.ceil(file.size / partSize))
-  if (partCount > MAX_PARTS) throw new Error('文件过大，分片数量超过 10000')
+  if (partCount > MAX_PARTS) throw new Error(t('objects.fileIsTooLargeMoreThan10000Parts'))
   for (const part of upload.parts) {
     if (part.part_number < 1 || part.part_number > partCount) {
-      throw new Error(`服务端分片 ${part.part_number} 超出当前文件范围`)
+      throw new Error(t('objects.serverPartValueIsOutsideTheCurrentFileRange', { '0': part.part_number }))
     }
     const start = (part.part_number - 1) * partSize
     const expectedSize = Math.min(partSize, file.size - start)
     if (part.size !== expectedSize) {
-      throw new Error(`文件与已上传的第 ${part.part_number} 分片不匹配`)
+      throw new Error(t('objects.fileDoesNotMatchUploadedPartValue', { '0': part.part_number }))
     }
   }
 }
@@ -80,20 +81,20 @@ export function putPart(
     })
     request.addEventListener('load', () => {
       if (request.status < 200 || request.status >= 300) {
-        reject(new Error(`分片上传失败（${request.status}）`))
+        reject(new Error(t('objects.partUploadFailedValue', { '0': request.status })))
         return
       }
       const etag = normalizeEtag(request.getResponseHeader('ETag') ?? '')
       if (!etag) {
-        reject(new Error('分片上传响应缺少有效 ETag'))
+        reject(new Error(t('objects.partUploadResponseHasNoValidEtag')))
         return
       }
       onProgress({ loaded: body.size, total: body.size })
       resolve(etag)
     })
-    request.addEventListener('error', () => reject(new Error('分片上传失败（网络错误）')))
+    request.addEventListener('error', () => reject(new Error(t('objects.partUploadFailedDueToANetworkError'))))
     request.addEventListener('abort', () => {
-      const error = new Error('上传已暂停')
+      const error = new Error(t('objects.uploadPaused'))
       error.name = 'AbortError'
       reject(error)
     })

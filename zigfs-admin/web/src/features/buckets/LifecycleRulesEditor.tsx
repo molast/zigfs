@@ -1,3 +1,4 @@
+import { t } from '@/locales'
 import { useErrorToast } from '../../components/ToastProvider'
 import { useState } from 'react'
 import { Clock3, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react'
@@ -61,9 +62,9 @@ export function LifecycleRulesEditor({ rules, configured, loading, onSave }: Lif
 
   async function removeRule(index: number) {
     if (!await confirm({
-      title: '删除 Lifecycle 规则',
-      message: `删除 Lifecycle 规则“${rules[index].id}”？此操作不可撤销。`,
-      confirmLabel: '删除',
+      title: t('buckets.deleteLifecycleRule'),
+      message: t('buckets.deleteLifecycleRuleValueThisCannotBeUndone', { '0': rules[index].id }),
+      confirmLabel: t('buckets.delete'),
       danger: true,
     })) return
     try {
@@ -77,25 +78,24 @@ export function LifecycleRulesEditor({ rules, configured, loading, onSave }: Lif
     <section className="lifecycle-rules">
       <div className="lifecycle-rules-header">
         <div>
-          <h3>Lifecycle rules</h3>
-          <p>对象过期规则由 ZigFS 后台扫描执行。</p>
+          <h3>{t('buckets.lifecycleRules')}</h3>
+          <p>{t('buckets.objectExpirationRulesRunThroughTheZigfsBackgroundScanner')}</p>
         </div>
         <div className="lifecycle-rules-actions">
-          <span className={`status-badge ${configured ? 'enabled' : ''}`}>{configured ? 'Configured' : 'Not configured'}</span>
+          <span className={`status-badge ${configured ? 'enabled' : ''}`}>{configured ? t('buckets.configured') : t('buckets.notConfigured')}</span>
           <button className="primary-button" type="button" onClick={addRule} disabled={loading || rules.length >= 1000}>
-            <Plus className="button-icon" aria-hidden="true" />添加规则
-          </button>
+            <Plus className="button-icon" aria-hidden="true" />{t('buckets.addRule')}</button>
         </div>
       </div>
 
       {rules.length > 0 ? (
         <div className="table-wrap lifecycle-table-wrap">
           <table className="lifecycle-table">
-            <thead><tr><th>Rule</th><th>Filter</th><th>Expiry</th><th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr><th>{t('buckets.rule')}</th><th>{t('buckets.filter')}</th><th>{t('buckets.expiry')}</th><th>{t('buckets.status')}</th><th>{t('buckets.actions')}</th></tr></thead>
             <tbody>{rules.map((rule, index) => (
               <tr key={rule.id}>
                 <td><strong>{rule.id}</strong><small>{objectVersionLabel(rule.action)}</small></td>
-                <td><code>{rule.prefix || 'All objects'}</code></td>
+                <td><code>{rule.prefix || t('buckets.allObjects')}</code></td>
                 <td>{expiryLabel(rule)}</td>
                 <td>
                   <button
@@ -103,14 +103,14 @@ export function LifecycleRulesEditor({ rules, configured, loading, onSave }: Lif
                     type="button"
                     role="switch"
                     aria-checked={rule.enabled}
-                    aria-label={`${rule.id} ${rule.enabled ? '已启用' : '已禁用'}`}
+                    aria-label={`${rule.id} ${rule.enabled ? t('buckets.enabled') : t('buckets.disabled')}`}
                     onClick={() => void toggleRule(index)}
                     disabled={loading}
-                  ><span aria-hidden="true" />{rule.enabled ? 'Enabled' : 'Disabled'}</button>
+                  ><span aria-hidden="true" />{rule.enabled ? t('buckets.enabled') : t('buckets.disabled')}</button>
                 </td>
                 <td className="table-actions">
-                  <button className="icon-button" type="button" title="编辑规则" aria-label={`编辑 ${rule.id}`} onClick={() => editRule(index)} disabled={loading}><Pencil aria-hidden="true" /></button>
-                  <button className="icon-button danger-icon-button" type="button" title="删除规则" aria-label={`删除 ${rule.id}`} onClick={() => void removeRule(index)} disabled={loading}><Trash2 aria-hidden="true" /></button>
+                  <button className="icon-button" type="button" title={t('buckets.editRule')} aria-label={t('buckets.editValue', { '0': rule.id })} onClick={() => editRule(index)} disabled={loading}><Pencil aria-hidden="true" /></button>
+                  <button className="icon-button danger-icon-button" type="button" title={t('buckets.deleteRule')} aria-label={t('buckets.deleteValue', { '0': rule.id })} onClick={() => void removeRule(index)} disabled={loading}><Trash2 aria-hidden="true" /></button>
                 </td>
               </tr>
             ))}</tbody>
@@ -119,8 +119,8 @@ export function LifecycleRulesEditor({ rules, configured, loading, onSave }: Lif
       ) : (
         <div className="empty-state empty-panel lifecycle-empty">
           <Clock3 aria-hidden="true" />
-          <strong>尚未配置 Lifecycle</strong>
-          <span>添加第一条对象过期规则。</span>
+          <strong>{t('buckets.noLifecycleRulesConfigured')}</strong>
+          <span>{t('buckets.addYourFirstObjectExpirationRule')}</span>
         </div>
       )}
 
@@ -128,69 +128,69 @@ export function LifecycleRulesEditor({ rules, configured, loading, onSave }: Lif
         <div className="modal-backdrop" role="presentation" onMouseDown={closeEditor}>
           <section className="lifecycle-modal" role="dialog" aria-modal="true" aria-labelledby="lifecycle-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="lifecycle-modal-header">
-              <div className="lifecycle-modal-title"><RefreshCw aria-hidden="true" /><h3 id="lifecycle-dialog-title">{editingIndex === null ? 'Add Lifecycle Rule' : 'Edit Lifecycle Rule'}</h3></div>
-              <button className="icon-button" type="button" aria-label="关闭" onClick={closeEditor}><X aria-hidden="true" /></button>
+              <div className="lifecycle-modal-title"><RefreshCw aria-hidden="true" /><h3 id="lifecycle-dialog-title">{editingIndex === null ? t('buckets.addLifecycleRule') : t('buckets.editLifecycleRule')}</h3></div>
+              <button className="icon-button" type="button" aria-label={t('buckets.close')} onClick={closeEditor}><X aria-hidden="true" /></button>
             </header>
 
             <div className="lifecycle-form">
               <label className="lifecycle-field lifecycle-field-wide">
-                <span>Rule ID</span>
+                <span>{t('buckets.ruleId')}</span>
                 <input value={draft.id} maxLength={255} onChange={(event) => setDraft({ ...draft, id: event.target.value })} autoFocus />
               </label>
 
               <div className="lifecycle-field lifecycle-field-wide lifecycle-status-field">
-                <span>Status</span>
+                <span>{t('buckets.status')}</span>
                 <button
                   className={`lifecycle-status-toggle${draft.enabled ? ' enabled' : ''}`}
                   type="button"
                   role="switch"
                   aria-checked={draft.enabled}
                   onClick={() => setDraft({ ...draft, enabled: !draft.enabled })}
-                ><span aria-hidden="true" />{draft.enabled ? 'Enabled' : 'Disabled'}</button>
+                ><span aria-hidden="true" />{draft.enabled ? t('buckets.enabled') : t('buckets.disabled')}</button>
               </div>
 
               <fieldset className="lifecycle-rule-type lifecycle-field-wide">
-                <legend>Rule type</legend>
-                <label><input type="radio" name="lifecycle-type" checked readOnly />Expiry</label>
-                <label className="disabled-option" title="ZigFS 暂未实现 Transition"><input type="radio" name="lifecycle-type" disabled />Transition</label>
+                <legend>{t('buckets.ruleType')}</legend>
+                <label><input type="radio" name="lifecycle-type" checked readOnly />{t('buckets.expiry')}</label>
+                <label className="disabled-option" title={t('buckets.transitionsAreNotSupportedYet')}><input type="radio" name="lifecycle-type" disabled />{t('buckets.transition')}</label>
               </fieldset>
 
               <label className="lifecycle-field lifecycle-field-wide">
-                <span>Object version</span>
+                <span>{t('buckets.objectVersion')}</span>
                 <select value={draft.action} onChange={(event) => setDraft({ ...draft, action: event.target.value as LifecycleAction })}>
-                  <option value="current-days">Current version · after days</option>
-                  <option value="current-date">Current version · on date</option>
-                  <option value="noncurrent-days">Non-current version</option>
-                  <option value="delete-marker">Expired delete marker</option>
+                  <option value="current-days">{t('buckets.currentVersionAfterDays')}</option>
+                  <option value="current-date">{t('buckets.currentVersionOnDate')}</option>
+                  <option value="noncurrent-days">{t('buckets.nonCurrentVersion')}</option>
+                  <option value="delete-marker">{t('buckets.expiredDeleteMarker')}</option>
                 </select>
               </label>
 
               {draft.action === 'current-date' ? (
                 <label className="lifecycle-field lifecycle-field-wide">
-                  <span>Expire on</span>
+                  <span>{t('buckets.expireOn')}</span>
                   <input type="date" value={draft.expirationDate} onChange={(event) => setDraft({ ...draft, expirationDate: event.target.value })} />
                 </label>
               ) : draft.action !== 'delete-marker' ? (
                 <label className="lifecycle-field lifecycle-field-wide">
-                  <span>{draft.action === 'noncurrent-days' ? 'Non-current expiration' : 'Expire after'}</span>
-                  <div className="input-with-suffix"><input type="number" min={1} step={1} value={draft.days} onChange={(event) => setDraft({ ...draft, days: Number(event.target.value) })} /><span>days</span></div>
+                  <span>{draft.action === 'noncurrent-days' ? t('buckets.nonCurrentExpiration') : t('buckets.expireAfter')}</span>
+                  <div className="input-with-suffix"><input type="number" min={1} step={1} value={draft.days} onChange={(event) => setDraft({ ...draft, days: Number(event.target.value) })} /><span>{t('buckets.days')}</span></div>
                 </label>
               ) : null}
 
               <label className="lifecycle-field lifecycle-field-wide">
-                <span>Prefix filter</span>
-                <input value={draft.prefix} placeholder="All objects" onChange={(event) => setDraft({ ...draft, prefix: event.target.value })} />
+                <span>{t('buckets.prefixFilter')}</span>
+                <input value={draft.prefix} placeholder={t('buckets.allObjects')} onChange={(event) => setDraft({ ...draft, prefix: event.target.value })} />
               </label>
 
               {draft.action === 'noncurrent-days' && (
                 <label className="lifecycle-field lifecycle-field-wide">
-                  <span>Keep newest non-current versions (optional)</span>
+                  <span>{t('buckets.keepNewestNonCurrentVersionsOptional')}</span>
                   <input
                     type="number"
                     min={1}
                     step={1}
                     value={draft.newerNoncurrentVersions ?? ''}
-                    placeholder="Not set"
+                    placeholder={t('buckets.notSet')}
                     onChange={(event) => setDraft({
                       ...draft,
                       newerNoncurrentVersions: event.target.value ? Number(event.target.value) : undefined,
@@ -200,8 +200,8 @@ export function LifecycleRulesEditor({ rules, configured, loading, onSave }: Lif
               )}
             </div>
             <footer className="lifecycle-modal-actions">
-              <button className="secondary-button" type="button" onClick={closeEditor} disabled={loading}>取消</button>
-              <button className="primary-button" type="button" onClick={() => void submitRule()} disabled={loading}>保存</button>
+              <button className="secondary-button" type="button" onClick={closeEditor} disabled={loading}>{t('buckets.cancel')}</button>
+              <button className="primary-button" type="button" onClick={() => void submitRule()} disabled={loading}>{t('buckets.save')}</button>
             </footer>
           </section>
         </div>
@@ -219,17 +219,17 @@ function nextRuleId(rules: LifecycleRule[]) {
 function objectVersionLabel(action: LifecycleAction) {
   switch (action) {
     case 'current-days':
-    case 'current-date': return 'Current version'
-    case 'noncurrent-days': return 'Non-current version'
-    case 'delete-marker': return 'DeleteMarker'
+    case 'current-date': return t('buckets.currentVersion')
+    case 'noncurrent-days': return t('buckets.nonCurrentVersion')
+    case 'delete-marker': return t('buckets.deletemarker')
   }
 }
 
 function expiryLabel(rule: LifecycleRule) {
   switch (rule.action) {
-    case 'current-days': return `After ${rule.days} days`
-    case 'current-date': return `On ${rule.expirationDate}`
-    case 'noncurrent-days': return `After ${rule.days} non-current days${rule.newerNoncurrentVersions ? ` · keep ${rule.newerNoncurrentVersions}` : ''}`
-    case 'delete-marker': return 'When expired'
+    case 'current-days': return t('buckets.afterValueDays', { '0': rule.days })
+    case 'current-date': return t('buckets.onValue', { '0': rule.expirationDate })
+    case 'noncurrent-days': return t('buckets.afterValueNonCurrentDaysvalue', { '0': rule.days, '1': rule.newerNoncurrentVersions ? ` · keep ${rule.newerNoncurrentVersions}` : '' })
+    case 'delete-marker': return t('buckets.whenExpired')
   }
 }

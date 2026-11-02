@@ -1,3 +1,4 @@
+import { t, getFormatLocale } from '@/locales'
 import { useCallback, useEffect, useId, useMemo, useState, type FormEvent } from 'react'
 import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, Pencil, Plus, Search, Trash2, UsersRound } from 'lucide-react'
 import type { ApiClient, GroupWrite, ManagedGroup, ManagedPolicy, ManagedUser, UserWrite } from '../../api/client'
@@ -20,13 +21,13 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 type Kind = 'users' | 'groups'
 type Identity = ManagedUser | ManagedGroup
 type SortKey = 'name' | 'policies' | 'enabled' | 'groups' | 'updated_at'
-const message = (reason: unknown) => reason instanceof Error ? reason.message : '操作失败，请重试'
-const dateLabel = (value: number) => value ? new Date(value * 1000).toLocaleString() : '—'
+const message = (reason: unknown) => reason instanceof Error ? reason.message : t('identities.operationFailedPleaseTryAgain')
+const dateLabel = (value: number) => value ? new Date(value * 1000).toLocaleString(getFormatLocale()) : '—'
 
 export function IdentitiesView({ kind, api }: { kind: Kind; api: ApiClient }) {
   const isGroup = kind === 'groups'
-  const title = isGroup ? 'User Groups' : 'Users'
-  const singular = isGroup ? 'Group' : 'User'
+  const title = isGroup ? t('identities.userGroups') : t('identities.users')
+  const singular = isGroup ? t('identities.group') : t('identities.user')
   const toast = useToast()
   const confirm = useConfirm()
   const [users, setUsers] = useState<ManagedUser[]>([])
@@ -90,7 +91,7 @@ export function IdentitiesView({ kind, api }: { kind: Kind; api: ApiClient }) {
     } finally { setBusy(false) }
   }
   async function remove(names: string[]) {
-    if (!await confirm({ title: names.length > 1 ? 'Delete Selected' : `Delete ${singular}`, message: `删除 ${names.length} 个${isGroup ? '用户组（用户将保留）' : '用户（同时移除组成员关系）'}？`, danger: true, confirmLabel: 'Delete', cancelLabel: 'Cancel' })) return
+    if (!await confirm({ title: names.length > 1 ? t('identities.deleteSelected') : t('identities.deleteValue', { '0': singular }), message: t('identities.deleteValueValue', { '0': names.length, '1': isGroup ? t('common.groupsUsersWillBeRetained') : t('common.usersGroupMembershipsWillAlsoBeRemoved') }), danger: true, confirmLabel: t('identities.delete'), cancelLabel: t('identities.cancel') })) return
     setBusy(true)
     const done: string[] = []
     const failed: string[] = []
@@ -99,7 +100,7 @@ export function IdentitiesView({ kind, api }: { kind: Kind; api: ApiClient }) {
       catch (reason) { failed.push(`${name}: ${message(reason)}`) }
     }
     setChecked(current => current.filter(name => !done.includes(name)))
-    if (done.length) toast(`已删除 ${done.length} 个${isGroup ? '用户组' : '用户'}`)
+    if (done.length) toast(t('identities.deletedValueValue', { '0': done.length, '1': isGroup ? t('common.groups') : t('common.users') }))
     if (failed.length) toast(failed.join('；'), 'error')
     await refresh()
   }
@@ -116,7 +117,7 @@ export function IdentitiesView({ kind, api }: { kind: Kind; api: ApiClient }) {
           done++
         } catch (reason) { failed.push(`${name}: ${message(reason)}`) }
       }
-      if (done) toast(`已更新 ${done} 个用户组`)
+      if (done) toast(t('identities.updatedValueGroups', { '0': done }))
       await refresh()
       if (failed.length) throw new Error(failed.join('；'))
       setBatch(null); setChecked([])
@@ -132,52 +133,52 @@ export function IdentitiesView({ kind, api }: { kind: Kind; api: ApiClient }) {
     <header className="page-header identities-header">
       <div className="flex items-center gap-2">{current && <Button variant="ghost" size="icon" aria-label={`Back to ${title}`} onClick={() => setSelected(null)}><ArrowLeft /></Button>}<h2>{current?.name ?? title}</h2></div>
       <div className="identity-header-actions">
-        {current ? <><Button variant="outline" disabled={busy} onClick={() => setEditor({ value: current })}><Pencil />Edit</Button><Button variant="destructive" disabled={busy} onClick={() => void remove([current.name])}><Trash2 />Delete</Button></> : <>
-          <div className="identity-search"><Search aria-hidden="true" /><Input aria-label={`Search ${title}`} placeholder={isGroup ? 'Search User Group' : 'Search Access User'} value={query} onChange={event => { setQuery(event.target.value); setPage(1); setChecked([]) }} /></div>
-          {!isGroup && <Button variant="outline" disabled={busy || !checked.length} onClick={() => void remove(checked)}><Trash2 />Delete Selected</Button>}
-          <Button variant="outline" disabled={busy || !checked.length} onClick={() => setBatch(isGroup ? 'policies' : 'groups')}><UsersRound />{isGroup ? 'Assign Policy' : 'Add to Group'}</Button>
-          <Button variant="outline" disabled={busy || !loaded} onClick={() => setEditor({ value: null })}><Plus />{isGroup ? 'Add User Group' : 'Add User'}</Button>
+        {current ? <><Button variant="outline" disabled={busy} onClick={() => setEditor({ value: current })}><Pencil />{t('identities.edit')}</Button><Button variant="destructive" disabled={busy} onClick={() => void remove([current.name])}><Trash2 />{t('identities.delete')}</Button></> : <>
+          <div className="identity-search"><Search aria-hidden="true" /><Input aria-label={`Search ${title}`} placeholder={isGroup ? t('identities.searchUserGroup') : t('identities.searchAccessUser')} value={query} onChange={event => { setQuery(event.target.value); setPage(1); setChecked([]) }} /></div>
+          {!isGroup && <Button variant="outline" disabled={busy || !checked.length} onClick={() => void remove(checked)}><Trash2 />{t('identities.deleteSelected')}</Button>}
+          <Button variant="outline" disabled={busy || !checked.length} onClick={() => setBatch(isGroup ? 'policies' : 'groups')}><UsersRound />{isGroup ? t('identities.assignPolicy') : t('identities.addToGroup')}</Button>
+          <Button variant="outline" disabled={busy || !loaded} onClick={() => setEditor({ value: null })}><Plus />{isGroup ? t('identities.addUserGroup') : t('identities.addUser')}</Button>
         </>}
       </div>
     </header>
     {current ? <Tabs key={current.name} defaultValue="summary" orientation="vertical" className="identity-detail">
       <TabsList className="identity-detail-nav" aria-label={`${singular} sections`}>
-        <TabsTrigger value="summary">Summary</TabsTrigger>
-        <TabsTrigger value="policies">Policies ({current.policies.length})</TabsTrigger>
-        <TabsTrigger value="members">{isGroup ? `Members (${(current as ManagedGroup).members.length})` : `Groups (${memberships.length})`}</TabsTrigger>
+        <TabsTrigger value="summary">{t('identities.summary')}</TabsTrigger>
+        <TabsTrigger value="policies">{t('identities.policiesCountLabel')}{current.policies.length})</TabsTrigger>
+        <TabsTrigger value="members">{isGroup ? t('identities.membersValue', { '0': (current as ManagedGroup).members.length }) : t('identities.groupsValue', { '0': memberships.length })}</TabsTrigger>
       </TabsList>
       <div className="identity-detail-content">
-        <TabsContent value="summary"><h3>{singular} Summary</h3><dl className="definition-list">
-          <div><dt>Name</dt><dd>{current.name}</dd></div><div><dt>Status</dt><dd><Badge>{current.enabled ? 'Enabled' : 'Disabled'}</Badge></dd></div>
-          <div><dt>Description</dt><dd className="whitespace-pre-wrap break-words">{current.description || '—'}</dd></div>
-          <div><dt>Policies</dt><dd>{current.policies.length}</dd></div>
-          <div><dt>{isGroup ? 'Members' : 'Groups'}</dt><dd>{isGroup ? (current as ManagedGroup).members.length : memberships.length}</dd></div>
+        <TabsContent value="summary"><h3>{singular} {t('identities.summary')}</h3><dl className="definition-list">
+          <div><dt>{t('identities.name')}</dt><dd>{current.name}</dd></div><div><dt>{t('identities.status')}</dt><dd><Badge>{current.enabled ? t('identities.enabled') : t('identities.disabled')}</Badge></dd></div>
+          <div><dt>{t('identities.description')}</dt><dd className="whitespace-pre-wrap break-words">{current.description || '—'}</dd></div>
+          <div><dt>{t('identities.policies')}</dt><dd>{current.policies.length}</dd></div>
+          <div><dt>{isGroup ? t('identities.members') : t('identities.groups')}</dt><dd>{isGroup ? (current as ManagedGroup).members.length : memberships.length}</dd></div>
         </dl></TabsContent>
-        <TabsContent value="policies"><h3>Assigned Policies</h3><NameList names={current.policies} empty="No policies assigned." />
-          {!isGroup && <><h3 className="mt-6">Policies from Groups</h3><NameList names={[...new Set(memberships.filter(group => group.enabled).flatMap(group => group.policies))]} empty="No policies assigned through enabled groups." /></>}
+        <TabsContent value="policies"><h3>{t('identities.assignedPolicies')}</h3><NameList names={current.policies} empty={t('identities.noPolicies')} />
+          {!isGroup && <><h3 className="mt-6">{t('identities.policiesFromGroups')}</h3><NameList names={[...new Set(memberships.filter(group => group.enabled).flatMap(group => group.policies))]} empty={t('identities.noGroupPolicies')} /></>}
         </TabsContent>
-        <TabsContent value="members"><h3>{isGroup ? 'Group Members' : 'User Groups'}</h3><NameList names={isGroup ? (current as ManagedGroup).members : memberships.map(group => group.name)} empty={isGroup ? 'No members in this group.' : 'This user does not belong to any groups.'} />{!isGroup && <p className="identity-scope-note">在 User Groups 中编辑组成员。</p>}</TabsContent>
+        <TabsContent value="members"><h3>{isGroup ? t('identities.groupMembers') : t('identities.userGroups')}</h3><NameList names={isGroup ? (current as ManagedGroup).members : memberships.map(group => group.name)} empty={isGroup ? t('identities.noMembersInThisGroup') : t('identities.thisUserDoesNotBelongToAnyGroups')} />{!isGroup && <p className="identity-scope-note">{t('identities.editMembershipsOnTheUserGroupsPage')}</p>}</TabsContent>
       </div>
     </Tabs> : <>
       <div className="identity-table-frame">
         <Table><TableHeader><TableRow>
-          <TableHead className="identity-check-cell"><Checkbox aria-label="Select current page" disabled={busy || !visible.length} checked={allChecked ? true : someChecked ? 'indeterminate' : false} onCheckedChange={value => setChecked(current => value === true ? [...new Set([...current, ...visible.map(item => item.name)])] : current.filter(name => !visible.some(item => item.name === name)))} /></TableHead>
-          {sortHeader('Name', 'name')}
-          {!isGroup && <>{sortHeader('Policy Name', 'policies')}{sortHeader('Status', 'enabled')}{sortHeader('Member Of', 'groups')}{sortHeader('Updated At', 'updated_at')}</>}
-          <TableHead className="identity-actions-cell">Actions</TableHead>
+          <TableHead className="identity-check-cell"><Checkbox aria-label={t('identities.selectCurrentPage')} disabled={busy || !visible.length} checked={allChecked ? true : someChecked ? 'indeterminate' : false} onCheckedChange={value => setChecked(current => value === true ? [...new Set([...current, ...visible.map(item => item.name)])] : current.filter(name => !visible.some(item => item.name === name)))} /></TableHead>
+          {sortHeader(t('common.name'), 'name')}
+          {!isGroup && <>{sortHeader(t('common.policyName'), 'policies')}{sortHeader(t('common.status'), 'enabled')}{sortHeader(t('common.memberOf'), 'groups')}{sortHeader(t('common.updatedAt'), 'updated_at')}</>}
+          <TableHead className="identity-actions-cell">{t('identities.actions')}</TableHead>
         </TableRow></TableHeader><TableBody>
           {visible.map(item => <TableRow key={item.name} data-state={checked.includes(item.name) ? 'selected' : undefined}>
             <TableCell className="identity-check-cell"><Checkbox aria-label={`Select ${item.name}`} disabled={busy} checked={checked.includes(item.name)} onCheckedChange={value => setChecked(current => value === true ? [...current, item.name] : current.filter(name => name !== item.name))} /></TableCell>
             <TableCell>{item.name}</TableCell>
-            {!isGroup && <><TableCell><NameList names={item.policies} empty="—" /></TableCell><TableCell><Badge>{item.enabled ? 'Enabled' : 'Disabled'}</Badge></TableCell><TableCell><NameList names={'groups' in item ? item.groups : []} empty="—" /></TableCell><TableCell>{dateLabel(item.updated_at)}</TableCell></>}
-            <TableCell className="identity-actions-cell"><div className="flex items-center justify-center gap-2"><Button variant="outline" size="sm" disabled={busy} onClick={() => isGroup ? setEditingGroup(item.name) : setEditor({ value: item })}><Pencil data-icon="inline-start" />Edit</Button><Button variant="destructive" size="sm" disabled={busy} onClick={() => void remove([item.name])}><Trash2 data-icon="inline-start" />Delete</Button></div></TableCell>
+            {!isGroup && <><TableCell><NameList names={item.policies} empty="—" /></TableCell><TableCell><Badge>{item.enabled ? t('identities.enabled') : t('identities.disabled')}</Badge></TableCell><TableCell><NameList names={'groups' in item ? item.groups : []} empty="—" /></TableCell><TableCell>{dateLabel(item.updated_at)}</TableCell></>}
+            <TableCell className="identity-actions-cell"><div className="flex items-center justify-center gap-2"><Button variant="outline" size="sm" disabled={busy} onClick={() => isGroup ? setEditingGroup(item.name) : setEditor({ value: item })}><Pencil data-icon="inline-start" />{t('identities.edit')}</Button><Button variant="destructive" size="sm" disabled={busy} onClick={() => void remove([item.name])}><Trash2 data-icon="inline-start" />{t('identities.delete')}</Button></div></TableCell>
           </TableRow>)}
-          {!visible.length && <TableRow><TableCell colSpan={isGroup ? 3 : 7} className="identity-empty-cell"><Empty><EmptyHeader><EmptyTitle>{!loaded ? busy ? 'Loading…' : 'Unable to load data' : query ? 'No matching results' : 'No Data'}</EmptyTitle><EmptyDescription>{!loaded ? 'Retry loading data.' : query ? 'Try another search.' : isGroup ? 'Create user groups to organize permissions' : 'Create a user to get started'}</EmptyDescription></EmptyHeader>{!loaded && !busy && <Button variant="outline" onClick={() => void refresh()}>Retry</Button>}</Empty></TableCell></TableRow>}
+          {!visible.length && <TableRow><TableCell colSpan={isGroup ? 3 : 7} className="identity-empty-cell"><Empty><EmptyHeader><EmptyTitle>{!loaded ? busy ? t('identities.loading') : t('identities.unableToLoadData') : query ? t('identities.noMatchingResults') : t('identities.noData')}</EmptyTitle><EmptyDescription>{!loaded ? t('identities.retryLoadingData') : query ? t('identities.tryAnotherSearch') : isGroup ? t('identities.createUserGroupsToOrganizePermissions') : t('identities.createAUserToGetStarted')}</EmptyDescription></EmptyHeader>{!loaded && !busy && <Button variant="outline" onClick={() => void refresh()}>{t('identities.retry')}</Button>}</Empty></TableCell></TableRow>}
         </TableBody></Table>
       </div>
       <footer className="identity-pagination">
-        <div className="flex items-center gap-3"><span>Rows per page</span><Select value={String(rows)} onValueChange={value => { setRows(Number(value)); setPage(1) }}><SelectTrigger aria-label="Rows per page" className="identity-page-size"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{[10, 25, 50].map(size => <SelectItem key={size} value={String(size)}>{size}</SelectItem>)}</SelectGroup></SelectContent></Select></div>
-        <div className="flex items-center gap-2"><span>Page {currentPage} of {pages}</span>{[['First', 1], ['Prev', currentPage - 1], ['Next', currentPage + 1], ['Last', pages]].map(([label, target]) => <Button key={label} variant="outline" size="sm" disabled={!pages || (label === 'First' || label === 'Prev' ? currentPage <= 1 : currentPage >= pages)} onClick={() => setPage(Number(target))}>{label}</Button>)}</div>
+        <div className="flex items-center gap-3"><span>{t('identities.rowsPerPage')}</span><Select value={String(rows)} onValueChange={value => { setRows(Number(value)); setPage(1) }}><SelectTrigger aria-label={t('identities.rowsPerPage')} className="identity-page-size"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{[10, 25, 50].map(size => <SelectItem key={size} value={String(size)}>{size}</SelectItem>)}</SelectGroup></SelectContent></Select></div>
+        <div className="flex items-center gap-2"><span>{t('common.pagination', { page: currentPage, total: pages })}</span>{[[t('common.first'), 1], [t('common.prev'), currentPage - 1], [t('common.next'), currentPage + 1], [t('common.last'), pages]].map(([label, target], index) => <Button key={label} variant="outline" size="sm" disabled={!pages || (index < 2 ? currentPage <= 1 : currentPage >= pages)} onClick={() => setPage(Number(target))}>{label}</Button>)}</div>
       </footer>
     </>}
     {editingGroup && groups.find(group => group.name === editingGroup) && <GroupEditorDialog key={editingGroup} api={api} initialGroup={groups.find(group => group.name === editingGroup)!} users={users} policies={policies} onSaved={saved => setGroups(current => current.map(group => group.name === saved.name ? saved : group))} onClose={() => { setEditingGroup(null); void refresh() }} />}
@@ -204,9 +205,9 @@ function IdentityEditor({ kind, value, users, groups, policies, onSave, onClose 
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (saving) return
-    if (!/^[A-Za-z0-9_.-]{1,128}$/.test(name.trim())) { toast('名称需为 1–128 个字母、数字、点、下划线或连字符', 'error'); return }
+    if (!/^[A-Za-z0-9_.-]{1,128}$/.test(name.trim())) { toast(t('identities.nameMustContain1128LettersNumbersPeriodsUnderscores'), 'error'); return }
     const size = new TextEncoder().encode(password).length
-    if (!isGroup && ((!value && !password) || (password && (size < 8 || size > 1024)))) { toast('密码长度需为 8–1024 字节', 'error'); return }
+    if (!isGroup && ((!value && !password) || (password && (size < 8 || size > 1024)))) { toast(t('identities.passwordMustContain81024Bytes'), 'error'); return }
     setSaving(true)
     try {
       await onSave({ name: name.trim(), description: value?.description ?? '', enabled, policies: assigned, ...(isGroup ? { members } : { groups: selectedGroups, ...(password ? { password } : {}) }) })
@@ -214,20 +215,20 @@ function IdentityEditor({ kind, value, users, groups, policies, onSave, onClose 
     finally { setSaving(false) }
   }
   return <Dialog open onOpenChange={open => { if (!open && !saving) onClose() }}><DialogContent className={`identity-dialog ${isGroup ? 'identity-group-dialog' : 'identity-user-dialog'}`}>
-    <DialogHeader><DialogTitle>{isGroup ? value ? 'Edit group members' : 'Add group members' : value ? 'Edit User' : 'Create User'}</DialogTitle><DialogDescription className="sr-only">{isGroup ? 'Set the group name and select users.' : 'Set the user name, password, groups and policy.'}</DialogDescription></DialogHeader>
+    <DialogHeader><DialogTitle>{isGroup ? value ? t('identities.editGroupMembers') : t('identities.addGroupMembers') : value ? t('identities.editUser') : t('identities.createUser')}</DialogTitle><DialogDescription className="sr-only">{isGroup ? t('identities.setTheGroupNameAndSelectUsers') : t('identities.setTheUserNamePasswordGroupsAndPolicy')}</DialogDescription></DialogHeader>
     <form onSubmit={event => void submit(event)} noValidate className="identity-form">
       <fieldset disabled={saving} className="identity-form-body"><FieldGroup>
         <div className={isGroup ? '' : 'identity-user-fields'}>
-          <Field><FieldLabel htmlFor={`${id}-name`}>{isGroup ? 'Name' : 'User Name'}</FieldLabel><Input id={`${id}-name`} autoFocus value={name} disabled={Boolean(value)} maxLength={128} autoComplete="off" onChange={event => setName(event.target.value)} /></Field>
-          {!isGroup && <Field><FieldLabel htmlFor={`${id}-password`}>Password</FieldLabel><Input id={`${id}-password`} type="password" autoComplete="new-password" value={password} placeholder={value ? 'Leave blank to keep password' : ''} onChange={event => setPassword(event.target.value)} /></Field>}
+          <Field><FieldLabel htmlFor={`${id}-name`}>{isGroup ? t('identities.name') : t('identities.userName')}</FieldLabel><Input id={`${id}-name`} autoFocus value={name} disabled={Boolean(value)} maxLength={128} autoComplete="off" onChange={event => setName(event.target.value)} /></Field>
+          {!isGroup && <Field><FieldLabel htmlFor={`${id}-password`}>{t('identities.password')}</FieldLabel><Input id={`${id}-password`} type="password" autoComplete="new-password" value={password} placeholder={value ? t('identities.leaveBlankToKeepPassword') : ''} onChange={event => setPassword(event.target.value)} /></Field>}
         </div>
-        {isGroup ? <MultiChoice title="Users" placeholder="Select user group members" options={users.map(user => user.name)} selected={members} onChange={setMembers} disabled={saving} /> : <>
-          <MultiChoice title="Groups" placeholder="Select Group" options={groups.map(group => group.name)} selected={selectedGroups} onChange={setSelectedGroups} disabled={saving} />
-          <MultiChoice title="Policy" placeholder="Select user group policies" options={policies.map(policy => policy.name)} selected={assigned} onChange={setAssigned} disabled={saving} />
+        {isGroup ? <MultiChoice title={t('identities.users')} placeholder={t('identities.selectUserGroupMembers')} options={users.map(user => user.name)} selected={members} onChange={setMembers} disabled={saving} /> : <>
+          <MultiChoice title={t('identities.groups')} placeholder={t('identities.selectGroup')} options={groups.map(group => group.name)} selected={selectedGroups} onChange={setSelectedGroups} disabled={saving} />
+          <MultiChoice title={t('identities.policy')} placeholder={t('identities.selectUserGroupPolicies')} options={policies.map(policy => policy.name)} selected={assigned} onChange={setAssigned} disabled={saving} />
         </>}
-        {value && <Field orientation="horizontal"><Checkbox id={`${id}-enabled`} checked={enabled} onCheckedChange={checked => setEnabled(checked === true)} /><FieldLabel htmlFor={`${id}-enabled`}>Enabled</FieldLabel></Field>}
+        {value && <Field orientation="horizontal"><Checkbox id={`${id}-enabled`} checked={enabled} onCheckedChange={checked => setEnabled(checked === true)} /><FieldLabel htmlFor={`${id}-enabled`}>{t('identities.enabled')}</FieldLabel></Field>}
       </FieldGroup></fieldset>
-      <footer className="identity-form-footer"><Button variant="outline" type="button" disabled={saving} onClick={onClose}>Cancel</Button><Button type="submit" disabled={saving}>{saving ? 'Submitting…' : 'Submit'}</Button></footer>
+      <footer className="identity-form-footer"><Button variant="outline" type="button" disabled={saving} onClick={onClose}>{t('identities.cancel')}</Button><Button type="submit" disabled={saving}>{saving ? t('identities.submitting') : t('identities.submit')}</Button></footer>
     </form>
   </DialogContent></Dialog>
 }
@@ -243,7 +244,7 @@ function AssignmentDialog({ kind, count, options, onSave, onClose }: { kind: 'gr
     try { await onSave(selected) } catch (reason) { toast(message(reason), 'error') } finally { setSaving(false) }
   }
   return <Dialog open onOpenChange={open => { if (!open && !saving) onClose() }}><DialogContent className="identity-dialog">
-    <DialogHeader><DialogTitle>{kind === 'groups' ? 'Add to Group' : 'Assign Policy'}</DialogTitle><DialogDescription className="identity-muted">{count} {kind === 'groups' ? 'users' : 'groups'} selected</DialogDescription></DialogHeader>
-    <form onSubmit={event => void submit(event)} className="identity-form"><div className="identity-form-body"><MultiChoice title={kind === 'groups' ? 'Groups' : 'Policy'} placeholder={kind === 'groups' ? 'Select Group' : 'Select policies'} options={options} selected={selected} onChange={setSelected} disabled={saving} /></div><footer className="identity-form-footer"><Button variant="outline" type="button" disabled={saving} onClick={onClose}>Cancel</Button><Button disabled={saving || !selected.length} type="submit">{saving ? 'Submitting…' : 'Submit'}</Button></footer></form>
+    <DialogHeader><DialogTitle>{kind === 'groups' ? t('identities.addToGroup') : t('identities.assignPolicy')}</DialogTitle><DialogDescription className="identity-muted">{count} {kind === 'groups' ? 'users' : 'groups'} {t('identities.selected')}</DialogDescription></DialogHeader>
+    <form onSubmit={event => void submit(event)} className="identity-form"><div className="identity-form-body"><MultiChoice title={kind === 'groups' ? t('identities.groups') : t('identities.policy')} placeholder={kind === 'groups' ? t('identities.selectGroup') : t('identities.selectPolicies')} options={options} selected={selected} onChange={setSelected} disabled={saving} /></div><footer className="identity-form-footer"><Button variant="outline" type="button" disabled={saving} onClick={onClose}>{t('identities.cancel')}</Button><Button disabled={saving || !selected.length} type="submit">{saving ? t('identities.submitting') : t('identities.submit')}</Button></footer></form>
   </DialogContent></Dialog>
 }

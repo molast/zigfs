@@ -1,5 +1,7 @@
 "use client"
 
+import { t } from '@/locales'
+
 import * as React from "react"
 import { cn } from "@/lib/utils"
 import useEmblaCarousel, {
@@ -196,7 +198,7 @@ function CarouselPrevious({
       {...props}
     >
       <ArrowLeft />
-      <span className="sr-only">Previous slide</span>
+      <span className="sr-only">{t('ui.previousSlide')}</span>
     </Button>
   )
 }
@@ -226,7 +228,7 @@ function CarouselNext({
       {...props}
     >
       <ArrowRight />
-      <span className="sr-only">Next slide</span>
+      <span className="sr-only">{t('ui.nextSlide')}</span>
     </Button>
   )
 }

@@ -21,3 +21,13 @@ These constraints apply to all code under `zigfs-admin/web/`, in addition to the
 ## Validation
 
 - Run `pnpm run build` after web changes. Check relevant forms and error paths when changing interactions, including that failure feedback remains visible while a dialog is open.
+
+## Localization
+
+- English is the source language and default. Keep all application UI copy in `src/locales/en.json` and `src/locales/zh.json`, grouped by feature module. Both files must have identical keys and interpolation placeholders.
+- Use the typed `t('module.key', { name: value })` helper. Translate complete sentences with placeholders; do not concatenate translated sentence fragments. Keep keys stable when editing copy.
+- Use descriptive camelCase translation keys (for example, `navigation.objectStorage`). Do not append hashes or generated numeric suffixes. Distinguish collisions by purpose, such as `deleteTagAction` and `deleteTagConfirmation`; changing wording must not rename the key. The `labels` module retains protocol enum names for display lookup.
+- Subscribe with `useLocale()` when a component renders outside the App tree. Do not evaluate translated strings once at module initialization; resolve them during rendering or through getters.
+- Keep route IDs, API values, IAM Action/resource names, policy JSON, and user-provided names unchanged. Never use translated labels to drive authorization, selection, pagination, or submitted values.
+- Format dates and numbers with `getFormatLocale()` and use the shared localized Calendar. Language changes must preserve form drafts and the current route.
+- Run `pnpm run test:i18n` and `pnpm run build` after localization changes. Raw upstream diagnostic messages remain server-provided; translate locally authored fallback messages.

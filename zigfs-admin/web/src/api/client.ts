@@ -1,3 +1,4 @@
+import { t } from '@/locales'
 export interface OIDCProvider {
   provider_id: string; display_name: string; enabled: boolean; configuration_url: string;
   client_id: string; client_secret: string; has_secret?: boolean; environment_managed?: boolean; scopes: string; audiences: string;
@@ -74,7 +75,7 @@ export function createApiClient() {
         signal: init.signal ?? controller.signal,
       })
     } catch (reason) {
-      if (timedOut) throw new Error('请求超时，请检查 ZigFS 服务是否正常运行。')
+      if (timedOut) throw new Error(t('api.requestTimedOutCheckThatZigfsIsRunning'))
       throw reason
     } finally {
       window.clearTimeout(timeout)
@@ -83,7 +84,7 @@ export function createApiClient() {
     if (!response.ok) {
       const fallback: ApiErrorBody = {
         code: 'RequestFailed',
-        message: `Request failed with status ${response.status}`,
+        message: t('api.requestFailedWithStatusValue', { '0': response.status }),
         request_id: response.headers.get('X-Request-ID') ?? '',
         details: {},
       }

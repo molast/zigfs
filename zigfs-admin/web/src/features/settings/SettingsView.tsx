@@ -1,3 +1,4 @@
+import { t, getFormatLocale } from '@/locales'
 import { Database, FileText, Globe, Home, Info, RefreshCw, Settings as SettingsIcon, ShieldCheck, CircleCheck, Box } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ApiClient } from '../../api/client'
@@ -14,12 +15,12 @@ import { SettingsPanels } from './SettingsPanels'
 import type { ManagementHealth, StorageInfo, StorageScannerStatus, Settings, SystemInfo } from '../../types/api'
 
 const categories = [
-  { id: 'general', label: '常规设置', subtitle: '实例基本信息', description: '查看实例的基本信息和运行参数', icon: Home },
-  { id: 'network', label: '网络设置', subtitle: '网络与访问', description: '查看 API 监听地址、公开访问入口和 S3 寻址配置', icon: Globe },
-  { id: 'security', label: '安全设置', subtitle: '安全策略配置', description: '查看管理会话与请求签名校验参数', icon: ShieldCheck },
-  { id: 'storage', label: '存储设置', subtitle: '存储策略与参数', description: '查看存储缓冲、分片上传保留期和生命周期扫描参数', icon: Database },
-  { id: 'logs', label: '日志设置', subtitle: '日志与可观测性', description: '查看实例的监控指标配置和日志配置范围', icon: FileText },
-  { id: 'about', label: '关于 ZigFS', subtitle: '版本与信息', description: '查看当前服务版本与实例运行信息', icon: Info },
+  { id: 'general', get label() { return t('settings.general') }, get subtitle() { return t('settings.instanceDetails') }, get description() { return t('settings.viewInstanceDetailsAndRuntimeSettings') }, icon: Home },
+  { id: 'network', get label() { return t('settings.network') }, get subtitle() { return t('settings.networkAndAccess') }, get description() { return t('settings.viewApiListenAddressesPublicEndpointsAndS3Addressing') }, icon: Globe },
+  { id: 'security', get label() { return t('settings.security') }, get subtitle() { return t('settings.securityConfiguration') }, get description() { return t('settings.viewAdminSessionAndRequestSignatureSettings') }, icon: ShieldCheck },
+  { id: 'storage', get label() { return t('settings.storage') }, get subtitle() { return t('settings.storagePoliciesAndSettings') }, get description() { return t('settings.viewStorageBuffersMultipartUploadRetentionAndLifecycleScan') }, icon: Database },
+  { id: 'logs', get label() { return t('settings.logs') }, get subtitle() { return t('settings.logsAndObservability') }, get description() { return t('settings.viewMetricsConfigurationAndAvailableLogSettings') }, icon: FileText },
+  { id: 'about', get label() { return t('settings.aboutZigfs') }, get subtitle() { return t('settings.versionAndInformation') }, get description() { return t('settings.viewTheServiceVersionAndInstanceRuntimeInformation') }, icon: Info },
 ] as const
 
 type Category = typeof categories[number]['id']
@@ -53,7 +54,7 @@ export function SettingsView({ api }: { api: ApiClient }) {
       setScanner(scan.status === 'fulfilled' ? scan.value : null)
       setHealth(readiness.status === 'fulfilled' ? readiness.value : null)
       setObservedAt(new Date())
-      if (results.some(result => result.status === 'rejected')) notifyError('部分系统信息加载失败，请点击刷新配置重试。')
+      if (results.some(result => result.status === 'rejected')) notifyError(t('settings.someSystemInformationCouldNotBeLoadedRefreshConfiguration'))
     } finally {
       pending.current = false
       if (mounted.current) setBusy(false)
@@ -66,56 +67,56 @@ export function SettingsView({ api }: { api: ApiClient }) {
     return () => { mounted.current = false }
   }, [refresh])
 
-  const startup = system && observedAt ? new Date(observedAt.getTime() - system.uptime * 1000).toLocaleString() : '—'
+  const startup = system && observedAt ? new Date(observedAt.getTime() - system.uptime * 1000).toLocaleString(getFormatLocale()) : '—'
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
   const groups: Partial<Record<Category, SettingGroup[]>> = {
     general: [
-      { title: '实例信息', items: [
-        { id: 'service', label: '服务名称', value: 'ZigFS', help: '当前对象存储服务' },
-        { id: 'description', label: '实例描述', value: '未上报', multiline: true, help: '当前服务未提供自定义实例描述' },
-        { id: 'instance-id', label: '实例 ID', value: '未上报', help: '当前服务未提供独立的实例标识' },
-        { id: 'startup', label: '启动时间', value: startup, help: '根据最近一次上报的运行时长估算，按浏览器时区显示' },
-        { id: 'uptime', label: '运行时长', value: system ? duration(system.uptime) : '—', help: '截至最近一次刷新' },
+      { title: t('settings.instanceInformation'), items: [
+        { id: 'service', label: t('settings.serviceName'), value: 'ZigFS', help: t('settings.currentObjectStorageService') },
+        { id: 'description', label: t('settings.instanceDescription'), value: t('settings.notReported'), multiline: true, help: t('settings.theServiceDoesNotReportACustomInstanceDescription') },
+        { id: 'instance-id', label: t('settings.instanceId'), value: t('settings.notReported'), help: t('settings.theServiceDoesNotReportASeparateInstanceId') },
+        { id: 'startup', label: t('settings.startedAt'), value: startup, help: t('settings.estimatedFromReportedUptimeDisplayedInYourLocalTimezone') },
+        { id: 'uptime', label: t('settings.uptime'), value: system ? duration(system.uptime) : '—', help: t('settings.asOfTheLastRefresh') },
       ] },
-      { title: '基本配置', items: [
-        { id: 'region', label: '默认区域', value: settings?.s3_region ?? '—', help: 'S3 服务区域与签名校验区域' },
-        { id: 'timezone', label: '显示时区', value: timezone, help: '当前浏览器时区；服务端时间使用 UTC' },
-        { id: 'date-format', label: '日期时间格式', value: '跟随浏览器区域设置', help: '时间按本地日期与时间格式显示' },
+      { title: t('settings.basicConfiguration'), items: [
+        { id: 'region', label: t('settings.defaultRegion'), value: settings?.s3_region ?? '—', help: t('settings.s3ServiceAndSignatureVerificationRegion') },
+        { id: 'timezone', label: t('settings.displayTimezone'), value: timezone, help: t('settings.yourBrowserTimezoneServerTimestampsUseUtc') },
+        { id: 'date-format', label: t('settings.dateAndTimeFormat'), value: t('settings.followsTheSelectedLanguage'), help: t('settings.datesAndTimesUseTheSelectedLanguageAndLocal') },
       ] },
     ],
     security: [
-      { title: '会话安全', items: [
-        { id: 'session-ttl', label: '管理会话有效期', value: settings ? duration(settings.admin_session_ttl_seconds) : '—', help: '管理控制台会话的最长有效时间' },
+      { title: t('settings.sessionSecurity'), items: [
+        { id: 'session-ttl', label: t('settings.adminSessionLifetime'), value: settings ? duration(settings.admin_session_ttl_seconds) : '—', help: t('settings.maximumConsoleSessionLifetime') },
       ] },
-      { title: '请求校验', items: [
-        { id: 'clock-skew', label: '签名时钟偏差', value: settings ? duration(settings.request_time_skew_seconds) : '—', help: 'S3 签名允许的客户端与服务端时间偏差' },
+      { title: t('settings.requestValidation'), items: [
+        { id: 'clock-skew', label: t('settings.signatureClockSkew'), value: settings ? duration(settings.request_time_skew_seconds) : '—', help: t('settings.allowedClockDifferenceBetweenClientAndServerForS3') },
       ] },
     ],
 
   }
 
   return <section className="system-settings-page" aria-busy={busy}>
-    <header className="system-settings-heading"><SettingsIcon aria-hidden="true" /><div><h2>系统设置</h2><p>查看 ZigFS 实例的全局参数</p></div></header>
+    <header className="system-settings-heading"><SettingsIcon aria-hidden="true" /><div><h2>{t('settings.systemSettings')}</h2><p>{t('settings.viewGlobalSettingsForThisZigfsInstance')}</p></div></header>
     <Tabs value={category} onValueChange={value => setCategory(value as Category)} orientation="vertical" className="system-settings-layout">
-      <Card className="system-settings-navigation"><TabsList aria-label="系统设置分类" className="system-settings-nav">
+      <Card className="system-settings-navigation"><TabsList aria-label={t('settings.systemSettingsCategories')} className="system-settings-nav">
         {categories.map(item => <TabsTrigger key={item.id} value={item.id}><item.icon aria-hidden="true" /><span><strong>{item.label}</strong><small>{item.subtitle}</small></span></TabsTrigger>)}
       </TabsList></Card>
       <div className="system-settings-main">
         <Card className="system-settings-editor">
           {categories.map(item => <TabsContent key={item.id} value={item.id} className="system-settings-tab">
-            <CardHeader><div className="system-settings-section-heading"><item.icon aria-hidden="true" /><div><CardTitle>{item.label}</CardTitle><CardDescription>{item.description}</CardDescription></div><Badge>{busy ? '加载中' : settings ? '当前生效 · 只读' : '配置未获取'}</Badge></div></CardHeader>
+            <CardHeader><div className="system-settings-section-heading"><item.icon aria-hidden="true" /><div><CardTitle>{item.label}</CardTitle><CardDescription>{item.description}</CardDescription></div><Badge>{busy ? t('settings.loading') : settings ? t('settings.effectiveReadOnly') : t('settings.configurationUnavailable')}</Badge></div></CardHeader>
             <CardContent className="system-settings-scroll">{groups[item.id] ? <Card className="system-settings-form"><CardContent>
               {groups[item.id]?.map((group, index) => <div key={group.title}>{index > 0 && <Separator />}<FieldSet><FieldLegend>{group.title}</FieldLegend><FieldGroup>
                 {group.items.map(setting => <Field key={setting.id} className="system-settings-field"><FieldLabel htmlFor={`system-${setting.id}`}>{setting.label}</FieldLabel>{setting.multiline ? <Textarea id={`system-${setting.id}`} readOnly value={setting.value} rows={2} aria-describedby={setting.help ? `system-${setting.id}-help` : undefined} /> : <Input id={`system-${setting.id}`} readOnly value={setting.value} aria-describedby={setting.help ? `system-${setting.id}-help` : undefined} />}{setting.help && <FieldDescription id={`system-${setting.id}-help`}>{setting.help}</FieldDescription>}</Field>)}
               </FieldGroup></FieldSet></div>)}
             </CardContent></Card> : <SettingsPanels category={item.id} settings={settings} system={system} storage={storage} scanner={scanner} health={health} />}</CardContent>
           </TabsContent>)}
-          <footer className="system-settings-actions"><span>当前配置仅供查看；修改服务配置后需重启 ZigFS。</span><Button size="sm" variant="outline" disabled={busy} onClick={() => void refresh()}><RefreshCw data-icon="inline-start" />{busy ? '加载中…' : '刷新配置'}</Button></footer>
+          <footer className="system-settings-actions"><span>{t('settings.configurationIsReadOnlyRestartZigfsAfterChangingService')}</span><Button size="sm" variant="outline" disabled={busy} onClick={() => void refresh()}><RefreshCw data-icon="inline-start" />{busy ? t('settings.loadingProgress') : t('settings.refreshConfiguration')}</Button></footer>
         </Card>
         <div className="system-settings-notes">
-          <Card><CardHeader><CircleCheck aria-hidden="true" /><div><CardTitle>当前配置</CardTitle><CardDescription>展示运行中的实际生效值</CardDescription></div></CardHeader></Card>
-          <Card><CardHeader><Info aria-hidden="true" /><div><CardTitle>重启提示</CardTitle><CardDescription>服务配置修改后需重启生效</CardDescription></div></CardHeader></Card>
-          <Card><CardHeader><Box aria-hidden="true" /><div><CardTitle>实例信息</CardTitle><CardDescription>版本：{system?.version ?? '—'} · 最近读取：{observedAt?.toLocaleTimeString() ?? '—'}</CardDescription></div></CardHeader></Card>
+          <Card><CardHeader><CircleCheck aria-hidden="true" /><div><CardTitle>{t('settings.currentConfiguration')}</CardTitle><CardDescription>{t('settings.showsEffectiveRuntimeValues')}</CardDescription></div></CardHeader></Card>
+          <Card><CardHeader><Info aria-hidden="true" /><div><CardTitle>{t('settings.restartRequired')}</CardTitle><CardDescription>{t('settings.restartTheServiceToApplyConfigurationChanges')}</CardDescription></div></CardHeader></Card>
+          <Card><CardHeader><Box aria-hidden="true" /><div><CardTitle>{t('settings.instanceInformation')}</CardTitle><CardDescription>{t('settings.versionLabel')}{system?.version ?? '—'} {t('settings.lastFetched')}{observedAt?.toLocaleTimeString(getFormatLocale()) ?? '—'}</CardDescription></div></CardHeader></Card>
         </div>
       </div>
     </Tabs>
@@ -127,5 +128,5 @@ function duration(seconds: number) {
   const hours = Math.floor(seconds % 86400 / 3600)
   const minutes = Math.floor(seconds % 3600 / 60)
   const rest = Math.floor(seconds % 60)
-  return [days && `${days} 天`, hours && `${hours} 小时`, minutes && `${minutes} 分钟`, rest && `${rest} 秒`].filter(Boolean).join(' ') || '0 秒'
+  return [days && t('settings.valueDays', { '0': days }), hours && t('settings.valueHours', { '0': hours }), minutes && t('settings.valueMinutes', { '0': minutes }), rest && t('settings.valueSeconds', { '0': rest })].filter(Boolean).join(' ') || t('settings.zeroSeconds')
 }

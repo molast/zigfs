@@ -1,3 +1,4 @@
+import { t, useLocale } from '@/locales'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from './ui/alert-dialog'
 
@@ -20,6 +21,7 @@ type Confirm = (options: ConfirmOptions) => Promise<boolean>
 const ConfirmContext = createContext<Confirm | null>(null)
 
 export function ConfirmProvider({ children }: { children: ReactNode }) {
+  useLocale()
   const [request, setRequest] = useState<ConfirmRequest | null>(null)
   const requestRef = useRef<ConfirmRequest | null>(null)
 
@@ -54,8 +56,8 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
         {request && <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>{request.options.title}</AlertDialogTitle><AlertDialogDescription>{request.options.message}</AlertDialogDescription></AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => close(false)}>{request.options.cancelLabel ?? '取消'}</AlertDialogCancel>
-            {!request.options.hideConfirm && <AlertDialogAction variant={request.options.danger ? 'destructive' : 'default'} onClick={() => close(true)}>{request.options.confirmLabel ?? '确认'}</AlertDialogAction>}
+            <AlertDialogCancel onClick={() => close(false)}>{request.options.cancelLabel ?? t('common.cancel')}</AlertDialogCancel>
+            {!request.options.hideConfirm && <AlertDialogAction variant={request.options.danger ? 'destructive' : 'default'} onClick={() => close(true)}>{request.options.confirmLabel ?? t('common.confirm')}</AlertDialogAction>}
           </AlertDialogFooter>
         </AlertDialogContent>}
       </AlertDialog>

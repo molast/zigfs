@@ -1,3 +1,4 @@
+import { useLocale } from '@/locales'
 import { LoaderCircle } from 'lucide-react'
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
@@ -15,6 +16,7 @@ interface LoadingContextValue {
 const LoadingContext = createContext<LoadingContextValue | null>(null)
 
 export function LoadingProvider({ children }: { children: ReactNode }) {
+  useLocale()
   const [tasks, setTasks] = useState<LoadingTask[]>([])
   const nextId = useRef(1)
 

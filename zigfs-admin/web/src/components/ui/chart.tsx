@@ -1,3 +1,4 @@
+import { getFormatLocale } from '@/locales'
 "use client"
 
 import * as React from "react"
@@ -254,7 +255,7 @@ function ChartTooltipContent({
                       {item.value != null && (
                         <span className="font-mono font-medium text-foreground tabular-nums">
                           {typeof item.value === "number"
-                            ? item.value.toLocaleString()
+                            ? item.value.toLocaleString(getFormatLocale())
                             : String(item.value)}
                         </span>
                       )}

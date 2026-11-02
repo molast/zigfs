@@ -1,3 +1,4 @@
+import { t } from '@/locales'
 import { useId, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
@@ -11,6 +12,6 @@ export function MultiChoice({ title, placeholder, options, selected, onChange, d
   const [query, setQuery] = useState('')
   const filtered = [...new Set([...options, ...selected])].filter(name => name.toLowerCase().includes(query.toLowerCase())).sort()
   return <Field><FieldLabel htmlFor={id}>{title}</FieldLabel><Popover><PopoverTrigger asChild><Button id={id} type="button" variant="outline" disabled={disabled} className="identity-multi-trigger"><span>{selected.length ? selected.join(', ') : placeholder}</span><ChevronDown /></Button></PopoverTrigger>
-    <PopoverContent align="start" className="identity-multi-content"><Input aria-label={`Search ${title}`} placeholder="Search..." value={query} onChange={event => setQuery(event.target.value)} /><div className="identity-choices">{filtered.length ? filtered.map((name, index) => <Field key={name} orientation="horizontal"><Checkbox id={`${id}-${index}`} disabled={disabled} checked={selected.includes(name)} onCheckedChange={checked => onChange(checked === true ? [...new Set([...selected, name])] : selected.filter(item => item !== name))} /><FieldLabel htmlFor={`${id}-${index}`}>{name}{!options.includes(name) ? ' (unavailable)' : ''}</FieldLabel></Field>) : <span className="identity-muted">No results</span>}</div></PopoverContent>
+    <PopoverContent align="start" className="identity-multi-content"><Input aria-label={`Search ${title}`} placeholder={t('identities.search')} value={query} onChange={event => setQuery(event.target.value)} /><div className="identity-choices">{filtered.length ? filtered.map((name, index) => <Field key={name} orientation="horizontal"><Checkbox id={`${id}-${index}`} disabled={disabled} checked={selected.includes(name)} onCheckedChange={checked => onChange(checked === true ? [...new Set([...selected, name])] : selected.filter(item => item !== name))} /><FieldLabel htmlFor={`${id}-${index}`}>{name}{!options.includes(name) ? t('identities.unavailable') : ''}</FieldLabel></Field>) : <span className="identity-muted">{t('identities.noResults')}</span>}</div></PopoverContent>
   </Popover></Field>
 }

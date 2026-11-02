@@ -1,3 +1,4 @@
+import { t } from '@/locales'
 import * as React from "react"
 import { Command as CommandPrimitive } from "cmdk"
 import { cn } from "@/lib/utils"
@@ -28,8 +29,8 @@ function Command({
 }
 
 function CommandDialog({
-  title = "Command Palette",
-  description = "Search for a command to run...",
+  title = t('common.commandPalette'),
+  description = t('common.searchForACommandToRun'),
   children,
   className,
   showCloseButton = true,

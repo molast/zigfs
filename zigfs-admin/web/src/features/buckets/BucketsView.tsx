@@ -1,3 +1,4 @@
+import { t, getFormatLocale } from '@/locales'
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowRight, Folder, FolderPlus, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { ApiError, type ApiClient } from '../../api/client'
@@ -23,7 +24,7 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
   const notifyError = useErrorToast()
 
   const refresh = useCallback(async () => {
-    const stopLoading = startLoading('正在加载 Buckets...')
+    const stopLoading = startLoading(t('buckets.loadingBuckets'))
     try {
       setRefreshing(true)
       setBuckets(await api.listBuckets())
@@ -56,13 +57,13 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
 
   async function create(event: FormEvent) {
     event.preventDefault()
-    const stopLoading = startLoading('正在创建 Bucket...')
+    const stopLoading = startLoading(t('buckets.creatingBucket'))
     try {
       await api.createBucket(name.trim())
       setName('')
       setShowCreate(false)
       await refresh()
-      showToast(`已创建 Bucket ${name.trim()}`)
+      showToast(t('buckets.createdBucketValue', { '0': name.trim() }))
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
@@ -72,23 +73,23 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
 
   async function remove(bucket: string) {
     if (!await confirm({
-      title: '删除 Bucket',
-      message: `删除 Bucket “${bucket}”？此操作不可撤销。`,
-      confirmLabel: '删除',
+      title: t('buckets.deleteBucket'),
+      message: t('buckets.deleteBucketValueThisCannotBeUndone', { '0': bucket }),
+      confirmLabel: t('buckets.delete'),
       danger: true,
     })) return
-    const stopLoading = startLoading('正在删除 Bucket...')
+    const stopLoading = startLoading(t('buckets.deletingBucket'))
     try {
       await api.deleteBucket(bucket)
       await refresh()
-      showToast(`已删除 Bucket ${bucket}`)
+      showToast(t('buckets.deletedBucketValue', { '0': bucket }))
     } catch (reason) {
       if (reason instanceof ApiError && reason.body.code === 'BucketNotEmpty') {
         stopLoading()
         await confirm({
-          title: '无法删除 Bucket',
-          message: `Bucket “${bucket}”必须为空才能删除。请先删除其中的所有对象和目录，Bucket 内的数据不会被自动删除。`,
-          cancelLabel: '知道了',
+          title: t('buckets.unableToDeleteBucket'),
+          message: t('buckets.bucketValueMustBeEmptyBeforeDeletionDeleteIts', { '0': bucket }),
+          cancelLabel: t('buckets.gotIt'),
           hideConfirm: true,
         })
       } else {
@@ -103,43 +104,41 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
     <section>
       <header className="page-header">
         <div>
-          <p className="eyebrow">Buckets</p>
-          <h2>Buckets</h2>
-          <p className="page-description">组织和浏览 ZigFS 中的对象存储空间。</p>
+          <p className="eyebrow">{t('buckets.buckets')}</p>
+          <h2>{t('buckets.buckets')}</h2>
+          <p className="page-description">{t('buckets.organizeAndBrowseObjectStorageInZigfs')}</p>
         </div>
-        <span className="count-badge">{buckets.length} 个 Bucket</span>
+        <span className="count-badge">{buckets.length} {t('buckets.bucketCountUnit')}</span>
       </header>
       <div className="page-toolbar">
         <div className="toolbar-leading">
           <label className="search-box">
             <Search aria-hidden="true" />
-            <input aria-label="搜索 Bucket" placeholder="搜索 Bucket 或 Owner" value={query} onChange={(event) => setQuery(event.target.value)} />
+            <input aria-label={t('buckets.searchBuckets')} placeholder={t('buckets.searchByBucketOrOwner')} value={query} onChange={(event) => setQuery(event.target.value)} />
           </label>
         </div>
         <div className="toolbar-actions">
           <button className="primary-button create-action-button" type="button" onClick={() => { setShowCreate(true) }} aria-haspopup="dialog" aria-expanded={showCreate}>
-            <Plus className="button-icon" aria-hidden="true" />创建 Bucket
-          </button>
+            <Plus className="button-icon" aria-hidden="true" />{t('buckets.createBucket')}</button>
           <button className="secondary-button refresh-action-button" type="button" onClick={() => void refresh()} disabled={refreshing} aria-busy={refreshing}>
-            <RefreshCw className={`button-icon${refreshing ? ' spinning' : ''}`} aria-hidden="true" />刷新
-          </button>
+            <RefreshCw className={`button-icon${refreshing ? ' spinning' : ''}`} aria-hidden="true" />{t('buckets.refresh')}</button>
         </div>
       </div>
       {showCreate && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowCreate(false)}>
           <section className="lifecycle-modal credential-modal bucket-create-modal" role="dialog" aria-modal="true" aria-labelledby="bucket-create-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="lifecycle-modal-header">
-              <div className="lifecycle-modal-title"><FolderPlus aria-hidden="true" /><h3 id="bucket-create-dialog-title">创建 Bucket</h3></div>
-              <button className="icon-button" type="button" aria-label="关闭" onClick={() => setShowCreate(false)}><X aria-hidden="true" /></button>
+              <div className="lifecycle-modal-title"><FolderPlus aria-hidden="true" /><h3 id="bucket-create-dialog-title">{t('buckets.createBucket')}</h3></div>
+              <button className="icon-button" type="button" aria-label={t('buckets.close')} onClick={() => setShowCreate(false)}><X aria-hidden="true" /></button>
             </header>
             <form className="credential-modal-form" onSubmit={create}>
-              <p className="credential-modal-description">名称创建后不可修改。Bucket 将自动绑定到当前管理员账号。</p>
+              <p className="credential-modal-description">{t('buckets.theNameCannotBeChangedAfterCreationTheBucket')}</p>
               <div className="credential-modal-fields">
-                <label>Bucket name<input aria-label="Bucket name" placeholder="bucket-name" value={name} onChange={(event) => setName(event.target.value)} required autoFocus /></label>
+                <label>{t('buckets.bucketName')}<input aria-label={t('buckets.bucketName')} placeholder="bucket-name" value={name} onChange={(event) => setName(event.target.value)} required autoFocus /></label>
               </div>
               <footer className="lifecycle-modal-actions">
-                <button className="secondary-button" type="button" onClick={() => setShowCreate(false)}>取消</button>
-                <button className="primary-button" type="submit">确认创建</button>
+                <button className="secondary-button" type="button" onClick={() => setShowCreate(false)}>{t('buckets.cancel')}</button>
+                <button className="primary-button" type="submit">{t('buckets.create')}</button>
               </footer>
             </form>
           </section>
@@ -148,7 +147,7 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
       <section className="panel table-panel">
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Bucket</th><th>Owner</th><th>Creation Date</th><th>Actions</th></tr></thead>
+            <thead><tr><th>{t('buckets.bucket')}</th><th>{t('buckets.owner')}</th><th>{t('buckets.creationDate')}</th><th>{t('buckets.actions')}</th></tr></thead>
             <tbody>
               {filteredBuckets.map((bucket) => (
                 <tr key={bucket.name}>
@@ -156,10 +155,10 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
                     <div className="bucket-cell"><Folder className="bucket-symbol" aria-hidden="true" /><button className="link-button bucket-link" onClick={() => onOpenBucket(bucket.name)}>{bucket.name}</button></div>
                   </td>
                   <td>{bucket.owner}</td>
-                  <td>{new Date(bucket.created_at).toLocaleString()}</td>
+                  <td>{new Date(bucket.created_at).toLocaleString(getFormatLocale())}</td>
                   <td className="table-actions">
-                    <button className="secondary-button" onClick={() => onOpenBucket(bucket.name)}><ArrowRight className="button-icon" aria-hidden="true" />打开</button>
-                    <button className="danger-button" onClick={() => void remove(bucket.name)}><Trash2 className="button-icon" aria-hidden="true" />删除</button>
+                    <button className="secondary-button" onClick={() => onOpenBucket(bucket.name)}><ArrowRight className="button-icon" aria-hidden="true" />{t('buckets.open')}</button>
+                    <button className="danger-button" onClick={() => void remove(bucket.name)}><Trash2 className="button-icon" aria-hidden="true" />{t('buckets.delete')}</button>
                   </td>
                 </tr>
               ))}
@@ -168,8 +167,8 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
         </div>
         {filteredBuckets.length === 0 && (
           <div className="empty-state empty-panel">
-            <strong>{buckets.length === 0 ? '还没有 Bucket' : '没有匹配的 Bucket'}</strong>
-            <span>{buckets.length === 0 ? '创建第一个 Bucket 后，它会显示在这里。' : '请调整搜索条件后重试。'}</span>
+            <strong>{buckets.length === 0 ? t('buckets.noBucketsYet') : t('buckets.noMatchingBuckets')}</strong>
+            <span>{buckets.length === 0 ? t('buckets.createYourFirstBucketToSeeItHere') : t('buckets.adjustYourSearchAndTryAgain')}</span>
           </div>
         )}
       </section>
