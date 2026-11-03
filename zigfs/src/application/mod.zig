@@ -1734,9 +1734,9 @@ test "directories can be recreated after deletion and restart" {
 
         const nested = try directories.create("project-assets", "images/nested/");
         nested.deinit(std.testing.allocator);
-        try std.testing.expectError(error.DirectoryNotEmpty, directories.delete("project-assets", "images/"));
-        try std.testing.expect((try directories.delete("project-assets", "images/nested/")).deleted);
         try std.testing.expect((try directories.delete("project-assets", "images/")).deleted);
+        try std.testing.expect(!(try directories.delete("project-assets", "images/nested/")).deleted);
+        try std.testing.expect(!(try directories.delete("project-assets", "images/")).deleted);
     }
 
     var restarted = Application.initWithAllocator(config, std.testing.allocator);
@@ -1755,7 +1755,7 @@ test "directories can be recreated after deletion and restart" {
     object.deinit(std.testing.allocator);
     try std.testing.expect(restarted.metadata_index.?.directoryGeneration("project-assets", "images/") != null);
     try std.testing.expect(restarted.metadata_index.?.directoryGeneration("project-assets", "images/nested/") != null);
-    try std.testing.expectError(error.DirectoryNotEmpty, directories.delete("project-assets", "images/nested/"));
+    try std.testing.expect((try directories.delete("project-assets", "images/nested/")).deleted);
 }
 
 test "directory deletion removes a same-key object marker from listings" {

@@ -416,7 +416,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       setSelectedDeletedIds(checked ? new Set(filteredDeletedObjects.map(versionIdentity)) : new Set())
       return
     }
-    setSelectedObjectKeys(checked ? new Set(filteredObjects.filter((object) => !isDirectoryKey(object.key)).map((object) => object.key)) : new Set())
+    setSelectedObjectKeys(checked ? new Set(filteredObjects.map((object) => object.key)) : new Set())
   }
 
   function toggleAllVersions(checked: boolean) {
@@ -939,10 +939,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 
   async function deleteDirectory(sourceKey: string) {
     const sourcePrefix = sourceKey.endsWith('/') ? sourceKey : `${sourceKey}/`
-    const listed = await listAllObjectsForPrefix(sourcePrefix)
-    const sourceKeys = [...new Set(listed.map((object) => object.key).filter((key) => key.startsWith(sourcePrefix)))]
-    sourceKeys.sort((left, right) => right.length - left.length)
-    for (const key of sourceKeys) await deleteObjectKey(key)
     await api.deleteDirectory(bucket, sourcePrefix)
   }
 
@@ -958,43 +954,16 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   }
 
   async function ensureDirectoryCanBeDeleted(key: string) {
-    if (!isDirectoryKey(key)) return true
-    if (!bucket) return false
-
-    const stopLoading = startLoading(t('objects.checkingDirectory'))
-    let hasChildren = false
-    try {
-      const [page, versions] = await Promise.all([
-        api.listObjects(bucket, key, '', '', 1, '/'),
-        api.listObjectVersions(bucket, key),
-      ])
-      hasChildren = page.items.some((item) => item.key !== key) ||
-        (page.common_prefixes ?? []).some((prefixKey) => prefixKey !== key) ||
-        (page.directories ?? []).some((directory) => directory.key !== key) ||
-        versions.some((version) => version.key !== key && version.key.startsWith(key))
-    } catch (reason) {
-      notifyError((reason as Error).message)
-      return false
-    } finally {
-      stopLoading()
-    }
-
-    if (!hasChildren) return true
-    await confirm({
-      title: t('objects.deleteDirectory'),
-      message: t('objects.deleteDirectoryValueItMustBeEmptyItsObjects', { '0': displayDirectoryKey(key) }),
-      cancelLabel: t('objects.gotIt'),
-      danger: true,
-      hideConfirm: true,
-    })
-    return false
+    // Directory deletion is handled by the prefix delete operation. It is
+    // valid for a directory to contain objects at any depth.
+    return true
   }
 
   async function deleteItem(item: SelectedObject) {
     if (!accessKey || !bucket) return
     if (item.kind === 'current') {
       if (isDirectoryKey(item.object.key)) {
-        await api.deleteDirectory(bucket, item.object.key)
+        await deleteDirectory(item.object.key)
         return
       }
       const presigned = await api.presignObject(accessKey, bucket, item.object.key, 'DELETE', 900)
@@ -1009,12 +978,15 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 
   async function purgeObject(key: string) {
     if (!accessKey || !bucket) return
-    const history = await api.listObjectVersions(bucket, key)
-    const exactVersions = history
-      .filter((version) => version.key === key)
-      .sort((left, right) => Number(left.is_delete_marker) - Number(right.is_delete_marker))
-    for (const version of exactVersions) {
-      await deleteItem({ kind: 'version', version })
+    // Deleting a version rewrites the metadata history. Re-read after every
+    // pass so a large history cannot leave a stale marker behind.
+    for (;;) {
+      const history = await api.listObjectVersions(bucket, key)
+      const exactVersions = history.filter((version) => version.key === key)
+      if (exactVersions.length === 0) return
+      // Delete one version per read. The metadata generation changes after
+      // every deletion, so never continue with a stale batch.
+      await deleteItem({ kind: 'version', version: exactVersions[0] })
     }
   }
 
@@ -1230,31 +1202,20 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 
   async function removeDirectory(object: ObjectSummary) {
     if (!accessKey || !bucket || !isDirectoryKey(object.key)) return
-    if (!await ensureDirectoryCanBeDeleted(object.key)) return
     if (!await confirm({
       title: t('objects.deleteDirectory'),
-      message: t('objects.deleteDirectoryValueItMustBeEmptyItsObjects', { '0': displayDirectoryKey(object.key) }),
+      message: t('objects.deleteDirectoryValueAndContents', { '0': displayDirectoryKey(object.key) }),
       confirmLabel: t('objects.deleteDirectory'),
       danger: true,
     })) return
     const stopLoading = startLoading(t('objects.deletingDirectory'))
     try {
       setDeletingKey(object.key)
-      await api.deleteDirectory(bucket, object.key)
+      await deleteDirectory(object.key)
       showToast(t('objects.deletedDirectoryValue', { '0': displayDirectoryKey(object.key) }))
       await load(true)
     } catch (reason) {
-      if (reason instanceof ApiError && reason.body.code === 'DirectoryNotEmpty') {
-        stopLoading()
-        await confirm({
-          title: t('objects.unableToDeleteDirectory'),
-          message: t('objects.directoryValueMustBeEmptyDeleteAllObjectsAnd', { '0': displayDirectoryKey(object.key) }),
-          cancelLabel: t('objects.gotIt'),
-          hideConfirm: true,
-        })
-      } else {
-        notifyError((reason as Error).message)
-      }
+      notifyError((reason as Error).message)
     } finally {
       setDeletingKey('')
       stopLoading()
@@ -1416,7 +1377,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   const selectedData = selected.filter((item) => item.kind === 'current' || !item.version.is_delete_marker)
   const selectedFiles = selectedData.filter((item) => !isDirectoryKey(item.kind === 'current' ? item.object.key : item.version.key))
   const selectedCount = selected.length
-  const selectableObjects = filteredObjects.filter((object) => !isDirectoryKey(object.key))
+  const selectableObjects = filteredObjects
   const selectableCurrentCount = showDeleted ? filteredDeletedObjects.length : selectableObjects.length
   const selectableVersionCount = filteredVersions.length
   const allCurrentSelected = selectableCurrentCount > 0 && (showDeleted
@@ -1480,17 +1441,19 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
           <ArrowLeft aria-hidden="true" />
         </button>
         <FolderOpen className="object-location-icon" aria-hidden="true" />
-        <div className="object-location-path">
-          <button className="object-location-link" type="button" onClick={() => onNavigatePath('')} disabled={!bucket}>{bucket || t('objects.noBucketSelected')}</button>
-          {prefix.trim() && prefix.split('/').filter(Boolean).map((segment, index, segments) => {
-            const target = `${segments.slice(0, index + 1).join('/')}/`
-            return <span className="object-location-crumb" key={target}><b>/</b><button className="object-location-link" type="button" onClick={() => onNavigatePath(target)}>{segment}</button></span>
-          })}
-        </div>
-        <div className="object-location-actions">
+        <div className="object-location-main">
+          <div className="object-location-path">
+            <button className="object-location-link" type="button" onClick={() => onNavigatePath('')} disabled={!bucket}>{bucket || t('objects.noBucketSelected')}</button>
+            {prefix.trim() && prefix.split('/').filter(Boolean).map((segment, index, segments) => {
+              const target = `${segments.slice(0, index + 1).join('/')}/`
+              return <span className="object-location-crumb" key={target}><b>/</b><button className="object-location-link" type="button" onClick={() => onNavigatePath(target)}>{segment}</button></span>
+            })}
+          </div>
           <button className="icon-button copy-path-button" type="button" onClick={() => void copyCurrentPath()} disabled={!bucket} title={t('objects.copyCurrentPath')} aria-label={t('objects.copyCurrentPath')}>
             <Copy aria-hidden="true" />
           </button>
+        </div>
+        <div className="object-location-actions">
           {viewMode !== 'versions' && <label className="deleted-toggle">
             <input key={viewMode} type="checkbox" checked={activeShowDeleted} onChange={(event) => {
               setSelectedObjectKeys(new Set())
@@ -1501,14 +1464,8 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
             <span>{t('objects.showDeletedObjects')}</span>
           </label>}
           {viewMode === 'current' && !showDeleted && <button className="secondary-button create-path-button" type="button" onClick={() => { setPathName(''); setShowCreatePath(true) }} disabled={!bucket || !accessKey}>
-            <FolderPlus className="button-icon" aria-hidden="true" />{t('objects.createNewPath')}</button>}
-        </div>
-      </div>
-
-      {selectedCount > 0 && (
-        <div className="selection-toolbar" role="toolbar" aria-label={t('objects.bulkObjectActions')}>
-          <strong>{t('objects.selected')} {selectedCount} {t('objects.objects')}</strong>
-          <div className="selection-toolbar-actions">
+            <FolderPlus className="button-icon" aria-hidden="true" />{t('common.create')}</button>}
+          {selectedCount > 0 && <div className="selection-toolbar-actions">
             {selectedFiles.length > 0 && <>
               <button className="secondary-button" type="button" onClick={() => void downloadSelected()} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />{t('objects.download')}</button>
               <button className="secondary-button" type="button" onClick={() => openTransfer('copy')} disabled={!accessKey}><Copy className="button-icon" aria-hidden="true" />{t('objects.copy')}</button>
@@ -1517,9 +1474,9 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
             {selectedDeleted.length > 0 && <button className="secondary-button" type="button" onClick={() => void restoreSelected()} disabled={!accessKey}><RotateCcw className="button-icon" aria-hidden="true" />{t('objects.restore')}</button>}
             <button className="danger-button" type="button" onClick={() => void removeSelected()} disabled={!accessKey}><Trash2 className="button-icon" aria-hidden="true" />{permanentDeleteOnly ? t('objects.permanentlyDelete') : t('objects.delete')}</button>
             <button className="icon-button" type="button" onClick={() => { setSelectedObjectKeys(new Set()); setSelectedDeletedIds(new Set()); setSelectedVersionIds(new Set()) }} title={t('objects.clearSelection')} aria-label={t('objects.clearSelection')}><X aria-hidden="true" /></button>
-          </div>
+          </div>}
         </div>
-      )}
+      </div>
 
       <section className="panel table-panel">
         <div className="table-wrap">
@@ -1543,7 +1500,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                       {!isDirectoryKey(object.key) && <button type="button" role="menuitem" onClick={() => void download(object)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />{t('objects.download')}</button>}
                       {!isDirectoryKey(object.key) && <button type="button" role="menuitem" onClick={() => openTransfer('copy', { kind: 'current', object })} disabled={!accessKey}><Copy className="button-icon" aria-hidden="true" />{t('objects.copy')}</button>}
                       <button type="button" role="menuitem" onClick={() => openTransfer('move', { kind: 'current', object })} disabled={!accessKey}><FolderInput className="button-icon" aria-hidden="true" />{t('objects.move')}</button>
-                      <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeObject(object)} disabled={!accessKey || deletingKey === object.key || (isDirectoryKey(object.key) && objects.some((item) => item.key !== object.key && item.key.startsWith(object.key)))}><Trash2 className="button-icon" aria-hidden="true" />{isDirectoryKey(object.key) ? t('objects.deleteDirectory') : t('objects.delete')}</button>
+                      <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeObject(object)} disabled={!accessKey || deletingKey === object.key}><Trash2 className="button-icon" aria-hidden="true" />{isDirectoryKey(object.key) ? t('objects.deleteDirectory') : t('objects.delete')}</button>
                     </ActionMenu>
                   </td>
                 </tr>

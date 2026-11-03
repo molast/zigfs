@@ -594,6 +594,7 @@
     "checkingDirectory": "Checking directory…",
     "deleteDirectory": "Delete directory",
     "deleteDirectoryValueItMustBeEmptyItsObjects": "Delete directory “{0}”? It must be empty; its objects will not be deleted.",
+    "deleteDirectoryValueAndContents": "Delete directory “{0}” and all objects inside it, including nested objects?",
     "gotIt": "Got it",
     "failedToDeleteVersionValueValue": "Failed to delete version {0} ({1}).",
     "permanentlyDeleteObject": "Permanently delete object",

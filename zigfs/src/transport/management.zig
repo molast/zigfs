@@ -767,7 +767,9 @@ fn serveListObjectVersions(
 fn isDirectVersionKey(key: []const u8, prefix: []const u8) bool {
     if (!std.mem.startsWith(u8, key, prefix)) return false;
     const relative_key = key[prefix.len..];
-    return relative_key.len > 0 and std.mem.indexOfScalar(u8, relative_key, '/') == null;
+    // An exact key prefix is used by the Admin UI when purging one object's
+    // complete version history. Keep that object in the response as well.
+    return relative_key.len == 0 or std.mem.indexOfScalar(u8, relative_key, '/') == null;
 }
 
 fn serveListObjects(

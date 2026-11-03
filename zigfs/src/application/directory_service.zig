@@ -65,7 +65,34 @@ pub const DirectoryService = struct {
         defer self.state_mutex.unlock(self.io);
         try self.verifyBucketLocked(bucket_name);
         const generation = self.index.directoryGeneration(bucket_name, key) orelse return .{ .deleted = false };
-        if (try self.hasChildrenLocked(bucket_name, key)) return error.DirectoryNotEmpty;
+        // Delete the complete key namespace in one metadata transaction. The
+        // index already contains every descendant key, so this remains
+        // bounded by the number of records and does not recurse through the
+        // directory tree or the object data plane.
+        var object_position: usize = 0;
+        while (object_position < self.index.objectEntries().len) {
+            const entry = self.index.objectEntries()[object_position];
+            if (!std.mem.eql(u8, entry.bucket, bucket_name) or entry.key.len <= key.len or !std.mem.startsWith(u8, entry.key, key)) {
+                object_position += 1;
+                continue;
+            }
+            const record = self.object_store.get(self.allocator, bucket_name, entry.key) catch |err| return mapObjectError(err);
+            defer record.deinit(self.allocator);
+            const object_generation = entry.generation;
+            if (record == .tombstone) { object_position += 1; continue; }
+            _ = self.object_store.tombstone(self.allocator, bucket_name, entry.key, object_generation) catch |err| return mapObjectError(err);
+            if (!self.index.removeObject(bucket_name, entry.key)) return error.CorruptMetadata;
+        }
+        var directory_position: usize = 0;
+        while (directory_position < self.index.directoryEntries().len) {
+            const entry = self.index.directoryEntries()[directory_position];
+            if (!std.mem.eql(u8, entry.bucket, bucket_name) or entry.key.len <= key.len or !std.mem.startsWith(u8, entry.key, key)) {
+                directory_position += 1;
+                continue;
+            }
+            _ = self.directory_store.tombstone(self.allocator, bucket_name, entry.key, entry.generation) catch |err| return mapStoreError(err);
+            if (!self.index.removeDirectory(bucket_name, entry.key)) return error.CorruptMetadata;
+        }
         try self.removeObjectMarkerLocked(bucket_name, key);
         _ = self.directory_store.tombstone(self.allocator, bucket_name, key, generation) catch |err| return mapStoreError(err);
         if (!self.index.removeDirectory(bucket_name, key)) return error.CorruptMetadata;
@@ -97,19 +124,6 @@ pub const DirectoryService = struct {
             .active => |bucket| if (bucket.generation != indexed) return error.CorruptMetadata,
             .tombstone => return error.CorruptMetadata,
         }
-    }
-
-    fn hasChildrenLocked(self: DirectoryService, bucket_name: []const u8, key: []const u8) Error!bool {
-        for (self.index.directoryEntries()) |entry| {
-            if (std.mem.eql(u8, entry.bucket, bucket_name) and entry.key.len > key.len and std.mem.startsWith(u8, entry.key, key)) return true;
-        }
-        for (self.index.objectEntries()) |entry| {
-            if (!std.mem.eql(u8, entry.bucket, bucket_name) or entry.key.len <= key.len or !std.mem.startsWith(u8, entry.key, key)) continue;
-            const record = self.object_store.get(self.allocator, bucket_name, entry.key) catch |err| return mapObjectError(err);
-            defer record.deinit(self.allocator);
-            if (record == .active) return true;
-        }
-        return false;
     }
 
     fn removeObjectMarkerLocked(self: DirectoryService, bucket_name: []const u8, key: []const u8) Error!void {

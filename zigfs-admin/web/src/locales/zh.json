@@ -594,6 +594,7 @@
     "checkingDirectory": "正在检查目录...",
     "deleteDirectory": "删除目录",
     "deleteDirectoryValueItMustBeEmptyItsObjects": "删除目录“{0}”？目录必须为空，目录下的对象不会被删除。",
+    "deleteDirectoryValueAndContents": "删除目录“{0}”及其中所有对象（包括深层目录中的对象）？",
     "gotIt": "知道了",
     "failedToDeleteVersionValueValue": "删除版本 {0} 失败（{1}）",
     "permanentlyDeleteObject": "永久删除对象",
