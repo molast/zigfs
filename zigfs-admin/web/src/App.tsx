@@ -1,3 +1,4 @@
+import { Breadcrumb, BreadcrumbList, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage, BreadcrumbSeparator } from './components/ui/breadcrumb'
 import { Tooltip, TooltipContent, TooltipTrigger } from './components/ui/tooltip'
 import { ThemeSwitcher } from './components/ThemeSwitcher'
 import { LanguageSwitcher } from './components/LanguageSwitcher'
@@ -283,13 +284,22 @@ export default function App() {
               {sidebarCollapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
             </button>
             <button className="topbar-icon mobile-sidebar-toggle" type="button" aria-label={t('navigation.openNavigation')} onClick={() => setMobileSidebarOpen(true)}><Menu aria-hidden="true" /></button>
-            <div className="breadcrumbs" aria-label={t('navigation.breadcrumb')}>
-              {view === 'objects' && selectedBucket ? <><span>{t('navigation.objectBrowser')}</span><b>/</b><strong>{selectedBucket}</strong></> : <>
-                <span>{meta.section}</span><b>/</b>
-                {(view === 'bucket-detail' || view === 'objects') && selectedBucket ? <><span>{selectedBucket}</span><b>/</b></> : null}
-                <strong>{meta.label}</strong>
-              </>}
-            </div>
+            {(view === 'buckets' || ((view === 'objects' || view === 'bucket-detail') && selectedBucket)) ? <Breadcrumb className="topbar-object-breadcrumb">
+              <BreadcrumbList>
+                <BreadcrumbItem><span>{t('objects.browser')}</span></BreadcrumbItem>
+                <BreadcrumbSeparator />
+                {view === 'buckets' ? <BreadcrumbItem><BreadcrumbPage>{t('common.buckets')}</BreadcrumbPage></BreadcrumbItem> : <>
+                  <BreadcrumbItem><BreadcrumbLink asChild><button type="button" onClick={() => navigate('buckets')}>{t('common.buckets')}</button></BreadcrumbLink></BreadcrumbItem>
+                  <BreadcrumbSeparator />
+                  <BreadcrumbItem><BreadcrumbPage>{selectedBucket}</BreadcrumbPage></BreadcrumbItem>
+                </>}
+              </BreadcrumbList>
+            </Breadcrumb> : <Breadcrumb>
+              <BreadcrumbList>
+                <BreadcrumbItem><BreadcrumbPage>{meta.label}</BreadcrumbPage></BreadcrumbItem>
+              </BreadcrumbList>
+            </Breadcrumb>}
+
           </div>
           <div className="topbar-actions">
             <Tooltip>
@@ -310,17 +320,15 @@ export default function App() {
         </header>
 
         <main className={`content${view === 'bucket-detail' ? ' content-bucket-detail' : view === 'oidc-settings' ? ' content-oidc' : view === 'settings' ? ' content-system-settings' : ''}`}>
-          {view === 'buckets' && <BucketsView api={api} onOpenBucket={(name) => {
+          {view === 'buckets' && <BucketsView api={api} onOpenObjects={(name) => navigate('objects', name)} onOpenBucket={(name) => {
             navigate('bucket-detail', name)
           }} />}
           {view === 'bucket-detail' && <BucketDetailView
             api={api}
             bucketName={selectedBucket}
-            onBack={() => navigate('buckets')}
-            onOpenObjects={() => navigate('objects', selectedBucket)}
             onDeleted={() => navigate('buckets')}
           />}
-          {view === 'objects' && <ObjectsView api={api} initialBucket={selectedBucket} initialPrefix={selectedPrefix} onNavigatePath={(prefix) => navigate('objects', selectedBucket, prefix)} onBack={() => navigate('bucket-detail', selectedBucket)} />}
+          {view === 'objects' && <ObjectsView api={api} initialBucket={selectedBucket} initialPrefix={selectedPrefix} onNavigatePath={(prefix) => navigate('objects', selectedBucket, prefix)} />}
           {view === 'access-keys' && <AccessKeysView api={api} />}
           {view === 'users' && <IdentitiesView key="users" kind="users" api={api} />}
           {view === 'user-groups' && <IdentitiesView key="groups" kind="groups" api={api} />}

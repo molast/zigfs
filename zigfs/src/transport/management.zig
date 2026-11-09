@@ -605,8 +605,10 @@ fn serveUpdateBucketConfiguration(
             .readonly
         else if (std.mem.eql(u8, policy, "Public"))
             .public
+        else if (std.mem.eql(u8, policy, "Custom"))
+            .custom
         else
-            return respondError(request, request_id, .bad_request, "InvalidAccessPolicy", "access_policy must be Private, Readonly, or Public");
+            return respondError(request, request_id, .bad_request, "InvalidAccessPolicy", "access_policy must be Private, Readonly, Public, or Custom");
         const previous = service.head(name) catch |err| return respondBucketError(request, request_id, err);
         defer previous.deinit(application.allocator);
         const updated = service.setAccessPolicy(name, access_policy) catch |err| return respondBucketError(request, request_id, err);
@@ -707,6 +709,7 @@ fn respondBucketConfiguration(
             .private => "Private",
             .readonly => "Readonly",
             .public => "Public",
+            .custom => "Custom",
         },
         .object_ownership = "BucketOwnerEnforced",
         .block_public_access = bucket.block_public_access,
@@ -2185,6 +2188,7 @@ fn accessPolicyName(policy: @import("../domain/bucket.zig").AccessPolicy) []cons
         .private => "Private",
         .readonly => "Readonly",
         .public => "Public",
+        .custom => "Custom",
     };
 }
 
@@ -2733,11 +2737,17 @@ fn serveBucketResourcePolicy(request: *std.http.Server.Request, app: *Applicatio
         return respondJson(request, request_id, .ok, .{ .document = if (record) |value| if (value.value.deleted) "" else value.value.document else "" });
     }
     if (method == .DELETE) {
+        if (bucket.access_policy == .custom) {
+            const private_bucket = buckets.setAccessPolicy(name, .private) catch |err| return respondBucketError(request, request_id, err);
+            private_bucket.deinit(app.allocator);
+        }
         store.remove(a, root, io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot delete bucket policy");
         return respondNoContent(request, request_id);
     }
     const snapshot = identities.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "IdentityStorageUnavailable", "cannot resolve policy principals");
     const prepared = store.prepare(a, input.document, bucket.name, snapshot.value) catch |err| return respondError(request, request_id, .bad_request, @errorName(err), "invalid bucket policy, resource or principal");
+    const custom_bucket = buckets.setAccessPolicy(name, .custom) catch |err| return respondBucketError(request, request_id, err);
+    custom_bucket.deinit(app.allocator);
     store.save(a, root, io, bucket.id, prepared) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot save bucket policy");
     audit(app, request_id, "put_bucket_policy", name, "updated");
     return respondJson(request, request_id, .ok, input);

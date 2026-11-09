@@ -1,3 +1,4 @@
+import { OptionSelect } from '../../components/ui/OptionSelect'
 import { t } from '@/locales'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowDownUp, ArrowLeft, ChevronLeft, ChevronRight, Copy, Eraser, RefreshCw, Shield, Trash2 } from 'lucide-react'
@@ -102,7 +103,7 @@ export function PoliciesView({ api }: { api: ApiClient }) {
           {visiblePolicies.length === 0 && <tr><td colSpan={2} className="policies-empty">{t('policies.noPoliciesFound')}</td></tr>}
         </tbody></table></div>
         <footer className="policies-pagination">
-          <label>{t('policies.rowsPerPage')}<select value={rowsPerPage} onChange={(event) => { setRowsPerPage(Number(event.target.value)); setPage(1) }}><option value={10}>10</option><option value={25}>25</option><option value={50}>50</option></select></label>
+          <label>{t('policies.rowsPerPage')}<OptionSelect value={String(rowsPerPage)} onValueChange={(value) => { setRowsPerPage(Number(value)); setPage(1) }} aria-label={t('policies.rowsPerPage')} options={[{ value: '10', label: '10' }, { value: '25', label: '25' }, { value: '50', label: '50' }]} /></label>
           <div className="pagination-controls"><span>{t('policies.page')} {currentPage} {t('policies.of')} {pageCount}</span><button className="icon-button" type="button" aria-label={t('policies.previousPage')} disabled={currentPage === 1} onClick={() => setPage((current) => Math.max(1, current - 1))}><ChevronLeft aria-hidden="true" /></button><button className="icon-button" type="button" aria-label={t('policies.nextPage')} disabled={currentPage === pageCount} onClick={() => setPage((current) => Math.min(pageCount, current + 1))}><ChevronRight aria-hidden="true" /></button></div>
         </footer>
       </Card>

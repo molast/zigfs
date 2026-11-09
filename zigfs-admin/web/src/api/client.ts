@@ -179,7 +179,7 @@ export function createApiClient() {
     },
     updateBucketConfiguration: (
       name: string,
-      update: { versioning?: 'Enabled' | 'Suspended'; access_policy?: 'Private' | 'Readonly' | 'Public'; block_public_access?: boolean; tags_json?: string; clear_tags?: boolean; encryption?: 'Disabled' | 'Enabled'; max_bytes?: number; max_objects?: number; retention_enabled?: boolean; retention_duration_seconds?: number; retention_mode?: 'GOVERNANCE' | 'COMPLIANCE'; object_locking?: boolean; replication_enabled?: boolean; lifecycle_configuration?: string; clear_lifecycle?: boolean },
+      update: { versioning?: 'Enabled' | 'Suspended'; access_policy?: 'Private' | 'Readonly' | 'Public' | 'Custom'; block_public_access?: boolean; tags_json?: string; clear_tags?: boolean; encryption?: 'Disabled' | 'Enabled'; max_bytes?: number; max_objects?: number; retention_enabled?: boolean; retention_duration_seconds?: number; retention_mode?: 'GOVERNANCE' | 'COMPLIANCE'; object_locking?: boolean; replication_enabled?: boolean; lifecycle_configuration?: string; clear_lifecycle?: boolean },
     ) => request<BucketConfiguration>(`/api/v1/buckets/${encodeURIComponent(name)}/configuration`, {
       method: 'PATCH',
       body: JSON.stringify(update),

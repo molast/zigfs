@@ -1,11 +1,15 @@
 import { t, getFormatLocale } from '@/locales'
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
-import { ArrowRight, Folder, FolderPlus, Trash2, X } from 'lucide-react'
+import { Settings, Folder, Trash2 } from 'lucide-react'
 import { ApiError, type ApiClient } from '../../api/client'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
 import { useErrorToast, useToast } from '../../components/ToastProvider'
 import { ToolbarControls, ToolbarCreateButton, ToolbarRefreshButton, ToolbarSearch } from '../../components/ui/ToolbarControls'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/Dialog'
+import { Input } from '../../components/ui/Input'
+import { Switch } from '../../components/ui/switch'
+import { RadioGroup, RadioGroupItem } from '../../components/ui/radio-group'
 import { Button } from '../../components/ui/Button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '../../components/ui/empty'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table'
@@ -14,9 +18,10 @@ import type { Bucket } from '../../types/api'
 interface BucketsViewProps {
   api: ApiClient
   onOpenBucket: (name: string) => void
+  onOpenObjects: (name: string) => void
 }
 
-export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
+export function BucketsView({ api, onOpenBucket, onOpenObjects }: BucketsViewProps) {
   const confirm = useConfirm()
   const { startLoading } = useLoading()
   const showToast = useToast()
@@ -25,7 +30,13 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
   const [versioning, setVersioning] = useState(false)
   const [objectLocking, setObjectLocking] = useState(false)
   const [quotaEnabled, setQuotaEnabled] = useState(false)
-  const [maxBytes, setMaxBytes] = useState('')
+  const [maxBytes, setMaxBytes] = useState('1')
+  const [quotaUnit, setQuotaUnit] = useState('GiB')
+  const [retention, setRetention] = useState(false)
+  const [retentionMode, setRetentionMode] = useState<'COMPLIANCE' | 'GOVERNANCE'>('COMPLIANCE')
+  const [validity, setValidity] = useState('180')
+  const [validityUnit, setValidityUnit] = useState('day')
+  const [creating, setCreating] = useState(false)
   const [maxObjects, setMaxObjects] = useState('')
   const [query, setQuery] = useState('')
   const [showCreate, setShowCreate] = useState(false)
@@ -49,15 +60,6 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
     void refresh()
   }, [refresh])
 
-  useEffect(() => {
-    if (!showCreate) return
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape') setShowCreate(false)
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [showCreate])
-
   const filteredBuckets = useMemo(() => {
     const needle = query.trim().toLowerCase()
     if (!needle) return buckets
@@ -66,21 +68,37 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
 
   async function create(event: FormEvent) {
     event.preventDefault()
+    const bytes = Number(maxBytes) * 1024 ** ({ MiB: 2, GiB: 3, TiB: 4, PiB: 5 }[quotaUnit] ?? 3)
+    const duration = Number(validity) * 86400 * (validityUnit === 'year' ? 365 : 1)
+    if (quotaEnabled && (!Number.isSafeInteger(bytes) || bytes <= 0)) { notifyError(t('buckets.valueMustBeAnIntegerGreaterThanZero', { '0': t('buckets.byteQuota') })); return }
+    if (quotaEnabled && maxObjects && (!Number.isSafeInteger(Number(maxObjects)) || Number(maxObjects) <= 0)) { notifyError(t('buckets.valueMustBeAnIntegerGreaterThanZero', { '0': t('buckets.objectCountQuota') })); return }
+    if (objectLocking && retention && (!Number.isSafeInteger(Number(validity)) || !Number.isSafeInteger(duration) || duration <= 0)) { notifyError(t('buckets.valueMustBeAnIntegerGreaterThanZero', { '0': t('buckets.duration') })); return }
+    setCreating(true)
     const stopLoading = startLoading(t('buckets.creatingBucket'))
     try {
       const createdName = name.trim()
-      await api.createBucket({ name: createdName, versioning: versioning || objectLocking, object_locking: objectLocking, ...(quotaEnabled && maxBytes ? { max_bytes: Number(maxBytes) } : {}), ...(quotaEnabled && maxObjects ? { max_objects: Number(maxObjects) } : {}) })
+      await api.createBucket({ name: createdName, versioning: versioning || objectLocking, object_locking: objectLocking, ...(quotaEnabled && maxBytes ? { max_bytes: bytes } : {}), ...(quotaEnabled && maxObjects ? { max_objects: Number(maxObjects) } : {}) })
+      let retentionFailed = false
+      if (objectLocking && retention) {
+        try {
+          await api.updateBucketConfiguration(createdName, { retention_enabled: true, retention_duration_seconds: duration, retention_mode: retentionMode })
+        } catch (reason) {
+          retentionFailed = true
+          notifyError(t('buckets.createdButRetentionFailed', { name: createdName, error: (reason as Error).message }))
+        }
+      }
       setName('')
       setVersioning(false)
       setObjectLocking(false)
       setQuotaEnabled(false)
-      setMaxBytes(''); setMaxObjects('')
+      setMaxBytes('1'); setMaxObjects(''); setQuotaUnit('GiB'); setRetention(false); setRetentionMode('COMPLIANCE'); setValidity('180'); setValidityUnit('day')
       setShowCreate(false)
       await refresh()
-      showToast(t('buckets.createdBucketValue', { '0': createdName }))
+      if (!retentionFailed) showToast(t('buckets.createdBucketValue', { '0': createdName }))
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
+      setCreating(false)
       stopLoading()
     }
   }
@@ -117,37 +135,59 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
   return (
     <section>
       <header className="page-header buckets-header">
-        <h2>{t('navigation.objectBrowser')}</h2>
+        <h2>{t('common.buckets')}</h2>
         <ToolbarControls className="buckets-header-actions">
           <ToolbarSearch label={t('buckets.searchBuckets')} placeholder={t('buckets.searchByBucketOrOwner')} value={query} onChange={(event) => setQuery(event.target.value)} />
           <ToolbarCreateButton label={t('buckets.createBucket')} onClick={() => setShowCreate(true)} aria-haspopup="dialog" aria-expanded={showCreate} />
           <ToolbarRefreshButton label={t('buckets.refresh')} onClick={() => void refresh()} busy={refreshing} />
         </ToolbarControls>
       </header>
-      {showCreate && (
-        <div className="modal-backdrop" role="presentation">
-          <section className="lifecycle-modal credential-modal bucket-create-modal" role="dialog" aria-modal="true" aria-labelledby="bucket-create-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
-            <header className="lifecycle-modal-header">
-              <div className="lifecycle-modal-title"><FolderPlus aria-hidden="true" /><h3 id="bucket-create-dialog-title">{t('buckets.createBucket')}</h3></div>
-              <button className="icon-button" type="button" aria-label={t('buckets.close')} onClick={() => setShowCreate(false)}><X aria-hidden="true" /></button>
-            </header>
-            <form className="credential-modal-form" onSubmit={create}>
-              <p className="credential-modal-description">{t('buckets.theNameCannotBeChangedAfterCreationTheBucket')}</p>
-              <div className="credential-modal-fields bucket-create-fields">
-                <label>{t('buckets.bucketName')}<input aria-label={t('buckets.bucketName')} placeholder="bucket-name" value={name} onChange={(event) => setName(event.target.value)} required autoFocus /></label>
-                <label className="bucket-create-toggle">{t('buckets.versioning')}<button type="button" role="switch" aria-checked={versioning} className={versioning ? 'active' : ''} onClick={() => setVersioning(value => !value)}><span /></button></label>
-                <label className="bucket-create-toggle">{t('buckets.objectLocking')}<button type="button" role="switch" aria-checked={objectLocking} className={objectLocking ? 'active' : ''} onClick={() => setObjectLocking(value => !value)}><span /></button></label>
-                <label className="bucket-create-toggle">{t('buckets.bucketQuota')}<button type="button" role="switch" aria-checked={quotaEnabled} className={quotaEnabled ? 'active' : ''} onClick={() => setQuotaEnabled(value => !value)}><span /></button></label>
-                {quotaEnabled && <div className="bucket-create-quota-fields"><input type="number" min="1" placeholder={t('buckets.byteQuota')} value={maxBytes} onChange={event => setMaxBytes(event.target.value)} /><input type="number" min="1" placeholder={t('buckets.objectCountQuota')} value={maxObjects} onChange={event => setMaxObjects(event.target.value)} /></div>}
-              </div>
-              <footer className="lifecycle-modal-actions">
-                <button className="secondary-button" type="button" onClick={() => setShowCreate(false)}>{t('buckets.cancel')}</button>
-                <button className="primary-button" type="submit">{t('buckets.create')}</button>
-              </footer>
-            </form>
-          </section>
-        </div>
-      )}
+      <Dialog open={showCreate} onOpenChange={(open) => { if (!creating) setShowCreate(open) }}>
+        <DialogContent className="bucket-create-dialog" onInteractOutside={(event) => event.preventDefault()}>
+          <DialogHeader><DialogTitle>{t('buckets.createBucket')}</DialogTitle></DialogHeader>
+          <form onSubmit={create}>
+            <fieldset disabled={creating} className="bucket-create-body">
+              <label className="bucket-create-field" htmlFor="create-bucket-name">{t('buckets.bucketName')}
+                <Input id="create-bucket-name" value={name} onChange={(event) => setName(event.target.value)} required autoFocus />
+              </label>
+              <label className="bucket-create-switch" htmlFor="create-versioning">{t('buckets.versioning')}<Switch id="create-versioning" checked={versioning} disabled={creating || objectLocking} onCheckedChange={setVersioning} /></label>
+              <label className="bucket-create-switch" htmlFor="create-lock">{t('buckets.objectLocking')}<Switch id="create-lock" checked={objectLocking} onCheckedChange={(enabled) => { if (enabled) setVersioning(true); setObjectLocking(enabled); if (!enabled) setRetention(false) }} /></label>
+              <label className="bucket-create-switch" htmlFor="create-quota">{t('buckets.bucketQuota')}<Switch id="create-quota" checked={quotaEnabled} onCheckedChange={setQuotaEnabled} /></label>
+              {quotaEnabled && <fieldset className="bucket-create-section">
+                <legend>{t('buckets.bucketQuota')}</legend>
+                <label htmlFor="create-quota-size">{t('buckets.quotaSize')}</label>
+                <div className="bucket-create-choice-row">
+                  <Input id="create-quota-size" type="number" min="0" step="any" required value={maxBytes} onChange={(event) => setMaxBytes(event.target.value)} />
+                  <RadioGroup className="bucket-create-options" aria-label={t('buckets.quotaUnit')} value={quotaUnit} onValueChange={setQuotaUnit}>
+                    {['MiB', 'GiB', 'TiB', 'PiB'].map(unit => <label key={unit}><RadioGroupItem value={unit} />{unit}</label>)}
+                  </RadioGroup>
+                </div>
+                <label htmlFor="create-max-objects">{t('buckets.maximumObjects')}</label>
+                <Input id="create-max-objects" type="number" min="1" step="1" placeholder={t('buckets.unlimited')} value={maxObjects} onChange={(event) => setMaxObjects(event.target.value)} />
+              </fieldset>}
+              {objectLocking && <fieldset className="bucket-create-section">
+                <legend>{t('buckets.objectLocking')}</legend>
+                <label className="bucket-create-switch" htmlFor="create-retention">{t('buckets.retention')}<Switch id="create-retention" checked={retention} onCheckedChange={setRetention} /></label>
+                {retention && <>
+                  <span>{t('buckets.mode')}</span>
+                  <RadioGroup className="bucket-create-options" aria-label={t('buckets.retentionMode')} value={retentionMode} onValueChange={(value) => setRetentionMode(value as 'COMPLIANCE' | 'GOVERNANCE')}>
+                    {['COMPLIANCE', 'GOVERNANCE'].map(mode => <label key={mode}><RadioGroupItem value={mode} />{mode}</label>)}
+                  </RadioGroup>
+                  <label htmlFor="create-validity">{t('buckets.retentionValidity')}</label>
+                  <div className="bucket-create-choice-row">
+                    <Input id="create-validity" type="number" min="1" step="1" required value={validity} onChange={(event) => setValidity(event.target.value)} />
+                    <RadioGroup className="bucket-create-options" aria-label={t('buckets.retentionValidityUnit')} value={validityUnit} onValueChange={setValidityUnit}>
+                      <label><RadioGroupItem value="day" />{t('buckets.validityDay')}</label>
+                      <label><RadioGroupItem value="year" />{t('buckets.validityYear')}</label>
+                    </RadioGroup>
+                  </div>
+                </>}
+              </fieldset>}
+            </fieldset>
+            <div className="ui-dialog-footer"><Button size="sm" variant="outline" type="button" disabled={creating} onClick={() => setShowCreate(false)}>{t('buckets.cancel')}</Button><Button size="sm" type="submit" disabled={creating || !name.trim()}>{t('buckets.create')}</Button></div>
+          </form>
+        </DialogContent>
+      </Dialog>
       <div className="data-table-frame">
         <Table>
           <TableHeader><TableRow>
@@ -159,11 +199,11 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
           <TableBody>
             {filteredBuckets.map((bucket) => (
               <TableRow key={bucket.name}>
-                <TableCell><div className="bucket-cell"><Folder className="bucket-symbol" aria-hidden="true" /><span>{bucket.name}</span></div></TableCell>
+                <TableCell><div className="bucket-cell"><Folder className="bucket-symbol" aria-hidden="true" /><Button variant="link" className="bucket-name-link" type="button" onClick={() => onOpenObjects(bucket.name)}>{bucket.name}</Button></div></TableCell>
                 <TableCell>{bucket.owner}</TableCell>
                 <TableCell>{new Date(bucket.created_at).toLocaleString(getFormatLocale())}</TableCell>
                 <TableCell className="bucket-actions-cell"><div className="flex items-center justify-center gap-2">
-                  <Button variant="outline" size="sm" type="button" onClick={() => onOpenBucket(bucket.name)}><ArrowRight data-icon="inline-start" />{t('buckets.open')}</Button>
+                  <Button variant="outline" size="sm" type="button" onClick={() => onOpenBucket(bucket.name)}><Settings data-icon="inline-start" />{t('buckets.settings')}</Button>
                   <Button variant="destructive" size="sm" type="button" onClick={() => void remove(bucket.name)}><Trash2 data-icon="inline-start" />{t('buckets.delete')}</Button>
                 </div></TableCell>
               </TableRow>

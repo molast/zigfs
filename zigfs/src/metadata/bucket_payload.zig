@@ -89,8 +89,8 @@ pub fn encode(
     std.mem.writeInt(u16, bytes[4..6], major_version, .little);
     std.mem.writeInt(u16, bytes[6..8], minor_version, .little);
     std.mem.writeInt(u16, bytes[flags_offset..status_offset], 0, .little);
-    bytes[status_offset] = @intFromEnum(value.status);
-    bytes[versioning_offset] = @intFromEnum(value.versioning);
+    bytes[status_offset] = @backingInt(value.status);
+    bytes[versioning_offset] = @backingInt(value.versioning);
     @memcpy(bytes[bucket_id_offset..created_at_offset], &value.id);
     std.mem.writeInt(
         i64,
@@ -101,13 +101,13 @@ pub fn encode(
     std.mem.writeInt(u16, bytes[name_length_offset..owner_length_offset], @intCast(value.name.len), .little);
     std.mem.writeInt(u16, bytes[owner_length_offset..lifecycle_length_offset], @intCast(value.owner.len), .little);
     std.mem.writeInt(u32, bytes[lifecycle_length_offset..reserved_offset], @intCast(lifecycle.len), .little);
-    std.mem.writeInt(u32, bytes[reserved_offset..tags_length_offset], @intFromEnum(value.access_policy), .little);
+    std.mem.writeInt(u32, bytes[reserved_offset..tags_length_offset], @backingInt(value.access_policy), .little);
     std.mem.writeInt(u32, bytes[tags_length_offset..encryption_offset], @intCast(tags.len), .little);
-    bytes[encryption_offset] = @intFromEnum(value.encryption);
+    bytes[encryption_offset] = @backingInt(value.encryption);
     std.mem.writeInt(u64, bytes[quota_max_bytes_offset .. quota_max_bytes_offset + 8], value.quota.max_bytes orelse 0, .little);
     std.mem.writeInt(u64, bytes[quota_max_objects_offset .. quota_max_objects_offset + 8], value.quota.max_objects orelse 0, .little);
     std.mem.writeInt(u64, bytes[retention_duration_offset .. retention_duration_offset + 8], value.retention.default_duration_seconds orelse 0, .little);
-    bytes[retention_mode_offset] = if (!value.retention.enabled) 0 else @intFromEnum(value.retention.mode orelse return error.PayloadTooLarge);
+    bytes[retention_mode_offset] = if (!value.retention.enabled) 0 else @backingInt(value.retention.mode orelse return error.PayloadTooLarge);
     bytes[object_locking_offset] = @intFromBool(value.object_locking);
     var offset = header_length;
     @memcpy(bytes[offset .. offset + value.name.len], value.name);
@@ -158,6 +158,7 @@ pub fn decode(bytes: []const u8) DecodeError!Value {
         0 => .private,
         1 => .readonly,
         2 => .public,
+        3 => .custom,
         else => return error.UnsupportedFlags,
     };
     var bucket_id: id.Uuid = undefined;
@@ -329,4 +330,17 @@ test "bucket payload rejects incompatible and malformed values" {
     @memcpy(changed, valid);
     changed[bucket_id_offset + 6] = 0;
     try std.testing.expectError(error.InvalidBucketId, decode(changed));
+}
+
+test "custom access policy survives metadata round trip" {
+    const encoded = try encode(std.testing.allocator, .{
+        .id = .{ 0, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 },
+        .name = "custom-policy",
+        .owner = "root",
+        .status = .active,
+        .access_policy = .custom,
+        .created_at_unix_seconds = 1_800_000_000,
+    });
+    defer std.testing.allocator.free(encoded);
+    try std.testing.expectEqual(.custom, (try decode(encoded)).access_policy);
 }

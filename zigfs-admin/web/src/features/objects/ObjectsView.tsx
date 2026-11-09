@@ -1,15 +1,25 @@
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/Tabs'
+import { Progress } from '../../components/ui/progress'
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '../../components/ui/sheet'
+import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '../../components/ui/empty'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/Dialog'
+import { Input } from '../../components/ui/Input'
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../../components/ui/table'
+import { Button } from '../../components/ui/Button'
+import { RadioGroup, RadioGroupItem } from '../../components/ui/radio-group'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
+import { EllipsisVertical } from 'lucide-react'
+import { OptionSelect } from '../../components/ui/OptionSelect'
 import { t, getFormatLocale } from '@/locales'
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react'
 import {
-  ArrowLeft,
-  Archive,
   CheckCircle2,
+  CloudUpload,
   Copy,
   Download,
   ExternalLink,
   File,
   Folder,
-  FolderOpen,
   FolderInput,
   FolderPlus,
   History,
@@ -28,7 +38,7 @@ import { ActionMenu } from '../../components/ActionMenu'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
 import { useErrorToast, useToast } from '../../components/ToastProvider'
-import { ToolbarControls, ToolbarRefreshButton, ToolbarSearch } from '../../components/ui/ToolbarControls'
+import { ToolbarSearch } from '../../components/ui/ToolbarControls'
 import type { AccessKey, Bucket, MultipartUpload, MultipartUploadSummary, ObjectSummary, ObjectVersion, PresignObjectResponse } from '../../types/api'
 import {
   choosePartSize,
@@ -46,7 +56,6 @@ interface ObjectsViewProps {
   initialBucket?: string
   initialPrefix?: string
   onNavigatePath: (prefix: string) => void
-  onBack: () => void
 }
 
 interface UploadProgress {
@@ -60,6 +69,7 @@ interface CompletedUpload {
   key: string
   fileName: string
   fileSize: number
+  initiatedAt: string
   completedAt: string
 }
 
@@ -82,18 +92,26 @@ interface FolderSizeSummary {
   generatedAt: string
 }
 
-export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNavigatePath, onBack }: ObjectsViewProps) {
+export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNavigatePath }: ObjectsViewProps) {
   const confirm = useConfirm()
   const { startLoading, withLoading } = useLoading()
   const [accessKeys, setAccessKeys] = useState<AccessKey[]>([])
   const [buckets, setBuckets] = useState<Bucket[]>([])
-  const [bucketInfo, setBucketInfo] = useState<Bucket | null>(null)
+  const [, setBucketInfo] = useState<Bucket | null>(null)
   const bucket = initialBucket
   const [accessKey, setAccessKey] = useState('')
   const [prefix, setPrefix] = useState(initialPrefix)
-  const [searchInput, setSearchInput] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [viewMode, setViewMode] = useState<'current' | 'versions'>('current')
+  const [onlyDeleted, setOnlyDeleted] = useState(false)
+  const [localFilter, setLocalFilter] = useState('')
+  const [sortField, setSortField] = useState<'key' | 'size' | 'last_modified'>('key')
+  const [sortDirection, setSortDirection] = useState(1)
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false)
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  const [uploadSubdirectory, setUploadSubdirectory] = useState('')
+  const [startingUploads, setStartingUploads] = useState(false)
+  const folderInput = useRef<HTMLInputElement>(null)
   const [showDeleted, setShowDeleted] = useState(false)
   const [showDeletedVersions, setShowDeletedVersions] = useState(false)
   const [objects, setObjects] = useState<ObjectSummary[]>([])
@@ -107,6 +125,9 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null)
   const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([])
+  const [taskTab, setTaskTab] = useState<string | null>(null)
+  const [cancelledUploads, setCancelledUploads] = useState<{ uploadId: string; key: string; fileSize: number; initiatedAt: string }[]>([])
+  const [deleteTasks, setDeleteTasks] = useState<{ id: string; key: string; directory: boolean; initiatedAt: string; status: 'processing' | 'completed' | 'failed'; error?: string }[]>([])
   const [completedUploads, setCompletedUploads] = useState<CompletedUpload[]>([])
   const [uploadsLoading, setUploadsLoading] = useState(false)
   const [uploadsPanelOpen, setUploadsPanelOpen] = useState(false)
@@ -151,16 +172,10 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   const visibleVersions = showDeletedVersions
     ? versions.filter((version) => !isDirectoryKey(version.key) && version.is_delete_marker && version.is_latest)
     : versions.filter((version) => !isDirectoryKey(version.key) && !version.is_delete_marker)
-  const normalizedSearchQuery = searchQuery.trim().toLocaleLowerCase()
-  const filteredObjects = normalizedSearchQuery
-    ? objects.filter((object) => object.key.toLocaleLowerCase().includes(normalizedSearchQuery))
-    : objects
-  const filteredDeletedObjects = normalizedSearchQuery
-    ? deletedObjects.filter((version) => version.key.toLocaleLowerCase().includes(normalizedSearchQuery))
-    : deletedObjects
-  const filteredVersions = normalizedSearchQuery
-    ? visibleVersions.filter((version) => version.key.toLocaleLowerCase().includes(normalizedSearchQuery))
-    : visibleVersions
+  const normalizedSearchQuery = localFilter.trim().toLocaleLowerCase()
+  const filteredObjects = [...objects].filter(item => item.key.toLocaleLowerCase().includes(normalizedSearchQuery)).sort((a, b) => Number(isDirectoryKey(b.key)) - Number(isDirectoryKey(a.key)) || sortDirection * (sortField === 'size' ? (a.size ?? 0) - (b.size ?? 0) : sortField === 'last_modified' ? Date.parse(a.last_modified) - Date.parse(b.last_modified) : a.key.localeCompare(b.key)))
+  const filteredDeletedObjects = [...deletedObjects].filter(item => item.key.toLocaleLowerCase().includes(normalizedSearchQuery)).sort((a, b) => Number(isDirectoryKey(b.key)) - Number(isDirectoryKey(a.key)) || sortDirection * (sortField === 'size' ? (a.size ?? 0) - (b.size ?? 0) : sortField === 'last_modified' ? Date.parse(a.last_modified) - Date.parse(b.last_modified) : a.key.localeCompare(b.key)))
+  const filteredVersions = [...visibleVersions].filter(item => item.key.toLocaleLowerCase().includes(normalizedSearchQuery)).sort((a, b) => Number(isDirectoryKey(b.key)) - Number(isDirectoryKey(a.key)) || sortDirection * (sortField === 'size' ? (a.size ?? 0) - (b.size ?? 0) : sortField === 'last_modified' ? Date.parse(a.last_modified) - Date.parse(b.last_modified) : a.key.localeCompare(b.key)))
 
   useEffect(() => {
     if (accessKeysLoaded.current) return
@@ -217,7 +232,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       } else if (requestedShowDeleted) {
         const history = await api.listObjectVersions(bucket, currentPrefix)
         if (requestId !== listRequestId.current) return
-        setObjects([])
+        setObjects(hideCurrentDirectoryMarker(history.filter(item => item.is_latest && !item.is_delete_marker).map(item => ({ ...item, etag: '' })), currentPrefix))
         setNextToken('')
         const visibleHistory = hideCurrentDirectoryMarker(history, currentPrefix)
         const objectSizes = latestObjectSizes(visibleHistory)
@@ -286,7 +301,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     if (routeChanged) {
       routeLocation.current = { bucket, prefix: initialPrefix }
       setPrefix(initialPrefix)
-      setSearchInput('')
+      setLocalFilter('')
       if (searchQuery) {
         setSearchQuery('')
         initialLoadKey.current = ''
@@ -366,7 +381,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   function selectFile(event: ChangeEvent<HTMLInputElement>) {
     const selected = [...(event.target.files ?? [])]
     event.target.value = ''
-    if (selected.length > 0) void beginUploads(selected)
+    if (selected.length === 0) return
+    const next = new Map(pendingFiles.map(file => [file.webkitRelativePath || file.name, file]))
+    for (const file of selected) next.set(file.webkitRelativePath || file.name, file)
+    if (next.size > 10000) { notifyError(t('objects.uploadQueueLimit')); return }
+    setPendingFiles([...next.values()])
   }
 
   function openRewind() {
@@ -414,7 +433,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   function toggleAllCurrent(checked: boolean) {
     if (showDeleted) {
       setSelectedDeletedIds(checked ? new Set(filteredDeletedObjects.map(versionIdentity)) : new Set())
-      return
+      if (onlyDeleted) return
     }
     setSelectedObjectKeys(checked ? new Set(filteredObjects.map((object) => object.key)) : new Set())
   }
@@ -431,14 +450,10 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         .filter((version) => selectedVersionIds.has(versionIdentity(version)))
         .map((version) => ({ kind: 'version' as const, version }))
     }
-    if (showDeleted) {
-      return filteredDeletedObjects
-        .filter((version) => selectedDeletedIds.has(versionIdentity(version)))
-        .map((version) => ({ kind: 'version' as const, version }))
-    }
-    return filteredObjects
-      .filter((object) => selectedObjectKeys.has(object.key))
-      .map((object) => ({ kind: 'current' as const, object }))
+    return [
+      ...(!onlyDeleted || !showDeleted ? filteredObjects.filter(object => selectedObjectKeys.has(object.key)).map(object => ({ kind: 'current' as const, object })) : []),
+      ...(showDeleted ? filteredDeletedObjects.filter(version => selectedDeletedIds.has(versionIdentity(version))).map(version => ({ kind: 'version' as const, version })) : []),
+    ]
   }
 
   function openTransfer(mode: 'copy' | 'move', item?: SelectedObject) {
@@ -546,18 +561,26 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     }
   }
 
-  async function beginUploads(files: File[]) {
-    if (!bucket || !accessKey || files.length === 0) return
-    const startNewUploadSession = !uploadsPanelOpen
-    if (startNewUploadSession) {
-      setUploadTasks([])
-      setCompletedUploads([])
+  async function startPendingUploads() {
+    if (startingUploads || uploading || !pendingFiles.length) return
+    const directory = uploadSubdirectory.trim().replace(/^\/+|\/+$/g, '')
+    if (directory.split('/').some(segment => segment === '.' || segment === '..') || directory.includes('\\')) {
+      notifyError(t('objects.invalidUploadDirectory'))
+      return
     }
-    setUploadsPanelOpen(true)
+    setStartingUploads(true)
+    try { await beginUploads([...pendingFiles], directory) }
+    finally { setStartingUploads(false) }
+  }
+
+  async function beginUploads(files: File[], destinationPrefix: string) {
+    if (!bucket || !accessKey || files.length === 0) return
+
     const tasks: UploadTask[] = []
     const failures: string[] = []
+    const failedFiles: File[] = []
     for (const file of files) {
-      const key = joinObjectPath(prefix, file.name)
+      const key = joinObjectPath(destinationPrefix, file.webkitRelativePath || file.name)
       try {
         const created = await api.createMultipartUpload(bucket, key, file.type || 'application/octet-stream')
         tasks.push({
@@ -576,9 +599,12 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
           file,
         })
       } catch (reason) {
+        failedFiles.push(file)
         failures.push(`${file.name}: ${(reason as Error).message}`)
       }
     }
+    setPendingFiles(failedFiles)
+    if (failedFiles.length === 0) { setUploadDialogOpen(false); setTaskTab(null); setUploadsPanelOpen(true) }
     if (tasks.length > 0) setUploadTasks((current) => [...tasks, ...current])
     if (failures.length > 0) notifyError(t('objects.unableToCreateUploadsForValue', { '0': failures.join('；') }))
     for (const task of tasks) {
@@ -720,10 +746,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
           key: task.key,
           fileName: task.fileName,
           fileSize: selectedFile.size,
+          initiatedAt: task.initiatedAt,
           completedAt: new Date().toISOString(),
         },
         ...current,
-      ].slice(0, 20))
+      ])
       setUploadTasks((current) => current.filter((item) => item.uploadId !== task.uploadId))
       await load(true)
     } catch (reason) {
@@ -778,6 +805,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     try {
       await api.abortMultipartUpload(task.uploadId, task.bucket, task.key)
       setUploadTasks((current) => current.filter((item) => item.uploadId !== task.uploadId))
+      setCancelledUploads(current => [...current.filter(item => item.uploadId !== task.uploadId), { uploadId: task.uploadId, key: task.key, fileSize: task.fileSize, initiatedAt: task.initiatedAt }])
       showToast(t('objects.cancelledValue', { '0': displayFileName(task.key) }))
     } catch (reason) {
       const message = (reason as Error).message
@@ -914,6 +942,20 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     if (!response.ok) throw new Error(t('objects.failedToCopyValueValue', { '0': displayKeyForMessage(sourceKey), '1': response.status }))
   }
 
+  async function trackDeletion(key: string, directory: boolean, operation: () => Promise<void>) {
+    const id = crypto.randomUUID()
+    setDeleteTasks(current => [...current, { id, key, directory, initiatedAt: new Date().toISOString(), status: 'processing' }])
+    try {
+      await operation()
+      setDeleteTasks(current => current.map(task => task.id === id ? { ...task, status: 'completed' } : task))
+      setTaskTab('completed')
+      setUploadsPanelOpen(true)
+    } catch (reason) {
+      setDeleteTasks(current => current.map(task => task.id === id ? { ...task, status: 'failed', error: (reason as Error).message } : task))
+      throw reason
+    }
+  }
+
   async function deleteObjectKey(key: string, versionId?: string) {
     if (!accessKey || !bucket) return
     const presigned = await api.presignObject(accessKey, bucket, key, 'DELETE', 900, versionId ? { versionId } : undefined)
@@ -1003,7 +1045,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const stopLoading = startLoading(t('objects.permanentlyDeletingObjects'))
     try {
       setDeletingVersion(identity)
-      await purgeObject(version.key)
+      await trackDeletion(version.key, false, () => purgeObject(version.key))
       showToast(t('objects.permanentlyDeletedValue', { '0': displayFileName(version.key) }))
       await load(true)
     } catch (reason) {
@@ -1047,7 +1089,9 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const label = permanent ? t('objects.permanentlyDeleteSelectedVersions') : t('objects.deleteSelectedObjects')
     if (!await confirm({
       title: purgingDeletedObjects ? t('objects.permanentlyDeleteObject') : label,
-      message: purgingDeletedObjects
+      message: deleteMarkers.length > 0 && !purgingDeletedObjects && viewMode === 'current'
+        ? t('objects.mixedDeleteConfirmation')
+        : purgingDeletedObjects
         ? t('objects.permanentlyDeleteValueObjectsIncludingAllVersionsAndDelete', { '0': new Set(deleteMarkers.map((item) => item.version.key)).size })
         : permanent
         ? t('objects.permanentlyDeleteValueObjectVersionsThisCannotBeUndone', { '0': items.length })
@@ -1058,9 +1102,13 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const stopLoading = startLoading(permanent ? t('objects.permanentlyDeletingObjectVersions') : t('objects.deletingObjects'))
     try {
       if (purgingDeletedObjects) {
-        for (const key of new Set(deleteMarkers.map((item) => item.version.key))) await purgeObject(key)
+        for (const key of new Set(deleteMarkers.map((item) => item.version.key))) await trackDeletion(key, false, () => purgeObject(key))
       } else {
-        for (const item of items) await deleteItem(item)
+        for (const item of items) {
+          const key = item.kind === 'current' ? item.object.key : item.version.key
+          await trackDeletion(key, item.kind === 'current' && isDirectoryKey(key), () =>
+            viewMode === 'current' && item.kind === 'version' && item.version.is_delete_marker ? purgeObject(key) : deleteItem(item))
+        }
       }
       setSelectedObjectKeys(new Set())
       setSelectedDeletedIds(new Set())
@@ -1211,7 +1259,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const stopLoading = startLoading(t('objects.deletingDirectory'))
     try {
       setDeletingKey(object.key)
-      await deleteDirectory(object.key)
+      await trackDeletion(object.key, true, () => deleteDirectory(object.key))
       showToast(t('objects.deletedDirectoryValue', { '0': displayDirectoryKey(object.key) }))
       await load(true)
     } catch (reason) {
@@ -1238,9 +1286,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const stopLoading = startLoading(t('objects.deletingObjects'))
     try {
       setDeletingKey(object.key)
-      const presigned = await api.presignObject(accessKey, bucket, object.key, 'DELETE', 900)
-      const response = await fetch(presigned.url, { method: 'DELETE' })
-      if (!response.ok) throw new Error(t('objects.deletionFailedValue', { '0': response.status }))
+      await trackDeletion(object.key, false, () => deleteObjectKey(object.key))
       if (detail?.key === object.key) closeDetail()
       showToast(t('objects.deletedValue', { '0': displayFileName(object.key) }))
       await load(true)
@@ -1266,9 +1312,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setDeletingVersion(identity)
-      const presigned = await api.presignObject(accessKey, bucket, version.key, 'DELETE', 900, { versionId: version.version_id })
-      const response = await fetch(presigned.url, { method: 'DELETE' })
-      if (!response.ok) throw new Error(t('objects.versionDeletionFailedValue', { '0': response.status }))
+      await trackDeletion(version.key, false, () => deleteObjectKey(version.key, version.version_id))
       showToast(t('objects.permanentlyDeletedValueValueOfValue', { '0': displayFileName(version.key), '1': target, '2': shortVersionId(version.version_id) }))
       await load(true)
     } catch (reason) {
@@ -1371,18 +1415,14 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     showToast(t('objects.previewLinkCopied'))
   }
 
-  const visibleObjectCount = viewMode === 'current' ? (showDeleted ? filteredDeletedObjects.length : filteredObjects.length) : filteredVersions.length
+  const visibleObjectCount = viewMode === 'current' ? (showDeleted ? filteredDeletedObjects.length + (onlyDeleted ? 0 : filteredObjects.length) : filteredObjects.length) : filteredVersions.length
   const selected = selectedItems()
   const selectedDeleted = selected.filter((item): item is Extract<SelectedObject, { kind: 'version' }> => item.kind === 'version' && item.version.is_delete_marker)
   const selectedData = selected.filter((item) => item.kind === 'current' || !item.version.is_delete_marker)
   const selectedFiles = selectedData.filter((item) => !isDirectoryKey(item.kind === 'current' ? item.object.key : item.version.key))
   const selectedCount = selected.length
-  const selectableObjects = filteredObjects
-  const selectableCurrentCount = showDeleted ? filteredDeletedObjects.length : selectableObjects.length
   const selectableVersionCount = filteredVersions.length
-  const allCurrentSelected = selectableCurrentCount > 0 && (showDeleted
-    ? filteredDeletedObjects.every((version) => selectedDeletedIds.has(versionIdentity(version)))
-    : selectableObjects.length > 0 && selectableObjects.every((object) => selectedObjectKeys.has(object.key)))
+  const allCurrentSelected = (onlyDeleted && showDeleted ? filteredDeletedObjects.length > 0 : filteredObjects.length + (showDeleted ? filteredDeletedObjects.length : 0) > 0) && (onlyDeleted && showDeleted || filteredObjects.every(object => selectedObjectKeys.has(object.key))) && (!showDeleted || filteredDeletedObjects.every(version => selectedDeletedIds.has(versionIdentity(version))))
   const allVersionsSelected = selectableVersionCount > 0 && filteredVersions.every((version) => selectedVersionIds.has(versionIdentity(version)))
   const hasDeleteMarkerSelection = selectedDeleted.length > 0
   const permanentDeleteOnly = viewMode === 'versions' || hasDeleteMarkerSelection
@@ -1391,56 +1431,61 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   )
   const deletedVersionSizes = latestObjectSizes(versions)
   const TransferIcon = transferDialog?.mode === 'copy' ? Copy : FolderInput
-  const activeShowDeleted = viewMode === 'versions' ? showDeletedVersions : showDeleted
+  const taskCounts = {
+    pending: uploadTasks.filter(task => task.status === 'paused').length,
+    processing: uploadTasks.filter(task => task.status === 'uploading' || task.status === 'completing').length + deleteTasks.filter(task => task.status === 'processing').length,
+    completed: completedUploads.length + deleteTasks.filter(task => task.status === 'completed').length,
+    failed: uploadTasks.filter(task => task.status === 'failed').length + deleteTasks.filter(task => task.status === 'failed').length,
+    cancelled: cancelledUploads.length,
+  }
+  const activeTaskTab = taskTab ?? (taskCounts.processing ? 'processing' : taskCounts.failed ? 'failed' : taskCounts.pending ? 'pending' : taskCounts.completed ? 'completed' : 'cancelled')
+  const totalUploadCount = uploadTasks.length + completedUploads.length + deleteTasks.length
+  const overallUploadProgress = totalUploadCount === 0 ? 0 : 100 * (
+    taskCounts.completed + uploadTasks.reduce((sum, task) => {
+      const loaded = uploadControl.current?.uploadId === task.uploadId && uploadProgress
+        ? uploadProgress.loaded : task.uploadedBytes
+      // Only completed objects count as fully uploaded, including empty files.
+      return sum + (task.fileSize > 0 ? Math.min(0.99, Math.max(0, loaded / task.fileSize)) : 0)
+    }, 0)
+  ) / totalUploadCount
+  const filteredTasks = uploadTasks.filter(task => activeTaskTab === 'processing' ? task.status === 'uploading' || task.status === 'completing' : activeTaskTab === 'pending' ? task.status === 'paused' : activeTaskTab === 'failed' && task.status === 'failed')
+  const visibleTasks = [
+    ...filteredTasks.map(task => ({ kind: 'upload' as const, task })),
+    ...deleteTasks.filter(task => task.status === activeTaskTab).map(task => ({ kind: 'delete' as const, task })),
+    ...(activeTaskTab === 'completed' ? completedUploads.map(task => ({ kind: 'completed' as const, task })) : []),
+    ...(activeTaskTab === 'cancelled' ? cancelledUploads.map(task => ({ kind: 'cancelled' as const, task })) : []),
+  ].sort((left, right) => Date.parse(left.task.initiatedAt) - Date.parse(right.task.initiatedAt))
+  function toggleSort(field: 'key' | 'size' | 'last_modified') { setSortDirection(sortField === field ? -sortDirection : 1); setSortField(field) }
 
   return (
-    <section>
-      <header className="page-header">
-        <div>
-          <button className="back-button" type="button" onClick={onBack}><ArrowLeft className="button-icon" aria-hidden="true" />{t('objects.backToBucket')}</button>
-          <h2>{t('objects.objectBrowser')}</h2>
-          <p className="page-description">{t('objects.browseUploadDownloadAndManageObjectsInThisBucket')}</p>
-        </div>
-        <span className="count-badge">{viewMode === 'current' ? t('objects.valuevalueObjects', { '0': visibleObjectCount, '1': !showDeleted && nextToken ? '+' : '' }) : t('objects.valueVersions', { '0': visibleObjectCount })}</span>
-      </header>
+    <section className="objects-page">
 
-      <div className="page-toolbar">
-        <div className="toolbar-leading object-toolbar-leading">
-          <div className="object-bucket-summary">
-            <span className="object-bucket-summary-icon" aria-hidden="true"><Archive /></span>
-            <div className="object-bucket-summary-copy">
-              <strong>{bucketInfo?.name ?? (bucket || t('objects.noBucketSelected'))}</strong>
-              <span>{t('objects.createdOn')} {bucketInfo ? new Date(bucketInfo.created_at).toLocaleString(getFormatLocale()) : '-'}</span>
-              <span>{t('objects.access')} <b>{t('objects.private')}</b></span>
-            </div>
+      <Dialog open={uploadDialogOpen} onOpenChange={open => { if (!startingUploads) setUploadDialogOpen(open) }}>
+        <DialogContent className="objects-upload-dialog" onInteractOutside={event => event.preventDefault()}>
+          <DialogHeader><DialogTitle>{t('objects.uploadFiles')}</DialogTitle></DialogHeader>
+          <div className="objects-upload-destination">
+            <span>{t('objects.uploadTargetBucket', { bucket })}</span>
+            <div className="objects-upload-pickers"><Button size="sm" variant="outline" disabled={startingUploads} onClick={() => fileInput.current?.click()}><File />{t('objects.selectFilesToUpload')}</Button><Button size="sm" variant="outline" disabled={startingUploads} onClick={() => folderInput.current?.click()}><Folder />{t('objects.uploadFolder')}</Button></div>
           </div>
-        </div>
-        <ToolbarControls className="object-toolbar-actions">
-          <ToolbarSearch
-            label={t('objects.searchObjectKeys')}
-            placeholder={t('objects.searchObjectKeysPartialMatch')}
-            value={searchInput}
-            onChange={(event) => setSearchInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key !== 'Enter') return
-              event.preventDefault()
-              setSearchQuery(searchInput.trim())
-            }}
-          />
-          <button className={`secondary-button rewind-button${viewMode === 'versions' ? ' active' : ''}`} type="button" onClick={openRewind} disabled={!bucket} title={viewMode === 'versions' ? t('objects.backToCurrentObjects') : t('objects.openVersionHistory')} aria-label={viewMode === 'versions' ? t('objects.backToCurrentObjects') : t('objects.openVersionHistory')} aria-pressed={viewMode === 'versions'}>
-            <Undo2 className="button-icon" aria-hidden="true" />{t('objects.rewind')}</button>
-          <input ref={fileInput} className="hidden-file-input" type="file" multiple onChange={selectFile} aria-label={t('objects.selectFilesToUpload')} disabled={uploading} />
-          <button className="primary-button" type="button" onClick={() => fileInput.current?.click()} disabled={!bucket || !accessKey || uploading}>
-            <Upload className="button-icon" aria-hidden="true" />{t('objects.uploadFiles')}</button>
-          <ToolbarRefreshButton label={t('objects.refresh')} onClick={() => void load(true)} disabled={!bucket} busy={loading} />
-        </ToolbarControls>
-      </div>
-
-      <div className="object-location" aria-label={t('objects.currentObjectPath')}>
-        <button className="icon-button path-back-button" type="button" onClick={goToParentPath} disabled={!bucket || !prefix.trim()} title={t('objects.goToParentDirectory')} aria-label={t('objects.goToParentDirectory')}>
-          <ArrowLeft aria-hidden="true" />
-        </button>
-        <FolderOpen className="object-location-icon" aria-hidden="true" />
+          <div className="objects-upload-prefix"><label htmlFor="upload-subdirectory">{t('objects.currentPrefix')}</label><Input id="upload-subdirectory" value={uploadSubdirectory} onChange={event => setUploadSubdirectory(event.target.value)} disabled={startingUploads} placeholder={t('objects.uploadSubdirectoryPlaceholder')} aria-describedby="upload-destination-hint" />
+          <p id="upload-destination-hint" className="objects-upload-help">{t('objects.uploadDestinationPath', { path: `${bucket}/${uploadSubdirectory.trim().replace(/^\/+|\/+$/g, '')}` })}</p></div>
+          <p className="objects-upload-warning">{t('objects.uploadOverwriteWarning')}</p>
+          <div className="objects-upload-queue">
+            <div className="objects-upload-queue-header"><span>{t('objects.pendingFileCount', { count: pendingFiles.length })}</span><Button size="sm" variant="outline" disabled={startingUploads || !pendingFiles.length} onClick={() => setPendingFiles([])}><Trash2 />{t('objects.clearUploadQueue')}</Button></div>
+            <div className="objects-upload-table">{pendingFiles.length > 0 ? <Table><TableHeader><TableRow><TableHead>{t('objects.object')}</TableHead><TableHead>{t('objects.size')}</TableHead><TableHead>{t('objects.actions')}</TableHead></TableRow></TableHeader><TableBody>
+              {pendingFiles.map(file => <TableRow key={file.webkitRelativePath || file.name}><TableCell>{file.webkitRelativePath || file.name}</TableCell><TableCell>{formatBytes(file.size)}</TableCell><TableCell><Button size="sm" variant="ghost" disabled={startingUploads} onClick={() => setPendingFiles(current => current.filter(item => item !== file))}><Trash2 />{t('objects.delete')}</Button></TableCell></TableRow>)}
+            </TableBody></Table> : <Empty className="objects-upload-empty">
+              <EmptyHeader>
+                <EmptyMedia><CloudUpload aria-hidden="true" /></EmptyMedia>
+                <EmptyTitle>{t('objects.noUploadSelection')}</EmptyTitle>
+                <EmptyDescription>{t('objects.selectFilesBeforeUpload')}<br />{t('objects.uploadSelectionHelp')}</EmptyDescription>
+              </EmptyHeader>
+            </Empty>}</div>
+          </div>
+          <div className="ui-dialog-footer"><Button size="sm" disabled={startingUploads || uploading || !pendingFiles.length || !accessKey} onClick={() => void startPendingUploads()}><Upload />{t('objects.startUpload')}</Button></div>
+        </DialogContent>
+      </Dialog>
+      {prefix.trim() && <div className="objects-directory-heading" aria-label={t('objects.currentObjectPath')}>
         <div className="object-location-main">
           <div className="object-location-path">
             <button className="object-location-link" type="button" onClick={() => onNavigatePath('')} disabled={!bucket}>{bucket || t('objects.noBucketSelected')}</button>
@@ -1453,18 +1498,10 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
             <Copy aria-hidden="true" />
           </button>
         </div>
-        <div className="object-location-actions">
-          {viewMode !== 'versions' && <label className="deleted-toggle">
-            <input key={viewMode} type="checkbox" checked={activeShowDeleted} onChange={(event) => {
-              setSelectedObjectKeys(new Set())
-              setSelectedDeletedIds(new Set())
-              setSelectedVersionIds(new Set())
-              setShowDeleted(event.target.checked)
-            }} disabled={!bucket} />
-            <span>{t('objects.showDeletedObjects')}</span>
-          </label>}
-          {viewMode === 'current' && !showDeleted && <button className="secondary-button create-path-button" type="button" onClick={() => { setPathName(''); setShowCreatePath(true) }} disabled={!bucket || !accessKey}>
-            <FolderPlus className="button-icon" aria-hidden="true" />{t('common.create')}</button>}
+      </div>}
+      <div className="objects-topbar">
+        <ToolbarSearch label={t('objects.filterLoadedObjects')} placeholder={t('objects.filterLoadedObjects')} value={localFilter} onChange={event => setLocalFilter(event.target.value)} />
+        <div className="objects-top-actions">
           {selectedCount > 0 && <div className="selection-toolbar-actions">
             {selectedFiles.length > 0 && <>
               <button className="secondary-button" type="button" onClick={() => void downloadSelected()} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />{t('objects.download')}</button>
@@ -1473,19 +1510,29 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
             {selectedData.length > 0 && <button className="secondary-button" type="button" onClick={() => openTransfer('move')} disabled={!accessKey}><FolderInput className="button-icon" aria-hidden="true" />{t('objects.move')}</button>}
             {selectedDeleted.length > 0 && <button className="secondary-button" type="button" onClick={() => void restoreSelected()} disabled={!accessKey}><RotateCcw className="button-icon" aria-hidden="true" />{t('objects.restore')}</button>}
             <button className="danger-button" type="button" onClick={() => void removeSelected()} disabled={!accessKey}><Trash2 className="button-icon" aria-hidden="true" />{permanentDeleteOnly ? t('objects.permanentlyDelete') : t('objects.delete')}</button>
-            <button className="icon-button" type="button" onClick={() => { setSelectedObjectKeys(new Set()); setSelectedDeletedIds(new Set()); setSelectedVersionIds(new Set()) }} title={t('objects.clearSelection')} aria-label={t('objects.clearSelection')}><X aria-hidden="true" /></button>
           </div>}
+          <input ref={fileInput} className="hidden-file-input" type="file" multiple onChange={selectFile} disabled={uploading} />
+          <input ref={folderInput} className="hidden-file-input" type="file" multiple {...{ webkitdirectory: '' }} onChange={selectFile} disabled={uploading} />
+          {(uploadTasks.length > 0 || completedUploads.length > 0 || cancelledUploads.length > 0 || deleteTasks.length > 0 || startingUploads) && <Button variant="outline" size="sm" onClick={() => { setTaskTab(null); setUploadsPanelOpen(true) }} aria-haspopup="dialog" aria-expanded={uploadsPanelOpen}>
+            {uploadTasks.length === 0 && taskCounts.processing === 0 && taskCounts.failed === 0 && taskCounts.completed > 0 ? <CheckCircle2 /> : <List />}
+            {uploadTasks.length === 0 && taskCounts.processing === 0 && taskCounts.failed === 0 && taskCounts.completed > 0 ? t('objects.taskCompleted') : t('objects.taskManagement')}
+          </Button>}
+          <Button variant="outline" size="sm" disabled={!bucket || !accessKey || uploading || startingUploads} onClick={() => { setUploadSubdirectory(prefix); setUploadDialogOpen(true) }}><Upload />{t('objects.uploadFileFolder')}</Button>
+          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="icon-sm" aria-label={t('objects.actions')}><EllipsisVertical /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem disabled={!bucket || loading} onSelect={() => void load(true)}><RefreshCw />{t('objects.refresh')}</DropdownMenuItem><DropdownMenuItem disabled={!bucket} onSelect={openRewind}><Undo2 />{viewMode === 'versions' ? t('objects.backToCurrentObjects') : t('objects.openVersionHistory')}</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
         </div>
       </div>
-
+      {viewMode === 'current' && <RadioGroup className="objects-deleted-filter" aria-label={t('objects.deletedFilter')} value={!showDeleted ? 'hide' : onlyDeleted ? 'only' : 'show'} onValueChange={value => { setSelectedObjectKeys(new Set()); setSelectedDeletedIds(new Set()); setOnlyDeleted(value === 'only'); setShowDeleted(value !== 'hide') }}>
+        <label><RadioGroupItem value="hide" />{t('objects.hideDeletedObjects')}</label><label><RadioGroupItem value="show" />{t('objects.showDeletedObjects')}</label><label><RadioGroupItem value="only" />{t('objects.onlyDeletedObjects')}</label>
+      </RadioGroup>}
       <section className="panel table-panel">
         <div className="table-wrap">
           {viewMode === 'current' ? <table className={`object-table${showDeleted ? ' deleted-object-table' : ''}`}>
-            <thead><tr><th className="selection-column"><input type="checkbox" checked={allCurrentSelected} onChange={(event) => toggleAllCurrent(event.target.checked)} aria-label={t('objects.selectAllObjects')} /></th><th className="object-column-title">{t('objects.object')}</th>{showDeleted && <th>{t('objects.status')}</th>}<th>{t('objects.size')}</th><th>{t('objects.lastModified')}</th><th className="sticky-actions-column">{t('objects.actions')}</th></tr></thead>
-            <tbody>{!showDeleted && filteredObjects.map((object) => (
+            <thead><tr><th className="selection-column"><input type="checkbox" checked={allCurrentSelected} onChange={(event) => toggleAllCurrent(event.target.checked)} aria-label={t('objects.selectAllObjects')} /></th><th className="object-column-title"><Button variant="ghost" size="sm" onClick={() => toggleSort('key')}>{t('objects.object')}<span aria-hidden="true">{sortField === 'key' ? sortDirection === 1 ? '↑' : '↓' : '↕'}</span></Button></th>{showDeleted && <th>{t('objects.status')}</th>}<th><Button variant="ghost" size="sm" onClick={() => toggleSort('size')}>{t('objects.size')}<span aria-hidden="true">{sortField === 'size' ? sortDirection === 1 ? '↑' : '↓' : '↕'}</span></Button></th><th><Button variant="ghost" size="sm" onClick={() => toggleSort('last_modified')}>{t('objects.lastModified')}<span aria-hidden="true">{sortField === 'last_modified' ? sortDirection === 1 ? '↑' : '↓' : '↕'}</span></Button></th><th className="sticky-actions-column">{t('objects.actions')}</th></tr></thead>
+            <tbody>{(!showDeleted || !onlyDeleted) && filteredObjects.map((object) => (
                 <tr key={object.key}>
                   <td className="selection-column"><input type="checkbox" checked={selectedObjectKeys.has(object.key)} onChange={(event) => toggleObjectSelection(object.key, event.target.checked)} aria-label={t('objects.selectValue', { '0': object.key })} /></td>
                   <td className="object-key"><div className="file-cell object-tree-cell object-key-trigger" role="button" tabIndex={0} onClick={() => openObject(object)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openObject(object) } }} title={isDirectoryKey(object.key) ? t('objects.openDirectory') : t('objects.viewObjectDetails')}><ObjectTreeIndent depth={objectTreeDepth(object.key, prefix)} />{isDirectoryKey(object.key) ? <Folder className="file-symbol" aria-hidden="true" /> : <File className="file-symbol" aria-hidden="true" />}<span>{displayObjectKey(object.key, prefix)}</span>{object.legal_hold && <span className="status-badge locked">{t('objects.legalHold')}</span>}{object.retention_until_unix_seconds && <span className="status-badge locked">{object.retention_mode ?? t('objects.retention')} {t('objects.until')} {new Date(object.retention_until_unix_seconds * 1000).toLocaleDateString(getFormatLocale())}</span>}</div></td>
+                  {showDeleted && <td>—</td>}
                   <td>{isDirectoryKey(object.key) ? (() => {
                     const summary = directorySizeSummaries.get(object.key)
                     const calculating = directorySizeLoading.has(object.key)
@@ -1523,7 +1570,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                 </tr>
               })}</tbody>
           </table> : <table className="object-table version-table">
-            <thead><tr><th className="selection-column"><input type="checkbox" checked={allVersionsSelected} onChange={(event) => toggleAllVersions(event.target.checked)} aria-label={t('objects.selectAllObjectVersions')} /></th><th className="object-column-title">{t('objects.object')}</th><th>{t('objects.state')}</th><th>{t('objects.size')}</th><th>{t('objects.lastModified')}</th><th className="sticky-actions-column">{t('objects.actions')}</th></tr></thead>
+            <thead><tr><th className="selection-column"><input type="checkbox" checked={allVersionsSelected} onChange={(event) => toggleAllVersions(event.target.checked)} aria-label={t('objects.selectAllObjectVersions')} /></th><th className="object-column-title"><Button variant="ghost" size="sm" onClick={() => toggleSort('key')}>{t('objects.object')}<span aria-hidden="true">{sortField === 'key' ? sortDirection === 1 ? '↑' : '↓' : '↕'}</span></Button></th><th>{t('objects.state')}</th><th><Button variant="ghost" size="sm" onClick={() => toggleSort('size')}>{t('objects.size')}<span aria-hidden="true">{sortField === 'size' ? sortDirection === 1 ? '↑' : '↓' : '↕'}</span></Button></th><th><Button variant="ghost" size="sm" onClick={() => toggleSort('last_modified')}>{t('objects.lastModified')}<span aria-hidden="true">{sortField === 'last_modified' ? sortDirection === 1 ? '↑' : '↓' : '↕'}</span></Button></th><th className="sticky-actions-column">{t('objects.actions')}</th></tr></thead>
             <tbody>{filteredVersions.map((version) => {
               const identity = `${version.key}\u0000${version.version_id}`
               const restoring = restoringVersion === identity
@@ -1554,21 +1601,34 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
             })}</tbody>
           </table>}
         </div>
-        {viewMode === 'current' && (showDeleted ? filteredDeletedObjects.length === 0 : filteredObjects.length === 0) && !loading && <div className="empty-state empty-panel"><strong>{normalizedSearchQuery ? t('objects.noMatchingObjects') : showDeleted ? t('objects.noDeletedObjects') : t('objects.thisBucketIsEmpty')}</strong><span>{normalizedSearchQuery ? t('objects.noObjectKeysMatchYourSearch') : showDeleted ? t('objects.noDeleteMarkersInThisPath') : t('objects.uploadFilesToSeeObjectsHere')}</span></div>}
+        {viewMode === 'current' && (visibleObjectCount === 0) && !loading && <div className="empty-state empty-panel"><strong>{normalizedSearchQuery ? t('objects.noMatchingObjects') : showDeleted ? t('objects.noDeletedObjects') : t('objects.thisBucketIsEmpty')}</strong><span>{normalizedSearchQuery ? t('objects.noObjectKeysMatchYourSearch') : showDeleted ? t('objects.noDeleteMarkersInThisPath') : t('objects.uploadFilesToSeeObjectsHere')}</span></div>}
         {viewMode === 'versions' && filteredVersions.length === 0 && !loading && <div className="empty-state empty-panel"><strong>{normalizedSearchQuery ? t('objects.noMatchingVersions') : showDeleted ? t('objects.noDeleteMarkers') : t('objects.noObjectVersions')}</strong><span>{normalizedSearchQuery ? t('objects.noObjectKeysMatchYourSearch') : showDeleted ? t('objects.noDeleteMarkersAreAvailable') : t('objects.enableVersioningToTrackNewWritesAndDeletesHere')}</span></div>}
       </section>
+      <div className="objects-list-footer"><span>{t('objects.loadedObjects', { count: viewMode === 'versions' ? versions.length : objects.length + (showDeleted ? deletedObjects.length : 0) })}</span><span>{t('objects.loadedFilterHint')}</span></div>
       {viewMode === 'current' && !showDeleted && nextToken && <div ref={loadMoreSentinel} className="list-load-sentinel" aria-live="polite">{loading ? t('objects.loadingMore') : t('objects.scrollDownToLoadMore')}</div>}
 
-      {uploadsPanelOpen && (
-        <aside className="uploads-drawer" role="dialog" aria-modal="false" aria-labelledby="uploads-drawer-title">
-          <header className="uploads-drawer-header">
-            <div className="uploads-drawer-title"><List aria-hidden="true" /><div><p className="eyebrow">{t('objects.transfers')}</p><h3 id="uploads-drawer-title">{t('objects.downloadsUploads')}</h3></div></div>
-            <button className="icon-button" type="button" aria-label={t('objects.closeTransferPanel')} title={t('objects.close')} onClick={() => setUploadsPanelOpen(false)}><X aria-hidden="true" /></button>
-          </header>
+      <Sheet open={uploadsPanelOpen} onOpenChange={setUploadsPanelOpen}>
+        <SheetContent side="right" className="upload-tasks-sheet">
+          <SheetHeader><SheetTitle>{t('objects.taskManagement')}</SheetTitle><SheetDescription>{t('objects.taskSessionHelp')}</SheetDescription></SheetHeader>
+          <div className="upload-tasks-summary">
+            <div className="upload-tasks-summary-header"><span>{taskCounts.completed} / {totalUploadCount}</span><Button variant="ghost" size="sm" disabled={!completedUploads.length && !cancelledUploads.length && !deleteTasks.some(task => task.status !== 'processing')} onClick={() => { setCompletedUploads([]); setCancelledUploads([]); setDeleteTasks(current => current.filter(task => task.status === 'processing')) }}>{t('objects.clearTaskRecords')}</Button></div>
+            <Progress className="h-1" value={overallUploadProgress} aria-label={t('objects.overallUploadProgress')} />
+          </div>
+          <Tabs className="upload-task-tabs" value={activeTaskTab} onValueChange={setTaskTab}>
+            <TabsList aria-label={t('objects.taskManagement')}>
+              <TabsTrigger value="pending">{t('objects.tasksPending')} ({taskCounts.pending})</TabsTrigger>
+              <TabsTrigger value="processing">{t('objects.tasksProcessing')} ({taskCounts.processing})</TabsTrigger>
+              <TabsTrigger value="completed">{t('objects.completed')} ({taskCounts.completed})</TabsTrigger>
+              <TabsTrigger value="failed">{t('objects.failed')} ({taskCounts.failed})</TabsTrigger>
+              <TabsTrigger value="cancelled">{t('objects.tasksCancelled')} ({taskCounts.cancelled})</TabsTrigger>
+            </TabsList>
+            <TabsContent value={activeTaskTab} className="upload-task-tab-content">
           <div className="uploads-drawer-body" aria-live="polite">
             {uploadsLoading && <p className="uploads-drawer-status">{t('objects.syncingMultipartUploads')}</p>}
-            {!uploadsLoading && uploadTasks.length === 0 && completedUploads.length === 0 && <p className="uploads-drawer-status">{t('objects.noActiveUploads')}</p>}
-            {uploadTasks.map((task) => {
+            {!uploadsLoading && taskCounts[activeTaskTab as keyof typeof taskCounts] === 0 && <p className="uploads-drawer-status">{t('objects.noActiveUploads')}</p>}
+            {visibleTasks.map(record => {
+              if (record.kind === 'upload') {
+              const task = record.task
               const active = task.status === 'uploading' || task.status === 'completing'
               const taskProgress = active && uploadProgress
                 ? uploadProgress
@@ -1615,20 +1675,42 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                   </div>
                 </article>
               )
-            })}
-            {completedUploads.map((item) => (
-              <article className="upload-task upload-task-completed" key={item.uploadId}>
-                <div className="upload-task-main">
-                  <div className="upload-task-title"><CheckCircle2 className="upload-complete-icon" aria-hidden="true" /><strong>{displayFileName(item.key)}</strong><span className="upload-status completed">{t('objects.completed')}</span></div>
-                  <span>{item.fileName} · {formatBytes(item.fileSize)} · {new Date(item.completedAt).toLocaleTimeString(getFormatLocale())}</span>
+              }
+              if (record.kind === 'delete') {
+                const task = record.task
+                return (
+              <article className="upload-task upload-task-completed" key={task.id}>
+                <div className="upload-task-record-heading">
+                  <strong title={task.key}>{task.directory ? displayDirectoryKey(task.key) : displayFileName(task.key)}</strong>
+                  {task.status !== 'processing' && <Button variant="ghost" size="icon-xs" className="upload-task-remove" aria-label={t('objects.removeTaskRecord', { name: task.key })} onClick={() => setDeleteTasks(current => current.filter(record => record.id !== task.id))}><Trash2 /></Button>}
                 </div>
-                <strong className="upload-complete-percent">100%</strong>
-                <div className="upload-progress-track" role="progressbar" aria-label={t('objects.uploadProgressForValue', { '0': item.fileName })} aria-valuemin={0} aria-valuemax={100} aria-valuenow={100}><span style={{ width: '100%' }} /></div>
+                <Progress className="h-1" value={task.status === 'processing' ? null : task.status === 'completed' ? 100 : 0} aria-label={t('objects.deletionProgress')} />
+                <div className="upload-task-record-footer"><span>{task.directory ? t('objects.recursiveDelete') : ''}</span><span>{t(task.directory ? 'objects.deleteFolderTaskStatus' : 'objects.deleteTaskStatus', { status: t(task.status === 'completed' ? 'objects.taskSuccess' : task.status === 'failed' ? 'objects.failed' : 'objects.tasksProcessing') })}</span></div>
+                {task.error && <span className="upload-task-error">{task.error}</span>}
               </article>
-            ))}
+                )
+              }
+              if (record.kind === 'completed') {
+                const item = record.task
+                return (
+              <article className="upload-task upload-task-completed" key={item.uploadId}>
+                <div className="upload-task-record-heading">
+                  <strong title={item.key}>{displayFileName(item.key)}</strong>
+                  <Button variant="ghost" size="icon-xs" className="upload-task-remove" aria-label={t('objects.removeUploadRecord', { name: item.fileName })} onClick={() => setCompletedUploads(current => current.filter(record => record.uploadId !== item.uploadId))}><Trash2 /></Button>
+                </div>
+                <Progress className="h-1" value={100} aria-label={t('objects.uploadProgressForValue', { '0': item.fileName })} />
+                <div className="upload-task-record-footer"><span>{formatBytes(item.fileSize)}</span><span>{t('objects.uploadSucceeded')}</span></div>
+              </article>
+                )
+              }
+              const item = record.task
+              return <article className="upload-task" key={item.uploadId}><div className="upload-task-main"><div className="upload-task-title"><strong>{displayFileName(item.key)}</strong><span className="upload-status">{t('objects.tasksCancelled')}</span></div><span>{formatBytes(item.fileSize)}</span></div></article>
+            })}
           </div>
-        </aside>
-      )}
+            </TabsContent>
+          </Tabs>
+        </SheetContent>
+      </Sheet>
 
       {showCreatePath && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowCreatePath(false)}>
@@ -1661,10 +1743,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
             <form className="credential-modal-form" onSubmit={submitTransfer}>
               <p className="credential-modal-description">{t('objects.selected')} {transferDialog.items.length} {t('objects.itemsEnterTheDestinationParentPathFileNamesAnd')}</p>
               <div className="credential-modal-fields transfer-fields">
-                <label>{t('objects.destinationBucket')}<select value={transferBucket} onChange={(event) => { setTransferBucket(event.target.value); setTransferPath(''); setTransferTreeOpen(false) }} required disabled={transferring}>
-                    <option value="" disabled>{t('objects.selectBucket')}</option>
-                    {buckets.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
-                  </select>
+                <label>{t('objects.destinationBucket')}<OptionSelect value={transferBucket} onValueChange={(value) => { setTransferBucket(value); setTransferPath(''); setTransferTreeOpen(false) }} required disabled={transferring} aria-label={t('objects.destinationBucket')} placeholder={t('objects.selectBucket')} options={buckets.map(item => ({ value: item.name, label: item.name }))} />
                 </label>
                 <label className="transfer-tree-field">{t('objects.destinationPath')}<button className="transfer-tree-trigger" type="button" onClick={() => setTransferTreeOpen((open) => !open)} disabled={transferring} aria-haspopup="listbox" aria-expanded={transferTreeOpen}>
                     {transferPath ? `${transferBucket}/${transferPath.replace(/\/+$/, '')}` : t('objects.valueRoot', { '0': transferBucket || t('objects.bucket') })}
@@ -1782,11 +1861,9 @@ function directorySummary(key: string, lastModified = ''): ObjectSummary {
 
 function displayObjectKey(key: string, prefix: string) {
   const normalizedPrefix = prefix.trim().replace(/^\/+/, '')
-  if (!normalizedPrefix) return isDirectoryKey(key) ? key.replace(/\/+$/, '') : key
   const prefixWithSlash = normalizedPrefix.endsWith('/') ? normalizedPrefix : `${normalizedPrefix}/`
-  if (!key.startsWith(prefixWithSlash)) return isDirectoryKey(key) ? key.replace(/\/+$/, '') : key
-  const relativeKey = key.slice(prefixWithSlash.length)
-  return isDirectoryKey(key) ? relativeKey.replace(/\/+$/, '') : relativeKey
+  const relativeKey = normalizedPrefix && key.startsWith(prefixWithSlash) ? key.slice(prefixWithSlash.length) : key
+  return isDirectoryKey(key) ? `${relativeKey.replace(/\/+$/, '')}/` : relativeKey
 }
 
 function displayObjectPath(path: string) {

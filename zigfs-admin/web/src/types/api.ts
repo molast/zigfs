@@ -36,7 +36,7 @@ export interface Bucket {
 export interface BucketConfiguration {
   name: string
   versioning: 'Unversioned' | 'Enabled' | 'Suspended'
-  access_policy: 'Private' | 'Readonly' | 'Public'
+  access_policy: 'Private' | 'Readonly' | 'Public' | 'Custom'
   object_ownership: 'BucketOwnerEnforced'
   block_public_access: boolean
   tags_json?: string

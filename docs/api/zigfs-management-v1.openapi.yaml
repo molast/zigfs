@@ -1357,6 +1357,10 @@ components:
         versioning:
           type: string
           enum: [Unversioned, Enabled, Suspended]
+        access_policy:
+          type: string
+          enum: [Private, Readonly, Public, Custom]
+          description: Custom evaluates the saved JSON resource policy without legacy anonymous grants.
         lifecycle_configuration:
           type: string
           description: 原始 S3 LifecycleConfiguration XML；未配置时省略。
@@ -1368,6 +1372,10 @@ components:
         versioning:
           type: string
           enum: [Enabled, Suspended]
+        access_policy:
+          type: string
+          enum: [Private, Readonly, Public, Custom]
+          description: Selecting Custom alone does not create a resource policy. Use the bucket policy endpoint to save the JSON document.
         lifecycle_configuration:
           type: string
           minLength: 1

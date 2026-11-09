@@ -483,7 +483,8 @@ fn serveAnonymousRead(
     var legacy_document: ?[]u8 = null;
     defer if (legacy_document) |doc| a.free(doc);
     if (ctx.resource_document == null and legacy_allowed) {
-        legacy_document = try std.fmt.allocPrint(a,
+        legacy_document = try std.fmt.allocPrint(
+            a,
             "{{\"Version\":\"2012-10-17\",\"Statement\":[{{\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"{s}\",\"Resource\":\"{s}\"}}]}}",
             .{ action, resource },
         );
@@ -728,13 +729,22 @@ fn urlDecode(a: std.mem.Allocator, input: []const u8) ![]u8 {
     var n: usize = 0;
     var i: usize = 0;
     while (i < input.len) : (i += 1) {
-        if (input[i] == '+') { out[n] = ' '; n += 1; continue; }
+        if (input[i] == '+') {
+            out[n] = ' ';
+            n += 1;
+            continue;
+        }
         if (input[i] == '%') {
             if (i + 2 >= input.len) return error.InvalidTag;
             const hi = std.fmt.charToDigit(input[i + 1], 16) catch return error.InvalidTag;
             const lo = std.fmt.charToDigit(input[i + 2], 16) catch return error.InvalidTag;
-            out[n] = @intCast(hi * 16 + lo); n += 1; i += 2;
-        } else { out[n] = input[i]; n += 1; }
+            out[n] = @intCast(hi * 16 + lo);
+            n += 1;
+            i += 2;
+        } else {
+            out[n] = input[i];
+            n += 1;
+        }
     }
     return a.realloc(out, n);
 }
@@ -772,9 +782,19 @@ fn serveBucketPolicy(request: *std.http.Server.Request, app: *Application, parse
             const role_snapshot = @import("../application/role_store.zig").load(root, io, a) catch return respondError(request, app.allocator, .service_unavailable, request_id);
             defer role_snapshot.deinit();
             const record = resource_policies.prepareWithRoles(a, body, bucket.name, snapshot.value, role_snapshot.value) catch return respondError(request, app.allocator, .malformed_policy, request_id);
+            const buckets = app.bucketService() orelse return respondError(request, app.allocator, .service_unavailable, request_id);
+            const custom_bucket = buckets.setAccessPolicy(bucket.name, .custom) catch return respondError(request, app.allocator, .service_unavailable, request_id);
+            custom_bucket.deinit(app.allocator);
             resource_policies.save(a, root, io, bucket.id, record) catch return respondError(request, app.allocator, .service_unavailable, request_id);
         },
-        .delete_bucket_policy => resource_policies.remove(a, root, io, bucket.id) catch return respondError(request, app.allocator, .service_unavailable, request_id),
+        .delete_bucket_policy => {
+            if (bucket.access_policy == .custom) {
+                const buckets = app.bucketService() orelse return respondError(request, app.allocator, .service_unavailable, request_id);
+                const private_bucket = buckets.setAccessPolicy(bucket.name, .private) catch return respondError(request, app.allocator, .service_unavailable, request_id);
+                private_bucket.deinit(app.allocator);
+            }
+            resource_policies.remove(a, root, io, bucket.id) catch return respondError(request, app.allocator, .service_unavailable, request_id);
+        },
         else => unreachable,
     }
     try request.respond("", .{ .status = .no_content });
@@ -3023,7 +3043,7 @@ fn ensureBucketOwner(
     const buckets = application.bucketService() orelse return error.Unavailable;
     const bucket = try buckets.head(bucket_name);
     if (access.owner.len == 0 and !access.iam_authorized) {
-        if (bucket.access_policy == .private) {
+        if (bucket.access_policy == .private or bucket.access_policy == .custom) {
             bucket.deinit(application.allocator);
             return error.InvalidOwner;
         }
@@ -3637,7 +3657,7 @@ fn parseCrc64Nvme(
 fn checksumHeaderAlgorithm(name: []const u8) ?checksum.Algorithm {
     const info = @typeInfo(checksum.Algorithm).@"enum";
     inline for (info.field_names, info.field_values) |_, value| {
-        const algorithm: checksum.Algorithm = @enumFromInt(value);
+        const algorithm: checksum.Algorithm = @fromBackingInt(@intCast(value));
         if (std.ascii.eqlIgnoreCase(name, algorithm.headerName())) return algorithm;
     }
     return null;

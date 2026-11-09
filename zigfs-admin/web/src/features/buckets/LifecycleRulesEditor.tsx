@@ -1,3 +1,4 @@
+import { OptionSelect } from '../../components/ui/OptionSelect'
 import { t } from '@/locales'
 import { useErrorToast } from '../../components/ToastProvider'
 import { useState } from 'react'
@@ -157,12 +158,7 @@ export function LifecycleRulesEditor({ rules, configured, loading, onSave }: Lif
 
               <label className="lifecycle-field lifecycle-field-wide">
                 <span>{t('buckets.objectVersion')}</span>
-                <select value={draft.action} onChange={(event) => setDraft({ ...draft, action: event.target.value as LifecycleAction })}>
-                  <option value="current-days">{t('buckets.currentVersionAfterDays')}</option>
-                  <option value="current-date">{t('buckets.currentVersionOnDate')}</option>
-                  <option value="noncurrent-days">{t('buckets.nonCurrentVersion')}</option>
-                  <option value="delete-marker">{t('buckets.expiredDeleteMarker')}</option>
-                </select>
+                <OptionSelect value={draft.action} onValueChange={(value) => setDraft({ ...draft, action: value as LifecycleAction })} aria-label={t('buckets.objectVersion')} options={[{ value: 'current-days', label: t('buckets.currentVersionAfterDays') }, { value: 'current-date', label: t('buckets.currentVersionOnDate') }, { value: 'noncurrent-days', label: t('buckets.nonCurrentVersion') }, { value: 'delete-marker', label: t('buckets.expiredDeleteMarker') }]} />
               </label>
 
               {draft.action === 'current-date' ? (

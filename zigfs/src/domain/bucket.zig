@@ -19,6 +19,7 @@ pub const AccessPolicy = enum(u8) {
     private = 0,
     readonly = 1,
     public = 2,
+    custom = 3,
 };
 pub const ObjectOwnership = enum(u8) { bucket_owner_enforced = 0 };
 
