@@ -21,6 +21,9 @@ func NewAuth(zig port.ZigClient) *Auth {
 func (service *Auth) Login(ctx context.Context, request contract.LoginRequest) (contract.LoginResponse, error) {
 	return service.zig.Login(ctx, request)
 }
+func (service *Auth) STSLogin(ctx context.Context, request contract.STSLoginRequest) (contract.LoginResponse, error) {
+	return service.zig.STSLogin(ctx, request)
+}
 
 func (service *Auth) Session(ctx context.Context) (contract.SessionResponse, error) {
 	return service.zig.Session(ctx)

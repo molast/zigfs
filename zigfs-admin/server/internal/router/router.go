@@ -25,6 +25,7 @@ func New(auth *handler.Auth, system *handler.System, management *handler.Managem
 
 	api := engine.Group("/api/v1")
 	api.POST("/auth/login", auth.Login)
+	api.POST("/auth/sts-login", auth.STSLogin)
 	api.GET("/auth/oidc/providers", management.OIDCLoginProviders)
 	api.POST("/auth/oidc/web-identity", management.OIDCWebIdentity)
 	api.GET("/auth/oidc/:id/start", management.OIDCLoginStart)

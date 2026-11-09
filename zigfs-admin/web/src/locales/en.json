@@ -218,6 +218,21 @@
     "password": "Password",
     "enterYourPassword": "Enter your password",
     "providerSignIn": "Continue with {provider}"
+    ,"loginMethod": "Login method"
+    ,"passwordLogin": "Password login"
+    ,"stsLogin": "STS login"
+    ,"stsUsername": "STS username"
+    ,"stsSecret": "STS secret"
+    ,"stsSessionToken": "STS session token"
+    ,"enterStsUsername": "Enter STS username"
+    ,"enterStsSecret": "Enter STS secret"
+    ,"enterStsSessionToken": "Enter STS session token"
+    ,"showSecret": "Show secret"
+    ,"hideSecret": "Hide secret"
+    ,"stsLoginNotAvailable": "STS login is not available yet"
+    ,"invalidStsCredentials": "Invalid STS credentials."
+    ,"loginTrouble": "Having trouble signing in?"
+    ,"getHelp": "Get help"
   },
   "buckets": {
     "loadingBucketConfiguration": "Loading bucket configuration…",
@@ -300,6 +315,8 @@
     "addTag": "Add tag",
     "saveTags": "Save tags",
     "versioning": "Versioning",
+    "objectLocking": "Object locking",
+    "bucketQuota": "Bucket quota",
     "bucketVersioning": "Bucket versioning",
     "suspended": "Suspended",
     "newWritesReceiveVersionIdsWhenEnabled": "New writes receive version IDs when enabled.",
@@ -912,7 +929,7 @@
     "editIdentityProvider": "Edit identity provider",
     "managedByZigfsOidcProvidersUpdateTheEnvironmentVariable": "Managed by ZIGFS_OIDC_PROVIDERS. Update the environment variable and restart ZigFS.",
     "configureAnIdentityProviderAndItsPolicyMappings": "Configure an identity provider and its policy mappings.",
-    "validateConnection": "Validate connection",
+    "validateConnection": "Validate",
     "processing": "Processing…",
     "save": "Save",
     "providerId": "Provider ID",

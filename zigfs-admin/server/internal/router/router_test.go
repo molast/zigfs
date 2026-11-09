@@ -63,6 +63,9 @@ func (authService) Login(context.Context, contract.LoginRequest) (contract.Login
 		ExpiresAt: time.Now().Add(time.Hour).Unix(),
 	}, nil
 }
+func (authService) STSLogin(context.Context, contract.STSLoginRequest) (contract.LoginResponse, error) {
+	return contract.LoginResponse{Token: "zigfs-issued-token", Username: "sts-user", ExpiresAt: time.Now().Add(time.Hour).Unix()}, nil
+}
 
 func (authService) Session(context.Context) (contract.SessionResponse, error) {
 	return contract.SessionResponse{

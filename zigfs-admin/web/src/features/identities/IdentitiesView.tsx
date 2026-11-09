@@ -184,7 +184,7 @@ export function IdentitiesView({ kind, api }: { kind: Kind; api: ApiClient }) {
     </>}
     {editingGroup && groups.find(group => group.name === editingGroup) && <GroupEditorDialog key={editingGroup} api={api} initialGroup={groups.find(group => group.name === editingGroup)!} users={users} policies={policies} onSaved={saved => setGroups(current => current.map(group => group.name === saved.name ? saved : group))} onClose={() => { setEditingGroup(null); void refresh() }} />}
     {editor && (!isGroup && editor.value ? <UserEditorDialog key={editor.value.name} api={api} initialUser={editor.value as ManagedUser} groups={groups} policies={policies} onSaved={saved => setUsers(current => current.map(user => user.name === saved.name ? saved : user))} onClose={() => setEditor(null)} /> : <IdentityEditor kind={kind} value={editor.value} users={users} groups={groups} policies={policies} onSave={save} onClose={() => setEditor(null)} />)}
-    {batch && <AssignmentDialog kind={batch} count={checked.length} options={(batch === 'groups' ? groups : policies).map(item => item.name)} onSave={assign} onClose={() => setBatch(null)} />}
+    {batch && <AssignmentDialog kind={batch} count={checked.length} selectedItems={checked} options={(batch === 'groups' ? groups : policies).map(item => item.name)} onSave={assign} onClose={() => setBatch(null)} />}
   </section>
 }
 
@@ -234,7 +234,7 @@ function IdentityEditor({ kind, value, users, groups, policies, onSave, onClose 
   </DialogContent></Dialog>
 }
 
-function AssignmentDialog({ kind, count, options, onSave, onClose }: { kind: 'groups' | 'policies'; count: number; options: string[]; onSave: (names: string[]) => Promise<void>; onClose: () => void }) {
+function AssignmentDialog({ kind, count, selectedItems, options, onSave, onClose }: { kind: 'groups' | 'policies'; count: number; selectedItems: string[]; options: string[]; onSave: (names: string[]) => Promise<void>; onClose: () => void }) {
   const [selected, setSelected] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const toast = useToast()
@@ -246,6 +246,6 @@ function AssignmentDialog({ kind, count, options, onSave, onClose }: { kind: 'gr
   }
   return <Dialog open onOpenChange={open => { if (!open && !saving) onClose() }}><DialogContent className="identity-dialog">
     <DialogHeader><DialogTitle>{kind === 'groups' ? t('identities.addToGroup') : t('identities.assignPolicy')}</DialogTitle><DialogDescription className="identity-muted">{count} {kind === 'groups' ? 'users' : 'groups'} {t('identities.selected')}</DialogDescription></DialogHeader>
-    <form onSubmit={event => void submit(event)} className="identity-form"><div className="identity-form-body"><MultiChoice title={kind === 'groups' ? t('identities.groups') : t('identities.policy')} placeholder={kind === 'groups' ? t('identities.selectGroup') : t('identities.selectPolicies')} options={options} selected={selected} onChange={setSelected} disabled={saving} /></div><footer className="identity-form-footer"><Button variant="outline" type="button" disabled={saving} onClick={onClose}>{t('identities.cancel')}</Button><Button disabled={saving || !selected.length} type="submit">{saving ? t('identities.submitting') : t('identities.submit')}</Button></footer></form>
+    <form onSubmit={event => void submit(event)} className="identity-form"><div className="identity-form-body"><div className="assignment-selected"><div className="assignment-selected-tags">{selectedItems.map(name => <Badge key={name}>{name}</Badge>)}</div></div><MultiChoice title={kind === 'groups' ? t('identities.groups') : t('identities.policy')} placeholder={kind === 'groups' ? t('identities.selectGroup') : t('identities.selectPolicies')} options={options} selected={selected} onChange={setSelected} disabled={saving} /></div><footer className="identity-form-footer"><Button variant="outline" type="button" disabled={saving} onClick={onClose}>{t('identities.cancel')}</Button><Button disabled={saving || !selected.length} type="submit">{saving ? t('identities.submitting') : t('identities.submit')}</Button></footer></form>
   </DialogContent></Dialog>
 }

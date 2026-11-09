@@ -138,6 +138,8 @@ export function createApiClient() {
         method: 'POST',
         body: JSON.stringify({ username, password }),
       }),
+    stsLogin: (username: string, secretKey: string, sessionToken: string) =>
+      request<AdminSession>('/api/v1/auth/sts-login', { method: 'POST', body: JSON.stringify({ username, secret_key: secretKey, session_token: sessionToken }) }),
     refreshOIDC: () => {
       if (!oidcRefresh) oidcRefresh = request<AdminSession>('/api/v1/auth/oidc/refresh', { method: 'POST' }).finally(() => { oidcRefresh = undefined })
       return oidcRefresh
@@ -152,10 +154,10 @@ export function createApiClient() {
     managementHealth: () => request<ManagementHealth>('/api/v1/management-health'),
     settings: () => request<Settings>('/api/v1/settings'),
     listBuckets: async () => (await request<{ items: Bucket[] }>('/api/v1/buckets')).items,
-    createBucket: (name: string) =>
+    createBucket: (value: { name: string; versioning?: boolean; object_locking?: boolean; max_bytes?: number; max_objects?: number }) =>
       request<Bucket>('/api/v1/buckets', {
         method: 'POST',
-        body: JSON.stringify({ name }),
+        body: JSON.stringify(value),
       }),
     deleteBucket: (name: string) =>
       request<void>(`/api/v1/buckets/${encodeURIComponent(name)}`, { method: 'DELETE' }),

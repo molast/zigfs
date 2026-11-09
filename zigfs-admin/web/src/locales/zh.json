@@ -218,6 +218,21 @@
     "password": "密码",
     "enterYourPassword": "请输入管理员密码",
     "providerSignIn": "使用 {provider} 登录"
+    ,"loginMethod": "登录方式"
+    ,"passwordLogin": "密钥登录"
+    ,"stsLogin": "STS 登录"
+    ,"stsUsername": "STS 用户名"
+    ,"stsSecret": "STS 密钥"
+    ,"stsSessionToken": "STS 会话令牌"
+    ,"enterStsUsername": "请输入 STS 用户名"
+    ,"enterStsSecret": "请输入 STS 密钥"
+    ,"enterStsSessionToken": "请输入 STS 会话令牌"
+    ,"showSecret": "显示密钥"
+    ,"hideSecret": "隐藏密钥"
+    ,"stsLoginNotAvailable": "STS 登录暂未启用"
+    ,"invalidStsCredentials": "STS 凭证无效。"
+    ,"loginTrouble": "登录遇到问题？"
+    ,"getHelp": "获取帮助"
   },
   "buckets": {
     "loadingBucketConfiguration": "正在加载 Bucket 配置...",
@@ -300,6 +315,8 @@
     "addTag": "添加标签",
     "saveTags": "保存 Tags",
     "versioning": "版本管理",
+    "objectLocking": "对象锁",
+    "bucketQuota": "存储桶配额",
     "bucketVersioning": "存储桶版本管理",
     "suspended": "已暂停",
     "newWritesReceiveVersionIdsWhenEnabled": "启用后将为新写入生成版本 ID",
@@ -912,7 +929,7 @@
     "editIdentityProvider": "编辑身份提供商",
     "managedByZigfsOidcProvidersUpdateTheEnvironmentVariable": "此配置由 ZIGFS_OIDC_PROVIDERS 管理，请修改环境变量后重启 ZigFS。",
     "configureAnIdentityProviderAndItsPolicyMappings": "配置身份提供商及其权限策略映射。",
-    "validateConnection": "验证连接",
+    "validateConnection": "验证",
     "processing": "处理中…",
     "save": "保存",
     "providerId": "提供商 ID",

@@ -38,6 +38,11 @@ func (client *Client) Login(ctx context.Context, request contract.LoginRequest) 
 	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/auth/login", request, &response)
 	return response, err
 }
+func (client *Client) STSLogin(ctx context.Context, request contract.STSLoginRequest) (contract.LoginResponse, error) {
+	var response contract.LoginResponse
+	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/auth/sts-login", request, &response)
+	return response, err
+}
 
 func (client *Client) Session(ctx context.Context) (contract.SessionResponse, error) {
 	var response contract.SessionResponse

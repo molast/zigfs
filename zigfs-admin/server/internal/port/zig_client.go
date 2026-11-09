@@ -53,6 +53,7 @@ type ZigClient interface {
 
 	Ready(ctx context.Context) error
 	Login(ctx context.Context, request contract.LoginRequest) (contract.LoginResponse, error)
+	STSLogin(ctx context.Context, request contract.STSLoginRequest) (contract.LoginResponse, error)
 	Session(ctx context.Context) (contract.SessionResponse, error)
 	System(ctx context.Context) (contract.SystemResponse, error)
 	Storage(ctx context.Context) (contract.StorageResponse, error)

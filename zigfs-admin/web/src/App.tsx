@@ -205,8 +205,10 @@ export default function App() {
   }
 
   if (!session) {
-    return <LoginView darkTheme={darkTheme} onLogin={async (username, password) => {
+    return <LoginView darkTheme={darkTheme} onToggleTheme={() => setDarkTheme(value => !value)} onLogin={async (username, password) => {
       setSession(await api.login(username, password))
+    }} onStsLogin={async (username, secretKey, sessionToken) => {
+      setSession(await api.stsLogin(username, secretKey, sessionToken))
     }} />
   }
 
@@ -248,9 +250,8 @@ export default function App() {
           <button className="mobile-close" type="button" aria-label={t('navigation.closeNavigation')} onClick={() => setMobileSidebarOpen(false)}><X aria-hidden="true" /></button>
         </div>
         <nav aria-label={t('navigation.primaryNavigation')}>
-          {visibleNavigation.map((group) => (
-            <div className="nav-group" key={group.label}>
-              <span className="nav-section-label">{group.label}</span>
+          {visibleNavigation.map((group, index) => (
+            <div className={`nav-group${index === 2 ? ' nav-group-divider' : ''}`} key={group.label}>
               {group.items.map((item) => {
                 const active = item.view === 'buckets' ? isBucketsActive : view === item.view
                 const Icon = item.icon
@@ -272,9 +273,6 @@ export default function App() {
         </nav>
         <div className="sidebar-footer">
           <div className="sidebar-version"><span className="status-dot" /> <span>ZigFS v0.1.0</span></div>
-          <button className="logout-button" type="button" onClick={() => void logout()}>
-            <LogOut className="nav-icon" aria-hidden="true" strokeWidth={1.8} /><span className="nav-label">{t('navigation.signOut')}</span>
-          </button>
         </div>
       </aside>
 

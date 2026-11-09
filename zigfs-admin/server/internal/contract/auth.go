@@ -5,6 +5,12 @@ type LoginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
+type STSLoginRequest struct {
+	Username     string `json:"username" binding:"required"`
+	SecretKey    string `json:"secret_key" binding:"required"`
+	SessionToken string `json:"session_token" binding:"required"`
+}
+
 type LoginResponse struct {
 	CookieExpiresAt int64  `json:"cookie_expires_at"`
 	DisplayName     string `json:"display_name"`

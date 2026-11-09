@@ -5,7 +5,7 @@ const nonce_length = 16;
 const nonce_hex_length = nonce_length * 2;
 const mac_hex_length = HmacSha256.mac_length * 2;
 
-pub const max_token_length = 128;
+pub const max_token_length = 256;
 
 pub const IssuedToken = struct {
     bytes: [max_token_length]u8,
@@ -88,6 +88,37 @@ pub fn validate(secret: []const u8, token: []const u8, now_unix_seconds: i64) ?i
         return null;
     }
     return expires_at;
+}
+
+pub const CredentialClaims = struct { access_key: []const u8, expires_at: i64 };
+
+pub fn issueCredential(io: std.Io, secret: []const u8, access_key: []const u8, ttl: u64, now: i64) !IssuedToken {
+    var nonce: [nonce_length]u8 = undefined;
+    try io.randomSecure(&nonce);
+    const expires = try std.math.add(i64, now, @intCast(ttl));
+    var result: IssuedToken = .{ .bytes = undefined, .len = 0, .expires_at_unix_seconds = expires };
+    const payload = try std.fmt.bufPrint(&result.bytes, "c1.{s}.{d}.{s}", .{ access_key, expires, std.fmt.bytesToHex(nonce, .lower) });
+    var mac: [HmacSha256.mac_length]u8 = undefined;
+    HmacSha256.create(&mac, payload, secret);
+    const suffix = try std.fmt.bufPrint(result.bytes[payload.len..], ".{s}", .{std.fmt.bytesToHex(mac, .lower)});
+    result.len = payload.len + suffix.len;
+    return result;
+}
+
+pub fn validateCredential(secret: []const u8, token: []const u8, now: i64) ?CredentialClaims {
+    var parts = std.mem.splitScalar(u8, token, '.');
+    if (!std.mem.eql(u8, parts.next() orelse return null, "c1")) return null;
+    const access_key = parts.next() orelse return null;
+    const expires = std.fmt.parseInt(i64, parts.next() orelse return null, 10) catch return null;
+    const nonce = parts.next() orelse return null;
+    const signature = parts.next() orelse return null;
+    if (parts.next() != null or access_key.len == 0 or nonce.len != nonce_hex_length or signature.len != mac_hex_length or expires <= now) return null;
+    var actual: [HmacSha256.mac_length]u8 = undefined;
+    _ = std.fmt.hexToBytes(&actual, signature) catch return null;
+    var expected: [HmacSha256.mac_length]u8 = undefined;
+    HmacSha256.create(&expected, token[0..std.mem.lastIndexOfScalar(u8, token, '.').?], secret);
+    if (!std.crypto.timing_safe.eql([HmacSha256.mac_length]u8, expected, actual)) return null;
+    return .{ .access_key = access_key, .expires_at = expires };
 }
 
 fn timingSafeStringEqual(expected: []const u8, actual: []const u8) bool {

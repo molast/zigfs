@@ -400,6 +400,10 @@ fn serveListBucketEvents(
 const CreateBucketRequest = struct {
     name: []const u8,
     owner: ?[]const u8 = null,
+    versioning: bool = false,
+    object_locking: bool = false,
+    max_bytes: ?u64 = null,
+    max_objects: ?u64 = null,
 };
 
 fn serveCreateBucket(
@@ -419,6 +423,21 @@ fn serveCreateBucket(
     };
     defer result.deinit(application.allocator);
     audit(application, request_id, "create_bucket", parsed.value.name, if (result.created) "created" else "exists");
+
+    if (result.created) {
+        if (parsed.value.versioning or parsed.value.object_locking) {
+            const updated = service.setVersioning(parsed.value.name, .enabled) catch |err| return respondBucketError(request, request_id, err);
+            updated.deinit(application.allocator);
+        }
+        if (parsed.value.object_locking) {
+            const updated = service.setObjectLocking(parsed.value.name, true) catch |err| return respondBucketError(request, request_id, err);
+            updated.deinit(application.allocator);
+        }
+        if (parsed.value.max_bytes != null or parsed.value.max_objects != null) {
+            const updated = service.setQuota(parsed.value.name, .{ .max_bytes = parsed.value.max_bytes, .max_objects = parsed.value.max_objects }) catch |err| return respondBucketError(request, request_id, err);
+            updated.deinit(application.allocator);
+        }
+    }
 
     var output: std.Io.Writer.Allocating = .init(application.allocator);
     defer output.deinit();

@@ -29,6 +29,18 @@ pub fn resolve(a: std.mem.Allocator, app: *Application, token: []const u8, now: 
         .expires_at = expires,
         .is_root = true,
     };
+    if (session.validateCredential(app.config.admin_session_secret, token, now)) |claims| {
+        const credentials = app.credentialService() orelse return error.Unavailable;
+        var material = credentials.resolveForAuth(claims.access_key) catch return null;
+        defer material.deinit(app.allocator);
+        var documents = std.ArrayList([]const u8).empty;
+        if (material.key_document) |document| try documents.append(a, try a.dupe(u8, document));
+        if (material.inherited_documents) |inherited| for (inherited) |document| try documents.append(a, try a.dupe(u8, document));
+        const owner = try a.dupe(u8, material.owner);
+        const username = if (std.mem.startsWith(u8, owner, "user:")) owner[5..] else owner;
+        const id = try a.dupe(u8, material.subject_id orelse owner);
+        return .{ .id = id, .username = username, .expires_at = claims.expires_at, .documents = try documents.toOwnedSlice(a) };
+    }
     if (std.mem.startsWith(u8, token, "o1.")) {
         if (token.len != 67) return null;
         const io = app.io orelse return error.Unavailable;

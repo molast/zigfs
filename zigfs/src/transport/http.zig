@@ -30,6 +30,7 @@ const Route = enum {
     live,
     ready,
     management_login,
+    management_sts_login,
     oidc_auth,
     management_session,
     management,
@@ -274,6 +275,7 @@ fn serveRequest(
         .metrics => serveMetrics(request, context.application.recoveryState().*, current_request_id),
         .oidc_auth => management.serveOidcAuth(request, context.application, current_request_id),
         .management_login => serveManagementLogin(request, context, current_request_id),
+        .management_sts_login => serveManagementStsLogin(request, context, current_request_id),
         .management_session => serveManagementSession(request, context, current_request_id),
         .management => serveAuthorizedManagement(request, context, current_request_id, peer),
         .s3 => s3.serveRequest(request, context.application, current_request_id, peer),
@@ -414,6 +416,35 @@ fn serveManagementLogin(
         current_request_id,
         null,
     );
+}
+
+fn serveManagementStsLogin(
+    request: *std.http.Server.Request,
+    context: *const ListenerContext,
+    current_request_id: []const u8,
+) !std.http.Status {
+    if (request.head.method != .POST) return management.respondMethodNotAllowed(request, current_request_id, "POST");
+    var read_buffer: [4096]u8 = undefined;
+    const reader = try request.readerExpectContinue(&read_buffer);
+    const body = reader.allocRemaining(std.heap.smp_allocator, .limited(4096)) catch return management.respondError(request, current_request_id, .payload_too_large, "PayloadTooLarge", "login request is too large");
+    defer std.heap.smp_allocator.free(body);
+    const Input = struct { username: []const u8, secret_key: []const u8, session_token: []const u8 };
+    const parsed = std.json.parseFromSlice(Input, std.heap.smp_allocator, body, .{}) catch return respondUnauthorized(request, current_request_id);
+    defer parsed.deinit();
+    const service = context.application.credentialService() orelse return respondUnauthorized(request, current_request_id);
+    var material = service.resolveForAuth(parsed.value.username) catch return respondUnauthorized(request, current_request_id);
+    defer material.deinit(context.application.allocator);
+    var expected_hash: [32]u8 = undefined;
+    var actual_hash: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(material.secret_key, &expected_hash, .{});
+    std.crypto.hash.sha2.Sha256.hash(parsed.value.secret_key, &actual_hash, .{});
+    if (!std.crypto.timing_safe.eql([32]u8, expected_hash, actual_hash) or material.session_token == null or !std.mem.eql(u8, material.session_token.?, parsed.value.session_token)) return respondUnauthorized(request, current_request_id);
+    const now = std.Io.Clock.real.now(context.io).toSeconds();
+    const issued = try management_session.issueCredential(context.io, context.config.admin_session_secret, parsed.value.username, context.config.admin_session_ttl_seconds, now);
+    var arena = std.heap.ArenaAllocator.init(context.application.allocator);
+    defer arena.deinit();
+    const response = try std.json.Stringify.valueAlloc(arena.allocator(), .{ .token = issued.value(), .token_type = "Bearer", .username = parsed.value.username, .subject_id = material.subject_id orelse parsed.value.username, .is_root = false, .expires_at = issued.expires_at_unix_seconds }, .{});
+    return respond(request, response, .ok, "application/json; charset=utf-8", current_request_id, null);
 }
 
 fn serveManagementSession(
@@ -613,6 +644,8 @@ fn classifyRoute(kind: ListenerKind, path: []const u8) Route {
             .oidc_auth
         else if (std.mem.eql(u8, path, "/_admin/v1/auth/login"))
             .management_login
+        else if (std.mem.eql(u8, path, "/_admin/v1/auth/sts-login"))
+            .management_sts_login
         else if (std.mem.eql(u8, path, "/_admin/v1/auth/session"))
             .management_session
         else if (std.mem.eql(u8, path, "/_admin/v1") or

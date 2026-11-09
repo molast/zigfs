@@ -22,6 +22,11 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
   const showToast = useToast()
   const [buckets, setBuckets] = useState<Bucket[]>([])
   const [name, setName] = useState('')
+  const [versioning, setVersioning] = useState(false)
+  const [objectLocking, setObjectLocking] = useState(false)
+  const [quotaEnabled, setQuotaEnabled] = useState(false)
+  const [maxBytes, setMaxBytes] = useState('')
+  const [maxObjects, setMaxObjects] = useState('')
   const [query, setQuery] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -63,11 +68,16 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
     event.preventDefault()
     const stopLoading = startLoading(t('buckets.creatingBucket'))
     try {
-      await api.createBucket(name.trim())
+      const createdName = name.trim()
+      await api.createBucket({ name: createdName, versioning: versioning || objectLocking, object_locking: objectLocking, ...(quotaEnabled && maxBytes ? { max_bytes: Number(maxBytes) } : {}), ...(quotaEnabled && maxObjects ? { max_objects: Number(maxObjects) } : {}) })
       setName('')
+      setVersioning(false)
+      setObjectLocking(false)
+      setQuotaEnabled(false)
+      setMaxBytes(''); setMaxObjects('')
       setShowCreate(false)
       await refresh()
-      showToast(t('buckets.createdBucketValue', { '0': name.trim() }))
+      showToast(t('buckets.createdBucketValue', { '0': createdName }))
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
@@ -115,7 +125,7 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
         </ToolbarControls>
       </header>
       {showCreate && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowCreate(false)}>
+        <div className="modal-backdrop" role="presentation">
           <section className="lifecycle-modal credential-modal bucket-create-modal" role="dialog" aria-modal="true" aria-labelledby="bucket-create-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="lifecycle-modal-header">
               <div className="lifecycle-modal-title"><FolderPlus aria-hidden="true" /><h3 id="bucket-create-dialog-title">{t('buckets.createBucket')}</h3></div>
@@ -123,8 +133,12 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
             </header>
             <form className="credential-modal-form" onSubmit={create}>
               <p className="credential-modal-description">{t('buckets.theNameCannotBeChangedAfterCreationTheBucket')}</p>
-              <div className="credential-modal-fields">
+              <div className="credential-modal-fields bucket-create-fields">
                 <label>{t('buckets.bucketName')}<input aria-label={t('buckets.bucketName')} placeholder="bucket-name" value={name} onChange={(event) => setName(event.target.value)} required autoFocus /></label>
+                <label className="bucket-create-toggle">{t('buckets.versioning')}<button type="button" role="switch" aria-checked={versioning} className={versioning ? 'active' : ''} onClick={() => setVersioning(value => !value)}><span /></button></label>
+                <label className="bucket-create-toggle">{t('buckets.objectLocking')}<button type="button" role="switch" aria-checked={objectLocking} className={objectLocking ? 'active' : ''} onClick={() => setObjectLocking(value => !value)}><span /></button></label>
+                <label className="bucket-create-toggle">{t('buckets.bucketQuota')}<button type="button" role="switch" aria-checked={quotaEnabled} className={quotaEnabled ? 'active' : ''} onClick={() => setQuotaEnabled(value => !value)}><span /></button></label>
+                {quotaEnabled && <div className="bucket-create-quota-fields"><input type="number" min="1" placeholder={t('buckets.byteQuota')} value={maxBytes} onChange={event => setMaxBytes(event.target.value)} /><input type="number" min="1" placeholder={t('buckets.objectCountQuota')} value={maxObjects} onChange={event => setMaxObjects(event.target.value)} /></div>}
               </div>
               <footer className="lifecycle-modal-actions">
                 <button className="secondary-button" type="button" onClick={() => setShowCreate(false)}>{t('buckets.cancel')}</button>

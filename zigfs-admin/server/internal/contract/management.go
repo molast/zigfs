@@ -101,8 +101,12 @@ type ListBucketsResponse struct {
 }
 
 type CreateBucketRequest struct {
-	Name  string `json:"name" binding:"required"`
-	Owner string `json:"owner,omitempty"`
+	Name          string  `json:"name" binding:"required"`
+	Owner         string  `json:"owner,omitempty"`
+	Versioning    bool    `json:"versioning,omitempty"`
+	ObjectLocking bool    `json:"object_locking,omitempty"`
+	MaxBytes      *uint64 `json:"max_bytes,omitempty"`
+	MaxObjects    *uint64 `json:"max_objects,omitempty"`
 }
 
 type Object struct {
