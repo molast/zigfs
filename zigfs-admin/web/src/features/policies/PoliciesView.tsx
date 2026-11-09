@@ -98,7 +98,7 @@ export function PoliciesView({ api }: { api: ApiClient }) {
           <th><button className="policy-sort-button" type="button" onClick={() => setSortAscending((current) => !current)}>{t('policies.name')} <ArrowDownUp aria-hidden="true" /></button></th>
           <th className="policy-actions-heading">{t('policies.actions')}</th>
         </tr></thead><tbody>
-          {visiblePolicies.map((policy) => <tr key={policy.name} className="policy-row" onClick={() => void openPolicy(policy)}><td>{policy.name}</td><td><div className="table-actions policy-actions"><button className="danger-button" type="button" onClick={(event) => { event.stopPropagation(); void removePolicy(policy) }}><Trash2 className="button-icon" aria-hidden="true" />{t('policies.delete')}</button></div></td></tr>)}
+          {visiblePolicies.map((policy) => <tr key={policy.name} className="policy-row" onClick={() => void openPolicy(policy)}><td>{policy.name}</td><td><div className="table-actions policy-actions"><Button variant="destructive" size="sm" type="button" onClick={(event) => { event.stopPropagation(); void removePolicy(policy) }}><Trash2 data-icon="inline-start" aria-hidden="true" />{t('policies.delete')}</Button></div></td></tr>)}
           {visiblePolicies.length === 0 && <tr><td colSpan={2} className="policies-empty">{t('policies.noPoliciesFound')}</td></tr>}
         </tbody></table></div>
         <footer className="policies-pagination">

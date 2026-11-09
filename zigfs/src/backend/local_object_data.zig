@@ -349,10 +349,13 @@ pub const LocalObjectDataStore = struct {
             readExact(source.interface(), ciphertext) catch return error.CorruptData;
             if (overlaps and remaining != 0) {
                 const plaintext = encryption_frames.open(self.allocator, key, associated_data, .{ .index = decoded.index, .plaintext_length = decoded.plaintext_length, .nonce = decoded.nonce, .tag = decoded.tag, .ciphertext = ciphertext }) catch return error.CorruptData;
-                defer { std.crypto.secureZero(u8, plaintext); self.allocator.free(plaintext); }
+                defer {
+                    std.crypto.secureZero(u8, plaintext);
+                    self.allocator.free(plaintext);
+                }
                 const from = @max(offset, frame_start) - frame_start;
                 const take = @min(@as(u64, decoded.plaintext_length) - from, remaining);
-                sink.writeAll(plaintext[@intCast(from) .. @intCast(from + take)]) catch return error.SinkWriteFailed;
+                sink.writeAll(plaintext[@intCast(from)..@intCast(from + take)]) catch return error.SinkWriteFailed;
                 remaining -= take;
             }
             total += decoded.plaintext_length;
@@ -466,7 +469,7 @@ pub const LocalObjectDataStore = struct {
         };
         durable.syncParent(self.root, self.io, paths.generationDirectory()) catch return error.Unavailable;
         durable.syncParent(self.root, self.io, trash_path) catch return error.Unavailable;
-        self.root.deleteTree(self.io, trash_path) catch return error.Unavailable;
+        try @import("cleanup.zig").removeTrash(self.root, self.io, trash_path);
         durable.syncParent(self.root, self.io, trash_path) catch return error.Unavailable;
         pruneEmptyDirectory(self, paths.objectDirectory());
         pruneEmptyDirectory(self, paths.shardDirectory());
@@ -645,11 +648,7 @@ fn parseShard(value: []const u8) ?u8 {
 }
 
 fn pruneEmptyDirectory(self: *LocalObjectDataStore, path: []const u8) void {
-    self.root.deleteDir(self.io, path) catch |err| switch (err) {
-        error.FileNotFound, error.DirNotEmpty => return,
-        else => return,
-    };
-    durable.syncParent(self.root, self.io, path) catch {};
+    @import("cleanup.zig").pruneEmpty(self.root, self.io, path);
 }
 
 const FileSink = struct {

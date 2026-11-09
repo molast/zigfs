@@ -159,7 +159,7 @@ export function BucketsView({ api, onOpenBucket }: BucketsViewProps) {
           <TableBody>
             {filteredBuckets.map((bucket) => (
               <TableRow key={bucket.name}>
-                <TableCell><div className="bucket-cell"><Folder className="bucket-symbol" aria-hidden="true" /><button className="link-button bucket-link" type="button" onClick={() => onOpenBucket(bucket.name)}>{bucket.name}</button></div></TableCell>
+                <TableCell><div className="bucket-cell"><Folder className="bucket-symbol" aria-hidden="true" /><span>{bucket.name}</span></div></TableCell>
                 <TableCell>{bucket.owner}</TableCell>
                 <TableCell>{new Date(bucket.created_at).toLocaleString(getFormatLocale())}</TableCell>
                 <TableCell className="bucket-actions-cell"><div className="flex items-center justify-center gap-2">

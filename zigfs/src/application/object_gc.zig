@@ -89,6 +89,10 @@ pub const ObjectGcService = struct {
         self.object_locks.lockAll(self.io);
         defer self.object_locks.unlockAll(self.io);
 
+        @import("../backend/cleanup.zig").rescan(self.allocator, self.data_root, self.io) catch |err| {
+            std.log.err("storage cleanup rescan failed: {t}; retry on next scan", .{err});
+        };
+
         var reachable_objects = std.AutoHashMap(ObjectLocationKey, void).init(self.allocator);
         defer reachable_objects.deinit();
         var reachable_parts = std.AutoHashMap(MultipartLocationKey, void).init(self.allocator);
@@ -164,6 +168,7 @@ pub const ObjectGcService = struct {
         for (scan.generations) |generation| {
             if (reachable_objects.contains(objectLocationKey(generation.location))) continue;
             const did_remove = self.data_store.deleteGeneration(generation.location) catch |err| {
+                std.log.err("object GC delete failed bucket={s} object={s} generation={s} error={t}; retry on next scan", .{ std.fmt.bytesToHex(generation.location.bucket_id, .lower), std.fmt.bytesToHex(generation.location.object_id, .lower), std.fmt.bytesToHex(generation.location.data_generation, .lower), err });
                 return mapDataStoreError(err);
             };
             if (!did_remove) return error.CorruptData;
@@ -173,6 +178,7 @@ pub const ObjectGcService = struct {
         for (multipart_scan.generations) |generation| {
             if (reachable_parts.contains(multipartLocationKey(generation.location))) continue;
             const did_remove = self.multipart_data_store.deleteGeneration(generation.location) catch |err| {
+                std.log.err("multipart GC delete failed upload={s} part={d} generation={s} error={t}; retry on next scan", .{ std.fmt.bytesToHex(generation.location.upload_id, .lower), generation.location.part_number, std.fmt.bytesToHex(generation.location.data_generation, .lower), err });
                 return mapMultipartDataStoreError(err);
             };
             if (!did_remove) return error.CorruptData;
@@ -196,6 +202,10 @@ pub const ObjectGcService = struct {
         defer self.multipart_locks.unlockAll(self.io);
         self.object_locks.lockAll(self.io);
         defer self.object_locks.unlockAll(self.io);
+
+        @import("../backend/cleanup.zig").rescan(self.allocator, self.data_root, self.io) catch |err| {
+            std.log.err("storage cleanup rescan failed: {t}; retry on next scan", .{err});
+        };
 
         var reachable_objects = std.AutoHashMap(ObjectLocationKey, void).init(self.allocator);
         defer reachable_objects.deinit();
@@ -240,6 +250,7 @@ pub const ObjectGcService = struct {
         for (scan.generations) |generation| {
             if (reachable_parts.contains(multipartLocationKey(generation.location))) continue;
             const did_remove = self.multipart_data_store.deleteGeneration(generation.location) catch |err| {
+                std.log.err("multipart GC delete failed upload={s} part={d} generation={s} error={t}; retry on next scan", .{ std.fmt.bytesToHex(generation.location.upload_id, .lower), generation.location.part_number, std.fmt.bytesToHex(generation.location.data_generation, .lower), err });
                 return mapMultipartDataStoreError(err);
             };
             if (!did_remove) return error.CorruptData;
@@ -282,7 +293,10 @@ pub const ObjectGcService = struct {
                     var version_buffer: [32]u8 = undefined;
                     const version_text = object.version_id.write(&version_buffer);
                     const tag_filename = object_tags.filenameFor(self.allocator, entry.bucket, entry.key, version_text) catch return error.OutOfMemory;
-                    live_tags.put(tag_filename, {}) catch { self.allocator.free(tag_filename); return error.OutOfMemory; };
+                    live_tags.put(tag_filename, {}) catch {
+                        self.allocator.free(tag_filename);
+                        return error.OutOfMemory;
+                    };
                     if (object.multipart_manifest) |manifest| {
                         for (manifest.parts) |part| {
                             const key = multipartLocationKey(.{
@@ -321,7 +335,10 @@ pub const ObjectGcService = struct {
             }
             const upload_id = std.fmt.bytesToHex(upload.id, .lower);
             const tag_filename = object_tags.filenameFor(self.allocator, upload.bucket_name, upload.key, &upload_id) catch return error.OutOfMemory;
-            live_tags.put(tag_filename, {}) catch { self.allocator.free(tag_filename); return error.OutOfMemory; };
+            live_tags.put(tag_filename, {}) catch {
+                self.allocator.free(tag_filename);
+                return error.OutOfMemory;
+            };
         }
     }
 };

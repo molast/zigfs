@@ -211,7 +211,7 @@ pub const LocalMultipartDataStore = struct {
         };
         durable.syncParent(self.root, self.io, paths.generationDirectory()) catch return error.Unavailable;
         durable.syncParent(self.root, self.io, trash_path) catch return error.Unavailable;
-        self.root.deleteTree(self.io, trash_path) catch return error.Unavailable;
+        try @import("cleanup.zig").removeTrash(self.root, self.io, trash_path);
         durable.syncParent(self.root, self.io, trash_path) catch return error.Unavailable;
         pruneEmptyDirectory(self, paths.partDirectory());
         pruneEmptyDirectory(self, paths.uploadDirectory());
@@ -403,11 +403,7 @@ fn parsePartNumber(value: []const u8) ?u16 {
 }
 
 fn pruneEmptyDirectory(self: *LocalMultipartDataStore, path: []const u8) void {
-    self.root.deleteDir(self.io, path) catch |err| switch (err) {
-        error.FileNotFound, error.DirNotEmpty => return,
-        else => return,
-    };
-    durable.syncParent(self.root, self.io, path) catch {};
+    @import("cleanup.zig").pruneEmpty(self.root, self.io, path);
 }
 
 fn temporaryPath(token: id.Uuid, buffer: *[max_path_length]u8) error{NoSpaceLeft}![]const u8 {

@@ -118,3 +118,20 @@ last successful completion timestamp/report and expose failure separately.
 Use `cd zigfs && zig build test` so the capacity backend C shim and libc are
 linked. Direct `zig test src/root.zig` invocations additionally need
 `src/backend/filesystem_capacity.c -lc`.
+
+## 清理失败后的补扫
+
+每次后台分片扫描、手动全量 GC 和启动 Multipart GC，在持有对象及上传发布锁时，
+都会补扫 `.zigfs/trash/objects`、`.zigfs/trash/multipart` 中已隔离的待删除数据。
+因此移入 Trash 后的删除失败不再只能等待重启处理。单次扫描中删除最多尝试三次，
+失败项保留在磁盘上，后续扫描继续重试；单项 Trash 删除失败不会阻塞其他 Trash 项。
+
+补扫还遍历 `objects` 和 `multipart` 的前三层物理容器，只使用空目录删除操作，
+不会递归删除其有效数据、generation 目录或 `metadata/directories` 中的用户目录记录。
+正常空文件夹不因本机制消失。已有的可达性校验和 generation GC 仍负责判定数据是否可回收。
+
+连续三次删除失败通过 `std.log.scoped(.storage_cleanup)` 输出 error 日志，包含操作、
+物理相对路径、尝试次数和底层错误；下轮扫描继续失败时会再次记录。目录不存在或非空
+属于正常情况，不输出删除失败告警。目录同步失败也会单独记录。
+目前日志走 ZigFS 标准服务日志输出；Admin 的日志配置页面是只读占位，并未提供
+可生效的级别、文件目录或输出目标配置。
