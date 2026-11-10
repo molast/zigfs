@@ -80,6 +80,23 @@ pub const AuthMaterial = struct {
         if (identity_decision == .deny or boundary_decision != .allow or resource_decision == .deny) return false;
         return identity_decision == .allow or resource_decision == .allow;
     }
+    pub fn allowsKms(self: AuthMaterial, allocator: std.mem.Allocator, action: []const u8, key: []const u8, context: @import("../auth/iam_policy.zig").Context) bool {
+        const evaluator = @import("../auth/iam_policy.zig");
+        const resource = std.fmt.allocPrint(allocator, "arn:aws:kms:::key/{s}", .{key}) catch return false;
+        defer allocator.free(resource);
+        var ctx = context;
+        ctx.resource_document = null;
+        if (self.inherited_documents) |documents| if (!evaluator.allowsWithContext(allocator, documents, action, resource, ctx)) return false;
+        if (self.key_document) |document| {
+            ctx.kind = .key_restriction;
+            if (!evaluator.allowsWithContext(allocator, &[_][]const u8{document}, action, resource, ctx)) return false;
+        }
+        if (self.boundary_documents) |documents| {
+            ctx.kind = .permission_boundary;
+            if (!evaluator.allowsWithContext(allocator, documents, action, resource, ctx)) return false;
+        }
+        return true;
+    }
     pub fn deinit(self: *AuthMaterial, allocator: std.mem.Allocator) void {
         if (self.subject_id) |subject| allocator.free(subject);
         if (self.principal_tags) |tags| allocator.free(tags);
@@ -340,7 +357,10 @@ pub const CredentialService = struct {
             self.allocator.free(documents);
         };
         var boundary_documents: ?[][]u8 = null;
-        errdefer if (boundary_documents) |documents| { for (documents) |document| self.allocator.free(document); self.allocator.free(documents); };
+        errdefer if (boundary_documents) |documents| {
+            for (documents) |document| self.allocator.free(document);
+            self.allocator.free(documents);
+        };
         if (std.mem.startsWith(u8, credential.owner, "user:")) {
             const identities = @import("identity_store.zig");
             const root = self.identity_root orelse return error.Unavailable;
@@ -387,8 +407,7 @@ pub const CredentialService = struct {
             const role = role_store.findRole(snapshot.value, role_id) orelse return error.CredentialDisabled;
             if (!role.enabled) return error.CredentialDisabled;
             subject_id = self.allocator.dupe(u8, session.subject_id) catch return error.OutOfMemory;
-            if (session.session_tags_json) |tags| principal_tags = self.allocator.dupe(u8, tags) catch return error.OutOfMemory
-            else if (role.tags_json) |tags| principal_tags = self.allocator.dupe(u8, tags) catch return error.OutOfMemory;
+            if (session.session_tags_json) |tags| principal_tags = self.allocator.dupe(u8, tags) catch return error.OutOfMemory else if (role.tags_json) |tags| principal_tags = self.allocator.dupe(u8, tags) catch return error.OutOfMemory;
             const policy_store = @import("policy_store.zig");
             const policies = policy_store.load(root, self.io, self.allocator) catch return error.Unavailable;
             defer policies.deinit();

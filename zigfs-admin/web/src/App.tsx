@@ -326,7 +326,7 @@ export default function App() {
           {view === 'bucket-detail' && <BucketDetailView
             api={api}
             bucketName={selectedBucket}
-            onDeleted={() => navigate('buckets')}
+            onBack={() => navigate('buckets')}
           />}
           {view === 'objects' && <ObjectsView api={api} initialBucket={selectedBucket} initialPrefix={selectedPrefix} onNavigatePath={(prefix) => navigate('objects', selectedBucket, prefix)} />}
           {view === 'access-keys' && <AccessKeysView api={api} />}

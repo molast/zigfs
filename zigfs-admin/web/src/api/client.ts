@@ -1,3 +1,9 @@
+import type { KmsDraft } from '@/features/settings/KmsSettingsPanel'
+export interface KmsStatus { state: 'unconfigured' | 'configured' | 'running' | 'error'; errorMessage: string; healthChecked: boolean; healthy: boolean; configured: boolean; config: KmsDraft; tokenConfigured: boolean; staticSecretKeyConfigured: boolean }
+export interface KmsKey { id: string; name: string; description: string; status: string; algorithm: string; usage: string; version: number; createdAt: string | null; rotatedAt: string | null; deletionDate: string | null; manageable: boolean }
+export interface KmsKeyList { items: KmsKey[]; canCreate: boolean; canRekey: boolean }
+export interface KmsCreateKey { name: string; description: string; setAsDefault: boolean }
+export type KmsKeyAction = 'rotate' | 'schedule-deletion' | 'cancel-deletion' | 'delete'
 import { t } from '@/locales'
 export interface OIDCProvider {
   provider_id: string; display_name: string; enabled: boolean; configuration_url: string;
@@ -153,6 +159,14 @@ export function createApiClient() {
     runStorageGC: () => request<StorageScanReport>('/api/v1/storage/gc', { method: 'POST' }),
     managementHealth: () => request<ManagementHealth>('/api/v1/management-health'),
     settings: () => request<Settings>('/api/v1/settings'),
+    stopKms: () => request<KmsStatus>('/api/v1/settings/kms/stop', { method: 'POST' }),
+    clearKmsCache: () => request<KmsStatus>('/api/v1/settings/kms/clear-cache', { method: 'POST' }),
+    kmsKeys: () => request<KmsKeyList>('/api/v1/settings/kms/keys'),
+    createKmsKey: (input: KmsCreateKey) => request<KmsKey>('/api/v1/settings/kms/keys', { method: 'POST', body: JSON.stringify(input) }),
+    kmsKeyAction: (id: string, action: KmsKeyAction) => request<{ ok: boolean }>('/api/v1/settings/kms/keys/action', { method: 'POST', body: JSON.stringify({ id, action }) }),
+    startKms: () => request<KmsStatus>('/api/v1/settings/kms/start', { method: 'POST' }),
+    kmsSettings: () => request<KmsStatus>('/api/v1/settings/kms'),
+    saveKmsSettings: (config: KmsDraft) => request<KmsStatus>('/api/v1/settings/kms', { method: 'PUT', body: JSON.stringify(config) }),
     listBuckets: async () => (await request<{ items: Bucket[] }>('/api/v1/buckets')).items,
     createBucket: (value: { name: string; versioning?: boolean; object_locking?: boolean; max_bytes?: number; max_objects?: number }) =>
       request<Bucket>('/api/v1/buckets', {
@@ -179,7 +193,7 @@ export function createApiClient() {
     },
     updateBucketConfiguration: (
       name: string,
-      update: { versioning?: 'Enabled' | 'Suspended'; access_policy?: 'Private' | 'Readonly' | 'Public' | 'Custom'; block_public_access?: boolean; tags_json?: string; clear_tags?: boolean; encryption?: 'Disabled' | 'Enabled'; max_bytes?: number; max_objects?: number; retention_enabled?: boolean; retention_duration_seconds?: number; retention_mode?: 'GOVERNANCE' | 'COMPLIANCE'; object_locking?: boolean; replication_enabled?: boolean; lifecycle_configuration?: string; clear_lifecycle?: boolean },
+      update: { versioning?: 'Enabled' | 'Suspended'; access_policy?: 'Private' | 'Readonly' | 'Public' | 'Custom'; block_public_access?: boolean; tags_json?: string; clear_tags?: boolean; encryption?: 'Disabled' | 'Enabled' | 'KMS'; kms_key_id?: string; max_bytes?: number; max_objects?: number; retention_enabled?: boolean; retention_duration_seconds?: number; retention_mode?: 'GOVERNANCE' | 'COMPLIANCE'; object_locking?: boolean; replication_enabled?: boolean; lifecycle_configuration?: string; clear_lifecycle?: boolean },
     ) => request<BucketConfiguration>(`/api/v1/buckets/${encodeURIComponent(name)}/configuration`, {
       method: 'PATCH',
       body: JSON.stringify(update),
@@ -209,9 +223,14 @@ export function createApiClient() {
         method: 'POST',
         body: JSON.stringify({ key }),
       }),
-    deleteDirectory: (bucket: string, key: string) =>
-      request<void>(`/api/v1/buckets/${encodeURIComponent(bucket)}/directories?key=${encodeURIComponent(key)}`, {
+    deleteDirectory: (bucket: string, key: string, allVersions = false) =>
+      request<void>(`/api/v1/buckets/${encodeURIComponent(bucket)}/directories?key=${encodeURIComponent(key)}&all_versions=${allVersions}`, {
         method: 'DELETE',
+      }),
+    forceCleanupDirectory: (bucket: string, key: string) =>
+      request<void>(`/api/v1/buckets/${encodeURIComponent(bucket)}/directories/cleanup`, {
+        method: 'POST',
+        body: JSON.stringify({ key }),
       }),
     presignObject: (
       accessKey: string,

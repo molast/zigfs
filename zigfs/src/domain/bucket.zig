@@ -26,6 +26,7 @@ pub const ObjectOwnership = enum(u8) { bucket_owner_enforced = 0 };
 pub const Encryption = enum(u8) {
     disabled = 0,
     enabled = 1,
+    kms = 2,
 };
 
 pub const Quota = struct {
@@ -50,6 +51,7 @@ pub const Bucket = struct {
     object_ownership: ObjectOwnership = .bucket_owner_enforced,
     block_public_access: bool = true,
     tags_json: ?[]u8 = null,
+    kms_key_id: KmsKeyId = .{},
     encryption: Encryption = .disabled,
     quota: Quota = .{},
     retention: Retention = .{},
@@ -164,3 +166,25 @@ test "reject S3 reserved bucket aliases and invalid owners" {
     try std.testing.expectError(error.InvalidOwner, validateOwner("owner\x00id"));
     try validateOwner("root");
 }
+
+/// Bucket default key IDs use the same portable names as ZigFS KMS providers.
+pub const KmsKeyId = struct {
+    bytes: [256]u8 = @splat(0),
+    len: u16 = 0,
+
+    pub fn fromString(value: []const u8) error{InvalidKeyId}!KmsKeyId {
+        if (value.len > 256 or std.mem.eql(u8, value, ".") or std.mem.eql(u8, value, "..")) return error.InvalidKeyId;
+        for (value) |c| if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_' and c != '.') return error.InvalidKeyId;
+        var result: KmsKeyId = .{ .len = @intCast(value.len) };
+        @memcpy(result.bytes[0..value.len], value);
+        return result;
+    }
+    pub fn slice(self: *const KmsKeyId) []const u8 {
+        return self.bytes[0..self.len];
+    }
+};
+
+pub const EncryptionConfiguration = struct {
+    algorithm: Encryption,
+    key: KmsKeyId = .{},
+};

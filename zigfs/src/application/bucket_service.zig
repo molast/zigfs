@@ -244,12 +244,15 @@ pub const BucketService = struct {
         defer self.mutex.unlock(self.io);
         const generation = self.index.bucketGeneration(name) orelse return error.BucketNotFound;
         const record = self.store.get(self.allocator, name) catch |err| return mapStoreError(err);
-        var bucket = switch (record) { .active => |active| active, .tombstone => return error.CorruptMetadata };
+        var bucket = switch (record) {
+            .active => |active| active,
+            .tombstone => return error.CorruptMetadata,
+        };
         errdefer bucket.deinit(self.allocator);
         if (bucket.generation != generation) return error.CorruptMetadata;
         var prepared = self.index.prepareBucket(name) catch |err| return mapIndexError(err);
         defer prepared.deinit(self.index.allocator);
-        const next = self.store.put(self.allocator, .{ .id = bucket.id, .name = bucket.name, .owner = bucket.owner, .status = bucket.status, .versioning = bucket.versioning, .access_policy = bucket.access_policy, .object_ownership = bucket.object_ownership, .block_public_access = block_public_access, .lifecycle_configuration = bucket.lifecycle_configuration, .tags_json = bucket.tags_json, .encryption = bucket.encryption, .quota = bucket.quota, .retention = bucket.retention, .object_locking = bucket.object_locking, .created_at_unix_seconds = bucket.created_at_unix_seconds }, .{ .exact = bucket.generation }) catch |err| return mapStoreError(err);
+        const next = self.store.put(self.allocator, .{ .id = bucket.id, .name = bucket.name, .owner = bucket.owner, .status = bucket.status, .versioning = bucket.versioning, .access_policy = bucket.access_policy, .object_ownership = bucket.object_ownership, .block_public_access = block_public_access, .lifecycle_configuration = bucket.lifecycle_configuration, .tags_json = bucket.tags_json, .encryption = bucket.encryption, .kms_key_id = bucket.kms_key_id, .quota = bucket.quota, .retention = bucket.retention, .object_locking = bucket.object_locking, .created_at_unix_seconds = bucket.created_at_unix_seconds }, .{ .exact = bucket.generation }) catch |err| return mapStoreError(err);
         self.index.publishBucket(&prepared, next);
         bucket.block_public_access = block_public_access;
         bucket.generation = next;
@@ -261,7 +264,11 @@ pub const BucketService = struct {
     }
 
     pub fn setEncryption(self: BucketService, name: []const u8, encryption: bucket_domain.Encryption) Error!bucket_domain.Bucket {
-        return self.updateConfiguration(name, null, null, .keep, null, false, encryption, null, null, null);
+        return self.setEncryptionWithKey(name, .{ .algorithm = encryption });
+    }
+
+    pub fn setEncryptionWithKey(self: BucketService, name: []const u8, configuration: bucket_domain.EncryptionConfiguration) Error!bucket_domain.Bucket {
+        return self.updateConfiguration(name, null, null, .keep, null, false, configuration, null, null, null);
     }
 
     pub fn setQuota(self: BucketService, name: []const u8, quota: bucket_domain.Quota) Error!bucket_domain.Bucket {
@@ -302,7 +309,7 @@ pub const BucketService = struct {
         lifecycle: LifecycleUpdate,
         tags_json: ?[]const u8,
         replace_tags: bool,
-        encryption: ?bucket_domain.Encryption,
+        encryption: ?bucket_domain.EncryptionConfiguration,
         quota: ?bucket_domain.Quota,
         retention: ?bucket_domain.Retention,
         object_locking: ?bool,
@@ -358,7 +365,8 @@ pub const BucketService = struct {
             .block_public_access = bucket.block_public_access,
             .lifecycle_configuration = lifecycle_value,
             .tags_json = tags_value,
-            .encryption = encryption orelse bucket.encryption,
+            .encryption = if (encryption) |e| e.algorithm else bucket.encryption,
+            .kms_key_id = if (encryption) |e| (if (e.algorithm == .kms) e.key else .{}) else bucket.kms_key_id,
             .quota = quota orelse bucket.quota,
             .retention = next_retention,
             .object_locking = next_object_locking,
@@ -372,7 +380,10 @@ pub const BucketService = struct {
             if (bucket.tags_json) |existing| self.allocator.free(existing);
             bucket.tags_json = owned_tags;
         }
-        bucket.encryption = encryption orelse bucket.encryption;
+        if (encryption) |e| {
+            bucket.encryption = e.algorithm;
+            bucket.kms_key_id = if (e.algorithm == .kms) e.key else .{};
+        }
         bucket.quota = quota orelse bucket.quota;
         bucket.retention = next_retention;
         bucket.object_locking = next_object_locking;

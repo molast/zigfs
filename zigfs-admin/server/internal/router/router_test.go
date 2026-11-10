@@ -128,7 +128,7 @@ func (managementService) CreateDirectory(context.Context, string, contract.Creat
 	return contract.Directory{}, nil
 }
 
-func (managementService) DeleteDirectory(context.Context, string, contract.CreateDirectoryRequest) error {
+func (managementService) DeleteDirectory(context.Context, string, contract.DeleteDirectoryRequest) error {
 	return nil
 }
 
@@ -334,7 +334,7 @@ func TestSystem(t *testing.T) {
 func TestManagementSummaryRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := testEngine(true)
-	for _, path := range []string{"/api/v1/storage", "/api/v1/storage/scanner", "/api/v1/management-health", "/api/v1/settings"} {
+	for _, path := range []string{"/api/v1/storage", "/api/v1/storage/scanner", "/api/v1/management-health", "/api/v1/settings", "/api/v1/settings/kms"} {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.AddCookie(&http.Cookie{Name: middleware.AdminSessionCookie, Value: "zigfs-issued-token"})
@@ -523,3 +523,99 @@ func (managementService) OIDCAuth(context.Context, string, string, json.RawMessa
 }
 
 func (authService) Logout(context.Context) error { return nil }
+
+func TestDirectoryOperationRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := testEngine(true)
+	for _, test := range []struct {
+		method, path, body string
+		status             int
+	}{
+		{http.MethodDelete, "/api/v1/buckets/photos/directories?key=folder%2F&all_versions=true", "", http.StatusNoContent},
+		{http.MethodDelete, "/api/v1/buckets/photos/directories?key=folder%2F&all_versions=invalid", "", http.StatusBadRequest},
+		{http.MethodPost, "/api/v1/buckets/photos/directories/cleanup", `{"key":"folder/"}`, http.StatusNoContent},
+		{http.MethodPost, "/api/v1/buckets/photos/directories/cleanup", `{}`, http.StatusBadRequest},
+	} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+		request.Header.Set("Content-Type", "application/json")
+		request.AddCookie(&http.Cookie{Name: middleware.AdminSessionCookie, Value: "zigfs-issued-token"})
+		engine.ServeHTTP(recorder, request)
+		if recorder.Code != test.status {
+			t.Errorf("%s %s: got %d, want %d: %s", test.method, test.path, recorder.Code, test.status, recorder.Body.String())
+		}
+	}
+}
+
+func (managementService) KMSSettings(context.Context) (contract.KMSStatus, error) {
+	return contract.KMSStatus{}, nil
+}
+func (managementService) SaveKMSSettings(context.Context, contract.KMSConfig) (contract.KMSStatus, error) {
+	return contract.KMSStatus{Configured: true}, nil
+}
+
+func TestKMSConfigurationRequiresSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := testEngine(true)
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(method, "/api/v1/settings/kms", nil)
+		engine.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: expected 401, got %d", method, recorder.Code)
+		}
+	}
+}
+
+func (managementService) StartKMS(context.Context) (contract.KMSStatus, error) {
+	return contract.KMSStatus{Configured: true, State: "running", Healthy: true, HealthChecked: true}, nil
+}
+
+func TestKMSStartRouteAndSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := testEngine(true)
+	for _, authenticated := range []bool{false, true} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/settings/kms/start", nil)
+		if authenticated {
+			request.AddCookie(&http.Cookie{Name: middleware.AdminSessionCookie, Value: "zigfs-issued-token"})
+		}
+		engine.ServeHTTP(recorder, request)
+		expected := http.StatusUnauthorized
+		if authenticated {
+			expected = http.StatusOK
+		}
+		if recorder.Code != expected {
+			t.Fatalf("got %d want %d: %s", recorder.Code, expected, recorder.Body.String())
+		}
+		if authenticated && !strings.Contains(recorder.Body.String(), `"state":"running"`) {
+			t.Fatal(recorder.Body.String())
+		}
+	}
+}
+
+func (managementService) StopKMS(context.Context) (contract.KMSStatus, error) {
+	return contract.KMSStatus{Configured: true, State: "configured"}, nil
+}
+
+func (managementService) ClearKMSCache(context.Context) (contract.KMSStatus, error) {
+	return contract.KMSStatus{Configured: true, State: "configured"}, nil
+}
+
+func (managementService) KMSKeys(context.Context, string, bool, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`{"items":[],"canCreate":true,"canRekey":false}`), nil
+}
+
+func TestKMSRuntimeAndKeyRoutesRequireSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := testEngine(true)
+	for _, path := range []string{"/api/v1/settings/kms/stop", "/api/v1/settings/kms/clear-cache", "/api/v1/settings/kms/keys", "/api/v1/settings/kms/keys/action"} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+		request.Header.Set("Content-Type", "application/json")
+		engine.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("%s returned %d", path, recorder.Code)
+		}
+	}
+}

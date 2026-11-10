@@ -17,6 +17,7 @@ type BucketConfiguration struct {
 	AccessPolicy           string  `json:"access_policy"`
 	TagsJSON               string  `json:"tags_json,omitempty"`
 	Encryption             string  `json:"encryption"`
+	KmsKeyID               string  `json:"kms_key_id"`
 	MaxBytes               *uint64 `json:"max_bytes,omitempty"`
 	MaxObjects             *uint64 `json:"max_objects,omitempty"`
 	RetentionEnabled       bool    `json:"retention_enabled"`
@@ -59,6 +60,7 @@ type UpdateBucketConfigurationRequest struct {
 	TagsJSON               string  `json:"tags_json,omitempty"`
 	ClearTags              bool    `json:"clear_tags,omitempty"`
 	Encryption             string  `json:"encryption,omitempty"`
+	KmsKeyID               string  `json:"kms_key_id,omitempty"`
 	MaxBytes               *uint64 `json:"max_bytes,omitempty"`
 	MaxObjects             *uint64 `json:"max_objects,omitempty"`
 	RetentionEnabled       *bool   `json:"retention_enabled,omitempty"`
@@ -129,6 +131,12 @@ type Directory struct {
 	Type         string    `json:"type"`
 	Key          string    `json:"key"`
 	LastModified time.Time `json:"last_modified"`
+}
+
+type DeleteDirectoryRequest struct {
+	Key          string `json:"key" binding:"required"`
+	AllVersions  bool   `json:"all_versions"`
+	ForceCleanup bool   `json:"-"`
 }
 
 type CreateDirectoryRequest struct {
@@ -409,4 +417,38 @@ type RoleSession struct {
 }
 type RoleSessionList struct {
 	Items []RoleSession `json:"items"`
+}
+
+type KMSConfig struct {
+	Backend               string `json:"backend"`
+	DefaultKey            string `json:"defaultKey"`
+	StaticSecretKey       string `json:"staticSecretKey"`
+	LocalKeyDirectory     string `json:"localKeyDirectory"`
+	FilePermissions       string `json:"filePermissions"`
+	LocalCacheEnabled     bool   `json:"localCacheEnabled"`
+	Address               string `json:"address"`
+	Token                 string `json:"token"`
+	Namespace             string `json:"namespace"`
+	MountPath             string `json:"mountPath"`
+	KvMount               string `json:"kvMount"`
+	KeyPathPrefix         string `json:"keyPathPrefix"`
+	SkipTlsVerification   bool   `json:"skipTlsVerification"`
+	CaCertificatePath     string `json:"caCertificatePath"`
+	ClientCertificatePath string `json:"clientCertificatePath"`
+	ClientKeyPath         string `json:"clientKeyPath"`
+	TimeoutSeconds        string `json:"timeoutSeconds"`
+	RetryCount            string `json:"retryCount"`
+	CacheEnabled          bool   `json:"cacheEnabled"`
+	CacheTtlSeconds       string `json:"cacheTtlSeconds"`
+	CacheCapacity         string `json:"cacheCapacity"`
+}
+type KMSStatus struct {
+	State                     string    `json:"state"`
+	ErrorMessage              string    `json:"errorMessage"`
+	HealthChecked             bool      `json:"healthChecked"`
+	Healthy                   bool      `json:"healthy"`
+	Configured                bool      `json:"configured"`
+	Config                    KMSConfig `json:"config"`
+	TokenConfigured           bool      `json:"tokenConfigured"`
+	StaticSecretKeyConfigured bool      `json:"staticSecretKeyConfigured"`
 }

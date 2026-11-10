@@ -39,6 +39,9 @@ pub const Error = error{
 };
 
 pub const PutOptions = struct {
+    encryption: ?bool = null,
+    kms_key: ?[]const u8 = null,
+    kms_selection: ?@import("kms.zig").Envelope = null,
     content_type: []const u8 = "application/octet-stream",
     user_metadata: []const object_domain.UserMetadata = &.{},
     expected_md5: ?[16]u8 = null,
@@ -63,6 +66,9 @@ pub const MultipartEtag = struct {
 };
 
 pub const MultipartCommitOptions = struct {
+    encryption: ?bool = null,
+    kms_key: ?[]const u8 = null,
+    kms_selection: ?@import("kms.zig").Envelope = null,
     content_type: []const u8 = "application/octet-stream",
     user_metadata: []const object_domain.UserMetadata = &.{},
     etag: MultipartEtag,
@@ -112,10 +118,21 @@ pub const ReadLease = struct {
     data_store: data_store_port.ObjectDataStore,
     multipart_data_store: ?multipart_data_store_port.MultipartDataStore,
     master_key: ?*const secret_box.Key,
+    kms: ?*@import("kms.zig").Service = null,
     object_lock: *std.Io.RwLock,
     object: ?object_domain.Object,
     lock_held: bool = true,
+    prepared_dek: ?secret_box.Key = null,
 
+    pub fn prepareKms(self: *ReadLease) Error!void {
+        if (self.prepared_dek != null) return;
+        const object = self.metadata();
+        const metadata_value = object.encryption_metadata orelse return;
+        const envelope = metadata_value.kms orelse return;
+        const ad = buildEncryptionAssociatedData(self.allocator, object.bucket_id, object.key, object.data_generation) catch return error.OutOfMemory;
+        defer self.allocator.free(ad);
+        self.prepared_dek = try unwrapKms(self.kms, self.allocator, envelope, ad);
+    }
     pub fn metadata(self: *const ReadLease) *const object_domain.Object {
         return &(self.object orelse unreachable);
     }
@@ -145,7 +162,7 @@ pub const ReadLease = struct {
             const encryption_metadata = object.encryption_metadata orelse return error.CorruptMetadata;
             const associated_data = buildEncryptionAssociatedData(self.allocator, object.bucket_id, object.key, object.data_generation) catch return error.OutOfMemory;
             defer self.allocator.free(associated_data);
-            var dek = object_encryption.unwrapDataKey(self.allocator, master_key.*, associated_data, .{
+            var dek = if (self.prepared_dek) |dek| dek else if (encryption_metadata.kms) |envelope| try unwrapKms(self.kms, self.allocator, envelope, associated_data) else object_encryption.unwrapDataKey(self.allocator, master_key.*, associated_data, .{
                 .nonce = encryption_metadata.wrapped_key_nonce,
                 .tag = encryption_metadata.wrapped_key_tag,
                 .ciphertext = encryption_metadata.wrapped_key,
@@ -197,7 +214,7 @@ pub const ReadLease = struct {
             const encryption_metadata = object.encryption_metadata orelse return error.CorruptMetadata;
             const associated_data = buildEncryptionAssociatedData(self.allocator, object.bucket_id, object.key, object.data_generation) catch return error.OutOfMemory;
             defer self.allocator.free(associated_data);
-            var dek = object_encryption.unwrapDataKey(self.allocator, master_key.*, associated_data, .{ .nonce = encryption_metadata.wrapped_key_nonce, .tag = encryption_metadata.wrapped_key_tag, .ciphertext = encryption_metadata.wrapped_key }) catch return error.CorruptData;
+            var dek = if (self.prepared_dek) |dek| dek else if (encryption_metadata.kms) |envelope| try unwrapKms(self.kms, self.allocator, envelope, associated_data) else object_encryption.unwrapDataKey(self.allocator, master_key.*, associated_data, .{ .nonce = encryption_metadata.wrapped_key_nonce, .tag = encryption_metadata.wrapped_key_tag, .ciphertext = encryption_metadata.wrapped_key }) catch return error.CorruptData;
             defer std.crypto.secureZero(u8, &dek);
             self.data_store.readEncryptedRange(locationFor(object), dek, associated_data, object.size, offset, length, sink) catch |err| return mapExistingDataError(err);
         } else {
@@ -212,6 +229,8 @@ pub const ReadLease = struct {
     }
 
     pub fn deinit(self: *ReadLease) void {
+        if (self.prepared_dek) |*dek| std.crypto.secureZero(u8, dek);
+        self.prepared_dek = null;
         if (self.object) |object| object.deinit(self.allocator);
         self.object = null;
         if (self.lock_held) self.object_lock.unlockShared(self.io);
@@ -227,6 +246,7 @@ pub const ObjectService = struct {
     data_store: data_store_port.ObjectDataStore,
     multipart_data_store: ?multipart_data_store_port.MultipartDataStore,
     master_key: ?*const secret_box.Key,
+    kms: ?*@import("kms.zig").Service = null,
     index: *index_module.MetadataIndex,
     state_mutex: *std.Io.Mutex,
     object_locks: *ObjectLockPool,
@@ -278,15 +298,16 @@ pub const ObjectService = struct {
         defer initial_bucket.deinit(self.allocator);
 
         const data_generation = @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable;
-        const staged = if (initial_bucket.encryption == .enabled) blk: {
+        const staged = if (options.kms_selection != null or options.kms_key != null or (options.encryption orelse (initial_bucket.encryption != .disabled))) blk: {
             const master_key = self.master_key orelse return error.Unavailable;
             var dek = object_encryption.generateDataKey(self.io) catch return error.Unavailable;
             defer std.crypto.secureZero(u8, &dek);
             const associated_data = buildEncryptionAssociatedData(self.allocator, initial_bucket.id, key, data_generation) catch return error.OutOfMemory;
             defer self.allocator.free(associated_data);
-            const wrapped = object_encryption.wrapDataKey(self.allocator, self.io, master_key.*, associated_data, dek) catch return error.Unavailable;
+            const kms_envelope = if (options.kms_selection) |selection| try wrapKmsSelection(self.kms, self.allocator, selection, associated_data, dek) else if (options.kms_key) |kms_key| try wrapKms(self.kms, self.allocator, kms_key, associated_data, dek) else if (options.encryption == null and initial_bucket.encryption == .kms) try wrapKms(self.kms, self.allocator, initial_bucket.kms_key_id.slice(), associated_data, dek) else null;
+            const wrapped = if (kms_envelope != null) object_encryption.WrappedKey{ .nonce = @splat(0), .tag = @splat(0), .ciphertext = @splat(0) } else object_encryption.wrapDataKey(self.allocator, self.io, master_key.*, associated_data, dek) catch return error.Unavailable;
             var result = self.data_store.stageEncrypted(data_generation, dek, associated_data, source) catch |err| return mapStageError(err);
-            result.encryption_metadata = .{ .wrapped_key_nonce = wrapped.nonce, .wrapped_key_tag = wrapped.tag, .wrapped_key = wrapped.ciphertext, .data_nonce = @as([12]u8, @splat(0)), .data_tag = @as([16 ]u8, @splat(0))};
+            result.encryption_metadata = .{ .kms = kms_envelope, .wrapped_key_nonce = wrapped.nonce, .wrapped_key_tag = wrapped.tag, .wrapped_key = wrapped.ciphertext, .data_nonce = @as([12]u8, @splat(0)), .data_tag = @as([16]u8, @splat(0)) };
             break :blk result;
         } else self.data_store.stage(data_generation, source) catch |err| return mapStageError(err);
         var staged_pending = true;
@@ -335,7 +356,7 @@ pub const ObjectService = struct {
         self.state_mutex.unlock(self.io);
         defer initial_bucket.deinit(self.allocator);
 
-        if (initial_bucket.encryption == .enabled) {
+        if (options.kms_selection != null or options.kms_key != null or (options.encryption orelse (initial_bucket.encryption != .disabled))) {
             const master_key = self.master_key orelse return error.Unavailable;
             const data_generation = @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable;
             var source = MultipartSource{ .store = multipart_store, .manifest = manifest, .index = 0, .offset = 0 };
@@ -343,9 +364,10 @@ pub const ObjectService = struct {
             defer std.crypto.secureZero(u8, &dek);
             const associated_data = buildEncryptionAssociatedData(self.allocator, initial_bucket.id, key, data_generation) catch return error.OutOfMemory;
             defer self.allocator.free(associated_data);
-            const wrapped = object_encryption.wrapDataKey(self.allocator, self.io, master_key.*, associated_data, dek) catch return error.Unavailable;
+            const kms_envelope = if (options.kms_selection) |selection| try wrapKmsSelection(self.kms, self.allocator, selection, associated_data, dek) else if (options.kms_key) |kms_key| try wrapKms(self.kms, self.allocator, kms_key, associated_data, dek) else if (options.encryption == null and initial_bucket.encryption == .kms) try wrapKms(self.kms, self.allocator, initial_bucket.kms_key_id.slice(), associated_data, dek) else null;
+            const wrapped = if (kms_envelope != null) object_encryption.WrappedKey{ .nonce = @splat(0), .tag = @splat(0), .ciphertext = @splat(0) } else object_encryption.wrapDataKey(self.allocator, self.io, master_key.*, associated_data, dek) catch return error.Unavailable;
             var staged = self.data_store.stageEncrypted(data_generation, dek, associated_data, source.interface()) catch |err| return mapStageError(err);
-            staged.encryption_metadata = .{ .wrapped_key_nonce = wrapped.nonce, .wrapped_key_tag = wrapped.tag, .wrapped_key = wrapped.ciphertext, .data_nonce = @as([12]u8, @splat(0)), .data_tag = @as([16 ]u8, @splat(0))};
+            staged.encryption_metadata = .{ .kms = kms_envelope, .wrapped_key_nonce = wrapped.nonce, .wrapped_key_tag = wrapped.tag, .wrapped_key = wrapped.ciphertext, .data_nonce = @as([12]u8, @splat(0)), .data_tag = @as([16]u8, @splat(0)) };
             var staged_pending = true;
             defer if (staged_pending) self.data_store.discard(staged.token);
             const put_options: PutOptions = .{ .content_type = options.content_type, .user_metadata = options.user_metadata, .multipart_etag = options.etag };
@@ -480,15 +502,16 @@ pub const ObjectService = struct {
             .size = source_view.size,
             .offset = 0,
         };
-        const staged = if (initial_bucket.encryption == .enabled) blk: {
+        const staged = if (options.kms_selection != null or options.kms_key != null or (options.encryption orelse (initial_bucket.encryption != .disabled))) blk: {
             const master_key = self.master_key orelse return error.Unavailable;
             var dek = object_encryption.generateDataKey(self.io) catch return error.Unavailable;
             defer std.crypto.secureZero(u8, &dek);
             const associated_data = buildEncryptionAssociatedData(self.allocator, initial_bucket.id, target_key, data_generation) catch return error.OutOfMemory;
             defer self.allocator.free(associated_data);
-            const wrapped = object_encryption.wrapDataKey(self.allocator, self.io, master_key.*, associated_data, dek) catch return error.Unavailable;
+            const kms_envelope = if (options.kms_selection) |selection| try wrapKmsSelection(self.kms, self.allocator, selection, associated_data, dek) else if (options.kms_key) |kms_key| try wrapKms(self.kms, self.allocator, kms_key, associated_data, dek) else if (options.encryption == null and initial_bucket.encryption == .kms) try wrapKms(self.kms, self.allocator, initial_bucket.kms_key_id.slice(), associated_data, dek) else null;
+            const wrapped = if (kms_envelope != null) object_encryption.WrappedKey{ .nonce = @splat(0), .tag = @splat(0), .ciphertext = @splat(0) } else object_encryption.wrapDataKey(self.allocator, self.io, master_key.*, associated_data, dek) catch return error.Unavailable;
             var result = self.data_store.stageEncrypted(data_generation, dek, associated_data, source_stream.interface()) catch |err| return mapStageError(err);
-            result.encryption_metadata = .{ .wrapped_key_nonce = wrapped.nonce, .wrapped_key_tag = wrapped.tag, .wrapped_key = wrapped.ciphertext, .data_nonce = @as([12]u8, @splat(0)), .data_tag = @as([16 ]u8, @splat(0))};
+            result.encryption_metadata = .{ .kms = kms_envelope, .wrapped_key_nonce = wrapped.nonce, .wrapped_key_tag = wrapped.tag, .wrapped_key = wrapped.ciphertext, .data_nonce = @as([12]u8, @splat(0)), .data_tag = @as([16]u8, @splat(0)) };
             break :blk result;
         } else self.data_store.stage(data_generation, source_stream.interface()) catch |err| return mapStageError(err);
         var staged_pending = true;
@@ -660,6 +683,7 @@ pub const ObjectService = struct {
             .data_store = self.data_store,
             .multipart_data_store = self.multipart_data_store,
             .master_key = self.master_key,
+            .kms = self.kms,
             .object_lock = object_lock,
             .object = object,
         };
@@ -689,6 +713,7 @@ pub const ObjectService = struct {
             .data_store = self.data_store,
             .multipart_data_store = self.multipart_data_store,
             .master_key = self.master_key,
+            .kms = self.kms,
             .object_lock = object_lock,
             .object = object,
         };
@@ -1660,6 +1685,7 @@ fn multipartLocation(upload_id: @import("../common/id.zig").Uuid, part: object_d
     return .{
         .upload_id = upload_id,
         .part_number = part.number,
+        .encrypted = part.encrypted,
         .data_generation = part.data_generation,
     };
 }
@@ -2180,4 +2206,21 @@ test "object service preserves version history delete markers and suspended null
     try std.testing.expectEqual(@as(usize, 2), suspended_versions.entries.len);
     try std.testing.expect(suspended_versions.entries[0].version_id == .null_version);
     try std.testing.expect(object_domain.VersionId.eql(first.version_id, suspended_versions.entries[1].version_id));
+}
+
+fn wrapKms(service: ?*@import("kms.zig").Service, allocator: std.mem.Allocator, key: []const u8, ad: []const u8, dek: secret_box.Key) Error!@import("kms.zig").Envelope {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    return (service orelse return error.Unavailable).wrap(arena.allocator(), key, ad, dek) catch return error.Unavailable;
+}
+fn unwrapKms(service: ?*@import("kms.zig").Service, allocator: std.mem.Allocator, envelope: @import("kms.zig").Envelope, ad: []const u8) Error!secret_box.Key {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    return (service orelse return error.Unavailable).unwrap(arena.allocator(), envelope, ad) catch return error.Unavailable;
+}
+
+fn wrapKmsSelection(service: ?*@import("kms.zig").Service, allocator: std.mem.Allocator, selection: @import("kms.zig").Envelope, ad: []const u8, dek: secret_box.Key) Error!@import("kms.zig").Envelope {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    return (service orelse return error.Unavailable).wrapSelection(arena.allocator(), selection, ad, dek) catch return error.Unavailable;
 }

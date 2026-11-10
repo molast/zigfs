@@ -20,7 +20,7 @@ const management_auth = @import("management_auth.zig");
 pub const api_prefix = "/_admin/v1";
 const max_body_size = 1024 * 1024;
 
-pub const Method = enum { get, post, patch, delete };
+pub const Method = enum { get, post, put, patch, delete };
 
 pub const Route = struct {
     method: Method,
@@ -78,6 +78,7 @@ pub const routes = [_]Route{
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/objects" },
     .{ .method = .post, .path = "/_admin/v1/buckets/:name/directories" },
     .{ .method = .delete, .path = "/_admin/v1/buckets/:name/directories" },
+    .{ .method = .post, .path = "/_admin/v1/buckets/:name/directories/cleanup" },
     .{ .method = .post, .path = "/_admin/v1/objects/presign" },
     .{ .method = .post, .path = "/_admin/v1/multipart-uploads" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/multipart-uploads" },
@@ -94,6 +95,14 @@ pub const routes = [_]Route{
     .{ .method = .get, .path = "/_admin/v1/system" },
     .{ .method = .get, .path = "/_admin/v1/health" },
     .{ .method = .get, .path = "/_admin/v1/settings" },
+    .{ .method = .get, .path = "/_admin/v1/settings/kms" },
+    .{ .method = .put, .path = "/_admin/v1/settings/kms" },
+    .{ .method = .post, .path = "/_admin/v1/settings/kms/stop" },
+    .{ .method = .post, .path = "/_admin/v1/settings/kms/clear-cache" },
+    .{ .method = .post, .path = "/_admin/v1/settings/kms/start" },
+    .{ .method = .get, .path = "/_admin/v1/settings/kms/keys" },
+    .{ .method = .post, .path = "/_admin/v1/settings/kms/keys" },
+    .{ .method = .post, .path = "/_admin/v1/settings/kms/keys/action" },
 };
 
 pub fn serveRequest(
@@ -198,6 +207,12 @@ pub fn serveRequest(
             }
             return serveListObjects(request, application, request_id, raw_name, target);
         }
+        if (std.mem.endsWith(u8, resource, "/directories/cleanup")) {
+            if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
+            const raw_name = resource[0 .. resource.len - "/directories/cleanup".len];
+            if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '/') != null) return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+            return serveDeleteFolder(request, application, request_id, raw_name, true);
+        }
         if (std.mem.endsWith(u8, resource, "/directories")) {
             const raw_name = resource[0 .. resource.len - "/directories".len];
             if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '/') != null) {
@@ -205,7 +220,7 @@ pub fn serveRequest(
             }
             return switch (request.head.method) {
                 .POST => serveCreateDirectory(request, application, request_id, raw_name),
-                .DELETE => serveDeleteDirectory(request, application, request_id, raw_name),
+                .DELETE => serveDeleteFolder(request, application, request_id, raw_name, false),
                 else => respondMethodNotAllowed(request, request_id, "POST, DELETE"),
             };
         }
@@ -284,6 +299,12 @@ pub fn serveRequest(
         if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
         return serveHealth(request, application, request_id);
     }
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/stop")) return serveKmsControl(request, application, request_id, true);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/clear-cache")) return serveKmsControl(request, application, request_id, false);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/keys")) return serveKmsKeys(request, application, request_id, false);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/keys/action")) return serveKmsKeys(request, application, request_id, true);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/start")) return serveKmsStart(request, application, request_id);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms")) return serveKmsSettings(request, application, request_id);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings")) {
         if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
         return serveSettings(request, application, request_id);
@@ -475,6 +496,7 @@ const UpdateBucketConfigurationRequest = struct {
     tags_json: ?[]const u8 = null,
     clear_tags: bool = false,
     encryption: ?[]const u8 = null,
+    kms_key_id: ?[]const u8 = null,
     max_bytes: ?u64 = null,
     max_objects: ?u64 = null,
     retention_enabled: ?bool = null,
@@ -620,8 +642,14 @@ fn serveUpdateBucketConfiguration(
         updated.deinit(application.allocator);
     }
     if (parsed.value.encryption) |status| {
-        const encryption: @import("../domain/bucket.zig").Encryption = if (std.mem.eql(u8, status, "Enabled")) .enabled else if (std.mem.eql(u8, status, "Disabled")) .disabled else return respondError(request, request_id, .bad_request, "InvalidEncryption", "encryption must be Enabled or Disabled");
-        const updated = service.setEncryption(name, encryption) catch |err| return respondBucketError(request, request_id, err);
+        const encryption: @import("../domain/bucket.zig").Encryption = if (std.mem.eql(u8, status, "Enabled")) .enabled else if (std.mem.eql(u8, status, "Disabled")) .disabled else if (std.mem.eql(u8, status, "KMS")) .kms else return respondError(request, request_id, .bad_request, "InvalidEncryption", "encryption must be Enabled, KMS or Disabled");
+        if (encryption == .kms) {
+            const kms = if (application.kms) |*value| value else return respondError(request, request_id, .service_unavailable, "KmsUnavailable", "KMS is not configured");
+            kms.requireRunning() catch |err| return respondError(request, request_id, .service_unavailable, @errorName(err), @import("../application/kms.zig").saveErrorMessage(err));
+        }
+        const key = @import("../domain/bucket.zig").KmsKeyId.fromString(parsed.value.kms_key_id orelse "") catch return respondError(request, request_id, .bad_request, "InvalidKeyId", "invalid KMS key ID");
+        if (encryption != .kms and key.len > 0) return respondError(request, request_id, .bad_request, "InvalidEncryption", "KMS key ID requires SSE-KMS");
+        const updated = service.setEncryptionWithKey(name, .{ .algorithm = encryption, .key = key }) catch |err| return respondBucketError(request, request_id, err);
         updated.deinit(application.allocator);
     }
     if (parsed.value.max_bytes != null or parsed.value.max_objects != null) {
@@ -714,9 +742,11 @@ fn respondBucketConfiguration(
         .object_ownership = "BucketOwnerEnforced",
         .block_public_access = bucket.block_public_access,
         .tags_json = bucket.tags_json,
+        .kms_key_id = bucket.kms_key_id.slice(),
         .encryption = switch (bucket.encryption) {
             .disabled => "Disabled",
             .enabled => "Enabled",
+            .kms => "KMS",
         },
         .max_bytes = bucket.quota.max_bytes,
         .max_objects = bucket.quota.max_objects,
@@ -866,27 +896,44 @@ fn serveCreateDirectory(
     return respondJson(request, request_id, .created, .{ .type = "directory", .key = directory.key, .last_modified = modified });
 }
 
-fn serveDeleteDirectory(
-    request: *std.http.Server.Request,
-    application: *Application,
-    request_id: []const u8,
-    raw_name: []const u8,
-) !std.http.Status {
+const DeleteFolderRequest = struct { key: []const u8, all_versions: bool = false };
+
+fn serveDeleteFolder(request: *std.http.Server.Request, application: *Application, request_id: []const u8, raw_name: []const u8, force: bool) !std.http.Status {
     const bucket = decodeComponent(application.allocator, raw_name, false) catch return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
     defer application.allocator.free(bucket);
-    const service = application.directoryService() orelse return respondNotReady(request, request_id);
-    const query_key = parseDirectoryKeyQuery(application.allocator, request.head.target) catch {
-        return respondError(request, request_id, .bad_request, "InvalidQuery", "directory key query is invalid");
-    };
+    const service = application.folderService() orelse return respondNotReady(request, request_id);
+    const query_key = parseDirectoryKeyQuery(application.allocator, request.head.target) catch return respondError(request, request_id, .bad_request, "InvalidQuery", "directory query is invalid");
+    defer if (query_key) |key| application.allocator.free(key);
     if (query_key) |key| {
-        defer application.allocator.free(key);
-        _ = service.delete(bucket, key) catch |err| return respondDirectoryError(request, request_id, err);
+        const all_versions = queryAllVersions(request.head.target);
+        service.delete(bucket, key, all_versions, force) catch |err| return respondFolderError(request, request_id, err, force);
     } else {
-        const parsed = try parseJsonBody(DirectoryRequest, request, application.allocator, request_id) orelse return .bad_request;
+        const parsed = try parseJsonBody(DeleteFolderRequest, request, application.allocator, request_id) orelse return .bad_request;
         defer parsed.deinit();
-        _ = service.delete(bucket, parsed.value.key) catch |err| return respondDirectoryError(request, request_id, err);
+        service.delete(bucket, parsed.value.key, parsed.value.all_versions, force) catch |err| return respondFolderError(request, request_id, err, force);
     }
     return respondNoContent(request, request_id);
+}
+
+fn respondFolderError(request: *std.http.Server.Request, request_id: []const u8, err: @import("../application/folder_service.zig").Error, cleanup: bool) !std.http.Status {
+    const status: std.http.Status = switch (err) {
+        error.InvalidBucketName, error.InvalidDirectoryKey, error.InvalidObjectKey => .bad_request,
+        error.BucketNotFound => .not_found,
+        error.ObjectLocked, error.RetentionActive => .forbidden,
+        error.Conflict, error.DirectoryNotEmpty => .conflict,
+        else => .service_unavailable,
+    };
+    return respondError(request, request_id, status, @errorName(err), if (cleanup)
+        "Directory repair or residual-data cleanup did not complete. Corrupt authoritative metadata requires recovery; no live data is intentionally deleted by cleanup."
+    else
+        "Folder deletion did not complete; some items may already have been deleted. Inspect the folder before retrying.");
+}
+
+fn queryAllVersions(target: []const u8) bool {
+    const start = std.mem.indexOfScalar(u8, target, '?') orelse return false;
+    var parameters = std.mem.splitScalar(u8, target[start + 1 ..], '&');
+    while (parameters.next()) |parameter| if (std.mem.eql(u8, parameter, "all_versions=true")) return true;
+    return false;
 }
 
 const PresignObjectRequest = struct {
@@ -1728,12 +1775,19 @@ fn parseDirectoryKeyQuery(allocator: std.mem.Allocator, target: []const u8) !?[]
     const raw_query = target[query_start + 1 ..];
     if (raw_query.len == 0) return null;
     var key: ?[]u8 = null;
+    var seen_all_versions = false;
     errdefer if (key) |value| allocator.free(value);
     var parameters = std.mem.splitScalar(u8, raw_query, '&');
     while (parameters.next()) |parameter| {
         if (parameter.len == 0) return error.InvalidQuery;
         const equals = std.mem.indexOfScalar(u8, parameter, '=') orelse return error.InvalidQuery;
         const name = parameter[0..equals];
+        if (std.mem.eql(u8, name, "all_versions")) {
+            const value = parameter[equals + 1 ..];
+            if (seen_all_versions or (!std.mem.eql(u8, value, "true") and !std.mem.eql(u8, value, "false"))) return error.InvalidQuery;
+            seen_all_versions = true;
+            continue;
+        }
         if (!std.mem.eql(u8, name, "key") or key != null) return error.InvalidQuery;
         key = try decodeComponent(allocator, parameter[equals + 1 ..], true);
     }
@@ -2897,4 +2951,80 @@ fn validateOidcProvider(request: *std.http.Server.Request, app: *Application, re
     const p = (try parseJsonBody(@import("../application/oidc_store.zig").Provider, request, a, request_id) orelse return .bad_request).value;
     const issuer = @import("../application/oidc_auth.zig").validateDiscovery(a, app.io orelse return respondNotReady(request, request_id), p) catch return respondError(request, request_id, .bad_request, "OidcValidationFailed", "discovery or JWKS validation failed; check issuer URL, HTTPS and provider availability");
     return respondJson(request, request_id, .ok, .{ .issuer = issuer, .discovery_valid = true, .login_verified = false });
+}
+
+test "folder deletion query validates all versions and rejects duplicates" {
+    const target = "/directories?key=folder%2F&all_versions=true";
+    const key = (try parseDirectoryKeyQuery(std.testing.allocator, target)).?;
+    defer std.testing.allocator.free(key);
+    try std.testing.expectEqualStrings("folder/", key);
+    try std.testing.expect(queryAllVersions(target));
+    try std.testing.expect(!queryAllVersions("/directories?key=folder%2F&all_versions=false"));
+    try std.testing.expectError(error.InvalidQuery, parseDirectoryKeyQuery(std.testing.allocator, "/directories?key=a%2F&all_versions=yes"));
+    try std.testing.expectError(error.InvalidQuery, parseDirectoryKeyQuery(std.testing.allocator, "/directories?key=a%2F&all_versions=true&all_versions=false"));
+}
+
+fn serveKmsSettings(request: *std.http.Server.Request, application: *Application, request_id: []const u8) !std.http.Status {
+    const service = if (application.kms) |*kms| kms else return respondError(request, request_id, .service_unavailable, "Unavailable", "KMS is not ready");
+    var arena = std.heap.ArenaAllocator.init(application.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    if (request.head.method == .PUT) {
+        const parsed = try parseJsonBody(@import("../application/kms.zig").Config, request, a, request_id) orelse return .bad_request;
+        service.save(a, parsed.value) catch |err| {
+            std.log.warn("KMS configuration save failed: {s}", .{@errorName(err)});
+            return respondError(request, request_id, if (err == error.InvalidKmsConfig or err == error.KmsVaultHttpsRequired) .bad_request else .service_unavailable, @errorName(err), @import("../application/kms.zig").saveErrorMessage(err));
+        };
+    } else if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET, PUT");
+    const status = service.status(a) catch return respondError(request, request_id, .service_unavailable, "KmsUnavailable", "KMS configuration could not be loaded");
+    return respondJson(request, request_id, .ok, status);
+}
+
+fn serveKmsStart(request: *std.http.Server.Request, application: *Application, request_id: []const u8) !std.http.Status {
+    if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
+    const service = if (application.kms) |*kms| kms else return respondError(request, request_id, .service_unavailable, "KmsUnavailable", "KMS is not ready");
+    var arena = std.heap.ArenaAllocator.init(application.allocator);
+    defer arena.deinit();
+    service.verify(arena.allocator()) catch |err| {
+        const failed = service.status(arena.allocator()) catch return respondError(request, request_id, .service_unavailable, @errorName(err), @import("../application/kms.zig").saveErrorMessage(err));
+        return respondError(request, request_id, .service_unavailable, @errorName(err), if (failed.errorMessage.len > 0) failed.errorMessage else @import("../application/kms.zig").saveErrorMessage(err));
+    };
+    return respondJson(request, request_id, .ok, try service.status(arena.allocator()));
+}
+
+fn serveKmsControl(request: *std.http.Server.Request, application: *Application, request_id: []const u8, stop: bool) !std.http.Status {
+    if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
+    const service = if (application.kms) |*kms| kms else return respondError(request, request_id, .service_unavailable, "KmsUnavailable", "KMS is not ready");
+    var arena = std.heap.ArenaAllocator.init(application.allocator);
+    defer arena.deinit();
+    if (stop) service.stop(arena.allocator()) catch |err| return respondError(request, request_id, .service_unavailable, @errorName(err), @import("../application/kms.zig").saveErrorMessage(err)) else service.flushCache() catch |err| return respondError(request, request_id, .conflict, @errorName(err), @import("../application/kms.zig").saveErrorMessage(err));
+    return respondJson(request, request_id, .ok, try service.status(arena.allocator()));
+}
+
+fn serveKmsKeys(request: *std.http.Server.Request, application: *Application, request_id: []const u8, action: bool) !std.http.Status {
+    const service = if (application.kms) |*kms| kms else return respondError(request, request_id, .service_unavailable, "KmsUnavailable", "KMS is not ready");
+    var arena = std.heap.ArenaAllocator.init(application.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    if (action) {
+        if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
+        const input = try parseJsonBody(struct { id: []const u8, action: []const u8 }, request, a, request_id) orelse return .bad_request;
+        service.keyAction(a, input.value.id, input.value.action) catch |err| return kmsKeyError(request, request_id, err);
+        return respondJson(request, request_id, .ok, .{ .ok = true });
+    }
+    if (request.head.method == .GET) {
+        const keys = service.listKeys(a) catch |err| return kmsKeyError(request, request_id, err);
+        return respondJson(request, request_id, .ok, keys);
+    }
+    if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "GET, POST");
+    const input = try parseJsonBody(@import("../application/kms_keys.zig").CreateKey, request, a, request_id) orelse return .bad_request;
+    const key = service.createKey(a, input.value) catch |err| return kmsKeyError(request, request_id, err);
+    return respondJson(request, request_id, .created, key);
+}
+fn kmsKeyError(request: *std.http.Server.Request, request_id: []const u8, err: anyerror) !std.http.Status {
+    return respondError(request, request_id, switch (err) {
+        error.InvalidKmsKeyRequest, error.InvalidKmsConfig => .bad_request,
+        error.KmsNotRunning, error.KmsKeyPendingDeletion, error.KmsKeyDeletionNotScheduled, error.KmsKeyOperationUnsupported => .conflict,
+        else => .service_unavailable,
+    }, @errorName(err), @import("../application/kms.zig").saveErrorMessage(err));
 }

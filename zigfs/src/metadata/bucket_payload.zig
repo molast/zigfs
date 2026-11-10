@@ -4,7 +4,7 @@ const id = @import("../common/id.zig");
 
 pub const magic = [4]u8{ 'Z', 'F', 'B', 'K' };
 pub const major_version: u16 = 1;
-pub const minor_version: u16 = 6;
+pub const minor_version: u16 = 7;
 pub const legacy_header_length: usize = 40;
 pub const header_length: usize = 88;
 
@@ -33,6 +33,7 @@ pub const Value = struct {
     versioning: bucket_domain.Versioning = .unversioned,
     access_policy: bucket_domain.AccessPolicy = .private,
     tags_json: ?[]const u8 = null,
+    kms_key_id: bucket_domain.KmsKeyId = .{},
     encryption: bucket_domain.Encryption = .disabled,
     quota: bucket_domain.Quota = .{},
     retention: bucket_domain.Retention = .{},
@@ -80,7 +81,7 @@ pub fn encode(
     const fields_with_tags = std.math.add(usize, fields_length, tags.len) catch {
         return error.PayloadTooLarge;
     };
-    const total_length = std.math.add(usize, header_length, fields_with_tags) catch {
+    const total_length = std.math.add(usize, header_length + value.kms_key_id.len, fields_with_tags) catch {
         return error.PayloadTooLarge;
     };
     const bytes = try allocator.alloc(u8, total_length);
@@ -109,6 +110,7 @@ pub fn encode(
     std.mem.writeInt(u64, bytes[retention_duration_offset .. retention_duration_offset + 8], value.retention.default_duration_seconds orelse 0, .little);
     bytes[retention_mode_offset] = if (!value.retention.enabled) 0 else @backingInt(value.retention.mode orelse return error.PayloadTooLarge);
     bytes[object_locking_offset] = @intFromBool(value.object_locking);
+    std.mem.writeInt(u16, bytes[82..84], value.kms_key_id.len, .little);
     var offset = header_length;
     @memcpy(bytes[offset .. offset + value.name.len], value.name);
     offset += value.name.len;
@@ -119,7 +121,9 @@ pub fn encode(
     // so bound it to the lifecycle payload explicitly.
     @memcpy(bytes[offset .. offset + lifecycle.len], lifecycle);
     offset += lifecycle.len;
-    @memcpy(bytes[offset..], tags);
+    @memcpy(bytes[offset .. offset + tags.len], tags);
+    offset += tags.len;
+    @memcpy(bytes[offset..], value.kms_key_id.slice());
     return bytes;
 }
 
@@ -189,6 +193,7 @@ pub fn decode(bytes: []const u8) DecodeError!Value {
     const encryption: bucket_domain.Encryption = if (encoded_minor_version < 4) .disabled else switch (bytes[encryption_offset]) {
         0 => .disabled,
         1 => .enabled,
+        2 => .kms,
         else => return error.UnsupportedFlags,
     };
     const quota: bucket_domain.Quota = if (encoded_minor_version < 5) .{} else .{
@@ -215,14 +220,17 @@ pub fn decode(bytes: []const u8) DecodeError!Value {
     const all_fields_length = std.math.add(usize, fields_length, tags_length) catch {
         return error.InvalidLength;
     };
-    const expected_length = std.math.add(usize, encoded_header_length, all_fields_length) catch {
+    const key_length: usize = if (encoded_minor_version >= 7) std.mem.readInt(u16, bytes[82..84], .little) else 0;
+    if (key_length > 256 or (key_length > 0 and encryption != .kms)) return error.UnsupportedFlags;
+    const expected_length = std.math.add(usize, encoded_header_length + key_length, all_fields_length) catch {
         return error.InvalidLength;
     };
     if (bytes.len != expected_length) return error.InvalidLength;
     const name = bytes[encoded_header_length .. encoded_header_length + name_length];
     const owner = bytes[encoded_header_length + name_length .. encoded_header_length + names_length];
     const lifecycle = bytes[encoded_header_length + names_length .. encoded_header_length + names_length + lifecycle_length];
-    const tags = bytes[encoded_header_length + names_length + lifecycle_length ..];
+    const tags = bytes[encoded_header_length + names_length + lifecycle_length .. bytes.len - key_length];
+    const key = bucket_domain.KmsKeyId.fromString(bytes[bytes.len - key_length ..]) catch return error.UnsupportedFlags;
     bucket_domain.validateName(name) catch return error.InvalidName;
     bucket_domain.validateOwner(owner) catch return error.InvalidOwner;
     return .{
@@ -234,6 +242,7 @@ pub fn decode(bytes: []const u8) DecodeError!Value {
         .access_policy = access_policy,
         .tags_json = if (tags.len == 0) null else tags,
         .encryption = encryption,
+        .kms_key_id = key,
         .quota = quota,
         .retention = retention,
         .object_locking = object_locking,
@@ -343,4 +352,30 @@ test "custom access policy survives metadata round trip" {
     });
     defer std.testing.allocator.free(encoded);
     try std.testing.expectEqual(.custom, (try decode(encoded)).access_policy);
+}
+
+test "bucket KMS key persists alongside tags and old metadata has no key" {
+    var value: Value = .{
+        .id = .{ 0, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 },
+        .name = "kms-bucket",
+        .owner = "root",
+        .status = .active,
+        .created_at_unix_seconds = 1_800_000_000,
+        .encryption = .kms,
+        .kms_key_id = try bucket_domain.KmsKeyId.fromString("bucket-key"),
+        .tags_json = "{}",
+        .lifecycle_configuration = "<LifecycleConfiguration/>",
+    };
+    const bytes = try encode(std.testing.allocator, value);
+    defer std.testing.allocator.free(bytes);
+    const decoded = try decode(bytes);
+    try std.testing.expectEqualStrings("bucket-key", decoded.kms_key_id.slice());
+    try std.testing.expectEqualStrings("{}", decoded.tags_json.?);
+    try std.testing.expectEqualStrings(value.lifecycle_configuration.?, decoded.lifecycle_configuration.?);
+    value.kms_key_id = .{};
+    const old = try encode(std.testing.allocator, value);
+    defer std.testing.allocator.free(old);
+    std.mem.writeInt(u16, old[6..8], 6, .little);
+    const legacy = try decode(old);
+    try std.testing.expectEqual(@as(u16, 0), legacy.kms_key_id.len);
 }

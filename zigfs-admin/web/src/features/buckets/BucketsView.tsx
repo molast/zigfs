@@ -1,6 +1,6 @@
 import { t, getFormatLocale } from '@/locales'
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
-import { Settings, Folder, Trash2 } from 'lucide-react'
+import { Settings, Folder, Trash2, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 import { ApiError, type ApiClient } from '../../api/client'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
@@ -13,7 +13,10 @@ import { RadioGroup, RadioGroupItem } from '../../components/ui/radio-group'
 import { Button } from '../../components/ui/Button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '../../components/ui/empty'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table'
-import type { Bucket } from '../../types/api'
+import type { Bucket, BucketConfiguration, BucketUsage } from '../../types/api'
+
+type BucketRow = Bucket & { usage?: BucketUsage; accessPolicy?: BucketConfiguration['access_policy'] }
+type SortField = 'name' | 'created_at' | 'objects' | 'bytes' | 'accessPolicy'
 
 interface BucketsViewProps {
   api: ApiClient
@@ -25,7 +28,8 @@ export function BucketsView({ api, onOpenBucket, onOpenObjects }: BucketsViewPro
   const confirm = useConfirm()
   const { startLoading } = useLoading()
   const showToast = useToast()
-  const [buckets, setBuckets] = useState<Bucket[]>([])
+  const [buckets, setBuckets] = useState<BucketRow[]>([])
+  const [sort, setSort] = useState<{ field: SortField; direction: 1 | -1 } | null>(null)
   const [name, setName] = useState('')
   const [versioning, setVersioning] = useState(false)
   const [objectLocking, setObjectLocking] = useState(false)
@@ -47,7 +51,26 @@ export function BucketsView({ api, onOpenBucket, onOpenObjects }: BucketsViewPro
     const stopLoading = startLoading(t('buckets.loadingBuckets'))
     try {
       setRefreshing(true)
-      setBuckets(await api.listBuckets())
+      const items = await api.listBuckets()
+      setBuckets(items)
+      let detailsFailed = false
+      // Bound concurrent requests when an account has many buckets.
+      for (let offset = 0; offset < items.length; offset += 5) {
+        const rows = await Promise.all(items.slice(offset, offset + 5).map(async (bucket): Promise<BucketRow> => {
+          const [usage, configuration] = await Promise.allSettled([
+            api.getBucketUsage(bucket.name),
+            api.getBucketConfiguration(bucket.name),
+          ])
+          if (usage.status === 'rejected' || configuration.status === 'rejected') detailsFailed = true
+          return {
+            ...bucket,
+            usage: usage.status === 'fulfilled' ? usage.value : undefined,
+            accessPolicy: configuration.status === 'fulfilled' ? configuration.value.access_policy : undefined,
+          }
+        }))
+        setBuckets(current => current.map(bucket => rows.find(row => row.name === bucket.name) ?? bucket))
+      }
+      if (detailsFailed) notifyError(t('buckets.listDetailsUnavailable'))
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
@@ -62,9 +85,31 @@ export function BucketsView({ api, onOpenBucket, onOpenObjects }: BucketsViewPro
 
   const filteredBuckets = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    if (!needle) return buckets
-    return buckets.filter((bucket) => bucket.name.toLowerCase().includes(needle) || bucket.owner.toLowerCase().includes(needle))
-  }, [buckets, query])
+    const filtered = buckets.filter((bucket) => !needle || bucket.name.toLowerCase().includes(needle) || bucket.owner.toLowerCase().includes(needle))
+    if (!sort) return filtered
+    const value = (bucket: BucketRow) => {
+      if (sort.field === 'objects' || sort.field === 'bytes') return bucket.usage?.[sort.field]
+      if (sort.field === 'created_at') return new Date(bucket.created_at).getTime()
+      return bucket[sort.field]
+    }
+    return filtered.sort((a, b) => {
+      const left = value(a)
+      const right = value(b)
+      if (left === undefined) return right === undefined ? 0 : 1
+      if (right === undefined) return -1
+      return (typeof left === 'number' && typeof right === 'number' ? left - right : String(left).localeCompare(String(right), getFormatLocale())) * sort.direction
+    })
+  }, [buckets, query, sort])
+
+  function sortHeader(field: SortField, label: string) {
+    const active = sort?.field === field
+    const Icon = active ? sort.direction === 1 ? ArrowUp : ArrowDown : ArrowUpDown
+    return <TableHead aria-sort={active ? sort.direction === 1 ? 'ascending' : 'descending' : 'none'}>
+      <Button variant="ghost" size="sm" onClick={() => setSort({ field, direction: active && sort.direction === 1 ? -1 : 1 })}>
+        {label}<Icon data-icon="inline-end" aria-hidden="true" />
+      </Button>
+    </TableHead>
+  }
 
   async function create(event: FormEvent) {
     event.preventDefault()
@@ -191,24 +236,28 @@ export function BucketsView({ api, onOpenBucket, onOpenObjects }: BucketsViewPro
       <div className="data-table-frame">
         <Table>
           <TableHeader><TableRow>
-            <TableHead>{t('buckets.bucket')}</TableHead>
-            <TableHead>{t('buckets.owner')}</TableHead>
-            <TableHead>{t('buckets.creationDate')}</TableHead>
+            {sortHeader('name', t('buckets.bucket'))}
+            {sortHeader('created_at', t('buckets.creationDate'))}
+            {sortHeader('objects', t('buckets.objectCount'))}
+            {sortHeader('bytes', t('buckets.size'))}
+            {sortHeader('accessPolicy', t('buckets.accessPolicy'))}
             <TableHead className="bucket-actions-cell">{t('buckets.actions')}</TableHead>
           </TableRow></TableHeader>
           <TableBody>
             {filteredBuckets.map((bucket) => (
               <TableRow key={bucket.name}>
                 <TableCell><div className="bucket-cell"><Folder className="bucket-symbol" aria-hidden="true" /><Button variant="link" className="bucket-name-link" type="button" onClick={() => onOpenObjects(bucket.name)}>{bucket.name}</Button></div></TableCell>
-                <TableCell>{bucket.owner}</TableCell>
                 <TableCell>{new Date(bucket.created_at).toLocaleString(getFormatLocale())}</TableCell>
+                <TableCell>{bucket.usage?.objects.toLocaleString(getFormatLocale()) ?? '—'}</TableCell>
+                <TableCell>{bucket.usage ? formatBucketSize(bucket.usage.bytes) : '—'}</TableCell>
+                <TableCell>{bucket.accessPolicy ? t(({ Private: 'buckets.private', Readonly: 'buckets.readonly', Public: 'buckets.public', Custom: 'buckets.customPolicy' } as const)[bucket.accessPolicy]) : '—'}</TableCell>
                 <TableCell className="bucket-actions-cell"><div className="flex items-center justify-center gap-2">
                   <Button variant="outline" size="sm" type="button" onClick={() => onOpenBucket(bucket.name)}><Settings data-icon="inline-start" />{t('buckets.settings')}</Button>
                   <Button variant="destructive" size="sm" type="button" onClick={() => void remove(bucket.name)}><Trash2 data-icon="inline-start" />{t('buckets.delete')}</Button>
                 </div></TableCell>
               </TableRow>
             ))}
-            {filteredBuckets.length === 0 && <TableRow><TableCell colSpan={4} className="data-table-empty-cell"><Empty><EmptyHeader>
+            {filteredBuckets.length === 0 && <TableRow><TableCell colSpan={6} className="data-table-empty-cell"><Empty><EmptyHeader>
               <EmptyTitle>{buckets.length === 0 ? t('buckets.noBucketsYet') : t('buckets.noMatchingBuckets')}</EmptyTitle>
               <EmptyDescription>{buckets.length === 0 ? t('buckets.createYourFirstBucketToSeeItHere') : t('buckets.adjustYourSearchAndTryAgain')}</EmptyDescription>
             </EmptyHeader></Empty></TableCell></TableRow>}
@@ -217,4 +266,10 @@ export function BucketsView({ api, onOpenBucket, onOpenObjects }: BucketsViewPro
       </div>
     </section>
   )
+}
+
+function formatBucketSize(bytes: number) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+  const index = bytes > 0 ? Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1) : 0
+  return `${(bytes / 1024 ** index).toLocaleString(getFormatLocale(), { maximumFractionDigits: index === 0 ? 0 : 1 })} ${units[index]}`
 }

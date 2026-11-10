@@ -3,6 +3,7 @@ const id = @import("../common/id.zig");
 const byte_stream = @import("byte_stream.zig");
 
 pub const Location = struct {
+    encrypted: bool = false,
     upload_id: id.Uuid,
     part_number: u16,
     data_generation: id.Uuid,
@@ -55,6 +56,7 @@ pub const MultipartDataStore = struct {
 
     pub const VTable = struct {
         cleanup_staged: *const fn (*anyopaque) Error!usize,
+        stage_encrypted: ?*const fn (*anyopaque, id.Uuid, byte_stream.Source) Error!Staged = null,
         stage: *const fn (*anyopaque, id.Uuid, byte_stream.Source) Error!Staged,
         publish: *const fn (*anyopaque, Staged, Location) Error!void,
         discard: *const fn (*anyopaque, id.Uuid) void,
@@ -71,6 +73,10 @@ pub const MultipartDataStore = struct {
 
     pub fn stage(self: MultipartDataStore, token: id.Uuid, source: byte_stream.Source) Error!Staged {
         return self.vtable.stage(self.context, token, source);
+    }
+
+    pub fn stageEncrypted(self: MultipartDataStore, token: id.Uuid, source: byte_stream.Source) Error!Staged {
+        return (self.vtable.stage_encrypted orelse return error.Unavailable)(self.context, token, source);
     }
 
     pub fn publish(self: MultipartDataStore, staged: Staged, location: Location) Error!void {

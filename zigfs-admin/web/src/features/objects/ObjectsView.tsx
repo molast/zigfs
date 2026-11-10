@@ -2,12 +2,13 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/Ta
 import { Progress } from '../../components/ui/progress'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '../../components/ui/sheet'
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '../../components/ui/empty'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/Dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/Dialog'
+import { Field, FieldGroup, FieldLabel, FieldDescription } from '../../components/ui/field'
 import { Input } from '../../components/ui/Input'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../../components/ui/table'
 import { Button } from '../../components/ui/Button'
 import { RadioGroup, RadioGroupItem } from '../../components/ui/radio-group'
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuGroup } from '../../components/ui/dropdown-menu'
 import { EllipsisVertical } from 'lucide-react'
 import { OptionSelect } from '../../components/ui/OptionSelect'
 import { t, getFormatLocale } from '@/locales'
@@ -25,6 +26,8 @@ import {
   History,
   List,
   Pause,
+  Pencil,
+  Ellipsis,
   Play,
   RefreshCw,
   RotateCcw,
@@ -139,6 +142,9 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   const [selectedObjectKeys, setSelectedObjectKeys] = useState<Set<string>>(new Set())
   const [selectedDeletedIds, setSelectedDeletedIds] = useState<Set<string>>(new Set())
   const [selectedVersionIds, setSelectedVersionIds] = useState<Set<string>>(new Set())
+  const [renameObject, setRenameObject] = useState<ObjectSummary | null>(null)
+  const [renameName, setRenameName] = useState('')
+  const [renaming, setRenaming] = useState(false)
   const [transferDialog, setTransferDialog] = useState<TransferDialogState | null>(null)
   const [transferBucket, setTransferBucket] = useState(bucket)
   const [transferPath, setTransferPath] = useState('')
@@ -1147,6 +1153,42 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     }
   }
 
+  const renameSourceName = renameObject?.key.slice(renameObject.key.lastIndexOf('/') + 1) ?? ''
+  const renameInvalid = !renameName.trim() || renameName === renameSourceName || renameName.includes('/') || renameName === '.' || renameName === '..'
+
+  async function submitRename(event: FormEvent) {
+    event.preventDefault()
+    if (!renameObject || !accessKey || !bucket || renaming) return
+    if (renameInvalid) { notifyError(t('objects.renameNameHint')); return }
+    const sourceKey = renameObject.key
+    const destinationKey = sourceKey.slice(0, sourceKey.lastIndexOf('/') + 1) + renameName
+    if (new TextEncoder().encode(destinationKey).length > 1024) { notifyError(t('objects.renameKeyTooLong')); return }
+    setRenaming(true)
+    let copied = false
+    try {
+      const existing = await api.listObjects(bucket, destinationKey, '', '', 1)
+      if (existing.items.some(item => item.key === destinationKey)) {
+        notifyError(t('objects.renameTargetExists'))
+        return
+      }
+      await copyObjectKey(sourceKey, bucket, destinationKey)
+      copied = true
+      await deleteObjectKey(sourceKey)
+      setRenameObject(null)
+      setSelectedObjectKeys(current => new Set([...current].filter(key => key !== sourceKey)))
+      if (detail?.key === sourceKey) closeDetail()
+      showToast(t('objects.renamedObject', { name: renameName }))
+      await load(true)
+    } catch (reason) {
+      notifyError(copied
+        ? t('objects.renameDeleteFailed', { name: renameName, error: (reason as Error).message })
+        : (reason as Error).message)
+      if (copied) await load(true)
+    } finally {
+      setRenaming(false)
+    }
+  }
+
   async function submitTransfer(event: FormEvent) {
     event.preventDefault()
     if (!transferDialog || !transferBucket || transferring) return
@@ -1248,34 +1290,60 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     setDetailTags('')
   }
 
-  async function removeDirectory(object: ObjectSummary) {
-    if (!accessKey || !bucket || !isDirectoryKey(object.key)) return
+  async function forceCleanupFolder(object: ObjectSummary) {
+    if (!bucket || !isDirectoryKey(object.key) || deletingKey) return
+    const folderPrefix = object.key.endsWith('/') ? object.key : `${object.key}/`
     if (!await confirm({
-      title: t('objects.deleteDirectory'),
-      message: t('objects.deleteDirectoryValueAndContents', { '0': displayDirectoryKey(object.key) }),
-      confirmLabel: t('objects.deleteDirectory'),
-      danger: true,
+      title: t('objects.forceCleanupFolder'),
+      message: t('objects.forceCleanupFolderDescription'),
+      details: `${bucket}/${folderPrefix}`,
+      confirmLabel: t('objects.forceCleanupFolder'),
+    })) return
+    const stopLoading = startLoading(t('objects.cleaningUpFolder'))
+    try {
+      setDeletingKey(object.key)
+      await api.forceCleanupDirectory(bucket, folderPrefix)
+      showToast(t('objects.folderCleanupComplete', { name: displayDirectoryKey(object.key) }))
+    } catch (reason) {
+      notifyError(t('objects.folderCleanupFailed', { error: (reason as Error).message }))
+    } finally {
+      setDeletingKey('')
+      stopLoading()
+      await load(true)
+    }
+  }
+
+  async function removeDirectory(object: ObjectSummary) {
+    if (!bucket || !isDirectoryKey(object.key) || deletingKey) return
+    let allVersions = false
+    if (!await confirm({
+      title: t('common.warning'),
+      message: t('objects.deleteFolderConfirmation'),
+      details: object.key,
+      checkbox: { label: t('objects.deleteAllVersions'), onCheckedChange: checked => { allVersions = checked } },
+      confirmLabel: t('common.confirm'),
     })) return
     const stopLoading = startLoading(t('objects.deletingDirectory'))
     try {
       setDeletingKey(object.key)
-      await trackDeletion(object.key, true, () => deleteDirectory(object.key))
+      await trackDeletion(object.key, true, () => api.deleteDirectory(bucket, object.key, allVersions))
       showToast(t('objects.deletedDirectoryValue', { '0': displayDirectoryKey(object.key) }))
-      await load(true)
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
       setDeletingKey('')
       stopLoading()
+      await load(true)
     }
   }
 
   async function removeObject(object: ObjectSummary) {
-    if (!accessKey || !bucket) return
+    if (!bucket) return
     if (isDirectoryKey(object.key)) {
       await removeDirectory(object)
       return
     }
+    if (!accessKey) return
     if (!await ensureDirectoryCanBeDeleted(object.key)) return
     if (!await confirm({
       title: t('objects.deleteObject'),
@@ -1543,12 +1611,17 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                   })() : formatBytes(object.size)}</td>
                   <td>{object.last_modified ? new Date(object.last_modified).toLocaleString(getFormatLocale()) : '-'}</td>
                   <td className="table-actions sticky-actions-column">
-                    <ActionMenu label={`${isDirectoryKey(object.key) ? t('objects.manageDirectory') : t('objects.manage')} ${displayKeyForMessage(object.key)}`}>
-                      {!isDirectoryKey(object.key) && <button type="button" role="menuitem" onClick={() => void download(object)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />{t('objects.download')}</button>}
-                      {!isDirectoryKey(object.key) && <button type="button" role="menuitem" onClick={() => openTransfer('copy', { kind: 'current', object })} disabled={!accessKey}><Copy className="button-icon" aria-hidden="true" />{t('objects.copy')}</button>}
-                      <button type="button" role="menuitem" onClick={() => openTransfer('move', { kind: 'current', object })} disabled={!accessKey}><FolderInput className="button-icon" aria-hidden="true" />{t('objects.move')}</button>
-                      <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeObject(object)} disabled={!accessKey || deletingKey === object.key}><Trash2 className="button-icon" aria-hidden="true" />{isDirectoryKey(object.key) ? t('objects.deleteDirectory') : t('objects.delete')}</button>
-                    </ActionMenu>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild><Button variant="outline" size="icon-sm" aria-label={`${t('objects.manage')} ${displayKeyForMessage(object.key)}`}><Ellipsis /></Button></DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="object-actions-menu"><DropdownMenuGroup>
+                        {!isDirectoryKey(object.key) && <DropdownMenuItem onSelect={() => void download(object)} disabled={!accessKey}><Download />{t('objects.download')}</DropdownMenuItem>}
+                        {!isDirectoryKey(object.key) && <DropdownMenuItem onSelect={() => openTransfer('copy', { kind: 'current', object })} disabled={!accessKey}><Copy />{t('objects.copy')}</DropdownMenuItem>}
+                        {!isDirectoryKey(object.key) && <DropdownMenuItem onSelect={() => { setRenameObject(object); setRenameName(object.key.slice(object.key.lastIndexOf('/') + 1)) }} disabled={!accessKey}><Pencil />{t('objects.rename')}</DropdownMenuItem>}
+                        {!isDirectoryKey(object.key) && <DropdownMenuItem onSelect={() => openTransfer('move', { kind: 'current', object })} disabled={!accessKey}><FolderInput />{t('objects.move')}</DropdownMenuItem>}
+                        <DropdownMenuItem variant="destructive" onSelect={() => void removeObject(object)} disabled={(!isDirectoryKey(object.key) && !accessKey) || !!deletingKey}><Trash2 />{t('objects.delete')}</DropdownMenuItem>
+                        {isDirectoryKey(object.key) && <DropdownMenuItem variant="destructive" onSelect={() => void forceCleanupFolder(object)} disabled={!!deletingKey}><Trash2 />{t('objects.forceCleanupFolder')}</DropdownMenuItem>}
+                      </DropdownMenuGroup></DropdownMenuContent>
+                    </DropdownMenu>
                   </td>
                 </tr>
               ))}
@@ -1733,6 +1806,24 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         </div>
       )}
 
+      <Dialog open={renameObject !== null} onOpenChange={(open) => { if (!open && !renaming) setRenameObject(null) }}>
+        <DialogContent className="object-rename-dialog" showCloseButton={!renaming} onInteractOutside={event => event.preventDefault()}>
+          <DialogHeader><DialogTitle>{t('objects.renameObject')}</DialogTitle></DialogHeader>
+          <DialogDescription className="break-all">{renameSourceName}</DialogDescription>
+          <form onSubmit={submitRename} className="flex flex-col gap-6">
+            <FieldGroup><Field>
+              <FieldLabel htmlFor="rename-object-name" className="sr-only">{t('objects.newObjectName')}</FieldLabel>
+              <Input id="rename-object-name" value={renameName} onChange={event => setRenameName(event.target.value)} disabled={renaming} aria-describedby="rename-object-hint" autoFocus onFocus={event => event.target.select()} />
+              <FieldDescription id="rename-object-hint">{t('objects.renameNameHint')}</FieldDescription>
+            </Field></FieldGroup>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" type="button" onClick={() => setRenameObject(null)} disabled={renaming}>{t('objects.cancel')}</Button>
+              <Button type="submit" disabled={renaming || renameInvalid || !accessKey}>{renaming ? t('objects.renaming') : t('objects.rename')}</Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       {transferDialog && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => { if (!transferring) setTransferDialog(null) }}>
           <section className="lifecycle-modal credential-modal transfer-modal" role="dialog" aria-modal="true" aria-labelledby="transfer-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -1741,7 +1832,17 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
               <button className="icon-button" type="button" aria-label={t('objects.close')} onClick={() => { if (!transferring) setTransferDialog(null) }}><X aria-hidden="true" /></button>
             </header>
             <form className="credential-modal-form" onSubmit={submitTransfer}>
-              <p className="credential-modal-description">{t('objects.selected')} {transferDialog.items.length} {t('objects.itemsEnterTheDestinationParentPathFileNamesAnd')}</p>
+              <div className="credential-modal-description">
+                <p id="transfer-source-path-label">{t('objects.sourcePath')}</p>
+                <ul className="transfer-source-paths" aria-labelledby="transfer-source-path-label" tabIndex={0}>
+                  {transferDialog.items.map(item => {
+                    const key = item.kind === 'current' ? item.object.key : item.version.key
+                    return <li key={item.kind === 'version' ? `${key}\u0000${item.version.version_id}` : key}>
+                      <code>{`${bucket}/${key}`}</code>
+                    </li>
+                  })}
+                </ul>
+              </div>
               <div className="credential-modal-fields transfer-fields">
                 <label>{t('objects.destinationBucket')}<OptionSelect value={transferBucket} onValueChange={(value) => { setTransferBucket(value); setTransferPath(''); setTransferTreeOpen(false) }} required disabled={transferring} aria-label={t('objects.destinationBucket')} placeholder={t('objects.selectBucket')} options={buckets.map(item => ({ value: item.name, label: item.name }))} />
                 </label>

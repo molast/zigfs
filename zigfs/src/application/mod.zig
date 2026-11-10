@@ -104,6 +104,7 @@ pub const Application = struct {
     directory_store: ?MetadataDirectoryStore = null,
     multipart_store: ?MetadataMultipartStore = null,
     master_key: ?CredentialMasterKey = null,
+    kms: ?@import("kms.zig").Service = null,
     local_object_data: ?LocalObjectDataStore = null,
     local_multipart_data: ?LocalMultipartDataStore = null,
     metadata_index: ?index_module.MetadataIndex = null,
@@ -386,6 +387,8 @@ pub const Application = struct {
             }
             return;
         };
+        self.kms = .{ .root = self.data_root.?, .io = io, .master = self.master_key.?.bytes, .allocator = self.allocator };
+        self.local_multipart_data.?.master_key = self.master_key.?.bytes;
 
         var rebuilt_index = index_module.MetadataIndex.init(self.allocator);
         rebuilt_index.rebuild(self.local_repository.?.interface()) catch |err| {
@@ -559,6 +562,10 @@ pub const Application = struct {
         self.local_repository = null;
         self.local_recovery_store = null;
         self.local_journal = null;
+        if (self.kms) |*kms| {
+            kms.deinit();
+            self.kms = null;
+        }
         if (self.master_key) |*master_key| {
             master_key.deinit();
             self.master_key = null;
@@ -634,7 +641,7 @@ pub const Application = struct {
             metadata_index
         else
             return null;
-        return object_service.ObjectService.init(
+        var service = object_service.ObjectService.init(
             self.allocator,
             io,
             bucket_store,
@@ -647,6 +654,18 @@ pub const Application = struct {
             &self.object_locks,
             directories,
         );
+        service.kms = if (self.kms) |*kms| kms else null;
+        return service;
+    }
+
+    pub fn folderService(self: *Application) ?@import("folder_service.zig").FolderService {
+        return .{
+            .allocator = self.allocator,
+            .directories = self.directoryService() orelse return null,
+            .objects = self.objectService() orelse return null,
+            .uploads = self.multipartService() orelse return null,
+            .garbage = self.objectGc() orelse return null,
+        };
     }
 
     pub fn directoryService(self: *Application) ?directory_service.DirectoryService {
@@ -2352,3 +2371,185 @@ pub const object_tag_store = @import("object_tag_store.zig");
 pub const role_store = @import("role_store.zig");
 pub const oidc_auth = @import("oidc_auth.zig");
 pub const oidc_store = @import("oidc_store.zig");
+
+test "folder cleanup preserves valid data and uploads while reclaiming orphan data" {
+    const streams = @import("../testing/streams.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(root);
+    var app = Application.initWithAllocator(.{ .data_root = root, .metrics_enabled = false }, std.testing.allocator);
+    defer app.deinit(std.testing.io);
+    try app.initialize(std.testing.io);
+    (try app.bucketService().?.create("folder-tests", "owner")).deinit(std.testing.allocator);
+    (try app.bucketService().?.setVersioning("folder-tests", .enabled)).deinit(std.testing.allocator);
+    const objects = app.objectService().?;
+    for ([_][]const u8{ "target/nested/file.txt", "target/nested/file.txt", "target-other/file.txt" }) |key| {
+        var source = streams.SliceSource.init("payload");
+        (try objects.put("folder-tests", key, source.interface(), .{})).deinit(std.testing.allocator);
+    }
+    const folders = app.folderService().?;
+    try std.testing.expectError(error.InvalidDirectoryKey, folders.delete("folder-tests", "", true, true));
+    try std.testing.expectError(error.InvalidDirectoryKey, folders.delete("folder-tests", "/", true, true));
+    try std.testing.expectError(error.InvalidDirectoryKey, folders.delete("folder-tests", "target", true, true));
+    try folders.delete("folder-tests", "target/", true, true);
+    {
+        const live_history = try objects.listVersions("folder-tests", "target/");
+        defer live_history.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(usize, 2), live_history.entries.len);
+        try std.testing.expect(!live_history.entries[0].is_delete_marker);
+    }
+    try folders.delete("folder-tests", "target/", false, false);
+    {
+        const history = try objects.listVersions("folder-tests", "target/");
+        defer history.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(usize, 3), history.entries.len);
+        try std.testing.expect(history.entries[0].is_delete_marker);
+    }
+    try std.testing.expect(app.metadata_index.?.directoryGeneration("folder-tests", "target/") == null);
+    // A retry can purge history even after the visible folder record is gone.
+    try folders.delete("folder-tests", "target/", true, false);
+    {
+        const history = try objects.listVersions("folder-tests", "target/");
+        defer history.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(usize, 0), history.entries.len);
+    }
+    const upload = try app.multipartService().?.create("folder-tests", "target/pending.txt", .{});
+    defer upload.deinit(std.testing.allocator);
+    const sibling_upload = try app.multipartService().?.create("folder-tests", "target-other/pending.txt", .{});
+    defer sibling_upload.deinit(std.testing.allocator);
+    const before = try app.objectGc().?.data_store.scanGenerations(std.testing.allocator);
+    defer before.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 3), before.generations.len);
+    const retained_folder = try app.directoryService().?.create("folder-tests", "target/");
+    defer retained_folder.deinit(std.testing.allocator);
+    (try app.directoryService().?.create("folder-tests", "target/empty-child/")).deinit(std.testing.allocator);
+    try folders.delete("folder-tests", "target/", true, true);
+    try std.testing.expectEqual(retained_folder.generation, app.metadata_index.?.directoryGeneration("folder-tests", "target/").?);
+    try std.testing.expect(app.metadata_index.?.directoryGeneration("folder-tests", "target/empty-child/") != null);
+    // Retrying cleanup must keep the same directory record, not recreate it.
+    try folders.delete("folder-tests", "target/", true, true);
+    try std.testing.expectEqual(retained_folder.generation, app.metadata_index.?.directoryGeneration("folder-tests", "target/").?);
+    const after = try app.objectGc().?.data_store.scanGenerations(std.testing.allocator);
+    defer after.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), after.generations.len);
+    const uploads = try app.multipartService().?.listUploads("folder-tests", .{});
+    defer uploads.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), uploads.uploads.len);
+    const sibling = try objects.listVersions("folder-tests", "target-other/");
+    defer sibling.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), sibling.entries.len);
+    // Legal hold blocks permanent cleanup before any metadata is deleted.
+    var protected_source = streams.SliceSource.init("protected");
+    const protected = try objects.put("folder-tests", "locked/file.txt", protected_source.interface(), .{});
+    defer protected.deinit(std.testing.allocator);
+    (try objects.setLegalHold("folder-tests", "locked/file.txt", protected.version_id, true)).deinit(std.testing.allocator);
+    try std.testing.expectError(error.ObjectLocked, folders.delete("folder-tests", "locked/", true, false));
+    try folders.delete("folder-tests", "locked/", true, true);
+    const locked_history = try objects.listVersions("folder-tests", "locked/");
+    defer locked_history.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), locked_history.entries.len);
+    try std.testing.expect(locked_history.entries[0].legal_hold);
+    try std.testing.expect(app.metadata_index.?.directoryGeneration("folder-tests", "locked/") != null);
+}
+
+test "folder deletion removes unversioned children and legacy markers but refuses new live children during prune" {
+    const streams = @import("../testing/streams.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(root);
+    var app = Application.initWithAllocator(.{ .data_root = root, .metrics_enabled = false }, std.testing.allocator);
+    defer app.deinit(std.testing.io);
+    try app.initialize(std.testing.io);
+    (try app.bucketService().?.create("folder-tests", "owner")).deinit(std.testing.allocator);
+    const objects = app.objectService().?;
+    var content = streams.SliceSource.init("content");
+    (try objects.put("folder-tests", "test/nested/file", content.interface(), .{})).deinit(std.testing.allocator);
+    var empty = streams.SliceSource.init("");
+    (try objects.put("folder-tests", "test/", empty.interface(), .{})).deinit(std.testing.allocator);
+    try std.testing.expectError(error.DirectoryNotEmpty, app.directoryService().?.prune("folder-tests", "test/", false));
+    try app.folderService().?.delete("folder-tests", "test/", false, false);
+    const versions = try objects.listVersions("folder-tests", "test/");
+    defer versions.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), versions.entries.len);
+    try std.testing.expect(app.metadata_index.?.directoryGeneration("folder-tests", "test/") == null);
+    try std.testing.expect(app.metadata_index.?.objectGeneration("folder-tests", "test/") == null);
+}
+
+test "folder cleanup repairs stale and missing indexes without removing healthy empty folders" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(root);
+    var app = Application.initWithAllocator(.{ .data_root = root, .metrics_enabled = false }, std.testing.allocator);
+    defer app.deinit(std.testing.io);
+    try app.initialize(std.testing.io);
+    (try app.bucketService().?.create("repair-tests", "owner")).deinit(std.testing.allocator);
+    const directories = app.directoryService().?;
+    const folders = app.folderService().?;
+    const parent = try directories.create("repair-tests", "target/");
+    defer parent.deinit(std.testing.allocator);
+    const stale = try directories.create("repair-tests", "target/stale/");
+    defer stale.deinit(std.testing.allocator);
+    // Simulate a durable deletion whose index update was lost.
+    _ = try directories.directory_store.tombstone(std.testing.allocator, "repair-tests", "target/stale/", stale.generation);
+    try std.testing.expect(app.metadata_index.?.directoryGeneration("repair-tests", "target/stale/") != null);
+    try folders.cleanup("repair-tests", "target/");
+    try std.testing.expect(app.metadata_index.?.directoryGeneration("repair-tests", "target/stale/") == null);
+    try std.testing.expectEqual(parent.generation, app.metadata_index.?.directoryGeneration("repair-tests", "target/").?);
+    // Repair an outdated index from the authoritative generation.
+    const updated = try directories.directory_store.put(std.testing.allocator, "repair-tests", "target/", parent.created_at_unix_seconds, parent.last_modified_unix_seconds + 1, .{ .exact = parent.generation });
+    try folders.cleanup("repair-tests", "target/");
+    try std.testing.expectEqual(updated, app.metadata_index.?.directoryGeneration("repair-tests", "target/").?);
+    // Repair a missing target index, including a healthy empty directory.
+    try std.testing.expect(app.metadata_index.?.removeDirectory("repair-tests", "target/"));
+    try folders.cleanup("repair-tests", "target/");
+    try std.testing.expectEqual(updated, app.metadata_index.?.directoryGeneration("repair-tests", "target/").?);
+    // Corrupt authoritative payloads are never guessed to be disposable.
+    const encoded = try @import("../metadata/object_key.zig").encode(std.testing.allocator, "repair-tests", "target/");
+    defer std.testing.allocator.free(encoded);
+    _ = try app.local_repository.?.interface().put(std.testing.allocator, .directory, encoded, .{ .exact = updated }, "broken-directory-payload");
+    try std.testing.expectError(error.CorruptMetadata, folders.cleanup("repair-tests", "target/"));
+    try std.testing.expectEqual(updated, app.metadata_index.?.directoryGeneration("repair-tests", "target/").?);
+}
+
+test "SSE-S3 multipart encryption snapshot survives default change and restart" {
+    const test_streams = @import("../testing/streams.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(data_root);
+    const config: Config = .{ .data_root = data_root, .metrics_enabled = false };
+    var upload_ids: [2][32]u8 = undefined;
+    var etags: [2][16]u8 = undefined;
+    {
+        var app = Application.initWithAllocator(config, std.testing.allocator);
+        defer app.deinit(std.testing.io);
+        try app.initialize(std.testing.io);
+        (try app.bucketService().?.create("sse-parts", "owner-a")).deinit(std.testing.allocator);
+        for ([_]bool{ false, true }, 0..) |encrypted, i| {
+            const upload = try app.multipartService().?.create("sse-parts", if (encrypted) "encrypted" else "plain", .{ .encryption = encrypted });
+            defer upload.deinit(std.testing.allocator);
+            const upload_id = multipart_domain.formatUploadId(upload.id, &upload_ids[i]);
+            var source = test_streams.SliceSource.init("restart encrypted multipart");
+            const part = try app.multipartService().?.uploadPart("sse-parts", upload.key, upload_id, 1, source.interface(), .{});
+            etags[i] = part.etag_md5;
+        }
+        (try app.bucketService().?.setEncryption("sse-parts", .enabled)).deinit(std.testing.allocator);
+    }
+    var app = Application.initWithAllocator(config, std.testing.allocator);
+    defer app.deinit(std.testing.io);
+    try app.initialize(std.testing.io);
+    for ([_]bool{ false, true }, 0..) |encrypted, i| {
+        const key = if (encrypted) "encrypted" else "plain";
+        const object = try app.multipartService().?.complete("sse-parts", key, &upload_ids[i], &.{.{ .number = 1, .etag_md5 = etags[i] }});
+        defer object.deinit(std.testing.allocator);
+        try std.testing.expectEqual(encrypted, object.encryption == .encrypted);
+        var sink = test_streams.CollectingSink.init(std.testing.allocator);
+        defer sink.deinit();
+        const read = try app.objectService().?.get("sse-parts", key, sink.interface());
+        defer read.deinit(std.testing.allocator);
+        try std.testing.expectEqualStrings("restart encrypted multipart", sink.bytes.items);
+    }
+}

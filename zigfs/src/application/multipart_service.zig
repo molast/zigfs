@@ -73,6 +73,9 @@ pub const ListUploadsResult = struct {
 };
 
 pub const CreateOptions = struct {
+    encryption: ?bool = null,
+    kms_key: ?[]const u8 = null,
+    kms_selection: ?@import("kms.zig").Envelope = null,
     content_type: []const u8 = "application/octet-stream",
     user_metadata: []const object_domain.UserMetadata = &.{},
 };
@@ -148,9 +151,17 @@ pub const MultipartService = struct {
             const upload_id_text = multipart_domain.formatUploadId(upload_id, &upload_id_buffer);
             if (!self.index.containsUpload(upload_id_text)) break;
         }
+        var kms_selection = options.kms_selection;
+        if (kms_selection == null) if (options.kms_key orelse (if (options.encryption == null and bucket.encryption == .kms) @as(?[]const u8, bucket.kms_key_id.slice()) else null)) |key_name| {
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            kms_selection = (self.objects.kms orelse return error.Unavailable).select(arena.allocator(), key_name) catch return error.Unavailable;
+        };
         const value: multipart_domain.View = .{
             .id = upload_id,
             .bucket_id = bucket.id,
+            .encryption = kms_selection != null or options.kms_key != null or (options.encryption orelse (bucket.encryption != .disabled)),
+            .kms = kms_selection,
             .bucket_name = bucket_name,
             .key = key,
             .content_type = options.content_type,
@@ -191,7 +202,7 @@ pub const MultipartService = struct {
         defer initial.deinit(self.allocator);
 
         const data_generation = id.randomV4(self.io) catch return error.Unavailable;
-        const staged = self.data_store.stage(data_generation, source) catch |err| return mapStageError(err);
+        const staged = (if (initial.encryption orelse false) self.data_store.stageEncrypted(data_generation, source) else self.data_store.stage(data_generation, source)) catch |err| return mapStageError(err);
         var staged_pending = true;
         defer if (staged_pending) self.data_store.discard(staged.token);
         if (options.expected_md5) |expected| {
@@ -463,6 +474,7 @@ pub const MultipartService = struct {
                 .size = stored.size,
                 .checksum_sha256 = stored.checksum_sha256,
                 .data_generation = stored.data_generation,
+                .encrypted = upload.encryption orelse false,
             };
         }
         var composite_etag: [16]u8 = undefined;
@@ -472,6 +484,8 @@ pub const MultipartService = struct {
             .parts = parts,
         }, total_size, .{
             .content_type = upload.content_type,
+            .encryption = upload.encryption,
+            .kms_selection = upload.kms,
             .user_metadata = @ptrCast(upload.user_metadata),
             .etag = .{
                 .digest = composite_etag,

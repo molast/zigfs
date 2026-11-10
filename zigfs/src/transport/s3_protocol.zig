@@ -9,6 +9,9 @@ pub const Operation = enum {
     get_bucket_policy,
     put_bucket_policy,
     delete_bucket_policy,
+    get_bucket_encryption,
+    put_bucket_encryption,
+    delete_bucket_encryption,
     get_bucket_versioning,
     put_bucket_versioning,
     get_bucket_lifecycle,
@@ -246,6 +249,18 @@ fn classify(
 ) Operation {
     if (bucket == null) return if (method == .GET) .list_buckets else .unsupported;
     if (key == null) {
+        if (queryShape(parameters, "encryption") != .missing) {
+            if (queryShape(parameters, "encryption") != .empty) return .unsupported;
+            for (parameters) |parameter| {
+                if (!std.mem.eql(u8, parameter.name, "encryption") and !std.mem.startsWith(u8, parameter.name, "X-Amz-")) return .unsupported;
+            }
+            return switch (method) {
+                .GET => .get_bucket_encryption,
+                .PUT => .put_bucket_encryption,
+                .DELETE => .delete_bucket_encryption,
+                else => .unsupported,
+            };
+        }
         if (queryShape(parameters, "policy") == .empty and parameters.len == 1) return switch (method) {
             .GET => .get_bucket_policy,
             .PUT => .put_bucket_policy,
@@ -437,6 +452,7 @@ pub const ErrorKind = enum {
     no_such_key,
     no_such_version,
     no_such_lifecycle_configuration,
+    no_such_encryption_configuration,
     bucket_already_exists,
     bucket_already_owned_by_you,
     bucket_not_empty,
@@ -487,6 +503,7 @@ pub fn describe(kind: ErrorKind) ErrorDescriptor {
         .no_such_bucket => .{ .code = "NoSuchBucket", .message = "The specified bucket does not exist.", .status = .not_found },
         .no_such_key => .{ .code = "NoSuchKey", .message = "The specified key does not exist.", .status = .not_found },
         .no_such_version => .{ .code = "NoSuchVersion", .message = "The specified version does not exist.", .status = .not_found },
+        .no_such_encryption_configuration => .{ .code = "ServerSideEncryptionConfigurationNotFoundError", .message = "The server side encryption configuration was not found.", .status = .not_found },
         .no_such_lifecycle_configuration => .{ .code = "NoSuchLifecycleConfiguration", .message = "The lifecycle configuration does not exist.", .status = .not_found },
         .bucket_already_exists => .{ .code = "BucketAlreadyExists", .message = "The requested bucket name is not available.", .status = .conflict },
         .bucket_already_owned_by_you => .{ .code = "BucketAlreadyOwnedByYou", .message = "Your previous request to create the named bucket succeeded and you already own it.", .status = .conflict },
@@ -696,4 +713,15 @@ test "S3 XML errors escape resources and expose stable request IDs" {
     try std.testing.expect(std.mem.indexOf(u8, xml, "<Code>NoSuchKey</Code>") != null);
     try std.testing.expect(std.mem.indexOf(u8, xml, "/bucket/a&amp;b") != null);
     try std.testing.expect(std.mem.indexOf(u8, xml, "<RequestId>request-1</RequestId>") != null);
+}
+
+test "bucket encryption routing supports presigned auth and rejects ambiguous subresources" {
+    const parsed = try parseTarget(std.testing.allocator, .GET, "/bucket?encryption=&X-Amz-Signature=abc");
+    defer parsed.deinit();
+    try std.testing.expectEqual(.get_bucket_encryption, parsed.operation);
+    for ([_][]const u8{ "/bucket?encryption=x", "/bucket?encryption=&encryption=", "/bucket?encryption=&lifecycle=" }) |target| {
+        const invalid = try parseTarget(std.testing.allocator, .PUT, target);
+        defer invalid.deinit();
+        try std.testing.expectEqual(.unsupported, invalid.operation);
+    }
 }

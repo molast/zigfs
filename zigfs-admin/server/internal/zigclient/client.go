@@ -223,8 +223,14 @@ func (client *Client) CreateDirectory(ctx context.Context, bucket string, reques
 	return response, err
 }
 
-func (client *Client) DeleteDirectory(ctx context.Context, bucket string, request contract.CreateDirectoryRequest) error {
+func (client *Client) DeleteDirectory(ctx context.Context, bucket string, request contract.DeleteDirectoryRequest) error {
+	if request.ForceCleanup {
+		return client.requestJSON(ctx, http.MethodPost, "/_admin/v1/buckets/"+url.PathEscape(bucket)+"/directories/cleanup", request, nil)
+	}
 	query := url.Values{"key": {request.Key}}
+	if request.AllVersions {
+		query.Set("all_versions", "true")
+	}
 	return client.requestJSON(ctx, http.MethodDelete, "/_admin/v1/buckets/"+url.PathEscape(bucket)+"/directories?"+query.Encode(), nil, nil)
 }
 
@@ -520,4 +526,47 @@ func (client *Client) UpdateUserAccessKey(ctx context.Context, name, id string, 
 }
 func (client *Client) DeleteUserAccessKey(ctx context.Context, name, id string) error {
 	return client.requestJSON(ctx, http.MethodDelete, userAccessKeysPath(name)+"/"+url.PathEscape(id), nil, nil)
+}
+
+func (client *Client) KMSSettings(ctx context.Context) (contract.KMSStatus, error) {
+	var response contract.KMSStatus
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/settings/kms", nil, &response)
+	return response, err
+}
+func (client *Client) SaveKMSSettings(ctx context.Context, config contract.KMSConfig) (contract.KMSStatus, error) {
+	var response contract.KMSStatus
+	err := client.requestJSON(ctx, http.MethodPut, "/_admin/v1/settings/kms", config, &response)
+	return response, err
+}
+
+func (client *Client) StartKMS(ctx context.Context) (contract.KMSStatus, error) {
+	var response contract.KMSStatus
+	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/settings/kms/start", nil, &response)
+	return response, err
+}
+
+func (client *Client) StopKMS(ctx context.Context) (contract.KMSStatus, error) {
+	var response contract.KMSStatus
+	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/settings/kms/stop", nil, &response)
+	return response, err
+}
+
+func (client *Client) ClearKMSCache(ctx context.Context) (contract.KMSStatus, error) {
+	var response contract.KMSStatus
+	err := client.requestJSON(ctx, http.MethodPost, "/_admin/v1/settings/kms/clear-cache", nil, &response)
+	return response, err
+}
+
+func (client *Client) KMSKeys(ctx context.Context, method string, action bool, input json.RawMessage) (json.RawMessage, error) {
+	path := "/_admin/v1/settings/kms/keys"
+	if action {
+		path += "/action"
+	}
+	var response json.RawMessage
+	var body any
+	if len(input) > 0 {
+		body = input
+	}
+	err := client.requestJSON(ctx, method, path, body, &response)
+	return response, err
 }

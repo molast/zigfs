@@ -26,6 +26,7 @@ pub const Value = struct {
     object_ownership: bucket_domain.ObjectOwnership = .bucket_owner_enforced,
     block_public_access: bool = false,
     tags_json: ?[]const u8 = null,
+    kms_key_id: bucket_domain.KmsKeyId = .{},
     encryption: bucket_domain.Encryption = .disabled,
     quota: bucket_domain.Quota = .{},
     retention: bucket_domain.Retention = .{},

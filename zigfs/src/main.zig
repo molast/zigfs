@@ -8,6 +8,12 @@ pub fn main(init: std.process.Init) !void {
     var app = zigfs.application.Application.init(config);
     defer app.deinit(init.io);
     try app.initialize(init.io);
+    if (app.kms) |*kms| {
+        kms.allow_insecure_dev_defaults = std.mem.eql(u8, init.environ_map.get("ZIGFS_KMS_ALLOW_INSECURE_DEV_DEFAULTS") orelse "", "true");
+        var kms_arena = std.heap.ArenaAllocator.init(app.allocator);
+        defer kms_arena.deinit();
+        kms.restore(kms_arena.allocator()) catch |err| std.log.warn("KMS automatic startup failed: {s}", .{@errorName(err)});
+    }
     try zigfs.application.oidc_store.importEnvironment(init.arena.allocator(), app.data_root.?, init.io, app.master_key.?.bytes, init.environ_map.get("ZIGFS_OIDC_PROVIDERS") orelse "[]");
 
     if (std.mem.eql(u8, config.admin_username, "admin") and

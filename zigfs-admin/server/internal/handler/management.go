@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -59,7 +60,7 @@ type ManagementService interface {
 	ListObjectVersions(ctx context.Context, bucket, prefix string) (contract.ListObjectVersionsResponse, error)
 	ListObjects(ctx context.Context, bucket, prefix, search, cursor, maxKeys, delimiter string) (contract.ListObjectsResponse, error)
 	CreateDirectory(ctx context.Context, bucket string, request contract.CreateDirectoryRequest) (contract.Directory, error)
-	DeleteDirectory(ctx context.Context, bucket string, request contract.CreateDirectoryRequest) error
+	DeleteDirectory(ctx context.Context, bucket string, request contract.DeleteDirectoryRequest) error
 	PresignObject(ctx context.Context, request contract.PresignObjectRequest) (contract.PresignObjectResponse, error)
 	CreateMultipartUpload(ctx context.Context, request contract.CreateMultipartUploadRequest) (contract.MultipartUpload, error)
 	ListMultipartUploads(ctx context.Context, bucket, prefix, keyMarker, uploadIDMarker string) (contract.ListMultipartUploadsResponse, error)
@@ -78,6 +79,12 @@ type ManagementService interface {
 	StorageScanner(ctx context.Context) (contract.StorageScannerStatus, error)
 	RunStorageGC(ctx context.Context) (contract.StorageScanReport, error)
 	Health(ctx context.Context) (contract.ManagementHealthResponse, error)
+	KMSSettings(ctx context.Context) (contract.KMSStatus, error)
+	StartKMS(ctx context.Context) (contract.KMSStatus, error)
+	KMSKeys(ctx context.Context, method string, action bool, input json.RawMessage) (json.RawMessage, error)
+	ClearKMSCache(ctx context.Context) (contract.KMSStatus, error)
+	StopKMS(ctx context.Context) (contract.KMSStatus, error)
+	SaveKMSSettings(ctx context.Context, config contract.KMSConfig) (contract.KMSStatus, error)
 	Settings(ctx context.Context) (contract.SettingsResponse, error)
 }
 
@@ -268,7 +275,22 @@ func (handler *Management) CreateDirectory(ctx *gin.Context) {
 }
 
 func (handler *Management) DeleteDirectory(ctx *gin.Context) {
-	request := contract.CreateDirectoryRequest{Key: ctx.Query("key")}
+	handler.deleteDirectory(ctx, false)
+}
+
+func (handler *Management) ForceCleanupDirectory(ctx *gin.Context) {
+	handler.deleteDirectory(ctx, true)
+}
+
+func (handler *Management) deleteDirectory(ctx *gin.Context, force bool) {
+	request := contract.DeleteDirectoryRequest{Key: ctx.Query("key")}
+	if value, present := ctx.GetQuery("all_versions"); present {
+		if value != "true" && value != "false" {
+			writeError(ctx, http.StatusBadRequest, "InvalidRequest", "all_versions must be true or false")
+			return
+		}
+		request.AllVersions = value == "true"
+	}
 	if request.Key == "" {
 		if err := ctx.ShouldBindJSON(&request); err != nil {
 			writeError(ctx, http.StatusBadRequest, "InvalidRequest", "directory key is required")
@@ -279,6 +301,7 @@ func (handler *Management) DeleteDirectory(ctx *gin.Context) {
 		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "directory key is required")
 		return
 	}
+	request.ForceCleanup = force
 	if err := handler.service.DeleteDirectory(ctx.Request.Context(), ctx.Param("name"), request); err != nil {
 		writeStorageError(ctx, err)
 		return
@@ -821,4 +844,80 @@ func (handler *Management) DeleteUserAccessKey(ctx *gin.Context) {
 		return
 	}
 	ctx.Status(http.StatusNoContent)
+}
+
+func (handler *Management) KMSSettings(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	response, err := handler.service.KMSSettings(ctx.Request.Context())
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+func (handler *Management) SaveKMSSettings(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	var config contract.KMSConfig
+	if err := ctx.ShouldBindJSON(&config); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "request body is invalid")
+		return
+	}
+	response, err := handler.service.SaveKMSSettings(ctx.Request.Context(), config)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) StartKMS(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	response, err := handler.service.StartKMS(ctx.Request.Context())
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) StopKMS(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	response, err := handler.service.StopKMS(ctx.Request.Context())
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) ClearKMSCache(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	response, err := handler.service.ClearKMSCache(ctx.Request.Context())
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) KMSKeys(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	action := strings.HasSuffix(ctx.FullPath(), "/action")
+	var input json.RawMessage
+	if ctx.Request.Method == http.MethodPost {
+		if err := ctx.ShouldBindJSON(&input); err != nil {
+			writeError(ctx, http.StatusBadRequest, "InvalidRequest", "request body is invalid")
+			return
+		}
+	}
+	response, err := handler.service.KMSKeys(ctx.Request.Context(), ctx.Request.Method, action, input)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	status := http.StatusOK
+	if ctx.Request.Method == http.MethodPost && !action {
+		status = http.StatusCreated
+	}
+	ctx.Data(status, "application/json", response)
 }

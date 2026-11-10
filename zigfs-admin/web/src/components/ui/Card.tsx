@@ -20,3 +20,7 @@ export function CardDescription({ className, ...props }: HTMLAttributes<HTMLPara
 export function CardContent({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return <div data-slot="card-content" className={cn('px-4 pb-4', className)} {...props} />
 }
+
+export function CardFooter({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div data-slot="card-footer" className={cn('flex items-center px-4 pb-4', className)} {...props} />
+}

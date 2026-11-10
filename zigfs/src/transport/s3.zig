@@ -21,6 +21,7 @@ const byte_stream = @import("../ports/byte_stream.zig");
 const aws_chunked = @import("aws_chunked.zig");
 const protocol = @import("s3_protocol.zig");
 const delete_objects = @import("s3_delete_objects.zig");
+const s3_encryption = @import("s3_encryption.zig");
 const s3_multipart = @import("s3_multipart.zig");
 const s3_post_policy = @import("s3_post_policy.zig");
 
@@ -31,6 +32,9 @@ pub const service_name = "s3";
 const BucketAccess = struct {
     owner: []const u8,
     iam_authorized: bool = false,
+    principal: ?*const credential_service.AuthMaterial = null,
+    context: iam.Context = .{},
+    kms_selection: ?@import("../application/kms.zig").Envelope = null,
 };
 
 const ByteRange = struct {
@@ -195,6 +199,13 @@ pub fn serveRequest(
         };
     }
 
+    if (singleHeader(headers.items, "x-amz-server-side-encryption") catch return respondError(request, allocator, .invalid_argument, request_id)) |algorithm| {
+        if ((parsed.operation != .put_object and parsed.operation != .create_multipart_upload) or (!std.mem.eql(u8, algorithm, "AES256") and !std.mem.eql(u8, algorithm, "aws:kms"))) return respondError(request, allocator, .invalid_argument, request_id);
+    }
+    if (singleHeader(headers.items, "x-amz-server-side-encryption-aws-kms-key-id") catch return respondError(request, allocator, .invalid_argument, request_id)) |key_name| {
+        if (requestedKmsKey(headers.items) == null or key_name.len == 0 or key_name.len > 256) return respondError(request, allocator, .invalid_argument, request_id);
+        for (key_name) |c| if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_' and c != '.') return respondError(request, allocator, .invalid_argument, request_id);
+    }
     if (hasUnsupportedHeaders(parsed.operation, headers.items)) {
         return respondError(request, allocator, .not_implemented, request_id);
     }
@@ -253,10 +264,29 @@ pub fn serveRequest(
             return respondError(request, allocator, .access_denied, request_id);
         };
     }
-    const bucket_access: BucketAccess = .{
+    var bucket_access: BucketAccess = .{
         .owner = auth_material.owner,
+        .principal = &auth_material,
+        .context = conditions,
         .iam_authorized = auth_material.inherited_documents != null or auth_material.key_document != null,
     };
+    if (parsed.operation == .put_object or parsed.operation == .create_multipart_upload) {
+        var key_name = requestedKmsKey(headers.items);
+        if (requestedEncryption(headers.items) == null) {
+            if (application.bucketService()) |service| {
+                if (service.head(parsed.bucket.?)) |bucket| {
+                    defer bucket.deinit(allocator);
+                    if (bucket.encryption == .kms) key_name = try condition_arena.allocator().dupe(u8, bucket.kms_key_id.slice());
+                } else |_| {}
+            }
+        }
+        if (key_name) |name| {
+            const kms = if (application.kms) |*value| value else return respondError(request, allocator, .service_unavailable, request_id);
+            const selected = kms.select(condition_arena.allocator(), name) catch return respondError(request, allocator, .service_unavailable, request_id);
+            if (!auth_material.allowsKms(allocator, "kms:GenerateDataKey", selected.key(), conditions)) return respondError(request, allocator, .access_denied, request_id);
+            bucket_access.kms_selection = selected;
+        }
+    }
     return switch (parsed.operation) {
         .list_buckets => serveListBuckets(
             request,
@@ -291,6 +321,7 @@ pub fn serveRequest(
             headers.items,
             request_id,
         ),
+        .get_bucket_encryption, .put_bucket_encryption, .delete_bucket_encryption => serveBucketEncryption(request, application, parsed, bucket_access, headers.items, payload_hash, request_id),
         .get_bucket_versioning => serveGetBucketVersioning(request, application, parsed, bucket_access, headers.items, request_id),
         .put_bucket_versioning => servePutBucketVersioning(request, application, parsed, bucket_access, headers.items, payload_hash, request_id),
         .get_bucket_lifecycle => serveGetBucketLifecycle(request, application, parsed, bucket_access, headers.items, request_id),
@@ -455,6 +486,8 @@ fn serveAnonymousRead(
     request_id: []const u8,
     peer: std.Io.net.IpAddress,
 ) !std.http.Status {
+    if ((singleHeader(headers, "x-amz-server-side-encryption") catch return respondError(request, application.allocator, .invalid_argument, request_id)) != null) return respondError(request, application.allocator, .invalid_argument, request_id);
+    if (hasUnsupportedHeaders(parsed.operation, headers)) return respondError(request, application.allocator, .not_implemented, request_id);
     const bucket_name = parsed.bucket orelse return respondError(request, application.allocator, .access_denied, request_id);
     const bucket_service_instance = application.bucketService() orelse return respondError(request, application.allocator, .service_unavailable, request_id);
     const bucket = bucket_service_instance.head(bucket_name) catch |err| return respondError(request, application.allocator, mapBucketError(err), request_id);
@@ -512,6 +545,8 @@ fn inheritedActionFor(operation: protocol.Operation, versioned: bool) []const u8
         .get_bucket_policy => "s3:GetBucketPolicy",
         .put_bucket_policy => "s3:PutBucketPolicy",
         .delete_bucket_policy => "s3:DeleteBucketPolicy",
+        .get_bucket_encryption => "s3:GetEncryptionConfiguration",
+        .put_bucket_encryption, .delete_bucket_encryption => "s3:PutEncryptionConfiguration",
         .get_bucket_versioning => "s3:GetBucketVersioning",
         .put_bucket_versioning => "s3:PutBucketVersioning",
         .get_bucket_lifecycle => "s3:GetLifecycleConfiguration",
@@ -539,8 +574,8 @@ fn actionFor(operation: protocol.Operation) ?credential_domain.Action {
         .put_object_tagging => .put_object,
         .delete_object_tagging => .delete_object,
         .put_bucket_policy, .delete_bucket_policy => .create_bucket,
-        .get_bucket_versioning, .get_bucket_lifecycle => .head_bucket,
-        .put_bucket_versioning, .put_bucket_lifecycle, .delete_bucket_lifecycle => .create_bucket,
+        .get_bucket_versioning, .get_bucket_lifecycle, .get_bucket_encryption => .head_bucket,
+        .put_bucket_versioning, .put_bucket_lifecycle, .delete_bucket_lifecycle, .put_bucket_encryption, .delete_bucket_encryption => .create_bucket,
         .delete_bucket => .delete_bucket,
         .delete_objects => .delete_object,
         .list_objects_v2, .list_object_versions => .list_objects,
@@ -559,6 +594,9 @@ fn actionFor(operation: protocol.Operation) ?credential_domain.Action {
 
 fn allowsPresigned(operation: protocol.Operation) bool {
     return switch (operation) {
+        .get_bucket_encryption,
+        .put_bucket_encryption,
+        .delete_bucket_encryption,
         .get_object,
         .head_object,
         .put_object,
@@ -931,6 +969,59 @@ fn serveGetBucketLocation(
         return respondError(request, application.allocator, .internal_error, request_id);
     };
     return respondXml(request, xml.written(), .ok, request_id, &.{});
+}
+
+fn requestedEncryption(headers: []const sigv4.Header) ?bool {
+    return if ((singleHeader(headers, "x-amz-server-side-encryption") catch null) != null) true else null;
+}
+
+fn serveBucketEncryption(request: *std.http.Server.Request, application: *Application, parsed: protocol.ParsedTarget, access: BucketAccess, headers: []const sigv4.Header, payload_hash: sigv4.PayloadHash, request_id: []const u8) !std.http.Status {
+    const bucket = ensureBucketOwner(application, parsed.bucket.?, access) catch |err| return respondError(request, application.allocator, mapBucketError(err), request_id);
+    defer bucket.deinit(application.allocator);
+    if (singleHeader(headers, "x-amz-expected-bucket-owner") catch return respondError(request, application.allocator, .invalid_argument, request_id)) |owner| {
+        if (!std.mem.eql(u8, owner, bucket.owner)) return respondError(request, application.allocator, .access_denied, request_id);
+    }
+    if (parsed.operation == .get_bucket_encryption) {
+        if (ensureEmptyRequestWithHash(request, payload_hash) != null) return respondError(request, application.allocator, .invalid_request, request_id);
+        if (bucket.encryption == .disabled) return respondError(request, application.allocator, .no_such_encryption_configuration, request_id);
+        if (bucket.encryption == .kms and bucket.kms_key_id.len > 0) {
+            const xml = try std.fmt.allocPrint(application.allocator, "<ServerSideEncryptionConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>aws:kms</SSEAlgorithm><KMSMasterKeyID>{s}</KMSMasterKeyID></ApplyServerSideEncryptionByDefault></Rule></ServerSideEncryptionConfiguration>", .{bucket.kms_key_id.slice()});
+            defer application.allocator.free(xml);
+            return respondXml(request, xml, .ok, request_id, &.{});
+        }
+        return respondXml(request, if (bucket.encryption == .kms) s3_encryption.kms_configuration_xml else s3_encryption.configuration_xml, .ok, request_id, &.{});
+    }
+    var configuration: @import("../domain/bucket.zig").EncryptionConfiguration = .{ .algorithm = .disabled };
+    if (parsed.operation == .put_bucket_encryption) {
+        const body = readXmlPayload(request, application.allocator, 64 * 1024, payload_hash) catch |err| return respondError(request, application.allocator, mapXmlPayloadError(err), request_id);
+        defer application.allocator.free(body);
+        if (validateBodyChecksums(headers, body)) |kind| return respondError(request, application.allocator, kind, request_id);
+        configuration = s3_encryption.parseConfiguration(body) catch |err| return respondError(request, application.allocator, if (err == error.InvalidArgument) .invalid_argument else .malformed_xml, request_id);
+    } else if (ensureEmptyRequestWithHash(request, payload_hash) != null) return respondError(request, application.allocator, .invalid_request, request_id);
+    const buckets = application.bucketService() orelse return respondError(request, application.allocator, .service_unavailable, request_id);
+    if (configuration.algorithm == .kms) {
+        const kms = if (application.kms) |*value| value else return respondError(request, application.allocator, .service_unavailable, request_id);
+        kms.requireRunning() catch return respondError(request, application.allocator, .service_unavailable, request_id);
+    }
+    const updated = buckets.setEncryptionWithKey(parsed.bucket.?, configuration) catch |err| return respondError(request, application.allocator, mapBucketError(err), request_id);
+    updated.deinit(application.allocator);
+    return respondEmpty(request, if (parsed.operation == .put_bucket_encryption) .ok else .no_content, request_id, &.{});
+}
+
+fn respondEmptyEncryption(request: *std.http.Server.Request, encrypted: EncryptionInfo, status: std.http.Status, request_id: []const u8, extra: []const std.http.Header) !std.http.Status {
+    var headers: [16]std.http.Header = undefined;
+    @memcpy(headers[0..extra.len], extra);
+    if (encrypted.enabled) headers[extra.len] = .{ .name = "x-amz-server-side-encryption", .value = if (encrypted.kms_key != null) "aws:kms" else "AES256" };
+    if (encrypted.kms_key) |key_name| headers[extra.len + 1] = .{ .name = "x-amz-server-side-encryption-aws-kms-key-id", .value = key_name };
+    return respondEmpty(request, status, request_id, headers[0 .. extra.len + @intFromBool(encrypted.enabled) + @intFromBool(encrypted.kms_key != null)]);
+}
+
+fn respondXmlEncryption(request: *std.http.Server.Request, encrypted: EncryptionInfo, body: []const u8, status: std.http.Status, request_id: []const u8, extra: []const std.http.Header) !std.http.Status {
+    var headers: [16]std.http.Header = undefined;
+    @memcpy(headers[0..extra.len], extra);
+    if (encrypted.enabled) headers[extra.len] = .{ .name = "x-amz-server-side-encryption", .value = if (encrypted.kms_key != null) "aws:kms" else "AES256" };
+    if (encrypted.kms_key) |key_name| headers[extra.len + 1] = .{ .name = "x-amz-server-side-encryption-aws-kms-key-id", .value = key_name };
+    return respondXml(request, body, status, request_id, headers[0 .. extra.len + @intFromBool(encrypted.enabled) + @intFromBool(encrypted.kms_key != null)]);
 }
 
 fn serveGetBucketVersioning(
@@ -1579,6 +1670,9 @@ fn servePutObject(
         },
     };
     const object = objects.put(bucket_name, key, source, .{
+        .encryption = requestedEncryption(headers),
+        .kms_key = requestedKmsKey(headers),
+        .kms_selection = access.kms_selection,
         .content_type = put_headers.content_type,
         .user_metadata = put_headers.views,
         .expected_md5 = expected_md5,
@@ -1623,14 +1717,14 @@ fn servePutObject(
             .{ .name = value.algorithm().headerName(), .value = encoded },
             .{ .name = "x-amz-version-id", .value = object.version_id.write(&version_buffer) },
         };
-        return respondEmpty(request, .ok, request_id, extra[0..if (include_version_id) 3 else 2]);
+        return respondEmptyEncryption(request, encryptionInfo(&object), .ok, request_id, extra[0..if (include_version_id) 3 else 2]);
     }
     var version_buffer: [object_domain.VersionId.encoded_length]u8 = undefined;
     const extra = [_]std.http.Header{
         .{ .name = "etag", .value = etag },
         .{ .name = "x-amz-version-id", .value = object.version_id.write(&version_buffer) },
     };
-    return respondEmpty(request, .ok, request_id, extra[0..if (include_version_id) 2 else 1]);
+    return respondEmptyEncryption(request, encryptionInfo(&object), .ok, request_id, extra[0..if (include_version_id) 2 else 1]);
 }
 
 fn servePostPolicyUpload(
@@ -1747,9 +1841,11 @@ fn servePostPolicyUpload(
 
     const post_bucket = ensureBucketOwner(application, parsed.bucket.?, .{
         .owner = auth_material.owner,
+        .principal = &auth_material,
+        .context = conditions,
         .iam_authorized = auth_material.inherited_documents != null or auth_material.key_document != null,
     }) catch |err| return respondError(request, application.allocator, mapBucketError(err), request_id);
-    post_bucket.deinit(application.allocator);
+    defer post_bucket.deinit(application.allocator);
 
     var policy_constraints = validatePostPolicy(
         application.allocator,
@@ -1765,6 +1861,20 @@ fn servePostPolicyUpload(
     if (policy_constraints.content_type == null) {
         policy_constraints.content_type = file.content_type;
     }
+    const encryption_algorithm = postField(&form, "x-amz-server-side-encryption") catch return respondError(request, application.allocator, .invalid_argument, request_id);
+    if (encryption_algorithm) |algorithm| {
+        if (!std.mem.eql(u8, algorithm, "AES256") and !std.mem.eql(u8, algorithm, "aws:kms")) return respondError(request, application.allocator, .invalid_argument, request_id);
+    }
+    const kms_key_field = postField(&form, "x-amz-server-side-encryption-aws-kms-key-id") catch return respondError(request, application.allocator, .invalid_argument, request_id);
+    const uses_kms = if (encryption_algorithm) |algorithm| std.mem.eql(u8, algorithm, "aws:kms") else post_bucket.encryption == .kms;
+    if (kms_key_field != null and !uses_kms) return respondError(request, application.allocator, .invalid_argument, request_id);
+    var kms_selection: ?@import("../application/kms.zig").Envelope = null;
+    if (uses_kms) {
+        const kms = if (application.kms) |*value| value else return respondError(request, application.allocator, .service_unavailable, request_id);
+        const selected = kms.select(ca, kms_key_field orelse (if (encryption_algorithm == null) post_bucket.kms_key_id.slice() else "")) catch return respondError(request, application.allocator, .service_unavailable, request_id);
+        if (!auth_material.allowsKms(application.allocator, "kms:GenerateDataKey", selected.key(), conditions)) return respondError(request, application.allocator, .access_denied, request_id);
+        kms_selection = selected;
+    }
     var metadata = collectPostMetadata(application.allocator, &form) catch |err| {
         return respondError(request, application.allocator, if (err == error.OutOfMemory) .internal_error else .invalid_request, request_id);
     };
@@ -1778,6 +1888,8 @@ fn servePostPolicyUpload(
         return respondError(request, application.allocator, .service_unavailable, request_id);
     };
     const object = objects.put(parsed.bucket.?, expanded_key, bounded.interface(), .{
+        .encryption = if (encryption_algorithm != null) true else null,
+        .kms_selection = kms_selection,
         .content_type = policy_constraints.content_type.?,
         .user_metadata = metadata.views,
         .expected_md5 = policy_constraints.expected_md5,
@@ -2023,7 +2135,9 @@ fn postPolicyConditionMentions(conditions: []const std.json.Value, field_name: [
 }
 
 fn postPolicySupportsField(name: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(name, "key") or
+    return std.ascii.eqlIgnoreCase(name, "x-amz-server-side-encryption-aws-kms-key-id") or
+        std.ascii.eqlIgnoreCase(name, "x-amz-server-side-encryption") or
+        std.ascii.eqlIgnoreCase(name, "key") or
         std.ascii.eqlIgnoreCase(name, "policy") or
         std.ascii.eqlIgnoreCase(name, "x-amz-algorithm") or
         std.ascii.eqlIgnoreCase(name, "x-amz-credential") or
@@ -2096,10 +2210,10 @@ fn respondPostPolicySuccess(
         writer.writeAll("</Bucket><Key>") catch return error.WriteFailed;
         protocol.writeXmlEscaped(writer, key) catch return error.WriteFailed;
         writer.print("</Key><ETag>{s}</ETag></PostResponse>\n", .{etag_value}) catch return error.WriteFailed;
-        return respondXml(request, xml.written(), .created, request_id, &.{});
+        return respondXmlEncryption(request, encryptionInfo(&object), xml.written(), .created, request_id, &.{});
     }
     const extra = [_]std.http.Header{.{ .name = "etag", .value = etag_value }};
-    return respondEmpty(request, status, request_id, &extra);
+    return respondEmptyEncryption(request, encryptionInfo(&object), status, request_id, &extra);
 }
 
 fn serveCopyObject(
@@ -2199,6 +2313,7 @@ fn serveCopyObject(
     }
     const content_type = if (replacement_headers) |value| value.content_type else source_object.content_type;
     const metadata = if (replacement_headers) |value| value.views else source_object.view().user_metadata;
+    if (!kmsReadAllowed(application.allocator, access, &source_object)) return respondError(request, application.allocator, .access_denied, request_id);
     const object = objects.copy(
         source.bucket,
         source.key,
@@ -2209,6 +2324,9 @@ fn serveCopyObject(
             .content_type = content_type,
             .user_metadata = metadata,
             .expected_current = expected_current,
+            .encryption = requestedEncryption(headers),
+            .kms_key = requestedKmsKey(headers),
+            .kms_selection = access.kms_selection,
             .expected_source_generation = if (source.version_id == null) source_object.metadata_generation else null,
         },
         directive == .copy,
@@ -2271,7 +2389,7 @@ fn serveCopyObject(
         extra[extra_count] = .{ .name = "x-amz-copy-source-version-id", .value = source_object.version_id.write(&source_version_buffer) };
         extra_count += 1;
     }
-    return respondXml(request, xml.written(), .ok, request_id, extra[0..extra_count]);
+    return respondXmlEncryption(request, encryptionInfo(&object), xml.written(), .ok, request_id, extra[0..extra_count]);
 }
 
 fn serveGetObject(
@@ -2310,6 +2428,7 @@ fn serveGetObject(
     };
     defer lease.deinit();
     const object = lease.metadata();
+    if (!kmsReadAllowed(application.allocator, access, object)) return respondError(request, application.allocator, .access_denied, request_id);
     const conditions = parseConditionalHeaders(headers) catch {
         return respondError(request, application.allocator, .invalid_argument, request_id);
     };
@@ -2329,6 +2448,7 @@ fn serveGetObject(
         }
     else
         null;
+    lease.prepareKms() catch |err| return respondError(request, application.allocator, mapObjectError(err), request_id);
     var response_headers = try ObjectResponseHeaders.init(
         application.allocator,
         object,
@@ -2391,6 +2511,7 @@ fn serveHeadObject(
     };
     defer lease.deinit();
     const object = lease.metadata();
+    if (!kmsReadAllowed(application.allocator, access, object)) return respondError(request, application.allocator, .access_denied, request_id);
     const conditions = parseConditionalHeaders(headers) catch {
         return respondError(request, application.allocator, .invalid_argument, request_id);
     };
@@ -2505,6 +2626,9 @@ fn serveCreateMultipartUpload(
         return respondError(request, application.allocator, .service_unavailable, request_id);
     };
     const upload = multiparts.create(parsed.bucket.?, parsed.key.?, .{
+        .encryption = requestedEncryption(headers),
+        .kms_key = requestedKmsKey(headers),
+        .kms_selection = access.kms_selection,
         .content_type = put_headers.content_type,
         .user_metadata = put_headers.views,
     }) catch |err| {
@@ -2533,7 +2657,7 @@ fn serveCreateMultipartUpload(
     writer.writeAll("</Key><UploadId>") catch return error.WriteFailed;
     protocol.writeXmlEscaped(writer, upload_id) catch return error.WriteFailed;
     writer.writeAll("</UploadId></InitiateMultipartUploadResult>\n") catch return error.WriteFailed;
-    return respondXml(request, xml.written(), .ok, request_id, &.{});
+    return respondXmlEncryption(request, uploadEncryptionInfo(&upload), xml.written(), .ok, request_id, &.{});
 }
 
 fn serveUploadPart(
@@ -2620,6 +2744,8 @@ fn serveUploadPart(
     const multiparts = application.multipartService() orelse {
         return respondError(request, application.allocator, .service_unavailable, request_id);
     };
+    const upload_configuration = multiparts.listParts(parsed.bucket.?, parsed.key.?, upload_id) catch |err| return respondError(request, application.allocator, mapMultipartError(err), request_id);
+    defer upload_configuration.deinit(application.allocator);
     const part = multiparts.uploadPart(
         parsed.bucket.?,
         parsed.key.?,
@@ -2654,10 +2780,10 @@ fn serveUploadPart(
             .{ .name = "etag", .value = etag },
             .{ .name = value.algorithm().headerName(), .value = encoded },
         };
-        return respondEmpty(request, .ok, request_id, &extra);
+        return respondEmptyEncryption(request, uploadEncryptionInfo(&upload_configuration), .ok, request_id, &extra);
     }
     const extra = [_]std.http.Header{.{ .name = "etag", .value = etag }};
-    return respondEmpty(request, .ok, request_id, &extra);
+    return respondEmptyEncryption(request, uploadEncryptionInfo(&upload_configuration), .ok, request_id, &extra);
 }
 
 fn serveUploadPartCopy(
@@ -2690,6 +2816,7 @@ fn serveUploadPartCopy(
     else
         objects.open(source.bucket, source.key) catch |err| return respondError(request, application.allocator, mapObjectError(err), request_id);
     defer lease.deinit();
+    if (!kmsReadAllowed(application.allocator, access, lease.metadata())) return respondError(request, application.allocator, .access_denied, request_id);
     const source_size = lease.metadata().size;
     var range: ByteRange = undefined;
     if (singleHeader(headers, "x-amz-copy-source-range") catch null) |value| {
@@ -2700,6 +2827,8 @@ fn serveUploadPartCopy(
     }
     var source_stream = object_service.LeaseSource.init(&lease, range.start, range.length);
     const multiparts = application.multipartService() orelse return respondError(request, application.allocator, .service_unavailable, request_id);
+    const upload_configuration = multiparts.listParts(parsed.bucket.?, parsed.key.?, upload) catch |err| return respondError(request, application.allocator, mapMultipartError(err), request_id);
+    defer upload_configuration.deinit(application.allocator);
     const part = multiparts.uploadPart(parsed.bucket.?, parsed.key.?, upload, part_number, source_stream.interface(), .{}) catch |err| return respondError(request, application.allocator, mapMultipartError(err), request_id);
     var etag_buffer: [34]u8 = undefined;
     const etag = formatEtag(part.etag_md5, &etag_buffer);
@@ -2708,7 +2837,7 @@ fn serveUploadPartCopy(
     xml.writer.print("<?xml version=\"1.0\" encoding=\"UTF-8\"?><CopyPartResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><LastModified>", .{}) catch return error.WriteFailed;
     protocol.writeIsoTime(&xml.writer, std.Io.Clock.real.now(application.io orelse return respondError(request, application.allocator, .service_unavailable, request_id)).toSeconds()) catch return error.WriteFailed;
     xml.writer.print("</LastModified><ETag>{s}</ETag></CopyPartResult>\n", .{etag}) catch return error.WriteFailed;
-    return respondXml(request, xml.written(), .ok, request_id, &.{});
+    return respondXmlEncryption(request, uploadEncryptionInfo(&upload_configuration), xml.written(), .ok, request_id, &.{});
 }
 
 fn serveListParts(
@@ -2789,7 +2918,7 @@ fn serveListParts(
         }) catch return error.WriteFailed;
     }
     writer.writeAll("</ListPartsResult>\n") catch return error.WriteFailed;
-    return respondXml(request, xml.written(), .ok, request_id, &.{});
+    return respondXmlEncryption(request, uploadEncryptionInfo(&upload), xml.written(), .ok, request_id, &.{});
 }
 
 fn serveCompleteMultipartUpload(
@@ -2835,6 +2964,12 @@ fn serveCompleteMultipartUpload(
     const multiparts = application.multipartService() orelse {
         return respondError(request, application.allocator, .service_unavailable, request_id);
     };
+    const upload_config = multiparts.listParts(parsed.bucket.?, parsed.key.?, upload_id) catch |err| return respondError(request, application.allocator, mapMultipartError(err), request_id);
+    defer upload_config.deinit(application.allocator);
+    if (upload_config.kms) |kms| {
+        const principal = access.principal orelse return respondError(request, application.allocator, .access_denied, request_id);
+        if (!principal.allowsKms(application.allocator, "kms:GenerateDataKey", kms.key(), access.context) or !principal.allowsKms(application.allocator, "kms:Decrypt", kms.key(), access.context)) return respondError(request, application.allocator, .access_denied, request_id);
+    }
     const object = multiparts.complete(parsed.bucket.?, parsed.key.?, upload_id, completion.parts) catch |err| {
         return respondError(request, application.allocator, mapMultipartError(err), request_id);
     };
@@ -2861,7 +2996,7 @@ fn serveCompleteMultipartUpload(
     writer.writeAll("</Bucket><Key>") catch return error.WriteFailed;
     protocol.writeXmlEscaped(writer, parsed.key.?) catch return error.WriteFailed;
     writer.print("</Key><ETag>{s}</ETag></CompleteMultipartUploadResult>\n", .{etag}) catch return error.WriteFailed;
-    return respondXml(request, xml.written(), .ok, request_id, &.{});
+    return respondXmlEncryption(request, encryptionInfo(&object), xml.written(), .ok, request_id, &.{});
 }
 
 fn serveAbortMultipartUpload(
@@ -3438,7 +3573,7 @@ fn respondNotModified(
         .{ .name = "etag", .value = etag },
         .{ .name = "last-modified", .value = last_modified },
     };
-    return respondEmpty(request, .not_modified, request_id, &extra);
+    return respondEmptyEncryption(request, encryptionInfo(object), .not_modified, request_id, &extra);
 }
 
 fn hasUnsupportedHeaders(
@@ -3448,6 +3583,7 @@ fn hasUnsupportedHeaders(
     const upload_operation = operation == .put_object or operation == .upload_part;
     const checksum_body_operation = upload_operation or
         operation == .put_bucket_versioning or
+        operation == .put_bucket_encryption or
         operation == .put_bucket_lifecycle or
         operation == .complete_multipart_upload or
         operation == .delete_objects;
@@ -3491,8 +3627,12 @@ fn hasUnsupportedHeaders(
                 !std.ascii.eqlIgnoreCase(header.value, "ENABLED")) return true;
             continue;
         }
-        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-server-side-encryption") or
-            std.ascii.eqlIgnoreCase(header.name, "x-amz-server-side-encryption-aws-kms-key-id") or
+        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-server-side-encryption-aws-kms-key-id")) {
+            if (operation != .put_object and operation != .create_multipart_upload) return true;
+            continue;
+        }
+        if (std.ascii.startsWithIgnoreCase(header.name, "x-amz-server-side-encryption-") or
+            std.ascii.startsWithIgnoreCase(header.name, "x-amz-copy-source-server-side-encryption-") or
             std.ascii.eqlIgnoreCase(header.name, "x-amz-server-side-encryption-customer-algorithm") or
             std.ascii.eqlIgnoreCase(header.name, "x-amz-storage-class") or
             std.ascii.eqlIgnoreCase(header.name, "x-amz-acl") or
@@ -3914,7 +4054,7 @@ const ObjectResponseHeaders = struct {
             ) catch return error.NoSpaceLeft;
             result.content_range_length = content_range.len;
         }
-        const fixed_count: usize = 8 +
+        const fixed_count: usize = 8 + @as(usize, @intFromBool(object.encryption == .encrypted)) + @as(usize, @intFromBool(encryptionInfo(object).kms_key != null)) +
             @as(usize, @intFromBool(include_content_length)) +
             @as(usize, @intFromBool(range != null)) +
             @as(usize, @intFromBool(include_version_id));
@@ -3949,6 +4089,14 @@ const ObjectResponseHeaders = struct {
             };
             index += 1;
         }
+        if (object.encryption == .encrypted) {
+            self.headers[index] = .{ .name = "x-amz-server-side-encryption", .value = if (encryptionInfo(object).kms_key != null) "aws:kms" else "AES256" };
+            index += 1;
+        }
+        if (encryptionInfo(object).kms_key) |key_name| {
+            self.headers[index] = .{ .name = "x-amz-server-side-encryption-aws-kms-key-id", .value = key_name };
+            index += 1;
+        }
         self.headers[index] = .{ .name = "accept-ranges", .value = "bytes" };
         index += 1;
         if (self.content_range_length != 0) {
@@ -3972,7 +4120,7 @@ const ObjectResponseHeaders = struct {
         index += 1;
         self.headers[index] = .{ .name = "access-control-allow-origin", .value = "*" };
         index += 1;
-        self.headers[index] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-version-id, x-amz-delete-marker, x-amz-copy-source-version-id" };
+        self.headers[index] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-version-id, x-amz-delete-marker, x-amz-copy-source-version-id, x-amz-server-side-encryption" };
         index += 1;
         for (object.user_metadata, 0..) |entry, metadata_index| {
             self.headers[index] = .{
@@ -4160,7 +4308,7 @@ fn respondXml(
     headers[2] = .{ .name = "x-amz-request-id", .value = request_id };
     headers[3] = .{ .name = "x-request-id", .value = request_id };
     headers[4] = .{ .name = "access-control-allow-origin", .value = "*" };
-    headers[5] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-version-id, x-amz-delete-marker, x-amz-copy-source-version-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" };
+    headers[5] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-version-id, x-amz-delete-marker, x-amz-copy-source-version-id, x-amz-server-side-encryption, x-amz-server-side-encryption-aws-kms-key-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" };
     @memcpy(headers[6..][0..additional_headers.len], additional_headers);
     try request.respond(body, .{
         .status = status,
@@ -4181,7 +4329,7 @@ fn respondEmpty(
     headers[1] = .{ .name = "x-amz-request-id", .value = request_id };
     headers[2] = .{ .name = "x-request-id", .value = request_id };
     headers[3] = .{ .name = "access-control-allow-origin", .value = "*" };
-    headers[4] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-version-id, x-amz-delete-marker, x-amz-copy-source-version-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" };
+    headers[4] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-version-id, x-amz-delete-marker, x-amz-copy-source-version-id, x-amz-server-side-encryption, x-amz-server-side-encryption-aws-kms-key-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" };
     @memcpy(headers[5..][0..additional_headers.len], additional_headers);
     try request.respond("", .{
         .status = status,
@@ -4200,8 +4348,8 @@ fn respondCorsPreflight(
         .{ .name = "x-request-id", .value = request_id },
         .{ .name = "access-control-allow-origin", .value = "*" },
         .{ .name = "access-control-allow-methods", .value = "GET, PUT, DELETE, HEAD, OPTIONS" },
-        .{ .name = "access-control-allow-headers", .value = "content-type, content-md5, if-match, if-none-match, if-modified-since, if-unmodified-since, x-amz-content-sha256, x-amz-date, x-amz-security-token, x-amz-copy-source, x-amz-copy-source-if-match, x-amz-copy-source-if-none-match, x-amz-copy-source-if-modified-since, x-amz-copy-source-if-unmodified-since, x-amz-metadata-directive, authorization, x-amz-sdk-checksum-algorithm, x-amz-trailer, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" },
-        .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-version-id, x-amz-delete-marker, x-amz-copy-source-version-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" },
+        .{ .name = "access-control-allow-headers", .value = "content-type, content-md5, if-match, if-none-match, if-modified-since, if-unmodified-since, x-amz-content-sha256, x-amz-date, x-amz-security-token, x-amz-server-side-encryption, x-amz-server-side-encryption-aws-kms-key-id, x-amz-copy-source, x-amz-copy-source-if-match, x-amz-copy-source-if-none-match, x-amz-copy-source-if-modified-since, x-amz-copy-source-if-unmodified-since, x-amz-metadata-directive, authorization, x-amz-sdk-checksum-algorithm, x-amz-trailer, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" },
+        .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-version-id, x-amz-delete-marker, x-amz-copy-source-version-id, x-amz-server-side-encryption, x-amz-server-side-encryption-aws-kms-key-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" },
         .{ .name = "access-control-max-age", .value = "600" },
     };
     try request.respond("", .{ .status = .no_content, .extra_headers = &headers });
@@ -4767,4 +4915,22 @@ test "CreateBucket location constraint matches the configured endpoint region" {
         protocol.ErrorKind.malformed_xml,
         validateLocationConstraint("<CreateBucketConfiguration>", "eu-central-1").?,
     );
+}
+
+const EncryptionInfo = struct { enabled: bool, kms_key: ?[]const u8 = null };
+fn encryptionInfo(object: *const object_domain.Object) EncryptionInfo {
+    return .{ .enabled = object.encryption == .encrypted, .kms_key = if (object.encryption_metadata) |*metadata| (if (metadata.kms) |*kms| kms.key() else null) else null };
+}
+fn uploadEncryptionInfo(upload: *const @import("../domain/multipart.zig").Upload) EncryptionInfo {
+    return .{ .enabled = upload.encryption orelse false, .kms_key = if (upload.kms) |*kms| kms.key() else null };
+}
+fn requestedKmsKey(headers: []const sigv4.Header) ?[]const u8 {
+    const algorithm = (singleHeader(headers, "x-amz-server-side-encryption") catch null) orelse return null;
+    if (!std.mem.eql(u8, algorithm, "aws:kms")) return null;
+    return (singleHeader(headers, "x-amz-server-side-encryption-aws-kms-key-id") catch null) orelse "";
+}
+
+fn kmsReadAllowed(a: std.mem.Allocator, access: BucketAccess, object: *const object_domain.Object) bool {
+    if (encryptionInfo(object).kms_key) |key_name| return if (access.principal) |principal| principal.allowsKms(a, "kms:Decrypt", key_name, access.context) else false;
+    return true;
 }

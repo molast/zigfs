@@ -184,3 +184,105 @@ func TestUserWriteForwardsPasswordAndEmptyGroupsWithoutExposingSecrets(t *testin
 		t.Error("password appeared in response")
 	}
 }
+
+func TestDirectoryDeletionOptions(t *testing.T) {
+	for _, mode := range []string{"current", "all", "cleanup"} {
+		t.Run(mode, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if mode == "cleanup" {
+					if r.Method != http.MethodPost || r.URL.Path != "/_admin/v1/buckets/photos/directories/cleanup" {
+						t.Errorf("unexpected cleanup route: %s %s", r.Method, r.URL)
+					}
+					var body contract.DeleteDirectoryRequest
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key != "nested/a b/" {
+						t.Errorf("invalid cleanup payload: %+v, %v", body, err)
+					}
+				} else {
+					if r.Method != http.MethodDelete || r.URL.Path != "/_admin/v1/buckets/photos/directories" || r.URL.Query().Get("key") != "nested/a b/" {
+						t.Errorf("invalid delete request: %s %s", r.Method, r.URL)
+					}
+					if (r.URL.Query().Get("all_versions") == "true") != (mode == "all") {
+						t.Errorf("all_versions not forwarded: %s", r.URL)
+					}
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+			client := zigclient.New(server.URL, time.Second)
+			if err := client.DeleteDirectory(context.Background(), "photos", contract.DeleteDirectoryRequest{Key: "nested/a b/", AllVersions: mode == "all", ForceCleanup: mode == "cleanup"}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestKMSConfigurationRoundTripAndUpstreamFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_admin/v1/settings/kms" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		if r.Method == http.MethodPut {
+			var config contract.KMSConfig
+			if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+				t.Error(err)
+			}
+			if config.Backend == "vault" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"code":"KmsUnavailable","message":"KMS unavailable"}`))
+				return
+			}
+			if config.StaticSecretKey != "secret" {
+				t.Error("secret was not forwarded")
+			}
+		}
+		_ = json.NewEncoder(w).Encode(contract.KMSStatus{Configured: true, Healthy: true, Config: contract.KMSConfig{Backend: "static"}, StaticSecretKeyConfigured: true})
+	}))
+	defer server.Close()
+	client := zigclient.New(server.URL, time.Second)
+	status, err := client.SaveKMSSettings(context.Background(), contract.KMSConfig{Backend: "static", StaticSecretKey: "secret"})
+	if err != nil || !status.Configured || !status.Healthy || status.Config.StaticSecretKey != "" {
+		t.Fatalf("unexpected status %+v: %v", status, err)
+	}
+	if _, err := client.KMSSettings(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.SaveKMSSettings(context.Background(), contract.KMSConfig{Backend: "vault"}); err == nil {
+		t.Fatal("upstream failure was swallowed")
+	}
+}
+
+func TestKMSKeyManagementForwardsRequestAndProviderError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_admin/v1/settings/kms/keys/action" || r.Method != http.MethodPost {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var input struct {
+			ID     string `json:"id"`
+			Action string `json:"action"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Error(err)
+		}
+		if input.ID != "key-1" {
+			t.Errorf("unexpected ID %s", input.ID)
+		}
+		if input.Action == "delete" {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"KmsKeyDeletionNotScheduled","message":"Schedule deletion first"}`))
+			return
+		}
+		if input.Action != "rotate" {
+			t.Errorf("unexpected action %s", input.Action)
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	client := zigclient.New(server.URL, time.Second)
+	result, err := client.KMSKeys(context.Background(), http.MethodPost, true, json.RawMessage(`{"id":"key-1","action":"rotate"}`))
+	if err != nil || string(result) != `{"ok":true}` {
+		t.Fatalf("unexpected result %s: %v", result, err)
+	}
+	if _, err = client.KMSKeys(context.Background(), http.MethodPost, true, json.RawMessage(`{"id":"key-1","action":"delete"}`)); err == nil {
+		t.Fatal("provider failure swallowed")
+	}
+}

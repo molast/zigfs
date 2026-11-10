@@ -40,7 +40,8 @@ export interface BucketConfiguration {
   object_ownership: 'BucketOwnerEnforced'
   block_public_access: boolean
   tags_json?: string
-  encryption: 'Disabled' | 'Enabled'
+  kms_key_id?: string
+  encryption: 'Disabled' | 'Enabled' | 'KMS'
   max_bytes?: number
   max_objects?: number
   retention_enabled: boolean
@@ -230,6 +231,7 @@ export interface AccessKeyCreate {
   expires_at?: string
   inherit_policy: boolean
   policy?: CredentialPolicy
+  policy_document?: string
 }
 
 export interface AccessKeyUpdate {

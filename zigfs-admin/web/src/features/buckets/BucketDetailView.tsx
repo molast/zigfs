@@ -6,20 +6,19 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import {
   Activity,
   Archive,
-  ChartPie,
+  ArrowLeft,
   CircleAlert,
   Gauge,
   KeyRound,
   LockKeyhole,
   Pencil,
   Plus,
-  RefreshCw,
   Shield,
   Tags,
   Trash2,
   X,
 } from 'lucide-react'
-import { ApiError, type ApiClient } from '../../api/client'
+import { type ApiClient, type KmsKey } from '../../api/client'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
 import { useErrorToast, useToast } from '../../components/ToastProvider'
@@ -31,6 +30,7 @@ import { Badge } from '../../components/ui/Badge'
 import { Switch } from '../../components/ui/switch'
 import { RadioGroup, RadioGroupItem } from '../../components/ui/radio-group'
 import { Input } from '../../components/ui/Input'
+import { Field, FieldGroup, FieldLabel, FieldDescription } from '../../components/ui/field'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/Dialog'
 import { LifecycleRulesEditor } from './LifecycleRulesEditor'
 import { parseLifecycleConfiguration, serializeLifecycleConfiguration, type LifecycleRule } from './lifecycle'
@@ -38,7 +38,7 @@ import { parseLifecycleConfiguration, serializeLifecycleConfiguration, type Life
 interface BucketDetailViewProps {
   api: ApiClient
   bucketName: string
-  onDeleted: () => void
+  onBack: () => void
 }
 
 interface BucketUsage {
@@ -48,7 +48,7 @@ interface BucketUsage {
 
 const sections = ['Summary', 'Events', 'Replication', 'Lifecycle', 'Access', 'Anonymous']
 
-export function BucketDetailView({ api, bucketName, onDeleted }: BucketDetailViewProps) {
+export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewProps) {
   const confirm = useConfirm()
   const { startLoading } = useLoading()
   const showToast = useToast()
@@ -66,7 +66,13 @@ export function BucketDetailView({ api, bucketName, onDeleted }: BucketDetailVie
   const [accessPolicyDialogOpen, setAccessPolicyDialogOpen] = useState(false)
   const [accessPolicyDraft, setAccessPolicyDraft] = useState<'Private' | 'Readonly' | 'Public' | 'Custom'>('Private')
   const [encryptionDialogOpen, setEncryptionDialogOpen] = useState(false)
-  const [encryptionDraft, setEncryptionDraft] = useState(false)
+  const [encryptionDraft, setEncryptionDraft] = useState<'Disabled' | 'Enabled' | 'KMS'>('Disabled')
+  const [kmsKeyDraft, setKmsKeyDraft] = useState('')
+  const [kmsKeys, setKmsKeys] = useState<KmsKey[]>([])
+  const [kmsKeysLoading, setKmsKeysLoading] = useState(false)
+  const [kmsKeysReady, setKmsKeysReady] = useState(false)
+  const [kmsKeysFailed, setKmsKeysFailed] = useState(false)
+  const [kmsKeysRefresh, setKmsKeysRefresh] = useState(0)
   const [retentionDialogOpen, setRetentionDialogOpen] = useState(false)
   const [retentionDraft, setRetentionDraft] = useState({ mode: 'GOVERNANCE' as 'GOVERNANCE' | 'COMPLIANCE', period: '1', unit: 'day' })
   const [quotaDialogOpen, setQuotaDialogOpen] = useState(false)
@@ -75,10 +81,7 @@ export function BucketDetailView({ api, bucketName, onDeleted }: BucketDetailVie
   const [quotaBytes, setQuotaBytes] = useState('')
   const [quotaObjects, setQuotaObjects] = useState('')
   const [usage, setUsage] = useState<BucketUsage>({ bytes: 0, objects: 0 })
-  const [bucketContentKnown, setBucketContentKnown] = useState(false)
-  const [bucketHasContent, setBucketHasContent] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [deleting, setDeleting] = useState(false)
   const notifyError = useErrorToast()
 
   const refresh = useCallback(async () => {
@@ -86,7 +89,6 @@ export function BucketDetailView({ api, bucketName, onDeleted }: BucketDetailVie
     const stopLoading = startLoading(t('buckets.loadingBucketConfiguration'))
     try {
       setLoading(true)
-      setBucketContentKnown(false)
       const [buckets, bucketConfiguration, bucketUsage] = await Promise.all([
         api.listBuckets(),
         api.getBucketConfiguration(bucketName),
@@ -103,23 +105,8 @@ export function BucketDetailView({ api, bucketName, onDeleted }: BucketDetailVie
         ? parseLifecycleConfiguration(bucketConfiguration.lifecycle_configuration)
         : [])
 
-      let continuationToken = ''
-      let bytes = bucketUsage.bytes
-      let objects = bucketUsage.objects
-      let hasContent = false
-      do {
-        const page = await api.listObjects(bucketName, '', continuationToken, '', 1000, '/')
-        hasContent = hasContent || page.items.length > 0 || (page.common_prefixes?.length ?? 0) > 0 || (page.directories?.length ?? 0) > 0
-        const nextToken = page.is_truncated ? (page.continuation_token ?? '') : ''
-        if (!nextToken || nextToken === continuationToken) break
-        continuationToken = nextToken
-      } while (continuationToken)
-      setUsage({ bytes, objects })
-      if (!hasContent) hasContent = (await api.listObjectVersions(bucketName)).length > 0
-      setBucketHasContent(hasContent)
-      setBucketContentKnown(true)
+      setUsage(bucketUsage)
     } catch (reason) {
-      setBucketContentKnown(false)
       notifyError((reason as Error).message)
     } finally {
       setLoading(false)
@@ -130,48 +117,6 @@ export function BucketDetailView({ api, bucketName, onDeleted }: BucketDetailVie
   useEffect(() => {
     void refresh()
   }, [refresh])
-
-  async function remove() {
-    if (!bucketContentKnown) return
-    if (bucketHasContent) {
-      await confirm({
-        title: t('buckets.deleteBucket'),
-        message: t('buckets.bucketValueMustBeEmptyBeforeDeletionDeleteIts', { '0': bucketName }),
-        cancelLabel: t('buckets.gotIt'),
-        danger: true,
-        hideConfirm: true,
-      })
-      return
-    }
-    if (!await confirm({
-      title: t('buckets.deleteBucket'),
-      message: t('buckets.deleteBucketValueThisCannotBeUndone', { '0': bucketName }),
-      confirmLabel: t('buckets.delete'),
-      danger: true,
-    })) return
-    const stopLoading = startLoading(t('buckets.deletingBucket'))
-    try {
-      setDeleting(true)
-      await api.deleteBucket(bucketName)
-      showToast(t('buckets.deletedBucketValue', { '0': bucketName }))
-      onDeleted()
-    } catch (reason) {
-      if (reason instanceof ApiError && reason.body.code === 'BucketNotEmpty') {
-        stopLoading()
-        await confirm({
-          title: t('buckets.unableToDeleteBucket'),
-          message: t('buckets.bucketValueMustBeEmptyBeforeDeletionDeleteIts', { '0': bucketName }),
-          cancelLabel: t('buckets.gotIt'),
-          hideConfirm: true,
-        })
-      } else {
-        notifyError((reason as Error).message)
-      }
-    } finally {
-      setDeleting(false)
-      stopLoading()
-    }
-  }
 
   async function updateVersioning(versioning: 'Enabled' | 'Suspended') {
     if (!configuration || (configuration.object_locking && versioning !== 'Enabled')) return
@@ -254,14 +199,39 @@ export function BucketDetailView({ api, bucketName, onDeleted }: BucketDetailVie
     }
   }
 
-  async function updateEncryption(encryption: 'Disabled' | 'Enabled') {
+  useEffect(() => {
+    if (!encryptionDialogOpen || encryptionDraft !== 'KMS') return
+    let cancelled = false
+    setKmsKeysLoading(true)
+    setKmsKeysReady(false)
+    setKmsKeysFailed(false)
+    api.kmsKeys().then(result => {
+      if (cancelled) return
+      setKmsKeys(result.items.filter(key => key.status === 'Enabled'))
+      setKmsKeysReady(true)
+    }).catch(reason => {
+      if (!cancelled) {
+        setKmsKeysFailed(true)
+        notifyError((reason as Error).message)
+      }
+    }).finally(() => {
+      if (!cancelled) setKmsKeysLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [api, encryptionDialogOpen, encryptionDraft, kmsKeysRefresh, notifyError])
+
+  async function updateEncryption(encryption: 'Disabled' | 'Enabled' | 'KMS') {
+    if (encryption === 'KMS' && (!kmsKeysReady || !kmsKeys.some(key => key.id === kmsKeyDraft))) {
+      notifyError(t('buckets.selectKmsKey'))
+      return
+    }
     const stopLoading = startLoading(t('buckets.updatingEncryption'))
     try {
       setLoading(true)
-      const updated = await api.updateBucketConfiguration(bucketName, { encryption })
+      const updated = await api.updateBucketConfiguration(bucketName, { encryption, kms_key_id: encryption === 'KMS' ? kmsKeyDraft : '' })
       setConfiguration(updated)
       setEncryptionDialogOpen(false)
-      showToast(t('buckets.encryptionUpdatedToValue', { '0': encryption }))
+      showToast(t('buckets.encryptionUpdatedToValue', { '0': encryption === 'KMS' ? 'SSE-KMS' : encryption === 'Enabled' ? t('buckets.sseS3') : t('buckets.disabled') }))
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
@@ -465,11 +435,9 @@ export function BucketDetailView({ api, bucketName, onDeleted }: BucketDetailVie
           </div>
         </div>
         <div className="bucket-detail-actions">
-
-          <button className="danger-button" type="button" onClick={() => void remove()} disabled={deleting || !bucket || !bucketContentKnown}>
-            <Trash2 className="button-icon" aria-hidden="true" />{t('buckets.deleteBucket')}</button>
-          <button className="secondary-button refresh-action-button" type="button" onClick={() => void refresh()} disabled={loading} aria-busy={loading}>
-            <RefreshCw className={`button-icon${loading ? ' spinning' : ''}`} aria-hidden="true" />{t('buckets.refresh')}</button>
+          <Button variant="outline" type="button" onClick={onBack}>
+            <ArrowLeft data-icon="inline-start" aria-hidden="true" />{t('common.buckets')}
+          </Button>
         </div>
       </header>
 
@@ -485,26 +453,19 @@ export function BucketDetailView({ api, bucketName, onDeleted }: BucketDetailVie
 
         <div className="bucket-settings-content">
           <div className="bucket-settings-title">
-            <div><p className="eyebrow">{t('buckets.bucketConfiguration')}</p><h3>{displayValue(activeSection)}</h3></div>
+            <div><p className="eyebrow">{t('buckets.bucketConfiguration')}</p>{activeSection !== 'Summary' && <h3>{displayValue(activeSection)}</h3>}</div>
             <span>{t('buckets.createdOn')} {bucket ? new Date(bucket.created_at).toLocaleString(getFormatLocale()) : '-'}</span>
           </div>
 
           {activeSection === 'Summary' ? <>
-          <div className="bucket-summary-grid">
-            <div className="bucket-usage">
-              <ChartPie aria-hidden="true" />
-              <div><span>{t('buckets.reportedUsage')}</span><strong>{formatBytes(usage.bytes)}</strong><small>{usage.objects.toLocaleString(getFormatLocale())} {t('buckets.objects')}</small></div>
-            </div>
-
-          </div>
           <SettingsSection>
             <div className="bucket-setting-item bucket-access-policy-setting">
               <div className="bucket-setting-label"><Shield aria-hidden="true" /><span>{t('buckets.accessPolicy')}</span><Badge>{!policyReady ? '—' : configuration?.access_policy === 'Custom' || policyDocument ? t('buckets.customPolicy') : configuration?.access_policy === 'Public' ? t('buckets.public') : configuration?.access_policy === 'Readonly' ? t('buckets.readonly') : t('buckets.private')}</Badge><SettingInfo label={t('buckets.accessPolicy')}>{t('buckets.controlsAnonymousReadAndListPermissions')}</SettingInfo></div>
               <Button variant="outline" size="sm" disabled={loading || !configuration} onClick={() => void openAccessPolicyDialog()}><Pencil aria-hidden="true" />{t('buckets.editQuota')}</Button>
             </div>
             <div className="bucket-setting-item bucket-encryption-setting">
-              <div className="bucket-setting-label"><LockKeyhole aria-hidden="true" /><span>{t('buckets.encryption')}</span><Badge>{configuration?.encryption === 'Enabled' ? t('buckets.enabled') : t('buckets.notConfigured')}</Badge><SettingInfo label={t('buckets.encryption')}>{t('buckets.newObjectsUseServerSideAes256GcmEncryption')}</SettingInfo></div>
-              <Button variant="outline" size="sm" disabled={loading || !configuration} onClick={() => { setEncryptionDraft(configuration?.encryption === 'Enabled'); setEncryptionDialogOpen(true) }}><Pencil aria-hidden="true" />{t('buckets.editQuota')}</Button>
+              <div className="bucket-setting-label"><LockKeyhole aria-hidden="true" /><span>{t('buckets.encryption')}</span><Badge>{configuration?.encryption === 'KMS' ? 'aws:kms' : configuration?.encryption === 'Enabled' ? t('buckets.encryptionAlgorithmAes256') : t('buckets.notConfigured')}</Badge><SettingInfo label={t('buckets.encryption')}>{t('buckets.newObjectsUseServerSideAes256GcmEncryption')}</SettingInfo></div>
+              <Button variant="outline" size="sm" disabled={loading || !configuration} onClick={() => { setEncryptionDraft(configuration?.encryption ?? 'Disabled'); setKmsKeyDraft(configuration?.kms_key_id ?? ''); setKmsKeysReady(false); setEncryptionDialogOpen(true) }}><Pencil aria-hidden="true" />{t('buckets.editQuota')}</Button>
             </div>
             <div className="bucket-setting-item bucket-versioning-control">
               <div className="bucket-setting-label"><Archive aria-hidden="true" /><span>{t('buckets.versioning')}</span><Badge>{configuration?.versioning === 'Enabled' ? t('buckets.enabled') : configuration?.versioning === 'Suspended' ? t('buckets.suspended') : t('buckets.disabled')}</Badge><SettingInfo label={t('buckets.versioning')}> {configuration?.object_locking ? t('buckets.versioningLockedByObjectLock') : configuration?.versioning === 'Unversioned' ? t('buckets.newWritesReceiveVersionIdsWhenEnabled') : t('buckets.versionHistoryIsPersistedByZigfs')} </SettingInfo></div>
@@ -587,9 +548,37 @@ export function BucketDetailView({ api, bucketName, onDeleted }: BucketDetailVie
         <Dialog open={encryptionDialogOpen} onOpenChange={(open) => { if (!loading) setEncryptionDialogOpen(open) }}>
           <DialogContent className="bucket-encryption-dialog" onInteractOutside={(event) => event.preventDefault()}>
             <DialogHeader><DialogTitle>{t('buckets.setEncryption')}</DialogTitle></DialogHeader>
-            <form onSubmit={(event) => { event.preventDefault(); void updateEncryption(encryptionDraft ? 'Enabled' : 'Disabled') }}>
-              <label className="bucket-encryption-toggle" htmlFor="bucket-encryption-enabled"><span>{t('buckets.encryption')}</span><Switch id="bucket-encryption-enabled" checked={encryptionDraft} onCheckedChange={setEncryptionDraft} disabled={loading} /></label>
-              <div className="ui-dialog-footer"><Button size="sm" type="button" variant="outline" disabled={loading} onClick={() => setEncryptionDialogOpen(false)}>{t('common.cancel')}</Button><Button size="sm" type="submit" disabled={loading}>{t('buckets.save')}</Button></div>
+            <form onSubmit={(event) => { event.preventDefault(); void updateEncryption(encryptionDraft) }}>
+              <FieldGroup>
+                <Field>
+                  <FieldLabel htmlFor="bucket-encryption-type">{t('buckets.encryptionType')}</FieldLabel>
+                  <OptionSelect id="bucket-encryption-type" aria-describedby="bucket-encryption-description" value={encryptionDraft} onValueChange={value => setEncryptionDraft(value as 'Disabled' | 'Enabled' | 'KMS')} disabled={loading} options={[
+                    { value: 'Disabled', label: t('buckets.disabled') },
+                    { value: 'Enabled', label: t('buckets.sseS3') },
+                    { value: 'KMS', label: 'SSE-KMS' },
+                  ]} />
+                  <FieldDescription id="bucket-encryption-description">{encryptionDraft === 'KMS' ? t('settings.kmsBucketDescription') : encryptionDraft === 'Enabled' ? t('buckets.sseS3Description') : t('buckets.disabledEncryptionDescription')}</FieldDescription>
+                </Field>
+                {encryptionDraft === 'KMS' && <Field>
+                  <FieldLabel htmlFor="bucket-encryption-key">{t('buckets.kmsKeyId')}</FieldLabel>
+                  <OptionSelect id="bucket-encryption-key" value={kmsKeyDraft} onValueChange={setKmsKeyDraft} disabled={loading || kmsKeysLoading || !kmsKeysReady || kmsKeys.length === 0} placeholder={t('buckets.selectKmsKey')} options={[
+                    ...kmsKeys.map(key => ({ value: key.id, label: key.name || key.description || key.id })),
+                    ...(kmsKeyDraft && !kmsKeys.some(key => key.id === kmsKeyDraft) ? [{ value: kmsKeyDraft, label: kmsKeyDraft, disabled: true }] : []),
+                  ]} />
+                  {!kmsKeysLoading && (kmsKeysFailed || (kmsKeysReady && kmsKeys.length === 0)) && <Alert variant="destructive">
+                    <AlertTitle>{t('buckets.kmsKeyListUnavailable')}</AlertTitle>
+                    <AlertDescription className="gap-3">
+                      <p>{t('buckets.kmsKeyListRetry')}</p>
+                      <Button type="button" variant="outline" className="w-full" disabled={loading} onClick={() => setKmsKeysRefresh(value => value + 1)}>{t('settings.kmsRefresh')}</Button>
+                    </AlertDescription>
+                  </Alert>}
+                </Field>}
+                {encryptionDraft === 'Disabled' && <Alert variant="destructive">
+                  <AlertTitle>{t('buckets.disabled')}</AlertTitle>
+                  <AlertDescription>{t('buckets.disabledEncryptionDescription')}</AlertDescription>
+                </Alert>}
+              </FieldGroup>
+              <div className="ui-dialog-footer"><Button size="sm" type="button" variant="outline" disabled={loading} onClick={() => setEncryptionDialogOpen(false)}>{t('common.cancel')}</Button><Button size="sm" type="submit" disabled={loading || (encryptionDraft === 'KMS' && (kmsKeysLoading || !kmsKeysReady || !kmsKeys.some(key => key.id === kmsKeyDraft)))}>{t('buckets.saveEncryption')}</Button></div>
             </form>
           </DialogContent>
         </Dialog>

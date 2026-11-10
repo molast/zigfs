@@ -20,6 +20,7 @@ pub const Encryption = enum(u8) {
 };
 
 pub const EncryptionMetadata = struct {
+    kms: ?@import("kms.zig").Envelope = null,
     wrapped_key_nonce: [12]u8,
     wrapped_key_tag: [16]u8,
     wrapped_key: [32]u8,
@@ -80,6 +81,8 @@ pub const OwnedUserMetadata = struct {
 };
 
 pub const MultipartPart = struct {
+    // Only used while consuming encrypted upload parts into a final object.
+    encrypted: bool = false,
     number: u16,
     size: u64,
     checksum_sha256: [32]u8,

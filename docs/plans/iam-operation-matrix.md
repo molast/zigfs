@@ -13,6 +13,7 @@
 | GetBucketPolicy | `s3:GetBucketPolicy` | bucket ARN | Principal、resource policy | Implemented | bucket policy |
 | PutBucketPolicy | `s3:PutBucketPolicy` | bucket ARN | Principal/Resource | Implemented | bucket policy |
 | DeleteBucketPolicy | `s3:DeleteBucketPolicy` | bucket ARN | Principal、resource policy | Implemented | bucket policy |
+| Get/Put/DeleteBucketEncryption | `s3:GetEncryptionConfiguration` / `s3:PutEncryptionConfiguration` | bucket ARN | SSE-S3 default configuration | Implemented | `conformance/sse_s3.py` read-only allow/write deny |
 | Get/PutBucketVersioning | `s3:GetBucketVersioning` / `s3:PutBucketVersioning` | bucket ARN | version state | Implemented | versioning |
 | Get/Put/DeleteLifecycle | lifecycle Actions | bucket ARN | lifecycle configuration | Implemented | lifecycle |
 | DeleteBucket | `s3:DeleteBucket` | bucket ARN | ownership、empty state | Implemented | delete bucket |

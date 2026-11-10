@@ -11,6 +11,83 @@ servers:
 security:
   - zigfsSessionCookie: []
 paths:
+  /api/v1/buckets/{name}/directories:
+    parameters:
+      - in: path
+        name: name
+        required: true
+        schema: { type: string }
+    post:
+      summary: Create a directory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key]
+              properties:
+                key: { type: string, description: Directory key ending in a slash }
+      responses:
+        '201': { description: Directory created }
+    delete:
+      summary: Delete a folder and its current objects or all versions
+      description: >-
+        Requires admin:* management authority. Default deletion uses S3 versioning
+        semantics and preserves historical versions in enabled buckets. all_versions=true
+        permanently deletes every historical version and delete marker under the exact
+        slash-terminated prefix. Legal Hold and retention are enforced. A concurrent write
+        may return 409; partial progress is possible and retries are supported even after
+        the folder record is removed. Physical orphan data is reclaimed by GC.
+      parameters:
+        - in: query
+          name: key
+          required: true
+          schema: { type: string, minLength: 2 }
+          description: Slash-terminated folder key; empty and root prefixes are rejected.
+        - in: query
+          name: all_versions
+          schema: { type: boolean, default: false }
+      responses:
+        '204': { description: Folder deleted }
+        '400': { description: Invalid key or options }
+        '403': { description: Permission denied or protected version }
+        '409': { description: Concurrent changes or remaining live content }
+        '503': { description: Storage failure; inspect contents before retrying }
+  /api/v1/buckets/{name}/directories/cleanup:
+    post:
+      summary: Force cleanup folder
+      description: >-
+        Requires admin:* management authority. Repairs stale directory index entries
+        against authoritative metadata and runs the shared reachability-based garbage
+        collector. Removes index entries whose persistent record is absent or tombstoned;
+        restores missing or outdated index state for valid directory records.
+        Healthy empty folders, current objects, historical versions, delete markers,
+        and active multipart uploads are preserved. This is not recursive deletion.
+        Unreadable or corrupt authoritative metadata requires recovery and is never
+        discarded on the assumption that it is garbage. Repairs may partially complete
+        before an error; retries are supported. Shared GC can also reclaim unreferenced
+        data elsewhere while preserving all reachable data.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key]
+              properties:
+                key: { type: string, minLength: 2, description: Slash-terminated folder key; root is forbidden }
+      responses:
+        '204': { description: Directory reconciliation and orphan-data collection completed }
+        '400': { description: Invalid folder key }
+        '403': { description: Permission denied or protected version }
+        '409': { description: Concurrent changes or remaining live content }
+        '503': { description: Repair incomplete or corrupt metadata requires recovery }
   /api/v1/auth/oidc/refresh:
     post:
       summary: Renew OIDC identity and synchronize profile and policies
@@ -995,6 +1072,140 @@ paths:
       responses:
         "204":
           description: 已删除或不存在
+  /api/v1/settings/kms:
+    get:
+      summary: Read redacted KMS configuration and last enable-time health
+      description: Requires management authority. Secrets are returned as empty strings.
+      responses:
+        '200':
+          description: KMS status without network probing (healthChecked is false until start-time verification)
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/KMSStatus' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Configuration store unavailable }
+    put:
+      summary: Validate and persist KMS configuration without contacting the provider
+      description: >-
+        Blank secrets preserve the existing value when saving the same backend.
+        Local paths refer to the ZigFS server. Old profiles are retained for existing objects.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/KMSConfig' }
+      responses:
+        '200':
+          description: Redacted active configuration and health
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/KMSStatus' }
+        '400': { description: Invalid configuration }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Configuration store or persistence failed }
+  /api/v1/settings/kms/start:
+    post:
+      summary: Start KMS by verifying the saved backend and default key
+      description: Requires management authority. Persists startup intent in xl.meta without saving the form draft. Enabled KMS is restored on ZigFS restart. Failure is retained in KMS status; GET and refresh do not retry.
+      responses:
+        '200':
+          description: Running KMS status
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/KMSStatus' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Backend initialization or key verification failed }
+
+  /api/v1/settings/kms/stop:
+    post:
+      summary: Stop KMS and clear its in-memory keys
+      description: Requires management authority. Does not delete key files. Stop persists disabled startup intent in xl.meta; Clear Cache does not change startup intent.
+      responses:
+        '200':
+          description: Updated KMS runtime status
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/KMSStatus' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '409': { description: KMS is not running }
+
+  /api/v1/settings/kms/clear-cache:
+    post:
+      summary: Clear cached KMS keys without stopping the service
+      description: Requires management authority. Does not delete key files. Stop persists disabled startup intent in xl.meta; Clear Cache does not change startup intent.
+      responses:
+        '200':
+          description: Updated KMS runtime status
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/KMSStatus' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '409': { description: KMS is not running }
+
+  /api/v1/settings/kms/keys:
+    get:
+      summary: List KMS key metadata without key material
+      description: Requires management authority and running KMS. Static keys are read-only.
+      responses:
+        '200':
+          description: Metadata and backend capabilities
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/KMSKey' } }
+                  canCreate: { type: boolean }
+                  canRekey: { type: boolean }
+        '409': { description: KMS is not running }
+        '503': { description: Key store or provider unavailable }
+    post:
+      summary: Create a KMS key and optionally make it the default
+      description: Requires management authority and running KMS. IDs are generated by ZigFS.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 256 }
+                description: { type: string, maxLength: 4096 }
+                setAsDefault: { type: boolean, default: false }
+      responses:
+        '201':
+          description: Created key metadata
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/KMSKey' }
+        '400': { description: Invalid request }
+        '409': { description: Backend does not support creation or KMS is not running }
+        '503': { description: Key store or provider unavailable }
+  /api/v1/settings/kms/keys/action:
+    post:
+      summary: Rotate, schedule deletion, restore, or permanently delete a key
+      description: Requires management authority and running KMS. Immediate deletion requires PendingDeletion. Pending state is enforced by ZigFS; the seven-day date does not trigger automatic deletion.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, action]
+              properties:
+                id: { type: string }
+                action: { type: string, enum: [rotate, schedule-deletion, cancel-deletion, delete] }
+      responses:
+        '200': { description: Key action completed }
+        '400': { description: Invalid request }
+        '409': { description: Invalid key state, unsupported operation, or KMS is not running }
+        '503': { description: Key store or provider unavailable }
+
 components:
   securitySchemes:
     zigfsSessionCookie:

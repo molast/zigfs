@@ -84,6 +84,7 @@ pub fn authenticateUser(a: std.mem.Allocator, app: *Application, username: []con
 // management authority. Unknown/new endpoints never default to read access.
 pub fn routeAction(method: std.http.Method, path: []const u8) []const u8 {
     if (method != .GET) {
+        if (std.mem.endsWith(u8, path, "/directories/cleanup") or (method == .DELETE and std.mem.endsWith(u8, path, "/directories"))) return "admin:*";
         if (std.mem.eql(u8, path, "/_admin/v1/buckets")) return if (method == .POST) "s3:CreateBucket" else "s3:ListAllMyBuckets";
         if (std.mem.eql(u8, path, "/_admin/v1/sts/assume-role")) return "sts:AssumeRole";
         if (std.mem.startsWith(u8, path, "/_admin/v1/objects/presign")) return "s3:GetObject";
@@ -129,4 +130,9 @@ test "management route actions never default ordinary reads to root" {
     try std.testing.expectEqualStrings("admin:ListRoles", routeAction(.GET, "/_admin/v1/roles"));
     try std.testing.expectEqualStrings("s3:ListBucket", routeAction(.GET, "/_admin/v1/buckets/photos/objects"));
     try std.testing.expectEqualStrings("s3:PutObject", routeAction(.POST, "/_admin/v1/multipart-uploads"));
+}
+
+test "recursive folder deletion requires management authority" {
+    try std.testing.expectEqualStrings("admin:*", routeAction(.DELETE, "/_admin/v1/buckets/photos/directories"));
+    try std.testing.expectEqualStrings("admin:*", routeAction(.POST, "/_admin/v1/buckets/photos/directories/cleanup"));
 }

@@ -60,6 +60,12 @@ type ZigClient interface {
 	StorageScanner(ctx context.Context) (contract.StorageScannerStatus, error)
 	RunStorageGC(ctx context.Context) (contract.StorageScanReport, error)
 	ManagementHealth(ctx context.Context) (contract.ManagementHealthResponse, error)
+	KMSSettings(ctx context.Context) (contract.KMSStatus, error)
+	StartKMS(ctx context.Context) (contract.KMSStatus, error)
+	KMSKeys(ctx context.Context, method string, action bool, input json.RawMessage) (json.RawMessage, error)
+	ClearKMSCache(ctx context.Context) (contract.KMSStatus, error)
+	StopKMS(ctx context.Context) (contract.KMSStatus, error)
+	SaveKMSSettings(ctx context.Context, config contract.KMSConfig) (contract.KMSStatus, error)
 	Settings(ctx context.Context) (contract.SettingsResponse, error)
 	ListBuckets(ctx context.Context) (contract.ListBucketsResponse, error)
 	CreateBucket(ctx context.Context, request contract.CreateBucketRequest) (contract.Bucket, error)
@@ -77,7 +83,7 @@ type ZigClient interface {
 	ListObjectVersions(ctx context.Context, bucket, prefix string) (contract.ListObjectVersionsResponse, error)
 	ListObjects(ctx context.Context, bucket, prefix, search, cursor, maxKeys, delimiter string) (contract.ListObjectsResponse, error)
 	CreateDirectory(ctx context.Context, bucket string, request contract.CreateDirectoryRequest) (contract.Directory, error)
-	DeleteDirectory(ctx context.Context, bucket string, request contract.CreateDirectoryRequest) error
+	DeleteDirectory(ctx context.Context, bucket string, request contract.DeleteDirectoryRequest) error
 	PresignObject(ctx context.Context, request contract.PresignObjectRequest) (contract.PresignObjectResponse, error)
 	CreateMultipartUpload(ctx context.Context, request contract.CreateMultipartUploadRequest) (contract.MultipartUpload, error)
 	ListMultipartUploads(ctx context.Context, bucket, prefix, keyMarker, uploadIDMarker string) (contract.ListMultipartUploadsResponse, error)

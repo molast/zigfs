@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 
 	"zigfs-admin/server/internal/contract"
 	"zigfs-admin/server/internal/port"
@@ -77,7 +78,7 @@ func (service *Management) CreateDirectory(ctx context.Context, bucket string, r
 	return service.zig.CreateDirectory(ctx, bucket, request)
 }
 
-func (service *Management) DeleteDirectory(ctx context.Context, bucket string, request contract.CreateDirectoryRequest) error {
+func (service *Management) DeleteDirectory(ctx context.Context, bucket string, request contract.DeleteDirectoryRequest) error {
 	return service.zig.DeleteDirectory(ctx, bucket, request)
 }
 
@@ -250,4 +251,27 @@ func (service *Management) UpdateUserAccessKey(ctx context.Context, name, id str
 }
 func (service *Management) DeleteUserAccessKey(ctx context.Context, name, id string) error {
 	return service.zig.DeleteUserAccessKey(ctx, name, id)
+}
+
+func (service *Management) KMSSettings(ctx context.Context) (contract.KMSStatus, error) {
+	return service.zig.KMSSettings(ctx)
+}
+func (service *Management) SaveKMSSettings(ctx context.Context, config contract.KMSConfig) (contract.KMSStatus, error) {
+	return service.zig.SaveKMSSettings(ctx, config)
+}
+
+func (service *Management) StartKMS(ctx context.Context) (contract.KMSStatus, error) {
+	return service.zig.StartKMS(ctx)
+}
+
+func (service *Management) StopKMS(ctx context.Context) (contract.KMSStatus, error) {
+	return service.zig.StopKMS(ctx)
+}
+
+func (service *Management) ClearKMSCache(ctx context.Context) (contract.KMSStatus, error) {
+	return service.zig.ClearKMSCache(ctx)
+}
+
+func (service *Management) KMSKeys(ctx context.Context, method string, action bool, input json.RawMessage) (json.RawMessage, error) {
+	return service.zig.KMSKeys(ctx, method, action, input)
 }

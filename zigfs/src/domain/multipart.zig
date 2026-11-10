@@ -26,6 +26,8 @@ pub const Part = struct {
 };
 
 pub const View = struct {
+    encryption: ?bool = null,
+    kms: ?@import("kms.zig").Envelope = null,
     id: id.Uuid,
     bucket_id: id.Uuid,
     bucket_name: []const u8,
@@ -38,6 +40,8 @@ pub const View = struct {
 };
 
 pub const Upload = struct {
+    encryption: ?bool = null,
+    kms: ?@import("kms.zig").Envelope = null,
     id: id.Uuid,
     bucket_id: id.Uuid,
     bucket_name: []u8,
@@ -61,6 +65,8 @@ pub const Upload = struct {
     pub fn view(self: *const Upload) View {
         return .{
             .id = self.id,
+            .encryption = self.encryption,
+            .kms = self.kms,
             .bucket_id = self.bucket_id,
             .bucket_name = self.bucket_name,
             .key = self.key,
@@ -133,6 +139,8 @@ pub fn cloneFromView(
     const parts = try allocator.dupe(Part, source.parts);
     return .{
         .id = source.id,
+        .encryption = source.encryption,
+        .kms = source.kms,
         .bucket_id = source.bucket_id,
         .bucket_name = bucket_name,
         .key = key,

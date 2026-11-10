@@ -41,6 +41,16 @@ checksum 会明确记为 `Unsupported`，不计作 `Passed`；真正的协议、
 - PutObject 和 UploadPart 支持 AWS Flexible Checksums 的 `CRC32`、`CRC32C`、`CRC64NVME`、`SHA1`、`SHA256` Header 与 signed trailer 模式；校验值参与 SigV4 并在 staged 流式落盘时重新计算。
 - Bucket、Object 和 Credential 状态均由 ZigFS 自有 Metadata Engine 持久化，不依赖数据库。
 
+## SSE-KMS
+
+支持 Local filesystem、Static、Vault Transit 和 Vault KV2，配置、权限、持久化及限制见 [SSE-KMS](sse-kms.md)。
+
+## SSE-S3
+
+支持 Bucket 默认 AES256 加密 API、对象显式加密、复制及分片上传、GET/HEAD 响应头和 POST Policy。
+Admin 设置与 S3 API 共用 ZigFS 配置。完整范围、Disabled 与现代 AWS 默认行为的差异、
+分片存储升级说明及 SDK 验证方式见 [SSE-S3](sse-s3.md)。
+
 ## Bucket
 
 | Operation | Method/Request | 状态 | 成功响应 | 权限 |
@@ -134,7 +144,7 @@ ListObjectsV2 已支持：
 - ListParts 支持 `part-number-marker` 和 `max-parts=0..1000`，默认 `1000`，按 Part Number 升序返回。
 - ListMultipartUploads 支持 `prefix`、`delimiter`、`key-marker`、`upload-id-marker`、`max-uploads=0..1000` 和 `encoding-type=url`，按 Key、UploadId 稳定排序；因此客户端丢失进程内状态后仍可发现未完成 Upload。
 - Complete XML 接受 `ETag`/`PartNumber` 两种字段顺序，并兼容 rclone 的 XML 实体引号。请求 Part 必须升序、无重复、存在且 ETag 一致；除最后一个提交 Part 外，每个 Part 至少 5 MiB。
-- Complete 验证已选 Part 的存在性后，以 Object Metadata CAS 原子发布有序 Part Manifest，不重新读取、拼接或复制完整对象。最终 ETag 为 `MD5(concat(binary_part_md5))-part_count`。
+- 未加密的 Complete 验证已选 Part 的存在性后，以 Object Metadata CAS 原子发布有序 Part Manifest，不重新读取、拼接或复制完整对象。SSE-S3 Complete 会流式解密 Part 并重新加密写入最终对象。最终 ETag 为 `MD5(concat(binary_part_md5))-part_count`。
 - Complete 成功后 Upload Metadata 提交 Tombstone，Manifest 引用的 Part 转由对象版本持有；Abort 只清理未完成 Upload，不会触碰已完成对象的 Part。
 - GET 按 Manifest 顺序读取 Part，Range 只读取相交 Part；完整 GET 逐 Part 校验 Size/SHA-256。启动 GC 同时以活动 Upload 和所有对象版本 Manifest 计算可达 Part，清理 Tombstone、覆盖 Part 和失败提交留下的孤儿。
 - `s3.multipart_expiry_seconds` 清理超时未完成上传；默认 7 天，允许 60 秒至 30 天。

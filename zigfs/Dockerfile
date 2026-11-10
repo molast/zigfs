@@ -7,6 +7,8 @@ ARG TARGETARCH
 ARG ZIG_DOWNLOAD_BASE_URL=https://ziglang.org/download
 ARG ZIG_TOOLCHAIN_SHA256=
 
+RUN apk add --no-cache curl-dev pkgconf
+
 WORKDIR /src
 RUN --mount=type=bind,source=.,target=/build-context,ro \
     target_arch="${TARGETARCH}" \
@@ -54,6 +56,8 @@ FROM alpine:latest AS runtime
 LABEL org.opencontainers.image.title="ZigFS" \
       org.opencontainers.image.version="0.1.0" \
       org.opencontainers.image.licenses="Apache-2.0"
+
+RUN apk add --no-cache libcurl ca-certificates
 
 RUN addgroup -S -g 10001 zigfs \
     && adduser -S -D -H -u 10001 -G zigfs zigfs \

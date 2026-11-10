@@ -5,8 +5,8 @@ const id = @import("../common/id.zig");
 
 pub const magic = [4]u8{ 'Z', 'F', 'M', 'P' };
 pub const major_version: u16 = 1;
-pub const minor_version: u16 = 0;
-pub const header_length: usize = 72;
+pub const minor_version: u16 = 2;
+pub const header_length: usize = 363;
 pub const part_record_length: usize = 84;
 
 const flags_offset: usize = 8;
@@ -76,7 +76,14 @@ pub fn encode(allocator: std.mem.Allocator, value: Value) EncodeError![]u8 {
     std.mem.writeInt(u16, bytes[4..6], major_version, .little);
     std.mem.writeInt(u16, bytes[6..8], minor_version, .little);
     std.mem.writeInt(u16, bytes[flags_offset..status_offset], 0, .little);
-    bytes[status_offset] = @intFromEnum(value.status);
+    bytes[status_offset] = @backingInt(value.status);
+    if (value.kms) |kms| {
+        bytes[72] = 1;
+        @memcpy(bytes[73..105], &kms.profile);
+        std.mem.writeInt(u16, bytes[105..107], kms.key_len, .little);
+        @memcpy(bytes[107..363], &kms.key_id);
+    }
+    bytes[reserved_offset] = if (value.encryption) |enabled| (if (enabled) @as(u8, 2) else @as(u8, 1)) else 0;
     @memcpy(bytes[upload_id_offset..bucket_id_offset], &value.id);
     @memcpy(bytes[bucket_id_offset..initiated_at_offset], &value.bucket_id);
     std.mem.writeInt(i64, bytes[initiated_at_offset..bucket_name_length_offset], value.initiated_at_unix_seconds, .little);
@@ -100,7 +107,7 @@ pub fn encode(allocator: std.mem.Allocator, value: Value) EncodeError![]u8 {
     }
     for (value.parts) |part| {
         std.mem.writeInt(u16, bytes[offset..][0..2], part.number, .little);
-        bytes[offset + 2] = @intFromEnum(part.status);
+        bytes[offset + 2] = @backingInt(part.status);
         bytes[offset + 3] = 0;
         std.mem.writeInt(u64, bytes[offset + 4 ..][0..8], part.size, .little);
         @memcpy(bytes[offset + 12 ..][0..16], &part.etag_md5);
@@ -114,13 +121,17 @@ pub fn encode(allocator: std.mem.Allocator, value: Value) EncodeError![]u8 {
 }
 
 pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decoded {
-    if (bytes.len < header_length) return error.InvalidLength;
+    if (bytes.len < 72) return error.InvalidLength;
     if (!std.mem.eql(u8, bytes[0..magic.len], &magic)) return error.InvalidMagic;
     if (std.mem.readInt(u16, bytes[4..6], .little) != major_version) return error.UnsupportedMajorVersion;
-    if (std.mem.readInt(u16, bytes[6..8], .little) != minor_version) return error.UnsupportedMinorVersion;
+    if (std.mem.readInt(u16, bytes[6..8], .little) > minor_version) return error.UnsupportedMinorVersion;
+    const encoded_header_length: usize = if (std.mem.readInt(u16, bytes[6..8], .little) < 2) 72 else header_length;
+    if (bytes.len < encoded_header_length) return error.InvalidLength;
+    if (encoded_header_length > 72 and (bytes[72] > 1 or std.mem.readInt(u16, bytes[105..107], .little) > 256)) return error.UnsupportedFlags;
     if (std.mem.readInt(u16, bytes[flags_offset..status_offset], .little) != 0 or
-        bytes[reserved_offset] != 0 or
-        !allZero(bytes[header_reserved_offset..header_length]))
+        bytes[reserved_offset] > 2 or
+        (std.mem.readInt(u16, bytes[6..8], .little) == 0 and bytes[reserved_offset] != 0) or
+        !allZero(bytes[header_reserved_offset..72]))
     {
         return error.UnsupportedFlags;
     }
@@ -154,12 +165,12 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
     const with_metadata = std.math.add(usize, text_length, metadata_length) catch return error.InvalidLength;
     const parts_length = std.math.mul(usize, part_count, part_record_length) catch return error.InvalidLength;
     const variable_length = std.math.add(usize, with_metadata, parts_length) catch return error.InvalidLength;
-    const expected_length = std.math.add(usize, header_length, variable_length) catch return error.InvalidLength;
+    const expected_length = std.math.add(usize, encoded_header_length, variable_length) catch return error.InvalidLength;
     if (expected_length != bytes.len) {
         return error.InvalidLength;
     }
 
-    var offset = header_length;
+    var offset = encoded_header_length;
     const bucket_name = takeField(bytes, &offset, bucket_name_length) orelse return error.InvalidLength;
     const key = takeField(bytes, &offset, key_length) orelse return error.InvalidLength;
     const content_type = takeField(bytes, &offset, content_type_length) orelse return error.InvalidLength;
@@ -195,6 +206,12 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
     if (offset != bytes.len) return error.InvalidLength;
     const value: Value = .{
         .id = upload_id,
+        .kms = if (encoded_header_length > 72 and bytes[72] == 1) .{ .profile = bytes[73..105].*, .key_len = std.mem.readInt(u16, bytes[105..107], .little), .key_id = bytes[107..363].* } else null,
+        .encryption = switch (bytes[reserved_offset]) {
+            1 => false,
+            2 => true,
+            else => null,
+        },
         .bucket_id = bucket_id,
         .bucket_name = bucket_name,
         .key = key,
@@ -277,4 +294,28 @@ test "multipart payload rejects corruption" {
     @memcpy(changed, bytes);
     changed[header_reserved_offset] = 1;
     try std.testing.expectError(error.UnsupportedFlags, decode(std.testing.allocator, changed));
+}
+
+test "multipart encryption snapshot and legacy payload compatibility" {
+    for ([_]?bool{ null, false, true }) |encryption| {
+        var value = testValue();
+        value.encryption = encryption;
+        const bytes = try encode(std.testing.allocator, value);
+        defer std.testing.allocator.free(bytes);
+        const decoded = try decode(std.testing.allocator, bytes);
+        defer decoded.deinit(std.testing.allocator);
+        try std.testing.expectEqual(encryption, decoded.value.encryption);
+        const legacy_bytes = try std.testing.allocator.alloc(u8, 72 + bytes.len - header_length);
+        defer std.testing.allocator.free(legacy_bytes);
+        @memcpy(legacy_bytes[0..72], bytes[0..72]);
+        @memcpy(legacy_bytes[72..], bytes[header_length..]);
+        legacy_bytes[6] = 0;
+        if (encryption != null) {
+            try std.testing.expectError(error.UnsupportedFlags, decode(std.testing.allocator, legacy_bytes));
+        } else {
+            const legacy = try decode(std.testing.allocator, legacy_bytes);
+            defer legacy.deinit(std.testing.allocator);
+            try std.testing.expectEqual(@as(?bool, null), legacy.value.encryption);
+        }
+    }
 }

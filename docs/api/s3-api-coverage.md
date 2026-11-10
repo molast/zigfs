@@ -73,7 +73,7 @@ ZigFS 0.1 已纳入 Versioning 和 Lifecycle 的核心子集。其余操作不�
 | `GetBucketVersioning` / `PutBucketVersioning` | `Implemented` | 支持从 Unversioned 启用，以及 Enabled/Suspended 切换；不支持恢复为 Unversioned。 |
 | `ListObjectVersions` | `Implemented` | 支持 Prefix、Delimiter、KeyMarker、VersionIdMarker、MaxKeys 与 URL Encoding。 |
 | `GetBucketWebsite` / `PutBucketWebsite` / `DeleteBucketWebsite` | `Out of Scope` | 静态网站托管 |
-| `GetBucketEncryption` / `PutBucketEncryption` / `DeleteBucketEncryption` | `Out of Scope` | S3 SSE/KMS 默认加密配置；Credential Secret 的内部加密不等同于该 API。 |
+| `GetBucketEncryption` / `PutBucketEncryption` / `DeleteBucketEncryption` | `Implemented` | SSE-S3 `AES256` 默认加密及对象/分片请求，详见 [SSE-S3 兼容范围](sse-s3.md)；SSE-KMS 支持四种后端，详见 [SSE-KMS](sse-kms.md)；SSE-C 不支持。 |
 | `GetPublicAccessBlock` / `PutPublicAccessBlock` / `DeletePublicAccessBlock` | `Out of Scope` | 公共访问阻断 |
 | `GetBucketOwnershipControls` / `PutBucketOwnershipControls` / `DeleteBucketOwnershipControls` | `Out of Scope` | Object Ownership |
 | `GetObjectLockConfiguration` / `PutObjectLockConfiguration` | `Out of Scope` | Object Lock 默认配置 |
@@ -157,7 +157,7 @@ Part，再上传缺失 Part。单次 PutObject 或单个 UploadPart 中断后必
 1. `ListObjects`、`UploadPartCopy` 等剩余文件生命周期接口。
 2. Object Tagging、Bucket Tagging，以及 Lifecycle Tag/Size Filter 和 Multipart 清理动作。
 3. ACL/Policy/Ownership Controls，先确定 Owner、Policy 和 Admin Management API 的统一权限模型。
-4. CORS、Notification、Replication、Encryption 等平台配置能力。
+4. CORS、Notification、Replication、KMS 等平台配置能力。
 5. Select、Object Lock、Inventory、Analytics、Intelligent-Tiering 和云厂商集成类能力。
 
 每个新增操作必须同时提交：HTTP/XML/错误契约、鉴权与权限规则、Metadata/Journal 设计、正常/异常/恢复测试、至少一个真实客户端验证，以及对应语言 SDK 映射。服务版本仍按 `0.1.x` 演进，不能因新增 S3 操作直接改成 `1.0.0`。

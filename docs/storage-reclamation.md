@@ -135,3 +135,32 @@ linked. Direct `zig test src/root.zig` invocations additionally need
 属于正常情况，不输出删除失败告警。目录同步失败也会单独记录。
 目前日志走 ZigFS 标准服务日志输出；Admin 的日志配置页面是只读占位，并未提供
 可生效的级别、文件目录或输出目标配置。
+
+## Folder deletion and force cleanup
+
+`DELETE /_admin/v1/buckets/{name}/directories?key=path%2F` deletes current
+objects using normal S3 versioning semantics. `all_versions=true` also permanently
+deletes historical versions and delete markers. Neither mode bypasses Legal Hold
+or retention. Both require `admin:*` management authority.
+
+`POST /_admin/v1/buckets/{name}/directories/cleanup` with `{"key":"path/"}`
+is a repair operation, not recursive deletion. It reconciles directory index
+entries with authoritative metadata: absent or tombstoned records are removed
+from the index, while valid records restore missing or outdated index entries.
+Healthy empty directories remain visible. Use ordinary Delete to remove them.
+Current objects, historical versions, delete markers and active multipart uploads
+are never deleted or aborted by cleanup. The shared garbage collector reclaims
+only unreachable generations and orphan tags; it may reclaim unreferenced data
+outside the requested prefix too, but preserves every reachable generation.
+
+This operation handles recoverable listing/index inconsistencies. Corrupt or
+unreadable authoritative metadata is reported for recovery, not blindly removed.
+After a failure some index repairs may already have completed; inspect the state
+and retry. A successful repair does not guarantee storage space was reclaimed.
+
+Ordinary folder deletion is not atomic across objects. On failure, refresh and
+inspect remaining contents before retrying. A concurrent write can cause a
+conflict rather than being silently removed by final metadata pruning. Deleted
+folder metadata is not required for retrying history deletion. Empty keys, the
+root `/`, and keys without a trailing slash are rejected. Admin forwards all
+operations through the BFF and never accesses the data directory directly.

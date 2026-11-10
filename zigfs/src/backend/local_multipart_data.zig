@@ -6,6 +6,10 @@ const multipart_domain = @import("../domain/multipart.zig");
 const byte_stream = @import("../ports/byte_stream.zig");
 const data_store_port = @import("../ports/multipart_data_store.zig");
 
+const secret_box = @import("../auth/secret_box.zig");
+const frames = @import("../application/object_encryption_frames.zig");
+const encrypted_stream = @import("../application/object_encrypted_stream.zig");
+
 pub const max_path_length: usize = 256;
 
 pub const LocalMultipartDataStore = struct {
@@ -13,6 +17,7 @@ pub const LocalMultipartDataStore = struct {
     root: std.Io.Dir,
     io: std.Io,
     buffer_size: usize,
+    master_key: ?secret_box.Key = null,
 
     pub fn init(allocator: std.mem.Allocator, root: std.Io.Dir, io: std.Io, buffer_size: usize) LocalMultipartDataStore {
         return .{ .allocator = allocator, .root = root, .io = io, .buffer_size = buffer_size };
@@ -22,6 +27,7 @@ pub const LocalMultipartDataStore = struct {
         return .{ .context = self, .vtable = &.{
             .cleanup_staged = cleanupStagedImpl,
             .stage = stageImpl,
+            .stage_encrypted = stageEncryptedImpl,
             .publish = publishImpl,
             .discard = discardImpl,
             .stat = statImpl,
@@ -78,6 +84,47 @@ pub const LocalMultipartDataStore = struct {
         };
     }
 
+    fn stageEncryptedImpl(context: *anyopaque, token: id.Uuid, source: byte_stream.Source) data_store_port.Error!data_store_port.Staged {
+        const self: *LocalMultipartDataStore = @ptrCast(@alignCast(context));
+        if (!id.isValidV4(token)) return error.InvalidValue;
+        var path_buffer: [max_path_length]u8 = undefined;
+        const path = temporaryPath(token, &path_buffer) catch return error.InvalidValue;
+        var file = self.root.createFile(self.io, path, .{ .read = true, .truncate = false, .exclusive = true }) catch |err| switch (err) {
+            error.PathAlreadyExists => return error.Conflict,
+            else => return error.Unavailable,
+        };
+        var keep_file = false;
+        errdefer if (!keep_file) self.root.deleteFile(self.io, path) catch {};
+        defer file.close(self.io);
+        var sink: FileSink = .{ .file = file, .io = self.io };
+        var key = try self.partKey(token);
+        defer std.crypto.secureZero(u8, &key);
+        const copied = encrypted_stream.sealSource(self.allocator, self.io, key, &token, source, sink.interface()) catch return error.SourceReadFailed;
+        file.sync(self.io) catch return error.Unavailable;
+        durable.syncParent(self.root, self.io, path) catch return error.Unavailable;
+        keep_file = true;
+        return .{
+            .token = token,
+            .size = copied.plaintext_size,
+            .etag_md5 = copied.etag_md5,
+            .checksum_crc32 = copied.checksum_crc32,
+            .checksum_crc32c = copied.checksum_crc32c,
+            .checksum_sha256 = copied.checksum_sha256,
+            .checksum_sha1 = copied.checksum_sha1,
+            .checksum_crc64nvme = copied.checksum_crc64nvme,
+        };
+    }
+
+    fn partKey(self: *LocalMultipartDataStore, token: id.Uuid) data_store_port.Error!secret_box.Key {
+        const master = self.master_key orelse return error.Unavailable;
+        var mac = std.crypto.auth.hmac.sha2.HmacSha256.init(&master);
+        mac.update("ZIGFS-MULTIPART-DATA-V1:");
+        mac.update(&token);
+        var key: secret_box.Key = undefined;
+        mac.final(&key);
+        return key;
+    }
+
     fn publishImpl(context: *anyopaque, staged: data_store_port.Staged, location: data_store_port.Location) data_store_port.Error!void {
         const self: *LocalMultipartDataStore = @ptrCast(@alignCast(context));
         if (!validLocation(location) or !std.mem.eql(u8, &staged.token, &location.data_generation)) return error.InvalidValue;
@@ -114,6 +161,12 @@ pub const LocalMultipartDataStore = struct {
             else => return error.Unavailable,
         };
         if (stat.kind != .file) return error.CorruptData;
+        if (location.encrypted) {
+            if (stat.size < frames.header_length) return error.CorruptData;
+            const count = (stat.size + frames.plaintext_frame_size + frames.header_length - 1) / (frames.plaintext_frame_size + frames.header_length);
+            if (stat.size < (count - 1) * (frames.plaintext_frame_size + frames.header_length) + frames.header_length) return error.CorruptData;
+            return stat.size - count * frames.header_length;
+        }
         return stat.size;
     }
 
@@ -127,6 +180,11 @@ pub const LocalMultipartDataStore = struct {
             else => return error.Unavailable,
         };
         defer file.close(self.io);
+        if (location.encrypted) {
+            const size = try statImpl(context, location);
+            if (offset > size or length > size - offset) return error.InvalidValue;
+            return self.readEncryptedRange(file, location.data_generation, offset, length, sink);
+        }
         const buffer = self.allocator.alloc(u8, self.buffer_size) catch return error.OutOfMemory;
         defer self.allocator.free(buffer);
         var position = offset;
@@ -138,6 +196,38 @@ pub const LocalMultipartDataStore = struct {
             sink.writeAll(buffer[0..count]) catch return error.SinkWriteFailed;
             position = std.math.add(u64, position, count) catch return error.InvalidValue;
             remaining -= count;
+        }
+    }
+
+    fn readEncryptedRange(self: *LocalMultipartDataStore, file: std.Io.File, token: id.Uuid, offset: u64, length: u64, sink: byte_stream.Sink) data_store_port.Error!void {
+        var key = try self.partKey(token);
+        defer std.crypto.secureZero(u8, &key);
+        var position = offset;
+        var remaining = length;
+        var verify_empty = offset == 0 and length == 0;
+        while (remaining > 0 or verify_empty) {
+            verify_empty = false;
+            const index = position / frames.plaintext_frame_size;
+            const physical = index * (frames.plaintext_frame_size + frames.header_length);
+            var bytes: [frames.header_length]u8 = undefined;
+            if ((file.readPositionalAll(self.io, &bytes, physical) catch return error.Unavailable) != bytes.len) return error.CorruptData;
+            const header = frames.decodeHeader(&bytes) catch return error.CorruptData;
+            if (header.index != index) return error.CorruptData;
+            const ciphertext = self.allocator.alloc(u8, header.ciphertext_length) catch return error.OutOfMemory;
+            defer self.allocator.free(ciphertext);
+            if ((file.readPositionalAll(self.io, ciphertext, physical + frames.header_length) catch return error.Unavailable) != ciphertext.len) return error.CorruptData;
+            const plaintext = frames.open(self.allocator, key, &token, .{ .index = index, .plaintext_length = header.plaintext_length, .nonce = header.nonce, .tag = header.tag, .ciphertext = ciphertext }) catch return error.CorruptData;
+            defer {
+                std.crypto.secureZero(u8, plaintext);
+                self.allocator.free(plaintext);
+            }
+            if (remaining == 0) return;
+            const start: usize = @intCast(position % frames.plaintext_frame_size);
+            if (start >= plaintext.len) return error.CorruptData;
+            const count = @min(remaining, plaintext.len - start);
+            sink.writeAll(plaintext[start..][0..@intCast(count)]) catch return error.SinkWriteFailed;
+            remaining -= count;
+            position += count;
         }
     }
 
@@ -473,4 +563,37 @@ test "local multipart data paths are opaque and stream ranges" {
 
     try store.deleteUpload(upload_id);
     try std.testing.expectError(error.NotFound, store.readRange(location, 0, 1, sink.interface()));
+}
+
+test "encrypted multipart data hides plaintext supports cross frame ranges and rejects tampering" {
+    const test_streams = @import("../testing/streams.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".zigfs/tmp");
+    try tmp.dir.createDirPath(std.testing.io, "multipart");
+    var local = LocalMultipartDataStore.init(std.testing.allocator, tmp.dir, std.testing.io, streaming.min_buffer_size);
+    local.master_key = @splat(42);
+    const store = local.interface();
+    const token: id.Uuid = .{ 0, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 };
+    const body = try std.testing.allocator.alloc(u8, frames.plaintext_frame_size + 123);
+    defer std.testing.allocator.free(body);
+    @memset(body, 'q');
+    var source = test_streams.SliceSource.init(body);
+    const staged = try store.stageEncrypted(token, source.interface());
+    const location: data_store_port.Location = .{ .upload_id = token, .part_number = 1, .data_generation = token, .encrypted = true };
+    try store.publish(staged, location);
+    try std.testing.expectEqual(body.len, try store.stat(location));
+    var paths: PathSet = undefined;
+    try paths.format(location);
+    const disk = try std.testing.allocator.alloc(u8, body.len + 2 * frames.header_length);
+    defer std.testing.allocator.free(disk);
+    const bytes = try tmp.dir.readFile(std.testing.io, paths.dataPath(), disk);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, body[0..64]) == null);
+    var sink = test_streams.CollectingSink.init(std.testing.allocator);
+    defer sink.deinit();
+    try store.readRange(location, frames.plaintext_frame_size - 5, 100, sink.interface());
+    try std.testing.expectEqualSlices(u8, body[0..100], sink.bytes.items);
+    disk[frames.header_length + 3] ^= 1;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = paths.dataPath(), .data = disk });
+    try std.testing.expectError(error.CorruptData, store.readRange(location, 0, 1, sink.interface()));
 }

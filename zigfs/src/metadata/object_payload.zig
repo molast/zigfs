@@ -5,11 +5,12 @@ const id = @import("../common/id.zig");
 
 pub const magic = [4]u8{ 'Z', 'F', 'O', 'B' };
 pub const major_version: u16 = 1;
-pub const minor_version: u16 = 5;
+pub const minor_version: u16 = 6;
 pub const legacy_header_length: usize = 136;
 pub const etag_header_length: usize = 140;
 pub const encryption_header_length: usize = 252;
-pub const header_length: usize = encryption_header_length + 16;
+pub const retention_header_length: usize = encryption_header_length + 16;
+pub const header_length: usize = retention_header_length + 805;
 pub const multipart_part_length: usize = 64;
 
 const flags_offset: usize = 8;
@@ -120,8 +121,8 @@ pub fn encode(allocator: std.mem.Allocator, value: Value) EncodeError![]u8 {
     std.mem.writeInt(u16, bytes[4..6], major_version, .little);
     std.mem.writeInt(u16, bytes[6..8], minor_version, .little);
     std.mem.writeInt(u16, bytes[flags_offset..status_offset], 0, .little);
-    bytes[status_offset] = @intFromEnum(value.status);
-    bytes[reserved_offset] = @intFromEnum(value.encryption);
+    bytes[status_offset] = @backingInt(value.status);
+    bytes[reserved_offset] = @backingInt(value.encryption);
     @memcpy(bytes[object_id_offset..bucket_id_offset], &value.id);
     @memcpy(bytes[bucket_id_offset..data_generation_offset], &value.bucket_id);
     @memcpy(bytes[data_generation_offset..size_offset], &value.data_generation);
@@ -141,6 +142,15 @@ pub fn encode(allocator: std.mem.Allocator, value: Value) EncodeError![]u8 {
         @memcpy(bytes[upload_id_offset..wrapped_key_nonce_offset], &manifest.upload_id);
     }
     if (value.encryption_metadata) |metadata| {
+        if (metadata.kms) |kms| {
+            bytes[268] = 1;
+            @memcpy(bytes[269..301], &kms.profile);
+            std.mem.writeInt(u16, bytes[301..303], kms.key_len, .little);
+            @memcpy(bytes[303..559], &kms.key_id);
+            std.mem.writeInt(u16, bytes[559..561], kms.ciphertext_len, .little);
+            @memcpy(bytes[561..1073], &kms.ciphertext);
+        }
+
         @memcpy(bytes[wrapped_key_nonce_offset..wrapped_key_tag_offset], &metadata.wrapped_key_nonce);
         @memcpy(bytes[wrapped_key_tag_offset..wrapped_key_offset], &metadata.wrapped_key_tag);
         @memcpy(bytes[wrapped_key_offset..data_nonce_offset], &metadata.wrapped_key);
@@ -148,7 +158,7 @@ pub fn encode(allocator: std.mem.Allocator, value: Value) EncodeError![]u8 {
         @memcpy(bytes[data_tag_offset..encryption_header_length], &metadata.data_tag);
     }
     if (value.retention_until_unix_seconds) |until| std.mem.writeInt(i64, bytes[retention_until_offset .. retention_until_offset + 8], until, .little);
-    bytes[retention_mode_offset] = if (value.retention_mode) |mode| @intFromEnum(mode) else 0;
+    bytes[retention_mode_offset] = if (value.retention_mode) |mode| @backingInt(mode) else 0;
     bytes[legal_hold_offset] = @intFromBool(value.legal_hold);
 
     var offset = header_length;
@@ -191,6 +201,7 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
         1 => etag_header_length,
         2, 3 => 164,
         4 => encryption_header_length,
+        5 => retention_header_length,
         else => header_length,
     };
     if (bytes.len < encoded_header_length) return error.InvalidLength;
@@ -248,12 +259,23 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
         return error.InvalidMultipartManifest;
     }
     const encryption_metadata: ?object_domain.EncryptionMetadata = if (encryption == .encrypted and encoded_minor_version >= 4) .{
+        .kms = if (encoded_minor_version >= 6 and bytes[268] == 1) .{
+            .profile = bytes[269..301].*,
+            .key_len = std.mem.readInt(u16, bytes[301..303], .little),
+            .key_id = bytes[303..559].*,
+            .ciphertext_len = std.mem.readInt(u16, bytes[559..561], .little),
+            .ciphertext = bytes[561..1073].*,
+        } else null,
         .wrapped_key_nonce = bytes[wrapped_key_nonce_offset..wrapped_key_tag_offset].*,
         .wrapped_key_tag = bytes[wrapped_key_tag_offset..wrapped_key_offset].*,
         .wrapped_key = bytes[wrapped_key_offset..data_nonce_offset].*,
         .data_nonce = bytes[data_nonce_offset..data_tag_offset].*,
         .data_tag = bytes[data_tag_offset..encryption_header_length].*,
     } else null;
+    if (encoded_minor_version >= 6 and bytes[268] > 1) return error.UnsupportedFlags;
+    if (encryption_metadata) |metadata| if (metadata.kms) |kms| {
+        if (kms.key_len == 0 or kms.key_len > 256 or kms.ciphertext_len == 0 or kms.ciphertext_len > 512) return error.UnsupportedFlags;
+    };
     if (encryption == .encrypted and encryption_metadata == null) return error.UnsupportedFlags;
     const retention_until = if (encoded_minor_version >= 5 and std.mem.readInt(i64, bytes[retention_until_offset .. retention_until_offset + 8], .little) != 0) std.mem.readInt(i64, bytes[retention_until_offset .. retention_until_offset + 8], .little) else null;
     const retention_mode: ?bucket_domain.RetentionMode = if (encoded_minor_version < 5) null else switch (bytes[retention_mode_offset]) {

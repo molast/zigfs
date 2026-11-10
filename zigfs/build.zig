@@ -13,6 +13,9 @@ pub fn build(b: *std.Build) void {
 
     mod.addCSourceFile(.{ .file = b.path("src/backend/filesystem_capacity.c"), .flags = &.{"-std=c99"} });
 
+    mod.addCSourceFile(.{ .file = b.path("src/backend/kms_http.c"), .flags = &.{"-std=c99"} });
+    mod.linkSystemLibrary("curl", .{});
+
     const exe = b.addExecutable(.{
         .name = "zigfs",
         .root_module = b.createModule(.{

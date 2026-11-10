@@ -1,10 +1,14 @@
 import { t, useLocale } from '@/locales'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Checkbox } from './ui/checkbox'
+import { Field, FieldLabel } from './ui/field'
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from './ui/alert-dialog'
 
 export interface ConfirmOptions {
   title: string
   message: string
+  details?: string
+  checkbox?: { label: string; onCheckedChange: (checked: boolean) => void }
   confirmLabel?: string
   cancelLabel?: string
   danger?: boolean
@@ -22,6 +26,7 @@ const ConfirmContext = createContext<Confirm | null>(null)
 
 export function ConfirmProvider({ children }: { children: ReactNode }) {
   useLocale()
+  const [checked, setChecked] = useState(false)
   const [request, setRequest] = useState<ConfirmRequest | null>(null)
   const requestRef = useRef<ConfirmRequest | null>(null)
 
@@ -29,6 +34,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
     // A confirmation is modal and should never be silently orphaned if a
     // second request arrives before the first one has been answered.
     requestRef.current?.resolve(false)
+    setChecked(false)
     const next = { options, resolve }
     requestRef.current = next
     setRequest(next)
@@ -55,6 +61,11 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
       <AlertDialog open={Boolean(request)} onOpenChange={open => { if (!open) close(false) }}>
         {request && <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>{request.options.title}</AlertDialogTitle><AlertDialogDescription>{request.options.message}</AlertDialogDescription></AlertDialogHeader>
+          {request.options.details && <p className="break-all font-mono text-sm">{request.options.details}</p>}
+          {request.options.checkbox && <Field orientation="horizontal">
+            <Checkbox id="confirm-option" checked={checked} onCheckedChange={value => { setChecked(value === true); request.options.checkbox?.onCheckedChange(value === true) }} />
+            <FieldLabel htmlFor="confirm-option">{request.options.checkbox.label}</FieldLabel>
+          </Field>}
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => close(false)}>{request.options.cancelLabel ?? t('common.cancel')}</AlertDialogCancel>
             {!request.options.hideConfirm && <AlertDialogAction variant={request.options.danger ? 'destructive' : 'default'} onClick={() => close(true)}>{request.options.confirmLabel ?? t('common.confirm')}</AlertDialogAction>}
