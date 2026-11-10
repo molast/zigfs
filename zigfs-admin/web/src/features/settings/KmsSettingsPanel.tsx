@@ -20,7 +20,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 export function createKmsDraft() {
   return {
     backend: 'vault', defaultKey: '', staticSecretKey: '',
-    localKeyDirectory: '', filePermissions: '384', localCacheEnabled: false,
+    localKeyDirectory: '', filePermissions: '384', localCacheEnabled: true,
     address: '', token: '', namespace: '', mountPath: 'transit',
     kvMount: 'secret', keyPathPrefix: 'zigfs/kms/keys',
     skipTlsVerification: false, caCertificatePath: '', clientCertificatePath: '', clientKeyPath: '',
@@ -42,7 +42,7 @@ export function KmsSettingsPanel({ api, status, setStatus, draft, setDraft }: {
   const [attempted, setAttempted] = useState(false)
   const [tlsOpen, setTlsOpen] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [interacted, setInteracted] = useState(() => JSON.stringify(draft) !== JSON.stringify(status?.config ?? createKmsDraft()))
+  const [interacted, setInteracted] = useState(() => JSON.stringify(draft) !== JSON.stringify(status?.configured ? status.config : createKmsDraft()))
   const errorSummary = useRef<HTMLDivElement>(null)
   const toast = useToast()
   const confirm = useConfirm()
@@ -109,7 +109,7 @@ export function KmsSettingsPanel({ api, status, setStatus, draft, setDraft }: {
   }
   const refreshStatus = async () => {
     setBusy(true)
-    try { const loaded = await api.kmsSettings(); setStatus(loaded); if (!status || loaded.configured) { setDraft(loaded.config); setInteracted(false); setAttempted(false) } }
+    try { const loaded = await api.kmsSettings(); setStatus(loaded); if (!status || loaded.configured) { setDraft(loaded.configured ? loaded.config : createKmsDraft()); setInteracted(false); setAttempted(false) } }
     catch (error) { notifyError(error instanceof Error ? error.message : t('settings.kmsRequestFailed')) } finally { setBusy(false) }
   }
   const localBackend = draft.backend === 'local'
@@ -266,7 +266,7 @@ export function KmsSettingsPanel({ api, status, setStatus, draft, setDraft }: {
       </CardContent>
       <CardFooter className="kms-form-actions">
         <div>
-          <Button type="button" variant="outline" disabled={!interacted || busy || !status} onClick={() => { setAttempted(false); setInteracted(false); setDraft(status?.config ?? createKmsDraft()) }}>{t('settings.kmsReset')}</Button>
+          <Button type="button" variant="outline" disabled={!interacted || busy || !status} onClick={() => { setAttempted(false); setInteracted(false); setDraft(status?.configured ? status.config : createKmsDraft()) }}>{t('settings.kmsReset')}</Button>
           <Button type="submit" form="kms-configuration-form" disabled={!interacted || busy || !status}>{status?.configured ? t('settings.kmsReconfigure') : t('settings.kmsSave')}</Button>
         </div>
       </CardFooter>

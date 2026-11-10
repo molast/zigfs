@@ -45,7 +45,7 @@ export function SettingsView({ api }: { api: ApiClient }) {
 
   useEffect(() => {
     let active = true
-    api.kmsSettings().then(status => { if (active) { setKmsStatus(status); setKmsDraft(status.config) } }).catch(error => { if (active) notifyError(error instanceof Error ? error.message : t('settings.kmsRequestFailed')) })
+    api.kmsSettings().then(status => { if (active) { setKmsStatus(status); setKmsDraft(status.configured ? status.config : createKmsDraft()) } }).catch(error => { if (active) notifyError(error instanceof Error ? error.message : t('settings.kmsRequestFailed')) })
     return () => { active = false }
   }, [api, notifyError])
 
