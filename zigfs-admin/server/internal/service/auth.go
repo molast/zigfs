@@ -32,7 +32,7 @@ func (service *Auth) Session(ctx context.Context) (contract.SessionResponse, err
 func (service *Auth) Logout(ctx context.Context) error {
 	token := managementauth.Token(ctx)
 	if !strings.HasPrefix(token, "o1.") {
-		return nil
+		return service.zig.Logout(ctx)
 	}
 	body, _ := json.Marshal(map[string]string{"token": token})
 	_, err := service.zig.OIDCAuth(ctx, "POST", "logout", body)

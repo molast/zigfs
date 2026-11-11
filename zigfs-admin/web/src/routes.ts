@@ -1,4 +1,4 @@
-export type View = 'buckets' | 'bucket-detail' | 'objects' | 'users' | 'user-groups' | 'access-keys' | 'policies' | 'storage' | 'system' | 'settings' | 'oidc-settings'
+export type View = 'buckets' | 'bucket-detail' | 'objects' | 'users' | 'user-groups' | 'access-keys' | 'policies' | 'storage' | 'logs' | 'system' | 'settings' | 'oidc-settings'
 
 export interface AppRoute {
   view: View
@@ -13,6 +13,7 @@ const staticRoutes: Record<string, View> = {
   policies: 'policies',
   'oidc-settings': 'oidc-settings',
   storage: 'storage',
+  logs: 'logs',
   system: 'system',
   settings: 'settings',
 }
@@ -69,6 +70,7 @@ export function appRoutePath(route: AppRoute): string {
     case 'policies': return '/policies'
     case 'oidc-settings': return '/oidc-settings'
     case 'storage': return '/storage'
+    case 'logs': return '/logs'
     case 'system': return '/system'
     case 'settings': return '/settings'
   }

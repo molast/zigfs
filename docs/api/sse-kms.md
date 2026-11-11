@@ -199,7 +199,7 @@ its native rotate API. Provider retention policies must retain versions needed
 by objects. Vault display names and lifecycle state are recorded inside encrypted
 xl.meta; pending deletion is enforced by ZigFS, not by unrelated Vault clients.
 The seven-day deletion date is metadata only; automatic deletion is not scheduled.
-Immediate deletion requires PendingDeletion, destroys all key versions, and
+Immediate deletion accepts enabled or pending-deletion keys, destroys all key versions, and
 retains a non-secret tombstone to prevent accidental regeneration. Restore is
 available only before permanent deletion. These operations clear the KMS cache.
 
@@ -221,3 +221,5 @@ Bucket Encryption supports selecting an enabled KMS key. The Management/BFF buck
 New PUT, COPY, multipart uploads and browser POSTs inherit the bucket key when the request does not explicitly choose encryption. Explicit `aws:kms` without a key uses the backend default. SSE-S3/disabled configuration clears the bucket key. Unrelated bucket settings and service restarts preserve it; existing encrypted objects retain their recorded key.
 
 Bucket metadata `ZFBK` is now version 1.7: the 88-byte header stores key length as little-endian u16 at offsets 82–83, with key bytes appended after tags. Older versions decode with an empty key ID.
+
+The last key in the active backend cannot be deleted or scheduled for deletion. ZigFS checks this under the KMS service mutex and returns HTTP 409 (`KmsLastKeyDeletionForbidden`).

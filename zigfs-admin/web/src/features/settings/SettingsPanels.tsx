@@ -1,5 +1,5 @@
 import { t, getFormatLocale } from '@/locales'
-import { Clock, Database, FileText, Globe, HardDrive, Info, Link, List, Monitor, Scale, ShieldCheck } from 'lucide-react'
+import { Database, Globe, HardDrive, Info, Link, Monitor, Scale, ShieldCheck } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Badge } from '../../components/ui/Badge'
@@ -8,7 +8,6 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from '../../component
 import { Input } from '../../components/ui/Input'
 import { Alert, AlertDescription } from '../../components/ui/alert'
 import { Progress } from '../../components/ui/progress'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/Tabs'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table'
 import type { ManagementHealth, Settings, StorageInfo, StorageScannerStatus, SystemInfo } from '../../types/api'
 
@@ -59,17 +58,6 @@ export function SettingsPanels({ category, settings, system, storage, scanner, h
     <Section icon={Globe} title={t('settings.publicAccess')} description={t('settings.publicDomainNameOrUrl')}><FieldGroup><ReadField id="public-endpoint" label={t('settings.publicUrl')} value={settings ? settings.s3_public_endpoint || t('common.notConfigured') : '—'} help={t('settings.publicS3EndpointForAReverseProxyOrDomain')} /><ReadField id="host-style" label={t('settings.virtualHostedAddressing')} value={settings ? settings.s3_virtual_hosted_style ? t('common.enabled') : t('common.disabled') : '—'} /></FieldGroup></Section>
     <Section icon={ShieldCheck} title={t('settings.trustedProxies')} description={t('settings.proxyServersAndAccessBoundaries')}><FieldGroup><ReadField id="trusted-proxy" label={t('settings.proxyAddresses')} help={t('settings.theApiDoesNotReportTrustedProxiesThisDoes')} /></FieldGroup></Section>
   </div>
-
-  if (category === 'logs') return <Tabs defaultValue="configuration" className="settings-log-tabs"><TabsList aria-label={t('settings.logSettingsCategories')}><TabsTrigger value="configuration"><FileText aria-hidden="true" />{t('settings.logConfiguration')}</TabsTrigger><TabsTrigger value="audit"><ShieldCheck aria-hidden="true" />{t('settings.auditLogs')}</TabsTrigger><TabsTrigger value="management"><List aria-hidden="true" />{t('settings.logManagement')}</TabsTrigger></TabsList>
-    <TabsContent value="configuration"><div className="settings-detail-stack">
-      <Section icon={FileText} title={t('settings.logConfiguration')} description={t('settings.systemLogLevelFormatAndDestinations')}><FieldGroup><ReadField id="log-level" label={t('settings.logLevel')} /><ReadField id="log-format" label={t('settings.logFormat')} /><ReadField id="log-output" label={t('settings.logOutput')} /><ReadField id="log-directory" label={t('settings.logDirectory')} help={t('settings.logConfigurationIsNotReportedByTheManagementApi')} /></FieldGroup></Section>
-      <Section icon={Clock} title={t('settings.logRetention')} description={t('settings.logRetentionPeriodAndFileSizeLimits')}><FieldGroup className="settings-field-pair"><ReadField id="log-days" label={t('settings.retentionPeriod')} value={t('common.managedByTheDeploymentEnvironment')} /><ReadField id="log-size" label={t('settings.maximumFileSize')} /><ReadField id="log-clean" label={t('settings.automaticCleanup')} /></FieldGroup></Section>
-      <Section icon={List} title={t('settings.logAccess')} description={t('settings.logQueriesAndDownloads')}><FieldGroup className="settings-field-pair"><ReadField id="log-download" label={t('settings.logDownloads')} value={t('common.notAvailableOnThisPage')} /><ReadField id="log-range" label={t('settings.queryRange')} value={t('common.notAvailableOnThisPage')} /></FieldGroup></Section>
-      <Note>{t('settings.manageLogOutputRotationAndRetentionInYourDeployment')}</Note>
-    </div></TabsContent>
-    <TabsContent value="audit"><Section icon={ShieldCheck} title={t('settings.auditLogs')} description={t('settings.operationRecordsAndAuditAccess')}><Note>{t('settings.viewBucketOperationsOnTheBucketEventsPageGlobal')}</Note></Section></TabsContent>
-    <TabsContent value="management"><Section icon={List} title={t('settings.logManagement')} description={t('settings.observabilityAndLogFileManagement')}><FieldGroup><ReadField id="log-metrics" label={t('settings.metrics')} value={settings ? settings.metrics_enabled ? t('common.enabled') : t('common.disabled') : '—'} /><ReadField id="log-metrics-address" label={t('settings.metricsListenAddress')} value={settings ? settings.metrics_enabled ? settings.metrics_address : t('common.disabled') : '—'} /></FieldGroup><Note>{t('settings.logFileListingDownloadAndDeletionAreNotAvailable')}</Note></Section></TabsContent>
-  </Tabs>
 
   if (category === 'storage') return <div className="settings-detail-stack">
     <Section icon={Database} title={t('settings.storageOverview')} description={t('settings.actualCapacityOfTheInstanceFilesystem')}><div className="settings-storage-overview"><div className="settings-capacity-ring" role="img" aria-label={percentage == null ? t('settings.capacityNotReported') : t('settings.valueUsed', { '0': percentage.toFixed(1) })} style={{ background: percentage == null ? 'var(--border)' : `conic-gradient(var(--accent) ${percentage}%, var(--border) 0)` }}><div><strong>{percentage == null ? '—' : `${percentage.toFixed(1)}%`}</strong><span>{t('settings.used')}</span></div></div><div>{capacity}</div><div className="settings-storage-status"><span>{t('settings.storageReadiness')}</span><Badge>{!health ? t('settings.unavailable') : ready ? t('settings.ready') : t('settings.needsAttention')}</Badge><span>{t('settings.scanStatus')}{scanState}</span><span>{t('settings.lastSuccessfulScan')}</span><strong>{scanner?.last_completed_at ? new Date(scanner.last_completed_at * 1000).toLocaleString(getFormatLocale()) : t('settings.noRecordsYet')}</strong></div></div></Section>

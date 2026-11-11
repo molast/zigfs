@@ -286,3 +286,85 @@ func TestKMSKeyManagementForwardsRequestAndProviderError(t *testing.T) {
 		t.Fatal("provider failure swallowed")
 	}
 }
+
+func TestLogSettingsForwardingAndDownloadDenial(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/_admin/v1/settings/logs/download" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"code":"LogDownloadsDisabled","message":"Log downloads are disabled."}`))
+			return
+		}
+		if r.URL.Path != "/_admin/v1/settings/logs" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		if r.Method == http.MethodPut {
+			var input map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatal(err)
+			}
+			if input["directory"] != "logs/custom" || input["retention"] != "forever" {
+				t.Errorf("lost log settings: %v", input)
+			}
+		}
+		_, _ = w.Write([]byte(`{"directory":"logs/custom","retention":"forever"}`))
+	}))
+	defer server.Close()
+	client := zigclient.New(server.URL, time.Second)
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		var input json.RawMessage
+		if method == http.MethodPut {
+			input = json.RawMessage(`{"directory":"logs/custom","retention":"forever"}`)
+		}
+		if _, err := client.LogSettings(context.Background(), method, "", input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := client.LogSettings(context.Background(), http.MethodGet, "download", nil); err == nil {
+		t.Fatal("download denial swallowed")
+	}
+}
+
+func TestGlobalAuditEventsForwardFilters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_admin/v1/audit-events" || r.URL.Query().Get("outcome") != "failure" || r.URL.Query().Get("cursor") != "50" || r.URL.Query().Get("action") != "put_object" || r.URL.Query().Get("limit") != "50" {
+			t.Errorf("unexpected audit query: %s", r.URL)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"timestamp_unix_seconds":1,"request_id":"audit-test","actor":"alice","action":"put_object","target":"/bucket/key","outcome":"failure:403"}],"next_cursor":"100"}`))
+	}))
+	defer server.Close()
+	client := zigclient.New(server.URL, time.Second)
+	result, err := client.ListBucketEvents(context.Background(), "", "50", "", "", "put_object", "failure", 50)
+	if err != nil || len(result.Items) != 1 {
+		t.Fatalf("global audit forwarding: %#v %v", result, err)
+	}
+}
+
+func TestAuditV1ForwardsNestedSchemaAndFilters(t *testing.T) {
+	payload := `{"items":[{"schema_version":"1.0","event_id":"evt_test","event_action":"PutObject","identity":{"auth_type":"s3_access_key","principal_name":"alice"},"resource":{"bucket":"photos","object_key":"a.jpg"},"response":{"status":"denied","http_status":403,"duration_ms":12}}],"next_cursor":null}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_admin/v1/audit-events" || r.URL.Query().Get("category") != "security" || r.URL.Query().Get("actor") != "alice" || r.URL.Query().Get("bucket") != "photos" || r.URL.Query().Get("request_id") != "req-one" {
+			t.Errorf("incorrect V1 audit query: %s", r.URL)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer server.Close()
+	client := zigclient.New(server.URL, time.Second)
+	result, err := client.AuditEvents(context.Background(), "", "category=security&actor=alice&bucket=photos&request_id=req-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got, expected any
+	if err := json.Unmarshal(result, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(payload), &expected); err != nil {
+		t.Fatal(err)
+	}
+	gotJSON, _ := json.Marshal(got)
+	expectedJSON, _ := json.Marshal(expected)
+	if string(gotJSON) != string(expectedJSON) {
+		t.Fatalf("structured audit data lost: %s", result)
+	}
+}

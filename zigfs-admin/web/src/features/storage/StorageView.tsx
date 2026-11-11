@@ -1,3 +1,6 @@
+import { Button } from '../../components/ui/Button'
+import { Card, CardContent } from '../../components/ui/Card'
+import { SettingsPanels } from '../settings/SettingsPanels'
 import { t } from '@/locales'
 import { Clock3, RefreshCw, ScanSearch, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
@@ -5,22 +8,32 @@ import type { ApiClient } from '../../api/client'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
 import { useErrorToast, useToast } from '../../components/ToastProvider'
-import type { StorageInfo, StorageScanReport, StorageScannerStatus } from '../../types/api'
+import type { Settings, ManagementHealth, StorageInfo, StorageScanReport, StorageScannerStatus } from '../../types/api'
 
 export function StorageView({ api }: { api: ApiClient }) {
   const { withLoading } = useLoading()
   const confirm = useConfirm()
   const showToast = useToast()
+  const [settings, setSettings] = useState<Settings | null>(null)
+  const [health, setHealth] = useState<ManagementHealth | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
   const [storage, setStorage] = useState<StorageInfo | null>(null)
   const [scanner, setScanner] = useState<StorageScannerStatus | null>(null)
   const [lastResult, setLastResult] = useState<StorageScanReport | null>(null)
   const notifyError = useErrorToast()
 
   const load = useCallback(async () => {
-    const [storageInfo, scannerInfo] = await Promise.all([api.storage(), api.storageScanner()])
-    setStorage(storageInfo)
-    setScanner(scannerInfo)
-    setLastResult(scannerInfo.last_scan)
+    setRefreshing(true)
+    try {
+      const [capacity, scan, configuration, readiness] = await Promise.allSettled([api.storage(), api.storageScanner(), api.settings(), api.managementHealth()])
+      setStorage(capacity.status === 'fulfilled' ? capacity.value : null)
+      setScanner(scan.status === 'fulfilled' ? scan.value : null)
+      setLastResult(scan.status === 'fulfilled' ? scan.value.last_scan : null)
+      setSettings(configuration.status === 'fulfilled' ? configuration.value : null)
+      setHealth(readiness.status === 'fulfilled' ? readiness.value : null)
+      const failure = [capacity, scan, configuration, readiness].find(result => result.status === 'rejected')
+      if (failure?.status === 'rejected') throw failure.reason
+    } finally { setRefreshing(false) }
   }, [api])
 
   useEffect(() => {
@@ -61,34 +74,30 @@ export function StorageView({ api }: { api: ApiClient }) {
   }
 
   return (
-    <section>
+    <section className="storage-page">
       <header className="page-header">
         <div><p className="eyebrow">{t('storage.capacityReclamation')}</p><h2>{t('storage.storage')}</h2><p className="page-description">{t('storage.viewLogicalObjectUsagePartitionScanProgressAndUnreferenced')}</p></div>
-        <button className="danger-button" type="button" onClick={() => void runGC()}><Trash2 className="button-icon" aria-hidden="true" />{t('storage.scanAndClean')}</button>
+        <div className="flex items-center gap-2"><Button variant="outline" disabled={refreshing} onClick={() => void load().catch(reason => notifyError(reason instanceof Error ? reason.message : t('settings.someSystemInformationCouldNotBeLoadedRefreshConfiguration')))}><RefreshCw data-icon="inline-start" />{t('settings.refreshConfiguration')}</Button><Button variant="destructive" type="button" disabled={refreshing} onClick={() => void runGC()}><Trash2 data-icon="inline-start" />{t('storage.scanAndClean')}</Button></div>
       </header>
-      {storage && (
-        <div className="panel metric-grid metric-grid-three">
-          <Metric label={t('storage.objectBytes')} value={formatBytes(storage.used)} />
-          <Metric label={t('storage.totalCapacity')} value={storage.total === null ? t('common.notReported') : formatBytes(storage.total)} />
-          <Metric label={t('storage.available')} value={storage.available === null ? t('common.notReported') : formatBytes(storage.available)} />
-        </div>
-      )}
+      <SettingsPanels category="storage" settings={settings} system={null} storage={storage} scanner={scanner} health={health} />
+      <p className="page-description">{t('settings.configurationIsReadOnlyRestartZigfsAfterChangingService')}</p>
+      {storage && <Card className="my-4"><CardContent className="pt-4"><Metric label={t('storage.objectBytes')} value={formatBytes(storage.used)} /></CardContent></Card>}
       <div className="storage-cleanup-grid">
-        <article className="panel storage-cleanup-item">
+        <Card className="storage-cleanup-item">
           <Clock3 aria-hidden="true" />
           <div><span>{t('storage.incompleteMpu')}</span><strong>{t('storage.automaticExpiryCleanup')}</strong><p>{t('storage.theScannerRemovesIncompleteUploadsBeyondTheConfiguredRetention')}</p></div>
-        </article>
-        <article className="panel storage-cleanup-item">
+        </Card>
+        <Card className="storage-cleanup-item">
           <ScanSearch aria-hidden="true" />
           <div><span>{t('storage.danglingData')}</span><strong>{t('storage.detectedAndPurgedByTheScanner')}</strong><p>{t('storage.scansProgressThrough16PartitionsAFullCycleCovers')}</p></div>
-        </article>
-        <article className="panel storage-cleanup-item">
+        </Card>
+        <Card className="storage-cleanup-item">
           <Trash2 aria-hidden="true" />
           <div><span>{t('storage.deletedData')}</span><strong>{t('storage.trashGc')}</strong><p>{t('storage.unreferencedGenerationsMoveToTrashBeforeFinalPhysicalDeletion')}</p></div>
-        </article>
+        </Card>
       </div>
       {scanner && (
-        <section className="panel scanner-panel">
+        <Card className="scanner-panel">
           <header>
             <div><h3>{t('storage.namespaceScanner')}</h3><p>{t('storage.eachBackgroundCycleProcessesOnePartition')}</p></div>
             <span className="scanner-progress">{t('storage.nextPartition')} {scanner.next_partition + 1} / {scanner.partitions}</span>
@@ -104,7 +113,7 @@ export function StorageView({ api }: { api: ApiClient }) {
               <Metric label={t('storage.expiredMpu')} value={String(lastResult.expired_multipart_uploads)} />
             </div>
           ) : <p className="scanner-empty"><RefreshCw aria-hidden="true" />{t('storage.waitingForTheFirstBackgroundScan')}</p>}
-        </section>
+        </Card>
       )}
     </section>
   )

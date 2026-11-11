@@ -1167,6 +1167,108 @@ paths:
                 $ref: "#/components/schemas/Settings"
         default:
           $ref: "#/components/responses/Error"
+  /_admin/v1/auth/logout:
+    post:
+      summary: Record authenticated console logout
+      description: BFF clears its browser cookie after this call. Existing stateless tokens keep their original expiry.
+      responses:
+        '204': { description: Logout acknowledged }
+        '401': { description: Authentication required }
+  /_admin/v1/audit-events:
+    get:
+      summary: List global management and S3 audit events
+      description: Requires management authority. Includes active and archived events; newest first. Offset pagination is not a snapshot.
+      parameters:
+        - { name: cursor, in: query, schema: { type: string }, description: Non-negative offset }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: from, in: query, schema: { type: integer, format: int64 } }
+        - { name: to, in: query, schema: { type: integer, format: int64 } }
+        - { name: action, in: query, schema: { type: string }, description: Standard event_action or legacy action exact match }
+        - { name: outcome, in: query, schema: { type: string }, description: Normalized success/failure/denied/error/unknown or exact legacy outcome }
+        - { name: category, in: query, schema: { type: string }, description: Event category }
+        - { name: actor, in: query, schema: { type: string }, description: Principal name or ID }
+        - { name: bucket, in: query, schema: { type: string }, description: Resource bucket }
+        - { name: request_id, in: query, schema: { type: string }, description: Request correlation ID }
+        - { name: source_ip, in: query, schema: { type: string }, description: ZigFS TCP peer IP }
+        - { name: service, in: query, schema: { type: string }, description: Operation service }
+        - { name: event_type, in: query, schema: { type: string }, description: Event type }
+      responses:
+        '200':
+          description: Audit events page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditEventPage' }
+        '400': { description: Invalid query }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Audit store unavailable }
+  /_admin/v1/audit-events/options:
+    get:
+      summary: List audit categories and standard operation mappings
+      responses:
+        '200':
+          description: Operation catalog for linked filter controls
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditOptions' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+  /_admin/v1/settings/logs:
+    get:
+      summary: Read persisted runtime log configuration
+      responses:
+        '200':
+          description: Current configuration (defaults when not configured)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LogConfig' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Log service unavailable }
+    put:
+      summary: Persist and immediately apply runtime log configuration
+      description: Paths are relative to the ZigFS data root; absolute paths, traversal and symlinks are rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LogConfig' }
+      responses:
+        '200':
+          description: Saved normalized configuration
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LogConfig' }
+        '400': { description: Invalid log configuration or directory }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Directory or configuration persistence failed }
+  /_admin/v1/settings/logs/query:
+    get:
+      summary: Read bounded runtime log content
+      description: Uses the configured directory and time range. Reads at most 1024 segments and 1 MiB; returns JSON, not a binary attachment.
+      responses:
+        '200':
+          description: Log content and truncation status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LogQuery' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Log storage unavailable }
+  /_admin/v1/settings/logs/download:
+    get:
+      summary: Download bounded runtime log content
+      description: Uses the configured directory and time range. Reads at most 1024 segments and 1 MiB; returns JSON, not a binary attachment.
+      responses:
+        '200':
+          description: Log content and truncation status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LogQuery' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required or downloads disabled }
+        '503': { description: Log storage unavailable }
   /_admin/v1/settings/kms:
     get:
       summary: Read redacted KMS configuration and last enable-time health
@@ -1284,7 +1386,7 @@ paths:
   /_admin/v1/settings/kms/keys/action:
     post:
       summary: Rotate, schedule deletion, restore, or permanently delete a key
-      description: Requires management authority and running KMS. Immediate deletion requires PendingDeletion. Pending state is enforced by ZigFS; the seven-day date does not trigger automatic deletion.
+      description: Requires management authority and running KMS. Immediate deletion supports enabled and pending-deletion keys. Deleting or scheduling deletion of the last key is rejected with HTTP 409 (KmsLastKeyDeletionForbidden). Pending state is enforced by ZigFS; the seven-day date does not trigger automatic deletion.
       requestBody:
         required: true
         content:
@@ -1338,6 +1440,128 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
   schemas:
+    AuditOptions:
+      type: object
+      required: [categories, operations]
+      properties:
+        categories: { type: array, items: { type: string } }
+        operations:
+          type: array
+          items:
+            type: object
+            required: [name, category, resource_type, service, is_read_only]
+            properties:
+              name: { type: string }
+              category: { type: string }
+              resource_type: { type: string }
+              service: { type: string }
+              is_read_only: { type: boolean }
+              method: { type: string }
+              path: { type: string }
+              alias: { type: string }
+    AuditEventPage:
+      type: object
+      required: [items]
+      properties:
+        next_cursor: { type: string, nullable: true }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEventV1' }
+    AuditEventV1:
+      type: object
+      required: [schema_version, event_id, event_time, event_category, event_type, event_action, request, identity, resource, operation, response]
+      properties:
+        schema_version: { type: string, enum: ['1.0'] }
+        event_id: { type: string }
+        event_time: { type: string, format: date-time }
+        event_category: { type: string, enum: [object_storage, identity, access_control, bucket_management, system_management, kms, security] }
+        event_type: { type: string, enum: [api_request, admin_action, security_event, system_event] }
+        event_action: { type: string }
+        request:
+          type: object
+          required: [request_id, method, path]
+          properties:
+            request_id: { type: string }
+            method: { type: string }
+            protocol: { type: string, nullable: true }
+            path: { type: string }
+            user_agent: { type: string, nullable: true }
+            source_ip: { type: string, nullable: true, description: Actual TCP peer; forwarding headers are not trusted. }
+            query:
+              type: object
+              additionalProperties: false
+              properties:
+                versionId: { type: string, nullable: true }
+                uploadId: { type: string, nullable: true }
+                prefix: { type: string, nullable: true }
+                key: { type: string, nullable: true }
+        identity:
+          type: object
+          required: [auth_type]
+          properties:
+            auth_type: { type: string, enum: [s3_access_key, sts, oidc, anonymous, internal, unknown] }
+            principal_id: { type: string, nullable: true }
+            principal_name: { type: string, nullable: true }
+            access_key_id: { type: string, nullable: true }
+            session_id: { type: string, nullable: true }
+        resource:
+          type: object
+          required: [type]
+          properties:
+            type: { type: string }
+            bucket: { type: string, nullable: true }
+            object_key: { type: string, nullable: true }
+            version_id: { type: string, nullable: true }
+            name: { type: string, nullable: true }
+        operation:
+          type: object
+          required: [name, service, is_read_only]
+          properties:
+            name: { type: string }
+            service: { type: string }
+            is_read_only: { type: boolean }
+        response:
+          type: object
+          required: [status, http_status, duration_ms]
+          properties:
+            status: { type: string, enum: [success, failure, denied, error, unknown] }
+            http_status: { type: integer }
+            duration_ms: { type: integer, format: int64, description: Historical events use zero with metadata.legacy=true; UI displays unavailable. }
+            error_code: { type: string, nullable: true }
+            error_message: { type: string, nullable: true }
+        metadata:
+          type: object
+          properties:
+            region: { type: string, nullable: true }
+            server_id: { type: string, nullable: true }
+            legacy: { type: boolean }
+        timestamp_unix_seconds: { type: integer, format: int64, deprecated: true }
+        request_id: { type: string, deprecated: true }
+        actor: { type: string, deprecated: true }
+        action: { type: string, deprecated: true }
+        target: { type: string, deprecated: true }
+        outcome: { type: string, deprecated: true }
+    LogConfig:
+      type: object
+      additionalProperties: false
+      properties:
+        level: { type: string, enum: [trace, debug, info, warn, error, 'off'], default: info }
+        format: { type: string, enum: [json, text], default: json }
+        output: { type: string, enum: [console, file, both], default: console }
+        directory: { type: string, default: logs, description: Relative directory under data root. Empty input normalizes to logs. }
+        retention: { type: string, enum: [forever, '1', '3', '7', '14', '30', '90'], default: '7', description: Retention in days or forever. }
+        maxSize: { type: string, default: '100', description: Positive finite size; converted size must be between 1 byte and 1 TiB. }
+        sizeUnit: { type: string, enum: [KiB, MiB, GiB], default: MiB, description: Binary units displayed as KB/MB/GB in the UI. }
+        cleanup: { type: string, enum: [enabled, disabled], default: enabled }
+        downloads: { type: string, enum: [enabled, disabled], default: enabled }
+        range: { type: string, enum: [1h, 24h, 7d, 30d], default: 24h }
+    LogQuery:
+      type: object
+      required: [content, truncated, range]
+      properties:
+        content: { type: string }
+        truncated: { type: boolean }
+        range: { type: string, enum: [1h, 24h, 7d, 30d] }
     KMSKey:
       type: object
       required: [id, name, description, status, algorithm, usage, version, manageable]

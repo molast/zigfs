@@ -1072,6 +1072,101 @@ paths:
       responses:
         "204":
           description: 已删除或不存在
+  /api/v1/audit-events:
+    get:
+      summary: List global management and S3 audit events
+      description: Requires management authority. Includes active and archived events; newest first. Offset pagination is not a snapshot.
+      parameters:
+        - { name: cursor, in: query, schema: { type: string }, description: Non-negative offset }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: from, in: query, schema: { type: integer, format: int64 } }
+        - { name: to, in: query, schema: { type: integer, format: int64 } }
+        - { name: action, in: query, schema: { type: string }, description: Standard event_action or legacy action exact match }
+        - { name: outcome, in: query, schema: { type: string }, description: Normalized success/failure/denied/error/unknown or exact legacy outcome }
+        - { name: category, in: query, schema: { type: string }, description: Event category }
+        - { name: actor, in: query, schema: { type: string }, description: Principal name or ID }
+        - { name: bucket, in: query, schema: { type: string }, description: Resource bucket }
+        - { name: request_id, in: query, schema: { type: string }, description: Request correlation ID }
+        - { name: source_ip, in: query, schema: { type: string }, description: ZigFS TCP peer IP }
+        - { name: service, in: query, schema: { type: string }, description: Operation service }
+        - { name: event_type, in: query, schema: { type: string }, description: Event type }
+      responses:
+        '200':
+          description: Audit events page
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/AuditEventPage' }
+        '400': { description: Invalid query }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Audit store unavailable }
+  /api/v1/audit-events/options:
+    get:
+      summary: List audit categories and standard operation mappings
+      responses:
+        '200':
+          description: Operation catalog for linked filter controls
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/AuditOptions' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+  /api/v1/settings/logs:
+    get:
+      summary: Read persisted runtime log configuration
+      responses:
+        '200':
+          description: Current configuration (defaults when not configured)
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/LogConfig' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Log service unavailable }
+    put:
+      summary: Persist and immediately apply runtime log configuration
+      description: Paths are relative to the ZigFS data root; absolute paths, traversal and symlinks are rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/LogConfig' }
+      responses:
+        '200':
+          description: Saved normalized configuration
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/LogConfig' }
+        '400': { description: Invalid log configuration or directory }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Directory or configuration persistence failed }
+  /api/v1/settings/logs/query:
+    get:
+      summary: Read bounded runtime log content
+      description: Uses the configured directory and time range. Reads at most 1024 segments and 1 MiB; returns JSON, not a binary attachment.
+      responses:
+        '200':
+          description: Log content and truncation status
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/LogQuery' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Log storage unavailable }
+  /api/v1/settings/logs/download:
+    get:
+      summary: Download bounded runtime log content
+      description: Uses the configured directory and time range. Reads at most 1024 segments and 1 MiB; returns JSON, not a binary attachment.
+      responses:
+        '200':
+          description: Log content and truncation status
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/LogQuery' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required or downloads disabled }
+        '503': { description: Log storage unavailable }
   /api/v1/settings/kms:
     get:
       summary: Read redacted KMS configuration and last enable-time health
@@ -1189,7 +1284,7 @@ paths:
   /api/v1/settings/kms/keys/action:
     post:
       summary: Rotate, schedule deletion, restore, or permanently delete a key
-      description: Requires management authority and running KMS. Immediate deletion requires PendingDeletion. Pending state is enforced by ZigFS; the seven-day date does not trigger automatic deletion.
+      description: Requires management authority and running KMS. Immediate deletion supports enabled and pending-deletion keys. Deleting or scheduling deletion of the last key is rejected with HTTP 409 (KmsLastKeyDeletionForbidden). Pending state is enforced by ZigFS; the seven-day date does not trigger automatic deletion.
       requestBody:
         required: true
         content:

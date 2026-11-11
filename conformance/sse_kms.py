@@ -143,6 +143,13 @@ admin:
             save('local', defaultKey='')
             api('settings/kms/start', {}, 'POST')
             probe='zigfs-internal-kms-probe'
+            for action in ['delete','schedule-deletion']:
+                try:api('settings/kms/keys/action',{'id':probe,'action':action},'POST')
+                except HTTPError as error:
+                    assert error.code==409
+                    assert json.load(error)['code']=='KmsLastKeyDeletionForbidden'
+                else:raise AssertionError('last KMS key deletion accepted')
+            assert len(api('settings/kms/keys')['items'])==1
             assert api('settings/kms')['config']['defaultKey']==''
             assert any(key['id']==probe and key['status']=='Enabled' for key in api('settings/kms/keys')['items'])
             api(f'buckets/{bucket}/configuration', {'encryption':'KMS','kms_key_id':probe}, 'PATCH')
@@ -334,6 +341,9 @@ admin:
             for backend in ['local','vault-kv2','vault']:
                 save(backend)
                 api('settings/kms/start',{},'POST')
+                immediate=api('settings/kms/keys',{'name':'Immediate'},'POST')
+                api('settings/kms/keys/action',{'id':immediate['id'],'action':'delete'},'POST')
+                assert all(key['id']!=immediate['id'] for key in api('settings/kms/keys')['items'])
                 listed=api('settings/kms/keys')
                 assert listed['canCreate'] and not listed['canRekey']
                 created=api('settings/kms/keys',{'name':'Reports','description':'Managed test key','setAsDefault':True},'POST')

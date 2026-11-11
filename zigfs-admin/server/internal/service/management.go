@@ -275,3 +275,11 @@ func (service *Management) ClearKMSCache(ctx context.Context) (contract.KMSStatu
 func (service *Management) KMSKeys(ctx context.Context, method string, action bool, input json.RawMessage) (json.RawMessage, error) {
 	return service.zig.KMSKeys(ctx, method, action, input)
 }
+
+func (service *Management) LogSettings(ctx context.Context, method, operation string, input json.RawMessage) (json.RawMessage, error) {
+	return service.zig.LogSettings(ctx, method, operation, input)
+}
+
+func (service *Management) AuditEvents(ctx context.Context, operation, query string) (json.RawMessage, error) {
+	return service.zig.AuditEvents(ctx, operation, query)
+}

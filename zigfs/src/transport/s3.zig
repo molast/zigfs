@@ -1,3 +1,4 @@
+const AuditContext = @import("audit_context.zig").Context;
 const std = @import("std");
 const Application = @import("../application/mod.zig").Application;
 const bucket_service = @import("../application/bucket_service.zig");
@@ -86,6 +87,7 @@ pub fn serveRequest(
     application: *Application,
     request_id: []const u8,
     peer: std.Io.net.IpAddress,
+    audit_context: *AuditContext,
 ) !std.http.Status {
     // Browsers use this unauthenticated preflight before direct presigned writes and deletes.
     if (request.head.method == .OPTIONS) return respondCorsPreflight(request, request_id);
@@ -117,6 +119,7 @@ pub fn serveRequest(
         return respondError(request, allocator, .invalid_request, request_id);
     };
     defer parsed.deinit();
+    try audit_context.operation(@tagName(parsed.operation), parsed.decoded_path);
     // Request body reads may reuse the HTTP head buffer. Keep Resource stable for errors.
     request.head.target = parsed.decoded_path;
 
@@ -127,7 +130,7 @@ pub fn serveRequest(
         if (sigv4.hasPresignedParameters(raw_target) or policy_authorization != null) {
             return respondError(request, allocator, .invalid_request, request_id);
         }
-        return servePostPolicyUpload(request, application, parsed, headers.items, request_id, peer);
+        return servePostPolicyUpload(request, application, parsed, headers.items, request_id, peer, audit_context);
     }
 
     const authorization_header = singleHeader(headers.items, "authorization") catch {
@@ -198,6 +201,9 @@ pub fn serveRequest(
             return respondError(request, allocator, mapSignatureVerifyError(err), request_id);
         };
     }
+
+    try audit_context.identify(auth_material.owner);
+    try audit_context.authenticate(if (auth_material.session_token != null) "sts" else "s3_access_key", auth_material.subject_id, access_key);
 
     if (singleHeader(headers.items, "x-amz-server-side-encryption") catch return respondError(request, allocator, .invalid_argument, request_id)) |algorithm| {
         if ((parsed.operation != .put_object and parsed.operation != .create_multipart_upload) or (!std.mem.eql(u8, algorithm, "AES256") and !std.mem.eql(u8, algorithm, "aws:kms"))) return respondError(request, allocator, .invalid_argument, request_id);
@@ -1734,6 +1740,7 @@ fn servePostPolicyUpload(
     input_headers: []const sigv4.Header,
     request_id: []const u8,
     peer: std.Io.net.IpAddress,
+    audit_context: *AuditContext,
 ) !std.http.Status {
     var condition_arena = std.heap.ArenaAllocator.init(application.allocator);
     defer condition_arena.deinit();
@@ -1829,6 +1836,9 @@ fn servePostPolicyUpload(
         return respondError(request, application.allocator, .internal_error, request_id);
     };
     defer application.allocator.free(expanded_key);
+    try audit_context.setResource(.{ .type = "object", .bucket = parsed.bucket, .object_key = expanded_key });
+    try audit_context.identify(auth_material.owner);
+    try audit_context.authenticate(if (auth_material.session_token != null) "sts" else "s3_access_key", auth_material.subject_id, access_key);
     const base_conditions = iam_context.build(ca, auth_material.owner, headers, parsed, peer, now, "POST", signed_at, application.config.s3_region, auth_material.subject_id) catch return respondError(request, application.allocator, .invalid_argument, request_id);
     var condition_entries: std.ArrayList(iam.Entry) = .empty;
     for (base_conditions.entries) |entry| if (!std.ascii.startsWithIgnoreCase(entry.key, "s3:x-amz-")) try condition_entries.append(ca, entry);

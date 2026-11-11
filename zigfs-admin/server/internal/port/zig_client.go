@@ -20,6 +20,7 @@ func (err *StatusError) Error() string {
 }
 
 type ZigClient interface {
+	Logout(context.Context) error
 	OIDCAuth(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
 	OIDCProviders(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
 	ListGroups(ctx context.Context) (contract.GroupList, error)
@@ -60,6 +61,8 @@ type ZigClient interface {
 	StorageScanner(ctx context.Context) (contract.StorageScannerStatus, error)
 	RunStorageGC(ctx context.Context) (contract.StorageScanReport, error)
 	ManagementHealth(ctx context.Context) (contract.ManagementHealthResponse, error)
+	AuditEvents(context.Context, string, string) (json.RawMessage, error)
+	LogSettings(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
 	KMSSettings(ctx context.Context) (contract.KMSStatus, error)
 	StartKMS(ctx context.Context) (contract.KMSStatus, error)
 	KMSKeys(ctx context.Context, method string, action bool, input json.RawMessage) (json.RawMessage, error)

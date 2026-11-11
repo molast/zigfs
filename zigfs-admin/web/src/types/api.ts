@@ -59,6 +59,27 @@ export interface BucketUsage {
   objects: number
 }
 
+export type AuditCategory = 'object_storage' | 'identity' | 'access_control' | 'bucket_management' | 'system_management' | 'kms' | 'security'
+export type AuditStatus = 'success' | 'failure' | 'denied' | 'error' | 'unknown'
+export interface AuditOperation { name: string; category: AuditCategory; resource_type: string; service: string; is_read_only: boolean }
+export interface AuditOptions { categories: AuditCategory[]; operations: AuditOperation[] }
+export interface StructuredAuditEvent extends AuditEvent {
+  schema_version: string
+  event_id: string
+  event_time: string
+  event_category: AuditCategory
+  event_type: string
+  event_action: string
+  request: { request_id: string; method: string; protocol?: string | null; path: string; query: Record<string, string | null>; user_agent?: string | null; source_ip?: string | null }
+  identity: { auth_type: string; principal_id?: string | null; principal_name?: string | null; access_key_id?: string | null; session_id?: string | null }
+  resource: { type: string; bucket?: string | null; object_key?: string | null; version_id?: string | null; name?: string | null }
+  operation: { name: string; service: string; is_read_only: boolean }
+  response: { status: AuditStatus; http_status: number; error_code?: string | null; error_message?: string | null; duration_ms: number }
+  metadata: { region?: string | null; server_id?: string | null; legacy?: boolean }
+}
+export interface AuditQuery { cursor?: string; limit?: number; from?: string; to?: string; category?: string; action?: string; outcome?: string; actor?: string; bucket?: string; request_id?: string; service?: string; event_type?: string; source_ip?: string }
+export interface AuditPage { items: StructuredAuditEvent[]; next_cursor?: string | null }
+
 export interface AuditEvent {
   timestamp_unix_seconds: number
   request_id: string

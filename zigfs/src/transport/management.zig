@@ -1,3 +1,4 @@
+const AuditContext = @import("audit_context.zig").Context;
 const std = @import("std");
 const Application = @import("../application/mod.zig").Application;
 const bucket_service = @import("../application/bucket_service.zig");
@@ -95,6 +96,10 @@ pub const routes = [_]Route{
     .{ .method = .get, .path = "/_admin/v1/system" },
     .{ .method = .get, .path = "/_admin/v1/health" },
     .{ .method = .get, .path = "/_admin/v1/settings" },
+    .{ .method = .get, .path = "/_admin/v1/settings/logs" },
+    .{ .method = .put, .path = "/_admin/v1/settings/logs" },
+    .{ .method = .get, .path = "/_admin/v1/settings/logs/query" },
+    .{ .method = .get, .path = "/_admin/v1/settings/logs/download" },
     .{ .method = .get, .path = "/_admin/v1/settings/kms" },
     .{ .method = .put, .path = "/_admin/v1/settings/kms" },
     .{ .method = .post, .path = "/_admin/v1/settings/kms/stop" },
@@ -110,6 +115,7 @@ pub fn serveRequest(
     application: *Application,
     request_id: []const u8,
     caller: management_auth.Principal,
+    audit_context: *AuditContext,
 ) !std.http.Status {
     const target = request.head.target;
     const path = requestPath(target);
@@ -122,15 +128,15 @@ pub fn serveRequest(
     if (std.mem.startsWith(u8, path, api_prefix ++ "/users/") and std.mem.indexOf(u8, path, "/access-keys") != null) return serveUserAccessKeys(request, application, request_id, path);
     if (std.mem.eql(u8, path, api_prefix ++ "/organizations") or std.mem.startsWith(u8, path, api_prefix ++ "/organizations/")) return serveRoles(true, request, application, request_id, path);
     if (std.mem.eql(u8, path, api_prefix ++ "/roles") or std.mem.startsWith(u8, path, api_prefix ++ "/roles/")) return serveRoles(false, request, application, request_id, path);
-    if (std.mem.eql(u8, path, api_prefix ++ "/users") or std.mem.startsWith(u8, path, api_prefix ++ "/users/")) return serveIdentities(false, request, application, request_id, path);
-    if (std.mem.eql(u8, path, api_prefix ++ "/groups") or std.mem.startsWith(u8, path, api_prefix ++ "/groups/")) return serveIdentities(true, request, application, request_id, path);
+    if (std.mem.eql(u8, path, api_prefix ++ "/users") or std.mem.startsWith(u8, path, api_prefix ++ "/users/")) return serveIdentities(false, request, application, request_id, path, audit_context);
+    if (std.mem.eql(u8, path, api_prefix ++ "/groups") or std.mem.startsWith(u8, path, api_prefix ++ "/groups/")) return serveIdentities(true, request, application, request_id, path, audit_context);
     if (std.mem.eql(u8, path, api_prefix ++ "/policies") or std.mem.startsWith(u8, path, api_prefix ++ "/policies/")) {
-        return servePolicies(request, application, request_id, path);
+        return servePolicies(request, application, request_id, path, audit_context);
     }
     if (std.mem.eql(u8, path, api_prefix ++ "/buckets")) {
         return switch (request.head.method) {
             .GET => serveListBuckets(request, application, request_id),
-            .POST => serveCreateBucket(request, application, request_id),
+            .POST => serveCreateBucket(request, application, request_id, audit_context),
             else => respondMethodNotAllowed(request, request_id, "GET, POST"),
         };
     }
@@ -219,7 +225,7 @@ pub fn serveRequest(
                 return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
             }
             return switch (request.head.method) {
-                .POST => serveCreateDirectory(request, application, request_id, raw_name),
+                .POST => serveCreateDirectory(request, application, request_id, raw_name, audit_context),
                 .DELETE => serveDeleteFolder(request, application, request_id, raw_name, false),
                 else => respondMethodNotAllowed(request, request_id, "POST, DELETE"),
             };
@@ -236,7 +242,7 @@ pub fn serveRequest(
         if (request.head.method != .POST) {
             return respondMethodNotAllowed(request, request_id, "POST");
         }
-        return servePresignObject(request, application, request_id);
+        return servePresignObject(request, application, request_id, audit_context);
     }
     if (std.mem.eql(u8, path, api_prefix ++ "/multipart-uploads")) {
         if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
@@ -301,10 +307,22 @@ pub fn serveRequest(
     }
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/stop")) return serveKmsControl(request, application, request_id, true);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/clear-cache")) return serveKmsControl(request, application, request_id, false);
-    if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/keys")) return serveKmsKeys(request, application, request_id, false);
-    if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/keys/action")) return serveKmsKeys(request, application, request_id, true);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/keys")) return serveKmsKeys(request, application, request_id, false, audit_context);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/keys/action")) return serveKmsKeys(request, application, request_id, true, audit_context);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/start")) return serveKmsStart(request, application, request_id);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms")) return serveKmsSettings(request, application, request_id);
+    if (std.mem.eql(u8, path, api_prefix ++ "/audit-events/options")) {
+        if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
+        const schema = @import("../application/audit_schema.zig");
+        return respondJson(request, request_id, .ok, .{ .categories = schema.categories, .operations = schema.operations });
+    }
+    if (std.mem.eql(u8, path, api_prefix ++ "/audit-events")) {
+        if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
+        return serveListBucketEvents(request, application, request_id, "", request.head.target);
+    }
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/logs")) return serveLogSettings(request, application, request_id, null);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/logs/query")) return serveLogSettings(request, application, request_id, false);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/logs/download")) return serveLogSettings(request, application, request_id, true);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings")) {
         if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
         return serveSettings(request, application, request_id);
@@ -343,9 +361,14 @@ fn serveListBucketEvents(
 ) !std.http.Status {
     const name = decodeComponent(application.allocator, raw_name, false) catch return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
     defer application.allocator.free(name);
-    const service = application.bucketService() orelse return respondNotReady(request, request_id);
-    const bucket = service.head(name) catch |err| return respondBucketError(request, request_id, err);
-    bucket.deinit(application.allocator);
+    if (name.len > 0) {
+        const service = application.bucketService() orelse return respondNotReady(request, request_id);
+        const bucket = service.head(name) catch |err| return respondBucketError(request, request_id, err);
+        bucket.deinit(application.allocator);
+    }
+    var filter_arena = std.heap.ArenaAllocator.init(application.allocator);
+    defer filter_arena.deinit();
+    var filters: @import("../application/audit_schema.zig").Filters = .{};
     var offset: usize = 0;
     var limit: usize = 50;
     var from: ?i64 = null;
@@ -377,12 +400,19 @@ fn serveListBucketEvents(
             } else if (std.mem.eql(u8, key, "outcome")) {
                 outcome = application.allocator.dupe(u8, value) catch return respondError(request, request_id, .internal_server_error, "OutOfMemory", "unable to parse outcome");
             } else {
-                return respondError(request, request_id, .bad_request, "InvalidQuery", "unsupported events query parameter");
+                var known = false;
+                inline for (@typeInfo(@TypeOf(filters)).@"struct".field_names) |field| {
+                    if (std.mem.eql(u8, key, field)) {
+                        @field(filters, field) = try filter_arena.allocator().dupe(u8, value);
+                        known = true;
+                    }
+                }
+                if (!known) return respondError(request, request_id, .bad_request, "InvalidQuery", "unsupported events query parameter");
             }
         }
     }
     if (from != null and to != null and from.? > to.?) return respondError(request, request_id, .bad_request, "InvalidQuery", "from must not be after to");
-    var page = application.listAuditEvents(name, offset, limit, from, to, action, outcome) catch |err| return switch (err) {
+    var page = application.queryAuditEvents(name, offset, limit, from, to, action, outcome, filters) catch |err| return switch (err) {
         error.OutOfMemory => respondError(request, request_id, .internal_server_error, "OutOfMemory", "unable to list audit events"),
         else => respondNotReady(request, request_id),
     };
@@ -393,22 +423,7 @@ fn serveListBucketEvents(
     try json.beginObject();
     try json.objectField("items");
     try json.beginArray();
-    for (page.items) |event| {
-        try json.beginObject();
-        try json.objectField("timestamp_unix_seconds");
-        try json.write(event.timestamp_unix_seconds);
-        try json.objectField("request_id");
-        try json.write(event.request_id);
-        try json.objectField("actor");
-        try json.write(event.actor);
-        try json.objectField("action");
-        try json.write(event.action);
-        try json.objectField("target");
-        try json.write(event.target);
-        try json.objectField("outcome");
-        try json.write(event.outcome);
-        try json.endObject();
-    }
+    for (page.items) |event| try json.write(event);
     try json.endArray();
     if (page.next_cursor) |cursor| {
         try json.objectField("next_cursor");
@@ -431,11 +446,13 @@ fn serveCreateBucket(
     request: *std.http.Server.Request,
     application: *Application,
     request_id: []const u8,
+    audit_context: *AuditContext,
 ) !std.http.Status {
     const parsed = try parseJsonBody(CreateBucketRequest, request, application.allocator, request_id) orelse {
         return .bad_request;
     };
     defer parsed.deinit();
+    try audit_context.setResource(.{ .type = "bucket", .bucket = parsed.value.name });
     const service = application.bucketService() orelse return respondNotReady(request, request_id);
     const owner = parsed.value.owner orelse application.config.admin_username;
     const result = service.create(parsed.value.name, owner) catch |err| {
@@ -883,11 +900,13 @@ fn serveCreateDirectory(
     application: *Application,
     request_id: []const u8,
     raw_name: []const u8,
+    audit_context: *AuditContext,
 ) !std.http.Status {
     const bucket = decodeComponent(application.allocator, raw_name, false) catch return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
     defer application.allocator.free(bucket);
     const parsed = try parseJsonBody(DirectoryRequest, request, application.allocator, request_id) orelse return .bad_request;
     defer parsed.deinit();
+    try audit_context.setResource(.{ .type = "object", .bucket = bucket, .object_key = parsed.value.key });
     const service = application.directoryService() orelse return respondNotReady(request, request_id);
     const directory = service.create(bucket, parsed.value.key) catch |err| return respondDirectoryError(request, request_id, err);
     defer directory.deinit(application.allocator);
@@ -1178,12 +1197,14 @@ fn servePresignObject(
     request: *std.http.Server.Request,
     application: *Application,
     request_id: []const u8,
+    audit_context: *AuditContext,
 ) !std.http.Status {
     const parsed = try parseJsonBody(PresignObjectRequest, request, application.allocator, request_id) orelse {
         return .bad_request;
     };
     defer parsed.deinit();
     const value = parsed.value;
+    try audit_context.setResource(.{ .type = "object", .bucket = value.bucket, .object_key = value.key, .version_id = value.version_id });
     const multipart_part = value.upload_id != null or value.part_number != null;
     const copy_source_requested = value.copy_source_bucket != null or
         value.copy_source_key != null or value.copy_source_version_id != null;
@@ -2216,14 +2237,6 @@ fn audit(
     target: []const u8,
     outcome: []const u8,
 ) void {
-    application.recordAudit(.{
-        .timestamp_unix_seconds = std.Io.Clock.real.now(application.io.?).toSeconds(),
-        .request_id = request_id,
-        .actor = application.config.admin_username,
-        .action = action,
-        .target = target,
-        .outcome = outcome,
-    });
     std.log.info(
         "management audit request_id={s} actor={s} action={s} target={s} outcome={s} time={d}",
         .{
@@ -2314,7 +2327,7 @@ test "management directory delete query decodes a trailing slash key" {
     try std.testing.expectEqualStrings("images/", key);
 }
 
-fn servePolicies(request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8) !std.http.Status {
+fn servePolicies(request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8, audit_context: *AuditContext) !std.http.Status {
     const store = @import("../application/policy_store.zig");
     const root = app.data_root orelse return respondNotReady(request, request_id);
     const io = app.io orelse return respondNotReady(request, request_id);
@@ -2337,6 +2350,7 @@ fn servePolicies(request: *std.http.Server.Request, app: *Application, request_i
     defer loaded.deinit();
     var index: ?usize = null;
     const lookup = if (input) |parsed| parsed.value.name else name;
+    if (lookup.len > 0) try audit_context.setResource(.{ .type = "policy", .name = lookup });
     for (loaded.value, 0..) |policy, i| {
         if (std.mem.eql(u8, policy.name, lookup)) {
             index = i;
@@ -2589,7 +2603,7 @@ fn serveRoleSessions(request: *std.http.Server.Request, app: *Application, reque
     return respondNoContent(request, request_id);
 }
 
-fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8) !std.http.Status {
+fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8, audit_context: *AuditContext) !std.http.Status {
     const store = @import("../application/identity_store.zig");
     const policies = @import("../application/policy_store.zig");
     const T = if (is_group) store.Group else store.User;
@@ -2628,6 +2642,7 @@ fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, a
     const loaded = store.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "IdentityStorageUnavailable", "cannot read identity storage");
     const items = if (is_group) loaded.value.groups else loaded.value.users;
     const lookup = if (input) |value| value.name else name;
+    if (lookup.len > 0) try audit_context.setResource(.{ .type = if (is_group) "group" else "user", .name = lookup });
     const index = store.find(items, lookup);
     if (method == .POST and !collection and !std.mem.eql(u8, name, input.?.name)) return respondError(request, request_id, .bad_request, "InvalidIdentity", "names cannot be changed");
     if (method == .GET) {
@@ -2871,7 +2886,7 @@ fn serveOidc(request: *std.http.Server.Request, app: *Application, request_id: [
     return respondJson(request, request_id, if (method == .POST) .created else .ok, input.?.redacted());
 }
 
-pub fn serveOidcAuth(request: *std.http.Server.Request, app: *Application, request_id: []const u8) !std.http.Status {
+pub fn serveOidcAuth(request: *std.http.Server.Request, app: *Application, request_id: []const u8, audit_context: *AuditContext) !std.http.Status {
     const oidc = @import("../application/oidc_auth.zig");
     const store = @import("../application/oidc_store.zig");
     const root = app.data_root orelse return respondNotReady(request, request_id);
@@ -2900,16 +2915,26 @@ pub fn serveOidcAuth(request: *std.http.Server.Request, app: *Application, reque
     }
     if (std.mem.eql(u8, path, api_prefix ++ "/auth/oidc/logout")) {
         const input = (try parseJsonBody(struct { token: []const u8 }, request, a, request_id) orelse return .bad_request).value;
+        if (try management_auth.resolve(a, app, input.token, std.Io.Clock.real.now(io).toSeconds())) |principal| {
+            try audit_context.identify(principal.username);
+            try audit_context.authenticate("oidc", principal.id, null);
+        }
         oidc.logout(a, app, input.token) catch return respondError(request, request_id, .service_unavailable, "OidcUnavailable", "cannot revoke session");
         return respondNoContent(request, request_id);
     }
     if (std.mem.eql(u8, path, api_prefix ++ "/auth/oidc/refresh")) {
         const input = (try parseJsonBody(struct { token: []const u8 }, request, a, request_id) orelse return .bad_request).value;
         const result = oidc.refresh(a, app, input.token) catch return respondError(request, request_id, .unauthorized, "OidcRefreshFailed", "session could not be renewed");
+        try audit_context.identify(result.username);
+        try audit_context.authenticate("oidc", result.subject_id, null);
         return respondJson(request, request_id, .ok, result);
     }
     if (std.mem.eql(u8, path, api_prefix ++ "/auth/oidc/end-session")) {
         const input = (try parseJsonBody(struct { token: []const u8 }, request, a, request_id) orelse return .bad_request).value;
+        if (try management_auth.resolve(a, app, input.token, std.Io.Clock.real.now(io).toSeconds())) |principal| {
+            try audit_context.identify(principal.username);
+            try audit_context.authenticate("oidc", principal.id, null);
+        }
         const url = oidc.endSession(a, app, input.token) catch return respondError(request, request_id, .service_unavailable, "OidcUnavailable", "session could not be revoked");
         return respondJson(request, request_id, .ok, .{ .logout_url = url });
     }
@@ -2923,6 +2948,8 @@ pub fn serveOidcAuth(request: *std.http.Server.Request, app: *Application, reque
         if (input.duration_seconds < 60 or input.duration_seconds > 3600) return respondError(request, request_id, .bad_request, "InvalidDuration", "duration must be between 60 and 3600 seconds");
         if (input.session_policy.len > 0) @import("../auth/iam_policy.zig").validateDocument(a, input.session_policy, .session) catch return respondError(request, request_id, .bad_request, "InvalidPolicy", "invalid session restriction policy");
         const identity = oidc.webIdentity(a, app, input.provider_id, input.web_identity_token) catch return respondError(request, request_id, .unauthorized, "InvalidIdentityToken", "web identity could not be verified");
+        try audit_context.identify(identity.subject_id);
+        try audit_context.authenticate("oidc", identity.subject_id, null);
         const now = std.Io.Clock.real.now(io).toSeconds();
         var issued = false;
         defer if (!issued) oidc.logout(a, app, identity.token) catch {};
@@ -2937,6 +2964,8 @@ pub fn serveOidcAuth(request: *std.http.Server.Request, app: *Application, reque
     if (std.mem.eql(u8, path, api_prefix ++ "/auth/oidc/callback")) {
         const input = (try parseJsonBody(struct { state: []const u8, code: []const u8 }, request, a, request_id) orelse return .bad_request).value;
         const result = oidc.callback(a, app, input.state, input.code) catch return respondError(request, request_id, .unauthorized, "OidcLoginFailed", "OIDC login could not be verified");
+        try audit_context.identify(result.username);
+        try audit_context.authenticate("oidc", result.subject_id, null);
         return respondJson(request, request_id, .ok, result);
     }
     return respondError(request, request_id, .not_found, "NotFound", "unknown OIDC operation");
@@ -3001,7 +3030,7 @@ fn serveKmsControl(request: *std.http.Server.Request, application: *Application,
     return respondJson(request, request_id, .ok, try service.status(arena.allocator()));
 }
 
-fn serveKmsKeys(request: *std.http.Server.Request, application: *Application, request_id: []const u8, action: bool) !std.http.Status {
+fn serveKmsKeys(request: *std.http.Server.Request, application: *Application, request_id: []const u8, action: bool, audit_context: *AuditContext) !std.http.Status {
     const service = if (application.kms) |*kms| kms else return respondError(request, request_id, .service_unavailable, "KmsUnavailable", "KMS is not ready");
     var arena = std.heap.ArenaAllocator.init(application.allocator);
     defer arena.deinit();
@@ -3009,6 +3038,7 @@ fn serveKmsKeys(request: *std.http.Server.Request, application: *Application, re
     if (action) {
         if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
         const input = try parseJsonBody(struct { id: []const u8, action: []const u8 }, request, a, request_id) orelse return .bad_request;
+        try audit_context.operation(try std.fmt.allocPrint(a, "kms:{s}", .{input.value.action}), input.value.id);
         service.keyAction(a, input.value.id, input.value.action) catch |err| return kmsKeyError(request, request_id, err);
         return respondJson(request, request_id, .ok, .{ .ok = true });
     }
@@ -3018,13 +3048,47 @@ fn serveKmsKeys(request: *std.http.Server.Request, application: *Application, re
     }
     if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "GET, POST");
     const input = try parseJsonBody(@import("../application/kms_keys.zig").CreateKey, request, a, request_id) orelse return .bad_request;
+    try audit_context.setResource(.{ .type = "kms_key", .name = input.value.name });
     const key = service.createKey(a, input.value) catch |err| return kmsKeyError(request, request_id, err);
     return respondJson(request, request_id, .created, key);
 }
 fn kmsKeyError(request: *std.http.Server.Request, request_id: []const u8, err: anyerror) !std.http.Status {
     return respondError(request, request_id, switch (err) {
         error.InvalidKmsKeyRequest, error.InvalidKmsConfig => .bad_request,
-        error.KmsNotRunning, error.KmsKeyPendingDeletion, error.KmsKeyDeletionNotScheduled, error.KmsKeyOperationUnsupported => .conflict,
+        error.KmsNotRunning, error.KmsKeyPendingDeletion, error.KmsKeyDeletionNotScheduled, error.KmsKeyOperationUnsupported, error.KmsLastKeyDeletionForbidden => .conflict,
         else => .service_unavailable,
     }, @errorName(err), @import("../application/kms.zig").saveErrorMessage(err));
+}
+
+fn logError(request: *std.http.Server.Request, request_id: []const u8, err: anyerror) !std.http.Status {
+    const status: std.http.Status = switch (err) {
+        error.InvalidLogConfig, error.InvalidLogDirectory => .bad_request,
+        error.LogDownloadsDisabled => .forbidden,
+        else => .service_unavailable,
+    };
+    return respondError(request, request_id, status, @errorName(err), switch (err) {
+        error.InvalidLogConfig => "Invalid log configuration. Check level, format, output, retention, file size and units.",
+        error.InvalidLogDirectory => "Log directory must be a relative path inside the data root without traversal or reserved components.",
+        error.LogDownloadsDisabled => "Log downloads are disabled.",
+        else => "Log storage is unavailable. Check the data directory permissions and free space.",
+    });
+}
+fn serveLogSettings(request: *std.http.Server.Request, app: *Application, request_id: []const u8, download: ?bool) !std.http.Status {
+    const logger = if (app.logger) |*value| value else return respondNotReady(request, request_id);
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    if (download) |is_download| {
+        if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
+        const result = logger.query(a, is_download) catch |err| return logError(request, request_id, err);
+        return respondJson(request, request_id, .ok, result);
+    }
+    if (request.head.method == .PUT) {
+        const input = try parseJsonBody(@import("../application/logging.zig").Config, request, a, request_id) orelse return .bad_request;
+        logger.save(input.value) catch |err| return logError(request, request_id, err);
+        std.log.info("Log configuration updated", .{});
+    } else if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET, PUT");
+    const saved = logger.snapshot(a) catch |err| return logError(request, request_id, err);
+    defer saved.deinit();
+    return respondJson(request, request_id, .ok, saved.value);
 }

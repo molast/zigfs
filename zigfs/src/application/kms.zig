@@ -704,6 +704,7 @@ pub fn saveErrorMessage(err: anyerror) []const u8 {
     return switch (err) {
         error.KmsKeyOperationUnsupported => "This KMS backend does not support this key management operation.",
         error.KmsKeyPendingDeletion => "The key must be enabled for this operation.",
+        error.KmsLastKeyDeletionForbidden => "The last KMS key cannot be deleted. Create another key first.",
         error.KmsKeyDeletionNotScheduled => "Schedule key deletion before deleting it immediately.",
         error.InvalidKmsKeyRequest => "The KMS key request is invalid.",
         error.KmsNotRunning => "KMS is configured but not running. Start KMS before using SSE-KMS.",
@@ -876,6 +877,9 @@ test "managed local keys rotate without losing old objects and support deletion 
     try service.save(a, .{ .backend = "local", .localKeyDirectory = "/data/keys", .localCacheEnabled = true });
     try std.testing.expectError(error.KmsNotRunning, service.listKeys(a));
     try service.verify(a);
+    try std.testing.expectError(error.KmsLastKeyDeletionForbidden, service.keyAction(a, probe_key_id, "delete"));
+    try std.testing.expectError(error.KmsLastKeyDeletionForbidden, service.keyAction(a, probe_key_id, "schedule-deletion"));
+    try std.testing.expectEqual(@as(usize, 1), (try service.listKeys(a)).items.len);
     const created = try service.createKey(a, .{ .name = "Reports", .description = "Report encryption", .setAsDefault = true });
     try std.testing.expectEqualStrings(created.id, (try service.status(a)).config.defaultKey);
     const dek: box.Key = @splat(0x77);

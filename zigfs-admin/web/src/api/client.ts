@@ -1,3 +1,6 @@
+import type { AuditOptions, AuditQuery, AuditPage } from '@/types/api'
+export interface LogConfig { level: string; format: string; output: string; directory: string; retention: string; maxSize: string; sizeUnit: string; cleanup: string; downloads: string; range: string }
+export interface LogQuery { content: string; truncated: boolean; range: string }
 import type { KmsDraft } from '@/features/settings/KmsSettingsPanel'
 export interface KmsStatus { state: 'unconfigured' | 'configured' | 'running' | 'error'; errorMessage: string; healthChecked: boolean; healthy: boolean; configured: boolean; config: KmsDraft; tokenConfigured: boolean; staticSecretKeyConfigured: boolean }
 export interface KmsKey { id: string; name: string; description: string; status: string; algorithm: string; usage: string; version: number; createdAt: string | null; rotatedAt: string | null; deletionDate: string | null; manageable: boolean }
@@ -158,6 +161,9 @@ export function createApiClient() {
     storageScanner: () => request<StorageScannerStatus>('/api/v1/storage/scanner'),
     runStorageGC: () => request<StorageScanReport>('/api/v1/storage/gc', { method: 'POST' }),
     managementHealth: () => request<ManagementHealth>('/api/v1/management-health'),
+    logSettings: () => request<LogConfig>('/api/v1/settings/logs'),
+    saveLogSettings: (config: LogConfig) => request<LogConfig>('/api/v1/settings/logs', { method: 'PUT', body: JSON.stringify(config) }),
+    queryLogs: (download = false) => request<LogQuery>(`/api/v1/settings/logs/${download ? 'download' : 'query'}`),
     settings: () => request<Settings>('/api/v1/settings'),
     stopKms: () => request<KmsStatus>('/api/v1/settings/kms/stop', { method: 'POST' }),
     clearKmsCache: () => request<KmsStatus>('/api/v1/settings/kms/clear-cache', { method: 'POST' }),
@@ -182,6 +188,12 @@ export function createApiClient() {
       request<BucketConfiguration>(`/api/v1/buckets/${encodeURIComponent(name)}/configuration`),
     getBucketUsage: (name: string) =>
       request<BucketUsage>(`/api/v1/buckets/${encodeURIComponent(name)}/usage`),
+    auditOptions: () => request<AuditOptions>('/api/v1/audit-events/options'),
+    listAuditEvents: (filters: AuditQuery = {}) => {
+      const query = new URLSearchParams()
+      for (const [key, value] of Object.entries(filters)) if (value !== undefined && value !== '') query.set(key, String(value))
+      return request<AuditPage>(`/api/v1/audit-events?${query.toString()}`)
+    },
     listBucketEvents: (name: string, cursor = '', limit = 50, from = '', to = '', action = '', outcome = '') => {
       const query = new URLSearchParams({ limit: String(limit) })
       if (cursor) query.set('cursor', cursor)

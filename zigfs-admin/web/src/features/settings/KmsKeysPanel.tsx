@@ -57,10 +57,17 @@ export function KmsKeysPanel({ api, onDefaultChanged }: { api: ApiClient; onDefa
     } catch (error) { notifyError(error instanceof Error ? error.message : t('settings.kmsRequestFailed')) }
     finally { setBusy(false) }
   }
+  const lastKey = (data?.items.length ?? 0) <= 1
   const act = async (key: KmsKey, action: KmsKeyAction) => {
+    if ((action === 'delete' || action === 'schedule-deletion') && lastKey) {
+      notifyError(t('settings.kmsLastKeyProtected'))
+      return
+    }
     const label = action === 'delete' ? t('settings.kmsKeyDeleteNow') : action === 'rotate' ? t('settings.kmsKeyRotate') : action === 'cancel-deletion' ? t('settings.kmsKeyCancelDeletion') : t('settings.kmsKeyScheduleDeletion')
     if (action !== 'cancel-deletion' && !await confirm({
-      title: label,
+      title: action === 'delete' ? t('settings.kmsKeyDeleteTitle') : label,
+      confirmLabel: action === 'delete' ? t('settings.kmsKeyDeleteTitle') : label,
+      details: action === 'delete' ? `${t('settings.kmsKeyId')}: ${key.id}` : undefined,
       message: t(action === 'delete' ? 'settings.kmsKeyDeleteWarning' : action === 'rotate' ? 'settings.kmsKeyRotateConfirmation' : 'settings.kmsKeyScheduleConfirmation', { key: key.id }),
       danger: action === 'delete' || action === 'schedule-deletion',
     })) return
@@ -84,7 +91,7 @@ export function KmsKeysPanel({ api, onDefaultChanged }: { api: ApiClient; onDefa
         </div>
       </CardHeader>
       <CardContent className="kms-key-content">
-        <Alert><AlertTitle>{t('settings.kmsTwoStageDeletion')}</AlertTitle><AlertDescription>{t('settings.kmsTwoStageDeletionHelp')}</AlertDescription></Alert>
+        <Alert><AlertTitle>{t('settings.kmsTwoStageDeletion')}</AlertTitle><AlertDescription>{lastKey ? t('settings.kmsLastKeyProtected') : t('settings.kmsTwoStageDeletionHelp')}</AlertDescription></Alert>
         <Table>
           <TableHeader><TableRow>{[
             t('settings.kmsKeyName'), t('settings.kmsKeyId'), t('settings.kmsStatus'), t('settings.kmsKeyAlgorithm'), t('settings.kmsKeyUsage'), t('settings.kmsKeyCreatedAt'), t('settings.kmsKeyActions'),
@@ -102,11 +109,12 @@ export function KmsKeysPanel({ api, onDefaultChanged }: { api: ApiClient; onDefa
                   {key.manageable && (key.status === 'PendingDeletion' ? <>
                     <DropdownMenuItem onSelect={() => void act(key, 'cancel-deletion')}>{t('settings.kmsKeyCancelDeletion')}</DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem variant="destructive" onSelect={() => void act(key, 'delete')}>{t('settings.kmsKeyDeleteNow')}</DropdownMenuItem>
+                    <DropdownMenuItem variant="destructive" disabled={lastKey || loading} onSelect={() => void act(key, 'delete')}>{t('settings.kmsKeyDeleteNow')}</DropdownMenuItem>
                   </> : <>
                     <DropdownMenuItem onSelect={() => void act(key, 'rotate')}>{t('settings.kmsKeyRotate')}</DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem variant="destructive" onSelect={() => void act(key, 'schedule-deletion')}>{t('settings.kmsKeyScheduleDeletion')}</DropdownMenuItem>
+                    <DropdownMenuItem variant="destructive" disabled={lastKey || loading} onSelect={() => void act(key, 'schedule-deletion')}>{t('settings.kmsKeyScheduleDeletion')}</DropdownMenuItem>
+                    <DropdownMenuItem variant="destructive" disabled={lastKey || loading} onSelect={() => void act(key, 'delete')}>{t('settings.kmsKeyDeleteNow')}</DropdownMenuItem>
                   </>)}
                 </DropdownMenuGroup></DropdownMenuContent>
               </DropdownMenu></TableCell>

@@ -1,3 +1,4 @@
+const AuditContext = @import("audit_context.zig").Context;
 const std = @import("std");
 const Application = @import("../application/mod.zig").Application;
 const Config = @import("../config.zig").Config;
@@ -61,10 +62,11 @@ pub fn serve(
         .config = config,
         .application = application,
     };
-    std.log.info("ZigFS API listening on http://{s}", .{config.api_address});
+    std.debug.print("ZigFS API listening on http://{s}\n", .{config.api_address});
 
     var background: std.Io.Group = .init;
     defer background.cancel(io);
+    background.async(io, serveLogMaintenance, .{application});
     background.async(io, serveLifecycleScanner, .{
         application,
         config.s3_lifecycle_scan_interval_seconds,
@@ -75,7 +77,7 @@ pub fn serve(
     });
 
     if (!config.metrics_enabled) {
-        std.log.info("Prometheus metrics listener disabled", .{});
+        std.debug.print("Prometheus metrics listener disabled\n", .{});
         return serveLoop(&api_listener, &api_context);
     }
 
@@ -92,9 +94,20 @@ pub fn serve(
     var listeners: std.Io.Group = .init;
     defer listeners.cancel(io);
 
-    std.log.info("Prometheus metrics listening on http://{s}{s}", .{ config.metrics_address, metrics_path });
+    std.debug.print("Prometheus metrics listening on http://{s}{s}\n", .{ config.metrics_address, metrics_path });
     listeners.async(io, serveLoopBackground, .{ &metrics_listener, &metrics_context });
     return serveLoop(&api_listener, &api_context);
+}
+
+fn serveLogMaintenance(application: *Application) void {
+    const io = application.io orelse return;
+    const interval: std.Io.Clock.Duration = .{ .clock = .awake, .raw = std.Io.Duration.fromSeconds(60) };
+    while (true) {
+        interval.sleep(io) catch return;
+        if (application.logger) |*logger| logger.maintain() catch {
+            std.log.defaultLog(.err, .default, "Log retention cleanup failed", .{});
+        };
+    }
 }
 
 fn serveLifecycleScanner(application: *Application, interval_seconds: u64) void {
@@ -190,7 +203,15 @@ fn serveConnection(context: *ListenerContext, stream: std.Io.net.Stream) void {
             return;
         };
 
-        const status = serveRequest(&request, context, current_request_id, stream.socket.address) catch |err| {
+        var audit_arena = std.heap.ArenaAllocator.init(context.application.allocator);
+        defer audit_arena.deinit();
+        const audit_allocator = audit_arena.allocator();
+        var audit_context: AuditContext = .{ .allocator = audit_allocator, .action = std.fmt.allocPrint(audit_allocator, "{s} {s}", .{ @tagName(request.head.method), path }) catch return, .target = path };
+        audit_context.capture(&request, stream.socket.address) catch return;
+        const audited = shouldAudit(context.kind, request.head.method, path);
+        var audit_status: std.http.Status = .internal_server_error;
+        defer if (audited) audit_context.finish(context.application, current_request_id, audit_status, @intCast(@max(0, started.untilNow(io).raw.toMilliseconds())));
+        const status = serveRequest(&request, context, current_request_id, stream.socket.address, &audit_context) catch |err| {
             if (err == error.OutputWriteFailed) return;
             const duration_ms = started.untilNow(io).raw.toMilliseconds();
             std.log.warn(
@@ -200,6 +221,7 @@ fn serveConnection(context: *ListenerContext, stream: std.Io.net.Stream) void {
             return;
         };
 
+        audit_status = status;
         const duration_ms = started.untilNow(io).raw.toMilliseconds();
         std.log.info(
             "http request method={s} path={s} status={d} request_id={s} duration_ms={d}",
@@ -259,11 +281,12 @@ fn serveRequest(
     context: *const ListenerContext,
     current_request_id: []const u8,
     peer: std.Io.net.IpAddress,
+    audit_context: *AuditContext,
 ) !std.http.Status {
     const path = requestPath(request.head.target);
     const route = classifyRoute(context.kind, path);
 
-    if (route == .s3 and @import("oidc_sts.zig").matches(request)) return @import("oidc_sts.zig").serve(request, context.application, current_request_id);
+    if (route == .s3 and @import("oidc_sts.zig").matches(request)) return @import("oidc_sts.zig").serve(request, context.application, current_request_id, audit_context);
     return switch (route) {
         .live => respondReadOnly(
             request,
@@ -273,12 +296,12 @@ fn serveRequest(
         ),
         .ready => serveReadiness(request, context.application.recoveryState().*, current_request_id),
         .metrics => serveMetrics(request, context.application.recoveryState().*, current_request_id),
-        .oidc_auth => management.serveOidcAuth(request, context.application, current_request_id),
-        .management_login => serveManagementLogin(request, context, current_request_id),
-        .management_sts_login => serveManagementStsLogin(request, context, current_request_id),
-        .management_session => serveManagementSession(request, context, current_request_id),
-        .management => serveAuthorizedManagement(request, context, current_request_id, peer),
-        .s3 => s3.serveRequest(request, context.application, current_request_id, peer),
+        .oidc_auth => management.serveOidcAuth(request, context.application, current_request_id, audit_context),
+        .management_login => serveManagementLogin(request, context, current_request_id, audit_context),
+        .management_sts_login => serveManagementStsLogin(request, context, current_request_id, audit_context),
+        .management_session => serveManagementSession(request, context, current_request_id, audit_context),
+        .management => serveAuthorizedManagement(request, context, current_request_id, peer, audit_context),
+        .s3 => s3.serveRequest(request, context.application, current_request_id, peer, audit_context),
         .not_found => respond(
             request,
             "not found\n",
@@ -344,6 +367,7 @@ fn serveManagementLogin(
     request: *std.http.Server.Request,
     context: *const ListenerContext,
     current_request_id: []const u8,
+    audit_context: *AuditContext,
 ) !std.http.Status {
     if (request.head.method != .POST) {
         return management.respondMethodNotAllowed(request, current_request_id, "POST");
@@ -391,11 +415,15 @@ fn serveManagementLogin(
         const now = std.Io.Clock.real.now(context.io).toSeconds();
         const token = (management_auth.authenticateUser(a, context.application, parsed.value.username, parsed.value.password, now) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
         const principal = (management_auth.resolve(a, context.application, token.value(), now) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
+        try audit_context.identify(principal.username);
+        try audit_context.authenticate(if (principal.federated) "oidc" else "internal", principal.id, null);
         const body_json = try std.json.Stringify.valueAlloc(a, .{ .token = token.value(), .token_type = "Bearer", .username = principal.username, .subject_id = principal.id, .is_root = false, .expires_at = principal.expires_at }, .{});
         return respond(request, body_json, .ok, "application/json; charset=utf-8", current_request_id, null);
     }
 
     const now = std.Io.Clock.real.now(context.io).toSeconds();
+    try audit_context.identify(config.admin_username);
+    try audit_context.authenticate("internal", "deployment-root", null);
     const issued = try management_session.issue(
         context.io,
         config.admin_session_secret,
@@ -422,6 +450,7 @@ fn serveManagementStsLogin(
     request: *std.http.Server.Request,
     context: *const ListenerContext,
     current_request_id: []const u8,
+    audit_context: *AuditContext,
 ) !std.http.Status {
     if (request.head.method != .POST) return management.respondMethodNotAllowed(request, current_request_id, "POST");
     var read_buffer: [4096]u8 = undefined;
@@ -440,6 +469,8 @@ fn serveManagementStsLogin(
     std.crypto.hash.sha2.Sha256.hash(parsed.value.secret_key, &actual_hash, .{});
     if (!std.crypto.timing_safe.eql([32]u8, expected_hash, actual_hash) or material.session_token == null or !std.mem.eql(u8, material.session_token.?, parsed.value.session_token)) return respondUnauthorized(request, current_request_id);
     const now = std.Io.Clock.real.now(context.io).toSeconds();
+    try audit_context.identify(material.owner);
+    try audit_context.authenticate("sts", material.subject_id, parsed.value.username);
     const issued = try management_session.issueCredential(context.io, context.config.admin_session_secret, parsed.value.username, context.config.admin_session_ttl_seconds, now);
     var arena = std.heap.ArenaAllocator.init(context.application.allocator);
     defer arena.deinit();
@@ -451,15 +482,20 @@ fn serveManagementSession(
     request: *std.http.Server.Request,
     context: *const ListenerContext,
     current_request_id: []const u8,
+    audit_context: *AuditContext,
 ) !std.http.Status {
-    if (request.head.method != .GET) {
-        return management.respondMethodNotAllowed(request, current_request_id, "GET");
+    const logout = std.mem.eql(u8, requestPath(request.head.target), "/_admin/v1/auth/logout");
+    if (request.head.method != (if (logout) std.http.Method.POST else std.http.Method.GET)) {
+        return management.respondMethodNotAllowed(request, current_request_id, if (logout) "POST" else "GET");
     }
     var arena = std.heap.ArenaAllocator.init(context.application.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const token = bearerToken(request) orelse return respondUnauthorized(request, current_request_id);
     const principal = (management_auth.resolve(a, context.application, token, std.Io.Clock.real.now(context.io).toSeconds()) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
+    try audit_context.identify(principal.username);
+    try audit_context.authenticate(if (principal.federated) "oidc" else "internal", principal.id, null);
+    if (logout) return respond(request, "", .no_content, "application/json", current_request_id, null);
     const response_body = try std.json.Stringify.valueAlloc(a, .{ .authenticated = true, .federated = principal.federated, .display_name = principal.display_name, .email = principal.email, .refreshable = principal.refreshable, .username = principal.username, .subject_id = principal.id, .is_root = principal.is_root, .expires_at = principal.expires_at }, .{});
     return respond(request, response_body, .ok, "application/json; charset=utf-8", current_request_id, null);
 }
@@ -475,13 +511,15 @@ fn bearerToken(request: *const std.http.Server.Request) ?[]const u8 {
     return result;
 }
 
-fn serveAuthorizedManagement(request: *std.http.Server.Request, context: *const ListenerContext, current_request_id: []const u8, peer: std.Io.net.IpAddress) !std.http.Status {
+fn serveAuthorizedManagement(request: *std.http.Server.Request, context: *const ListenerContext, current_request_id: []const u8, peer: std.Io.net.IpAddress, audit_context: *AuditContext) !std.http.Status {
     var arena = std.heap.ArenaAllocator.init(context.application.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const token = bearerToken(request) orelse return respondUnauthorized(request, current_request_id);
     const now = std.Io.Clock.real.now(context.io).toSeconds();
     const principal = (management_auth.resolve(a, context.application, token, now) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
+    try audit_context.identify(principal.username);
+    try audit_context.authenticate(if (principal.federated) "oidc" else "internal", principal.id, null);
     if (!principal.is_root) {
         var headers: std.ArrayList(sigv4.Header) = .empty;
         var iterator = request.iterateHeaders();
@@ -493,7 +531,7 @@ fn serveAuthorizedManagement(request: *std.http.Server.Request, context: *const 
         const resource = managementResource(a, requestPath(request.head.target));
         if (!principal.allows(a, action, resource, conditions)) return management.respondError(request, current_request_id, .forbidden, "AccessDenied", "current identity is not authorized for this management operation");
     }
-    return management.serveRequest(request, context.application, current_request_id, principal);
+    return management.serveRequest(request, context.application, current_request_id, principal, audit_context);
 }
 
 fn managementResource(a: std.mem.Allocator, path: []const u8) []const u8 {
@@ -634,6 +672,23 @@ fn requestPath(target: []const u8) []const u8 {
     return target[0..query_start];
 }
 
+fn shouldAudit(kind: ListenerKind, method: std.http.Method, path: []const u8) bool {
+    if (method == .OPTIONS) return false;
+    return switch (classifyRoute(kind, path)) {
+        .live, .ready, .metrics => false,
+        else => true,
+    };
+}
+
+test "audit exclusions do not hide similarly named S3 resources" {
+    try std.testing.expect(!shouldAudit(.api, .GET, "/health/ready"));
+    try std.testing.expect(!shouldAudit(.metrics, .GET, "/metrics"));
+    try std.testing.expect(!shouldAudit(.api, .OPTIONS, "/bucket/key"));
+    try std.testing.expect(shouldAudit(.api, .GET, "/health/object.txt"));
+    try std.testing.expect(shouldAudit(.api, .GET, "/metrics"));
+    try std.testing.expect(shouldAudit(.api, .GET, "/_admin/v1/audit-events"));
+}
+
 fn classifyRoute(kind: ListenerKind, path: []const u8) Route {
     return switch (kind) {
         .api => if (std.mem.eql(u8, path, health_live_path))
@@ -646,7 +701,7 @@ fn classifyRoute(kind: ListenerKind, path: []const u8) Route {
             .management_login
         else if (std.mem.eql(u8, path, "/_admin/v1/auth/sts-login"))
             .management_sts_login
-        else if (std.mem.eql(u8, path, "/_admin/v1/auth/session"))
+        else if (std.mem.eql(u8, path, "/_admin/v1/auth/session") or std.mem.eql(u8, path, "/_admin/v1/auth/logout"))
             .management_session
         else if (std.mem.eql(u8, path, "/_admin/v1") or
             std.mem.startsWith(u8, path, "/_admin/v1/"))

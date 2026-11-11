@@ -8,6 +8,7 @@ import {
   Activity,
   ChevronDown,
   FolderOpen,
+  FileText,
   Fingerprint,
   HardDrive,
   KeyRound,
@@ -36,6 +37,7 @@ import { BucketDetailView } from './features/buckets/BucketDetailView'
 import { BucketsView } from './features/buckets/BucketsView'
 import { ObjectsView } from './features/objects/ObjectsView'
 import { SettingsView } from './features/settings/SettingsView'
+import { LogsView } from './features/logs/LogsView'
 import { StorageView } from './features/storage/StorageView'
 import { SystemView } from './features/system/SystemView'
 import { appRoutePath, createAppRoute, parseAppRoute, type AppRoute, type View } from './routes'
@@ -71,6 +73,7 @@ const navigation: Array<{ label: string; items: NavItem[] }> = [
     get label() { return t('navigation.serviceStatus') },
     items: [
       { view: 'storage', get label() { return t('navigation.storage') }, icon: HardDrive },
+      { view: 'logs', get label() { return t('navigation.logs') }, icon: FileText },
       { view: 'system', get label() { return t('navigation.monitoring') }, icon: Activity },
     ],
   },
@@ -90,6 +93,7 @@ const viewMeta: Record<View, { section: string; label: string }> = {
   'access-keys': { get section() { return t('common.accessControl') }, get label() { return t('navigation.accessKeys') } },
   policies: { get section() { return t('common.accessControl') }, get label() { return t('navigation.policies') } },
   storage: { get section() { return t('common.system') }, get label() { return t('navigation.storage') } },
+  logs: { get section() { return t('common.system') }, get label() { return t('navigation.logs') } },
   system: { get section() { return t('common.monitoring') }, get label() { return t('navigation.runningStatus') } },
   settings: { get section() { return t('common.configuration') }, get label() { return t('navigation.systemSetting') } },
   'oidc-settings': { get section() { return t('common.configuration') }, label: 'OpenID' },
@@ -238,8 +242,8 @@ export default function App() {
   const meta = viewMeta[view]
   const connectionLabel = t(availability === 'ready' ? 'navigation.fsReady' : 'navigation.connectingToZigfs')
   const isBucketsActive = view === 'buckets' || view === 'bucket-detail' || view === 'objects'
-  const visibleNavigation = session.is_root ? navigation : navigation.filter(group => !group.items.some(item => ['storage', 'system', 'settings', 'oidc-settings'].includes(item.view)))
-  const restrictedView = !session.is_root && (view === 'storage' || view === 'system' || view === 'settings' || view === 'oidc-settings')
+  const visibleNavigation = session.is_root ? navigation : navigation.filter(group => !group.items.some(item => ['storage', 'logs', 'system', 'settings', 'oidc-settings'].includes(item.view)))
+  const restrictedView = !session.is_root && (view === 'logs' || view === 'storage' || view === 'system' || view === 'settings' || view === 'oidc-settings')
 
   return (
     <div className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}${mobileSidebarOpen ? ' sidebar-open' : ''}${darkTheme ? ' theme-dark' : ''}`}>
@@ -335,6 +339,7 @@ export default function App() {
           {view === 'policies' && <PoliciesView api={api} />}
           {!restrictedView && view === 'oidc-settings' && <OIDCSettingsView api={api} />}
           {restrictedView && <AccessDeniedView />}
+          {!restrictedView && view === 'logs' && <LogsView api={api} />}
           {!restrictedView && view === 'storage' && <StorageView api={api} />}
           {!restrictedView && view === 'system' && <SystemView api={api} />}
           {!restrictedView && view === 'settings' && <SettingsView api={api} />}

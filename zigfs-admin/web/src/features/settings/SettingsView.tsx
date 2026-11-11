@@ -1,5 +1,5 @@
 import { t, getFormatLocale } from '@/locales'
-import { Database, FileText, Globe, Home, Info, RefreshCw, Settings as SettingsIcon, ShieldCheck, CircleCheck, Box } from 'lucide-react'
+import { FileText, Globe, Home, Info, RefreshCw, Settings as SettingsIcon, ShieldCheck, CircleCheck, Box } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ApiClient, KmsStatus } from '../../api/client'
 import { useErrorToast } from '../../components/ToastProvider'
@@ -11,16 +11,16 @@ import { Input } from '../../components/ui/Input'
 import { Textarea } from '../../components/ui/Textarea'
 import { Separator } from '../../components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/Tabs'
+import { LogConfigurationPanel } from './LogConfigurationPanel'
 import { SettingsPanels } from './SettingsPanels'
 import { KmsSettingsPanel, createKmsDraft } from './KmsSettingsPanel'
-import type { ManagementHealth, StorageInfo, StorageScannerStatus, Settings, SystemInfo } from '../../types/api'
+import type { ManagementHealth, StorageInfo, Settings, SystemInfo } from '../../types/api'
 
 const categories = [
   { id: 'general', get label() { return t('settings.general') }, get subtitle() { return t('settings.instanceDetails') }, get description() { return t('settings.viewInstanceDetailsAndRuntimeSettings') }, icon: Home },
   { id: 'network', get label() { return t('settings.network') }, get subtitle() { return t('settings.networkAndAccess') }, get description() { return t('settings.viewApiListenAddressesPublicEndpointsAndS3Addressing') }, icon: Globe },
   { id: 'security', get label() { return t('settings.security') }, get subtitle() { return t('settings.securityConfiguration') }, get description() { return t('settings.viewAdminSessionAndRequestSignatureSettings') }, icon: ShieldCheck },
-  { id: 'storage', get label() { return t('settings.storage') }, get subtitle() { return t('settings.storagePoliciesAndSettings') }, get description() { return t('settings.viewStorageBuffersMultipartUploadRetentionAndLifecycleScan') }, icon: Database },
-  { id: 'logs', get label() { return t('settings.logs') }, get subtitle() { return t('settings.logsAndObservability') }, get description() { return t('settings.viewMetricsConfigurationAndAvailableLogSettings') }, icon: FileText },
+  { id: 'logs', get label() { return t('settings.logs') }, get subtitle() { return t('settings.logsAndObservability') }, get description() { return t('settings.systemLogLevelFormatAndDestinations') }, icon: FileText },
   { id: 'about', get label() { return t('settings.aboutZigfs') }, get subtitle() { return t('settings.versionAndInformation') }, get description() { return t('settings.viewTheServiceVersionAndInstanceRuntimeInformation') }, icon: Info },
 ] as const
 
@@ -35,7 +35,6 @@ export function SettingsView({ api }: { api: ApiClient }) {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [system, setSystem] = useState<SystemInfo | null>(null)
   const [storage, setStorage] = useState<StorageInfo | null>(null)
-  const [scanner, setScanner] = useState<StorageScannerStatus | null>(null)
   const [health, setHealth] = useState<ManagementHealth | null>(null)
   const [observedAt, setObservedAt] = useState<Date | null>(null)
   const [busy, setBusy] = useState(false)
@@ -54,13 +53,12 @@ export function SettingsView({ api }: { api: ApiClient }) {
     pending.current = true
     setBusy(true)
     try {
-      const results = await Promise.allSettled([api.settings(), api.system(), api.storage(), api.storageScanner(), api.managementHealth()])
-      const [configuration, runtime, capacity, scan, readiness] = results
+      const results = await Promise.allSettled([api.settings(), api.system(), api.storage(), api.managementHealth()])
+      const [configuration, runtime, capacity, readiness] = results
       if (!mounted.current) return
       setSettings(configuration.status === 'fulfilled' ? configuration.value : null)
       setSystem(runtime.status === 'fulfilled' ? runtime.value : null)
       setStorage(capacity.status === 'fulfilled' ? capacity.value : null)
-      setScanner(scan.status === 'fulfilled' ? scan.value : null)
       setHealth(readiness.status === 'fulfilled' ? readiness.value : null)
       setObservedAt(new Date())
       if (results.some(result => result.status === 'rejected')) notifyError(t('settings.someSystemInformationCouldNotBeLoadedRefreshConfiguration'))
@@ -111,16 +109,16 @@ export function SettingsView({ api }: { api: ApiClient }) {
       <div className="system-settings-main">
         <Card className="system-settings-editor">
           {categories.map(item => <TabsContent key={item.id} value={item.id} data-settings-category={item.id} className="system-settings-tab">
-            <CardHeader><div className="system-settings-section-heading"><item.icon aria-hidden="true" /><div><CardTitle>{item.label}</CardTitle><CardDescription>{item.description}</CardDescription></div>{item.id !== 'security' && <Badge>{busy ? t('settings.loading') : settings ? t('settings.effectiveReadOnly') : t('settings.configurationUnavailable')}</Badge>}</div></CardHeader>
-            <CardContent className="system-settings-scroll"><div className="settings-detail-stack">{item.id === 'security' ? <KmsSettingsPanel api={api} status={kmsStatus} setStatus={setKmsStatus} draft={kmsDraft} setDraft={setKmsDraft} /> : groups[item.id] ? <Card className="system-settings-form"><CardContent>
+            <CardHeader><div className="system-settings-section-heading"><item.icon aria-hidden="true" /><div><CardTitle>{item.label}</CardTitle><CardDescription>{item.description}</CardDescription></div>{item.id !== 'security' && item.id !== 'logs' && <Badge>{busy ? t('settings.loading') : settings ? t('settings.effectiveReadOnly') : t('settings.configurationUnavailable')}</Badge>}</div></CardHeader>
+            <CardContent className="system-settings-scroll"><div className="settings-detail-stack">{item.id === 'security' ? <KmsSettingsPanel api={api} status={kmsStatus} setStatus={setKmsStatus} draft={kmsDraft} setDraft={setKmsDraft} /> : item.id === 'logs' ? <LogConfigurationPanel api={api} /> : groups[item.id] ? <Card className="system-settings-form"><CardContent>
               {groups[item.id]?.map((group, index) => <div key={group.title}>{index > 0 && <Separator />}<FieldSet><FieldLegend>{group.title}</FieldLegend><FieldGroup>
                 {group.items.map(setting => <Field key={setting.id} className="system-settings-field"><FieldLabel htmlFor={`system-${setting.id}`}>{setting.label}</FieldLabel>{setting.multiline ? <Textarea id={`system-${setting.id}`} readOnly value={setting.value} rows={2} aria-describedby={setting.help ? `system-${setting.id}-help` : undefined} /> : <Input id={`system-${setting.id}`} readOnly value={setting.value} aria-describedby={setting.help ? `system-${setting.id}-help` : undefined} />}{setting.help && <FieldDescription id={`system-${setting.id}-help`}>{setting.help}</FieldDescription>}</Field>)}
               </FieldGroup></FieldSet></div>)}
-            </CardContent></Card> : <SettingsPanels category={item.id} settings={settings} system={system} storage={storage} scanner={scanner} health={health} />}</div></CardContent>
+            </CardContent></Card> : <SettingsPanels category={item.id} settings={settings} system={system} storage={storage} scanner={null} health={health} />}</div></CardContent>
           </TabsContent>)}
-          {category !== 'security' && <footer className="system-settings-actions"><span>{t('settings.configurationIsReadOnlyRestartZigfsAfterChangingService')}</span><Button size="sm" variant="outline" disabled={busy} onClick={() => void refresh()}><RefreshCw data-icon="inline-start" />{busy ? t('settings.loadingProgress') : t('settings.refreshConfiguration')}</Button></footer>}
+          {category !== 'security' && category !== 'logs' && <footer className="system-settings-actions"><span>{t('settings.configurationIsReadOnlyRestartZigfsAfterChangingService')}</span><Button size="sm" variant="outline" disabled={busy} onClick={() => void refresh()}><RefreshCw data-icon="inline-start" />{busy ? t('settings.loadingProgress') : t('settings.refreshConfiguration')}</Button></footer>}
         </Card>
-        {category !== 'security' && <div className="system-settings-notes">
+        {category !== 'security' && category !== 'logs' && <div className="system-settings-notes">
           <Card><CardHeader><CircleCheck aria-hidden="true" /><div><CardTitle>{t('settings.currentConfiguration')}</CardTitle><CardDescription>{t('settings.showsEffectiveRuntimeValues')}</CardDescription></div></CardHeader></Card>
           <Card><CardHeader><Info aria-hidden="true" /><div><CardTitle>{t('settings.restartRequired')}</CardTitle><CardDescription>{t('settings.restartTheServiceToApplyConfigurationChanges')}</CardDescription></div></CardHeader></Card>
           <Card><CardHeader><Box aria-hidden="true" /><div><CardTitle>{t('settings.instanceInformation')}</CardTitle><CardDescription>{t('settings.versionLabel')}{system?.version ?? '—'} {t('settings.lastFetched')}{observedAt?.toLocaleTimeString(getFormatLocale()) ?? '—'}</CardDescription></div></CardHeader></Card>

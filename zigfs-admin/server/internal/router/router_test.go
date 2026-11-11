@@ -619,3 +619,11 @@ func TestKMSRuntimeAndKeyRoutesRequireSession(t *testing.T) {
 		}
 	}
 }
+
+func (managementService) LogSettings(context.Context, string, string, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`{"level":"info","directory":"logs"}`), nil
+}
+
+func (managementService) AuditEvents(context.Context, string, string) (json.RawMessage, error) {
+	return json.RawMessage(`{"items":[]}`), nil
+}

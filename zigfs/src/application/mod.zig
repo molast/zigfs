@@ -21,6 +21,8 @@ const local_layout = @import("../metadata/local_layout.zig");
 const multipart_domain = @import("../domain/multipart.zig");
 const MetadataRepository = @import("../ports/metadata_repository.zig").MetadataRepository;
 
+pub const logging = @import("logging.zig");
+
 pub const bucket_service = @import("bucket_service.zig");
 pub const continuation_token = @import("continuation_token.zig");
 pub const credential_service = @import("credential_service.zig");
@@ -57,27 +59,15 @@ pub const StorageScannerSnapshot = struct {
     last_scan: ?StorageScanReport,
 };
 
-pub const AuditEvent = struct {
-    timestamp_unix_seconds: i64,
-    request_id: []const u8,
-    actor: []const u8,
-    action: []const u8,
-    target: []const u8,
-    outcome: []const u8,
-};
+pub const audit_schema = @import("audit_schema.zig");
+pub const AuditEvent = audit_schema.Event;
 
 pub const AuditEventPage = struct {
     items: []AuditEvent,
     next_cursor: ?[]const u8 = null,
 
     pub fn deinit(self: *AuditEventPage, allocator: std.mem.Allocator) void {
-        for (self.items) |event| {
-            allocator.free(event.request_id);
-            allocator.free(event.actor);
-            allocator.free(event.action);
-            allocator.free(event.target);
-            allocator.free(event.outcome);
-        }
+        for (self.items) |event| audit_schema.free(allocator, event);
         allocator.free(self.items);
         if (self.next_cursor) |cursor| allocator.free(cursor);
         self.* = .{ .items = &.{} };
@@ -104,6 +94,7 @@ pub const Application = struct {
     directory_store: ?MetadataDirectoryStore = null,
     multipart_store: ?MetadataMultipartStore = null,
     master_key: ?CredentialMasterKey = null,
+    logger: ?logging.Service = null,
     kms: ?@import("kms.zig").Service = null,
     local_object_data: ?LocalObjectDataStore = null,
     local_multipart_data: ?LocalMultipartDataStore = null,
@@ -148,27 +139,13 @@ pub const Application = struct {
         defer self.audit_mutex.unlock(self.io.?);
         if (self.audit_events.items.len == audit_event_capacity) {
             self.persistArchivedEvent(self.audit_events.items[0]);
-            self.allocator.free(self.audit_events.items[0].request_id);
-            self.allocator.free(self.audit_events.items[0].actor);
-            self.allocator.free(self.audit_events.items[0].action);
-            self.allocator.free(self.audit_events.items[0].target);
-            self.allocator.free(self.audit_events.items[0].outcome);
+            self.freeAuditEvent(self.audit_events.items[0]);
             _ = self.audit_events.orderedRemove(0);
         }
-        const owned: AuditEvent = .{
-            .timestamp_unix_seconds = event.timestamp_unix_seconds,
-            .request_id = self.allocator.dupe(u8, event.request_id) catch return,
-            .actor = self.allocator.dupe(u8, event.actor) catch return,
-            .action = self.allocator.dupe(u8, event.action) catch return,
-            .target = self.allocator.dupe(u8, event.target) catch return,
-            .outcome = self.allocator.dupe(u8, event.outcome) catch return,
-        };
+        const owned = self.cloneAuditEvent(event) catch return;
         self.audit_events.append(self.allocator, owned) catch {
-            self.allocator.free(owned.request_id);
-            self.allocator.free(owned.actor);
-            self.allocator.free(owned.action);
-            self.allocator.free(owned.target);
-            self.allocator.free(owned.outcome);
+            self.freeAuditEvent(owned);
+            return;
         };
         self.persistAuditEvents();
     }
@@ -178,13 +155,15 @@ pub const Application = struct {
         const root = self.data_root orelse return;
         root.createDirPath(io, audit_archive_dir) catch return;
         var path_buffer: [180]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buffer, "{s}/{d}-{x}.json", .{ audit_archive_dir, event.timestamp_unix_seconds, std.hash.Wyhash.hash(0, event.request_id) }) catch return;
+        const archive_id = @import("../common/id.zig").randomV4(io) catch return;
+        const path = std.fmt.bufPrint(&path_buffer, "{s}/{d}-{s}.json", .{ audit_archive_dir, event.timestamp_unix_seconds, std.fmt.bytesToHex(archive_id, .lower) }) catch return;
         var output: std.Io.Writer.Allocating = .init(self.allocator);
         defer output.deinit();
         var json: std.json.Stringify = .{ .writer = &output.writer };
         json.write(event) catch return;
         var atomic = root.createFileAtomic(io, path, .{ .replace = false }) catch return;
         defer atomic.deinit(io);
+        atomic.file.setPermissions(io, .fromMode(0o600)) catch return;
         atomic.file.writeStreamingAll(io, output.written()) catch return;
         atomic.file.sync(io) catch return;
         atomic.link(io) catch return;
@@ -196,69 +175,37 @@ pub const Application = struct {
         var output: std.Io.Writer.Allocating = .init(self.allocator);
         defer output.deinit();
         var json: std.json.Stringify = .{ .writer = &output.writer };
-        json.beginArray() catch return;
-        for (self.audit_events.items) |event| {
-            json.beginObject() catch return;
-            json.objectField("timestamp_unix_seconds") catch return;
-            json.write(event.timestamp_unix_seconds) catch return;
-            json.objectField("request_id") catch return;
-            json.write(event.request_id) catch return;
-            json.objectField("actor") catch return;
-            json.write(event.actor) catch return;
-            json.objectField("action") catch return;
-            json.write(event.action) catch return;
-            json.objectField("target") catch return;
-            json.write(event.target) catch return;
-            json.objectField("outcome") catch return;
-            json.write(event.outcome) catch return;
-            json.endObject() catch return;
-        }
-        json.endArray() catch return;
+        json.write(self.audit_events.items) catch return;
         var atomic = root.createFileAtomic(io, audit_events_path, .{ .replace = true }) catch return;
         defer atomic.deinit(io);
+        atomic.file.setPermissions(io, .fromMode(0o600)) catch return;
         atomic.file.writeStreamingAll(io, output.written()) catch return;
         atomic.file.sync(io) catch return;
-        atomic.link(io) catch return;
+        atomic.replace(io) catch return;
     }
 
     fn loadAuditEvents(self: *Application) void {
         const io = self.io orelse return;
         const root = self.data_root orelse return;
-        const bytes = root.readFileAlloc(io, audit_events_path, self.allocator, .limited(1024 * 1024)) catch return;
+        const bytes = root.readFileAlloc(io, audit_events_path, self.allocator, .limited(32 * 1024 * 1024)) catch return;
         defer self.allocator.free(bytes);
         const parsed = std.json.parseFromSlice([]AuditEvent, self.allocator, bytes, .{ .allocate = .alloc_always }) catch return;
         defer parsed.deinit();
         for (parsed.value) |event| {
             if (self.audit_events.items.len == audit_event_capacity) break;
-            const owned: AuditEvent = .{
-                .timestamp_unix_seconds = event.timestamp_unix_seconds,
-                .request_id = self.allocator.dupe(u8, event.request_id) catch break,
-                .actor = self.allocator.dupe(u8, event.actor) catch break,
-                .action = self.allocator.dupe(u8, event.action) catch break,
-                .target = self.allocator.dupe(u8, event.target) catch break,
-                .outcome = self.allocator.dupe(u8, event.outcome) catch break,
+            const owned = self.cloneAuditEvent(event) catch break;
+            self.audit_events.append(self.allocator, owned) catch {
+                self.freeAuditEvent(owned);
+                break;
             };
-            self.audit_events.append(self.allocator, owned) catch break;
         }
     }
 
     fn freeAuditEvent(self: *Application, event: AuditEvent) void {
-        self.allocator.free(event.request_id);
-        self.allocator.free(event.actor);
-        self.allocator.free(event.action);
-        self.allocator.free(event.target);
-        self.allocator.free(event.outcome);
+        audit_schema.free(self.allocator, event);
     }
-
     fn cloneAuditEvent(self: *Application, event: AuditEvent) !AuditEvent {
-        return .{
-            .timestamp_unix_seconds = event.timestamp_unix_seconds,
-            .request_id = try self.allocator.dupe(u8, event.request_id),
-            .actor = try self.allocator.dupe(u8, event.actor),
-            .action = try self.allocator.dupe(u8, event.action),
-            .target = try self.allocator.dupe(u8, event.target),
-            .outcome = try self.allocator.dupe(u8, event.outcome),
-        };
+        return audit_schema.clone(self.allocator, event);
     }
 
     fn auditEventNewestFirst(_: void, left: AuditEvent, right: AuditEvent) bool {
@@ -266,6 +213,9 @@ pub const Application = struct {
     }
 
     pub fn listAuditEvents(self: *Application, bucket: []const u8, offset: usize, limit: usize, from: ?i64, to: ?i64, action: ?[]const u8, outcome: ?[]const u8) !AuditEventPage {
+        return self.queryAuditEvents(bucket, offset, limit, from, to, action, outcome, .{});
+    }
+    pub fn queryAuditEvents(self: *Application, bucket: []const u8, offset: usize, limit: usize, from: ?i64, to: ?i64, action: ?[]const u8, outcome: ?[]const u8, filters: audit_schema.Filters) !AuditEventPage {
         const io = self.io orelse return error.Unavailable;
         self.audit_mutex.lockUncancelable(io);
         defer self.audit_mutex.unlock(io);
@@ -294,11 +244,22 @@ pub const Application = struct {
         var skipped: usize = 0;
         var matched_total: usize = 0;
         for (candidates.items) |event| {
-            if (!std.mem.eql(u8, event.target, bucket)) continue;
+            if (!audit_schema.matches(event, filters)) continue;
+            if (bucket.len > 0 and !std.mem.eql(u8, event.target, bucket)) {
+                const s3_prefix = try std.fmt.allocPrint(self.allocator, "/{s}", .{bucket});
+                defer self.allocator.free(s3_prefix);
+                const admin_prefix = try std.fmt.allocPrint(self.allocator, "/_admin/v1/buckets/{s}", .{bucket});
+                defer self.allocator.free(admin_prefix);
+                const match_s3 = std.mem.startsWith(u8, event.target, s3_prefix) and (event.target.len == s3_prefix.len or event.target[s3_prefix.len] == '/');
+                const match_admin = std.mem.startsWith(u8, event.target, admin_prefix) and (event.target.len == admin_prefix.len or event.target[admin_prefix.len] == '/');
+                if (!match_s3 and !match_admin) continue;
+            }
             if (from) |value| if (event.timestamp_unix_seconds < value) continue;
             if (to) |value| if (event.timestamp_unix_seconds > value) continue;
-            if (action) |value| if (!std.mem.eql(u8, event.action, value)) continue;
-            if (outcome) |value| if (!std.mem.eql(u8, event.outcome, value)) continue;
+            if (action) |value| if (!std.mem.eql(u8, event.action, value) and !std.mem.eql(u8, event.event_action, value)) continue;
+            if (outcome) |value| {
+                if (!std.mem.eql(u8, event.outcome, value) and !std.mem.eql(u8, event.response.status, value) and !(std.mem.eql(u8, value, "success") and std.mem.startsWith(u8, event.outcome, "success:"))) continue;
+            }
             matched_total += 1;
             if (skipped < offset) {
                 skipped += 1;
@@ -387,6 +348,8 @@ pub const Application = struct {
             }
             return;
         };
+        self.logger = .{ .root = self.data_root.?, .io = io, .allocator = self.allocator };
+        try self.logger.?.init();
         self.kms = .{ .root = self.data_root.?, .io = io, .master = self.master_key.?.bytes, .allocator = self.allocator };
         self.local_multipart_data.?.master_key = self.master_key.?.bytes;
 
@@ -540,13 +503,9 @@ pub const Application = struct {
     }
 
     pub fn deinit(self: *Application, io: std.Io) void {
-        for (self.audit_events.items) |event| {
-            self.allocator.free(event.request_id);
-            self.allocator.free(event.actor);
-            self.allocator.free(event.action);
-            self.allocator.free(event.target);
-            self.allocator.free(event.outcome);
-        }
+        if (self.logger) |*logger| logger.deinit();
+        self.logger = null;
+        for (self.audit_events.items) |event| self.freeAuditEvent(event);
         self.audit_events.deinit(self.allocator);
         if (self.metadata_index) |*metadata_index| {
             metadata_index.deinit();
@@ -2552,4 +2511,50 @@ test "SSE-S3 multipart encryption snapshot survives default change and restart" 
         defer read.deinit(std.testing.allocator);
         try std.testing.expectEqualStrings("restart encrypted multipart", sink.bytes.items);
     }
+}
+
+test "global audit queries include failures and preserve bucket boundaries" {
+    var app = Application.initWithAllocator(.{}, std.testing.allocator);
+    defer app.deinit(std.testing.io);
+    app.io = std.testing.io;
+    app.recordAudit(.{ .timestamp_unix_seconds = 10, .request_id = "one", .actor = "alice", .action = "put_object", .target = "/alpha/a.txt", .outcome = "success:200" });
+    app.recordAudit(.{ .timestamp_unix_seconds = 20, .request_id = "two", .actor = "bob", .action = "put_object", .target = "/alphabet/b.txt", .outcome = "failure:403" });
+    app.recordAudit(.{ .timestamp_unix_seconds = 30, .request_id = "three", .actor = "alice", .action = "PUT /_admin/v1/settings/logs", .target = "/_admin/v1/settings/logs", .outcome = "failure:400" });
+    var all = try app.listAuditEvents("", 0, 1, null, null, null, null);
+    defer all.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("three", all.items[0].request_id);
+    try std.testing.expectEqualStrings("1", all.next_cursor.?);
+    var next = try app.listAuditEvents("", 1, 10, null, null, null, null);
+    defer next.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("two", next.items[0].request_id);
+    var bucket = try app.listAuditEvents("alpha", 0, 10, null, null, null, null);
+    defer bucket.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), bucket.items.len);
+    try std.testing.expectEqualStrings("alice", bucket.items[0].actor);
+}
+
+test "audit window and archives survive reload including repeated request IDs" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".zigfs/system");
+    {
+        var app = Application.initWithAllocator(.{}, std.testing.allocator);
+        defer app.deinit(std.testing.io);
+        app.io = std.testing.io;
+        const event: AuditEvent = .{ .timestamp_unix_seconds = 10, .request_id = "client-reused-id", .actor = "alice", .action = "get_object", .target = "/bucket/key", .outcome = "success:200" };
+        // Seed in memory, then exercise overflow persistence without thousands of disk writes.
+        for (0..audit_event_capacity) |_| app.recordAudit(event);
+        app.data_root = try tmp.dir.openDir(std.testing.io, ".", .{});
+        app.recordAudit(event);
+        app.recordAudit(event);
+    }
+    var restored = Application.initWithAllocator(.{}, std.testing.allocator);
+    defer restored.deinit(std.testing.io);
+    restored.io = std.testing.io;
+    restored.data_root = try tmp.dir.openDir(std.testing.io, ".", .{});
+    restored.loadAuditEvents();
+    try std.testing.expectEqual(audit_event_capacity, restored.audit_events.items.len);
+    var page = try restored.listAuditEvents("", 0, audit_event_capacity + 10, null, null, null, null);
+    defer page.deinit(std.testing.allocator);
+    try std.testing.expectEqual(audit_event_capacity + 2, page.items.len);
 }

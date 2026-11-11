@@ -79,6 +79,8 @@ type ManagementService interface {
 	StorageScanner(ctx context.Context) (contract.StorageScannerStatus, error)
 	RunStorageGC(ctx context.Context) (contract.StorageScanReport, error)
 	Health(ctx context.Context) (contract.ManagementHealthResponse, error)
+	AuditEvents(context.Context, string, string) (json.RawMessage, error)
+	LogSettings(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
 	KMSSettings(ctx context.Context) (contract.KMSStatus, error)
 	StartKMS(ctx context.Context) (contract.KMSStatus, error)
 	KMSKeys(ctx context.Context, method string, action bool, input json.RawMessage) (json.RawMessage, error)
@@ -146,6 +148,7 @@ func (handler *Management) GetBucketUsage(ctx *gin.Context) {
 }
 
 func (handler *Management) ListBucketEvents(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
 	limit := 50
 	if value := ctx.Query("limit"); value != "" {
 		parsed, err := strconv.Atoi(value)
@@ -920,4 +923,42 @@ func (handler *Management) KMSKeys(ctx *gin.Context) {
 		status = http.StatusCreated
 	}
 	ctx.Data(status, "application/json", response)
+}
+
+func (handler *Management) LogSettings(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	operation := ""
+	if strings.HasSuffix(ctx.FullPath(), "/query") {
+		operation = "query"
+	}
+	if strings.HasSuffix(ctx.FullPath(), "/download") {
+		operation = "download"
+	}
+	var input json.RawMessage
+	if ctx.Request.Method == http.MethodPut {
+		if err := ctx.ShouldBindJSON(&input); err != nil {
+			writeError(ctx, http.StatusBadRequest, "InvalidRequest", "request body is invalid")
+			return
+		}
+	}
+	response, err := handler.service.LogSettings(ctx.Request.Context(), ctx.Request.Method, operation, input)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.Data(http.StatusOK, "application/json", response)
+}
+
+func (handler *Management) AuditEvents(ctx *gin.Context) {
+	operation := ""
+	if strings.HasSuffix(ctx.Request.URL.Path, "/options") {
+		operation = "options"
+	}
+	result, err := handler.service.AuditEvents(ctx.Request.Context(), operation, ctx.Request.URL.RawQuery)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.Header("Cache-Control", "no-store")
+	ctx.Data(http.StatusOK, "application/json", result)
 }

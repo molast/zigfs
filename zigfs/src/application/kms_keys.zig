@@ -94,6 +94,10 @@ pub fn create(service: *kms.Service, a: std.mem.Allocator, input: CreateKey) !Ke
 }
 pub fn act(service: *kms.Service, a: std.mem.Allocator, name: []const u8, action: []const u8) !void {
     if (!kms.validKey(name)) return error.InvalidKmsKeyRequest;
+    if (std.mem.eql(u8, action, "delete") or std.mem.eql(u8, action, "schedule-deletion")) {
+        const keys = try list(service, a);
+        if (keys.items.len <= 1) return error.KmsLastKeyDeletionForbidden;
+    }
     const stored = try service.current(a);
     if (!std.mem.eql(u8, stored.config.backend, "local")) return remoteAct(service, a, stored.config, name, action);
     var dir = try service.localDirectory(stored.config.localKeyDirectory, false);
@@ -108,7 +112,6 @@ pub fn act(service: *kms.Service, a: std.mem.Allocator, name: []const u8, action
         record.status = "Enabled";
         record.deletion_date = null;
     } else if (std.mem.eql(u8, action, "delete")) {
-        if (!std.mem.eql(u8, record.status, "PendingDeletion")) return error.KmsKeyDeletionNotScheduled;
         var deleted = info(record);
         deleted.status = "Deleted";
         try putMetadata(service, a, stored.config, deleted, false);
@@ -237,7 +240,6 @@ fn remoteAct(service: *kms.Service, a: std.mem.Allocator, config: kms.Config, na
         key.version += 1;
         key.rotatedAt = try now(service, a, 0);
     } else if (std.mem.eql(u8, action, "delete")) {
-        if (!std.mem.eql(u8, key.status, "PendingDeletion")) return error.KmsKeyDeletionNotScheduled;
         if (transit) _ = try service.vault(a, config, try std.fmt.allocPrint(a, "{s}/keys/{s}/config", .{ config.mountPath, name }), try std.json.Stringify.valueAlloc(a, .{ .deletion_allowed = true }, .{}));
         _ = try service.vaultMethod(a, config, if (transit) try std.fmt.allocPrint(a, "{s}/keys/{s}", .{ config.mountPath, name }) else try kvPath(a, config, "metadata", name), null, "DELETE");
         key.status = "Deleted";

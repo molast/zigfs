@@ -29,7 +29,8 @@ fn respond(request: *std.http.Server.Request, body: []const u8, status: std.http
 fn failure(request: *std.http.Server.Request) !std.http.Status {
     return respond(request, "<ErrorResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><Error><Type>Sender</Type><Code>InvalidIdentityToken</Code><Message>Web identity request could not be verified</Message></Error></ErrorResponse>", .bad_request);
 }
-pub fn serve(request: *std.http.Server.Request, app: *Application, request_id: []const u8) !std.http.Status {
+pub fn serve(request: *std.http.Server.Request, app: *Application, request_id: []const u8, audit_context: *@import("audit_context.zig").Context) !std.http.Status {
+    try audit_context.operation("sts:AssumeRoleWithWebIdentity", "/");
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -71,6 +72,8 @@ pub fn serve(request: *std.http.Server.Request, app: *Application, request_id: [
             return failure(request);
         }
     }
+    try audit_context.identify(identity.subject_id);
+    try audit_context.authenticate("oidc", identity.subject_id, null);
     const now = std.Io.Clock.real.now(app.io.?).toSeconds();
     var issued = false;
     defer if (!issued) oidc.logout(a, app, identity.token) catch {};

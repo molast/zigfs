@@ -136,6 +136,9 @@ func (client *Client) ListBucketEvents(ctx context.Context, name, cursor, from, 
 		query.Set("limit", strconv.Itoa(limit))
 	}
 	path := "/_admin/v1/buckets/" + url.PathEscape(name) + "/events"
+	if name == "" {
+		path = "/_admin/v1/audit-events"
+	}
 	if encoded := query.Encode(); encoded != "" {
 		path += "?" + encoded
 	}
@@ -569,4 +572,35 @@ func (client *Client) KMSKeys(ctx context.Context, method string, action bool, i
 	}
 	err := client.requestJSON(ctx, method, path, body, &response)
 	return response, err
+}
+
+func (client *Client) LogSettings(ctx context.Context, method, operation string, input json.RawMessage) (json.RawMessage, error) {
+	path := "/_admin/v1/settings/logs"
+	if operation != "" {
+		path += "/" + operation
+	}
+	var response json.RawMessage
+	var body any
+	if len(input) > 0 {
+		body = input
+	}
+	err := client.requestJSON(ctx, method, path, body, &response)
+	return response, err
+}
+
+func (client *Client) Logout(ctx context.Context) error {
+	return client.requestJSON(ctx, http.MethodPost, "/_admin/v1/auth/logout", nil, nil)
+}
+
+func (client *Client) AuditEvents(ctx context.Context, operation, query string) (json.RawMessage, error) {
+	path := "/_admin/v1/audit-events"
+	if operation == "options" {
+		path += "/options"
+	}
+	if query != "" {
+		path += "?" + query
+	}
+	var result json.RawMessage
+	err := client.requestJSON(ctx, http.MethodGet, path, nil, &result)
+	return result, err
 }

@@ -2,6 +2,20 @@ const std = @import("std");
 
 pub const Error = error{ InvalidTimestamp, InvalidDate, NoSpaceLeft };
 
+pub fn formatIso8601Milliseconds(unix_milliseconds: i64, buffer: *[24]u8) Error![]const u8 {
+    var seconds_buffer: [20]u8 = undefined;
+    const seconds = try formatIso8601(@divFloor(unix_milliseconds, 1000), &seconds_buffer);
+    const milliseconds: u16 = @intCast(@mod(unix_milliseconds, 1000));
+    return std.fmt.bufPrint(buffer, "{s}.{d:0>3}Z", .{ seconds[0..19], milliseconds }) catch error.NoSpaceLeft;
+}
+
+test "ISO milliseconds have three unsigned digits" {
+    var buffer: [24]u8 = undefined;
+    try std.testing.expectEqualStrings("1970-01-01T00:00:00.000Z", try formatIso8601Milliseconds(0, &buffer));
+    try std.testing.expectEqualStrings("1970-01-01T00:00:00.007Z", try formatIso8601Milliseconds(7, &buffer));
+    try std.testing.expectEqualStrings("1970-01-01T00:00:01.123Z", try formatIso8601Milliseconds(1123, &buffer));
+}
+
 pub fn formatIso8601(
     unix_seconds: i64,
     buffer: *[20]u8,
@@ -119,7 +133,7 @@ fn partsFromUnix(unix_seconds: i64) Error!Parts {
     const day_seconds = epoch.getDaySeconds();
     return .{
         .year = year_day.year,
-        .month = @intFromEnum(month_day.month),
+        .month = @backingInt(month_day.month),
         .day = month_day.day_index + 1,
         .hour = day_seconds.getHoursIntoDay(),
         .minute = day_seconds.getMinutesIntoHour(),

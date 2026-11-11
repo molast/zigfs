@@ -1,6 +1,8 @@
 const std = @import("std");
 const zigfs = @import("zigfs");
 
+pub const std_options: std.Options = .{ .log_level = .debug, .logFn = zigfs.application.logging.logFn };
+
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     const config = try zigfs.config.Config.load(init.io, init.arena.allocator(), args);
@@ -8,6 +10,8 @@ pub fn main(init: std.process.Init) !void {
     var app = zigfs.application.Application.init(config);
     defer app.deinit(init.io);
     try app.initialize(init.io);
+    zigfs.application.logging.active = if (app.logger) |*logger| logger else null;
+    defer zigfs.application.logging.active = null;
     if (app.kms) |*kms| {
         kms.allow_insecure_dev_defaults = std.mem.eql(u8, init.environ_map.get("ZIGFS_KMS_ALLOW_INSECURE_DEV_DEFAULTS") orelse "", "true");
         var kms_arena = std.heap.ArenaAllocator.init(app.allocator);
@@ -23,8 +27,8 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const recovery_state = app.recoveryState();
-    std.log.info(
-        "zigfs {s} initialized (data_root={s}, api={s}, metrics={s}, metrics_enabled={}, recovery={s}, failure={s})",
+    std.debug.print(
+        "zigfs {s} initialized (data_root={s}, api={s}, metrics={s}, metrics_enabled={}, recovery={s}, failure={s})\n",
         .{
             zigfs.version,
             config.data_root,
