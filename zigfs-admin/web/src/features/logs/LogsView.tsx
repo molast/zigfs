@@ -1,9 +1,10 @@
+import { filterAuditLogContent } from './auditLogs'
 import { FilterFields } from '@/components/ui/FilterFields'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ApiClient } from '@/api/client'
+import type { ApiClient, LogConfig } from '@/api/client'
 import type { AuditCategory, AuditOptions, AuditPage, AuditQuery, AuditStatus, StructuredAuditEvent } from '@/types/api'
 import { t, getFormatLocale } from '@/locales'
-import { useErrorToast } from '@/components/ToastProvider'
+import { useErrorToast, useToast } from '@/components/ToastProvider'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -24,7 +25,7 @@ const defaults = { range: '24h', category: 'all', action: 'all', outcome: 'all',
 type Draft = typeof defaults
 function queryFor(draft: Draft): AuditQuery {
   return {
-    from: draft.range === 'all' ? '' : String(Math.floor(Date.now() / 1000) - ({ '1h': 3600, '24h': 86400, '7d': 604800 }[draft.range] ?? 86400)),
+    from: draft.range === 'all' ? '0' : String(Math.floor(Date.now() / 1000) - ({ '1h': 3600, '24h': 86400, '7d': 604800, '30d': 2592000 }[draft.range] ?? 86400)),
     category: draft.category === 'all' ? '' : draft.category,
     action: draft.action === 'all' ? '' : draft.action,
     outcome: draft.outcome === 'all' ? '' : draft.outcome,
@@ -46,6 +47,10 @@ function eventDate(event: StructuredAuditEvent): Date | null {
 }
 
 export function LogsView({ api }: { api: ApiClient }) {
+  const [logConfig, setLogConfig] = useState<LogConfig | null>(null)
+  const [downloading, setDownloading] = useState(false)
+  const toast = useToast()
+  const configuredDefaults = { ...defaults, range: logConfig?.range ?? defaults.range }
   const [page, setPage] = useState<AuditPage>({ items: [] })
   const [options, setOptions] = useState<AuditOptions | null>(null)
   const [draft, setDraft] = useState(defaults)
@@ -59,12 +64,35 @@ export function LogsView({ api }: { api: ApiClient }) {
   const generation = useRef(0)
   const notifyError = useErrorToast()
   const cursor = cursors[cursors.length - 1]
+  const loadConfiguration = useCallback(async () => {
+    try {
+      const config = await api.auditLogSettings()
+      setLogConfig(config)
+      const next = { ...defaults, range: config.range }
+      setDraft(next); setApplied(next); setQuery(queryFor(next)); setCursors([''])
+    } catch (error) { notifyError(error instanceof Error ? error.message : t('settings.logLoadFailed')) }
+  }, [api, notifyError])
+  useEffect(() => { void loadConfiguration() }, [loadConfiguration])
+  const download = async () => {
+    setDownloading(true)
+    try {
+      const filter = queryFor(applied)
+      const result = await api.queryAuditLogs(true, { from: Number(filter.from), to: Math.floor(Date.now() / 1000) })
+      const content = filterAuditLogContent(result.content, filter)
+      const url = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }))
+      const link = document.createElement('a'); link.href = url; link.download = 'zigfs-audit.log'; link.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      if (result.truncated) toast(t('settings.logTruncated'))
+    } catch (error) { notifyError(error instanceof Error ? error.message : t('settings.logQueryFailed')) }
+    finally { setDownloading(false) }
+  }
   const loadOptions = useCallback(async () => {
     try { setOptions(await api.auditOptions()) }
     catch (error) { notifyError(error instanceof Error ? error.message : t('audit.optionsFailed')) }
   }, [api, notifyError])
   useEffect(() => { void loadOptions() }, [loadOptions])
   useEffect(() => {
+    if (!logConfig) return
     const current = ++generation.current
     setBusy(true); setReady(false)
     api.listAuditEvents({ ...query, cursor, limit: pageSize }).then(result => {
@@ -72,7 +100,7 @@ export function LogsView({ api }: { api: ApiClient }) {
     }).catch(error => { if (generation.current === current) notifyError(error instanceof Error ? error.message : t('audit.loadFailed')) })
       .finally(() => { if (generation.current === current) setBusy(false) })
     return () => { generation.current++ }
-  }, [api, query, cursor, pageSize, notifyError])
+  }, [api, query, cursor, pageSize, logConfig, notifyError])
   const actions = useMemo(() => [...new Set((options?.operations ?? []).filter(item => (draft.category === 'all' || draft.category === 'security' || item.category === draft.category) && (draft.service === 'all' || item.service === draft.service)).map(item => item.name))].sort(), [options, draft.category, draft.service])
   const all = { value: 'all', label: t('audit.all') }
   const update = (field: keyof Draft, value: string) => setDraft(current => ({ ...current, [field]: value, ...(['category', 'service'].includes(field) ? { action: 'all' } : {}) }))
@@ -88,7 +116,7 @@ export function LogsView({ api }: { api: ApiClient }) {
             {select('category', t('audit.category'), [all, ...categories.map(value => ({ value, label: categoryLabel(value) }))])}
             <Field><FieldLabel htmlFor="audit-action">{t('audit.action')}</FieldLabel><Combobox items={['all', ...actions]} value={draft.action} onValueChange={value => update('action', value ?? 'all')} itemToStringLabel={value => value === 'all' ? t('audit.all') : value} disabled={!options}><ComboboxInput id="audit-action" placeholder={t('audit.searchOperation')} disabled={!options} /><ComboboxContent><ComboboxEmpty>{t('audit.noOperations')}</ComboboxEmpty><ComboboxList>{(value: string) => <ComboboxItem key={value} value={value}>{value === 'all' ? t('audit.all') : value}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox></Field>
             {select('outcome', t('audit.outcome'), [all, ...statuses.map(value => ({ value, label: statusLabel(value) }))])}
-            {select('range', t('audit.range'), [all, { value: '1h', label: t('audit.lastHour') }, { value: '24h', label: t('audit.lastDay') }, { value: '7d', label: t('audit.lastWeek') }])}
+            {select('range', t('audit.range'), [all, { value: '1h', label: t('audit.lastHour') }, { value: '24h', label: t('audit.lastDay') }, { value: '7d', label: t('audit.lastWeek') }, { value: '30d', label: t('settings.logLastMonth') }])}
             {select('service', t('audit.service'), [all, ...['s3', 'admin', 'kms', 'sts'].map(value => ({ value, label: value.toUpperCase() }))])}
             {input('actor', t('audit.actor'))}
             {input('bucket', t('audit.bucket'))}
@@ -96,7 +124,7 @@ export function LogsView({ api }: { api: ApiClient }) {
             {input('source_ip', t('audit.sourceIp'))}
             {select('event_type', t('audit.eventType'), [all, ...(['api_request', 'admin_action', 'security_event', 'system_event'] as const).map(value => ({ value, label: t(typeKeys[value]) }))])}
           </FilterFields>
-          <div className="flex flex-wrap justify-end gap-2"><Button type="submit" disabled={busy}>{t('audit.apply')}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => { setDraft(defaults); apply(defaults) }}>{t('audit.reset')}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => { apply(applied); if (!options) void loadOptions() }}>{t('audit.refresh')}</Button></div>
+          <div className="flex flex-wrap justify-end gap-2"><Button type="submit" disabled={busy}>{t('audit.apply')}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => { setDraft(configuredDefaults); apply(configuredDefaults) }}>{t('audit.reset')}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => { apply(applied); if (!options) void loadOptions(); if (!logConfig) void loadConfiguration() }}>{t('audit.refresh')}</Button><Button type="button" variant="outline" disabled={downloading || logConfig?.downloads !== 'enabled'} onClick={() => void download()}>{t('settings.logDownload')}</Button></div>
         </form>
         <Table>
           <TableHeader><TableRow>{(['time', 'category', 'action', 'actor', 'target', 'outcome', 'duration', 'details'] as const).map(key => <TableHead key={key}>{t(`audit.${key}`)}</TableHead>)}</TableRow></TableHeader>

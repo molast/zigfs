@@ -22,6 +22,11 @@ curl --fail http://127.0.0.1:19000/health/ready
 
 ## 不要做的操作
 
+元数据检查点启用后，旧 journal 和 multipart tombstone 可能已经被回收。
+不支持检查点的版本不能直接复用该目录，也不能通过清除 `format.meta` feature flag
+或删除 `.zigfs/journal/checkpoint.meta` 降级。恢复升级前完整备份意味着其中不包含升级后
+的新写入；需要保留这些写入时，应先停写并制定数据导出/迁移方案。
+
 - 不要删除 `.zigfs/journal/`、`.zigfs/system/credential-master.key` 或单条 Metadata 记录。
 - 不要用空的 `format.meta` 覆盖原格式文件。
 - 不要把旧版本直接启动到未经验证的 RC 数据目录，也不要混用两套版本的配置。

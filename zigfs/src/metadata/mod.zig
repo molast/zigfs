@@ -1,6 +1,8 @@
 const std = @import("std");
 
 pub const durable = @import("durable.zig");
+pub const checkpoint = @import("checkpoint.zig");
+pub const atomic_cleanup = @import("atomic_cleanup.zig");
 pub const bucket_payload = @import("bucket_payload.zig");
 pub const bucket_store = @import("bucket_store.zig");
 pub const credential_payload = @import("credential_payload.zig");
@@ -29,4 +31,5 @@ pub const current_format_version: u16 = 1;
 
 test {
     std.testing.refAllDecls(@This());
+    _ = @import("maintenance_test.zig");
 }

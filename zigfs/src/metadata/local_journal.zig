@@ -2,6 +2,9 @@ const std = @import("std");
 const durable = @import("durable.zig");
 const journal_record = @import("journal_record.zig");
 const journal_port = @import("../ports/transaction_journal.zig");
+const checkpoint = @import("checkpoint.zig");
+const fault = @import("../common/fault_injection.zig");
+const Cursor = @import("scan_cursor.zig").Cursor;
 
 pub const LocalTransactionJournal = struct {
     root: std.Io.Dir,
@@ -52,6 +55,7 @@ pub const LocalTransactionJournal = struct {
         allocator: std.mem.Allocator,
     ) journal_port.Error!journal_port.ScanResult {
         const self: *LocalTransactionJournal = @ptrCast(@alignCast(context));
+        const boundary = try checkpoint.load(self.root, self.io);
         var journal_dir = self.root.openDir(self.io, ".zigfs/journal", .{ .iterate = true }) catch {
             return error.Unavailable;
         };
@@ -66,18 +70,10 @@ pub const LocalTransactionJournal = struct {
             {
                 continue;
             }
-            var buffer: [journal_record.encoded_length + 1]u8 = undefined;
-            const bytes = journal_dir.readFile(self.io, directory_entry.name, &buffer) catch {
-                return error.Unavailable;
-            };
-            const decoded = journal_record.decode(bytes) catch return error.CorruptJournal;
-            var expected_path_buffer: [160]u8 = undefined;
-            const expected_path = journalPath(decoded, &expected_path_buffer) catch {
-                return error.CorruptJournal;
-            };
-            if (!std.mem.eql(u8, directory_entry.name, std.fs.path.basename(expected_path))) {
-                return error.CorruptJournal;
-            }
+            const decoded = try readEntry(journal_dir, self.io, directory_entry.name);
+            // Filter before recovery validates intent/commit pairs: reclamation
+            // may have removed only one member of an old transaction.
+            if (decoded.generation <= boundary) continue;
             entries.append(allocator, decoded) catch return error.OutOfMemory;
         }
         std.mem.sort(journal_port.Entry, entries.items, {}, lessThan);
@@ -88,16 +84,52 @@ pub const LocalTransactionJournal = struct {
         if (left.generation != right.generation) return left.generation < right.generation;
         const transaction_order = std.mem.order(u8, &left.transaction_id, &right.transaction_id);
         if (transaction_order != .eq) return transaction_order == .lt;
-        return @intFromEnum(left.state) < @intFromEnum(right.state);
+        return @backingInt(left.state) < @backingInt(right.state);
     }
 };
+
+fn readEntry(dir: std.Io.Dir, io: std.Io, name: []const u8) journal_port.Error!journal_port.Entry {
+    var buffer: [journal_record.encoded_length + 1]u8 = undefined;
+    const bytes = dir.readFile(io, name, &buffer) catch return error.Unavailable;
+    const entry = journal_record.decode(bytes) catch return error.CorruptJournal;
+    var path_buffer: [160]u8 = undefined;
+    const expected = journalPath(entry, &path_buffer) catch return error.CorruptJournal;
+    if (!std.mem.eql(u8, name, std.fs.path.basename(expected))) return error.CorruptJournal;
+    return entry;
+}
+
+pub const PruneReport = struct { removed: usize = 0, scanned: usize = 0, has_more: bool = false };
+
+// A retained stream bounds visits, not just deletions. New writes and checkpoint
+// files also consume budget; the next pass resumes where this one stopped.
+pub fn prune(root: std.Io.Dir, io: std.Io, boundary: u64, limit: usize, cursor: *Cursor, injector: fault.Injector) journal_port.Error!PruneReport {
+    errdefer cursor.reset(io);
+    var report: PruneReport = .{};
+    while (report.scanned < limit) {
+        const entry = (cursor.next(root, io, ".zigfs/journal") catch return error.Unavailable) orelse {
+            durable.syncDirectory(cursor.dir.?, io) catch return error.Unavailable;
+            cursor.reset(io);
+            return report;
+        };
+        report.scanned += 1;
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".journal")) continue;
+        const record = try readEntry(cursor.dir.?, io, entry.name);
+        if (record.generation > boundary) continue;
+        cursor.dir.?.deleteFile(io, entry.name) catch return error.Unavailable;
+        report.removed += 1;
+        if (injector.trigger(.metadata_journal_pruned)) return error.Unavailable;
+    }
+    if (cursor.dir) |dir| durable.syncDirectory(dir, io) catch return error.Unavailable;
+    report.has_more = true;
+    return report;
+}
 
 fn journalPath(entry: journal_port.Entry, buffer: *[160]u8) error{NoSpaceLeft}![]const u8 {
     const transaction_hex = std.fmt.bytesToHex(entry.transaction_id, .lower);
     return std.fmt.bufPrint(
         buffer,
         ".zigfs/journal/{d:0>20}-{s}-{d}.journal",
-        .{ entry.generation, &transaction_hex, @intFromEnum(entry.state) },
+        .{ entry.generation, &transaction_hex, @backingInt(entry.state) },
     );
 }
 

@@ -12,6 +12,8 @@ pub const Config = struct {
 
     data_root: []const u8 = "data",
     stream_buffer_size: usize = 64 * 1024,
+    metadata_maintenance_interval_seconds: u64 = 60,
+    metadata_maintenance_batch_size: usize = 1000,
     api_address: []const u8 = "0.0.0.0:9000",
     metrics_enabled: bool = true,
     metrics_address: []const u8 = "127.0.0.1:9090",
@@ -130,6 +132,10 @@ pub const Config = struct {
                         self.stream_buffer_size = std.fmt.parseInt(usize, value, 10) catch {
                             return error.InvalidYaml;
                         };
+                    } else if (std.mem.eql(u8, key, "metadata_maintenance_interval_seconds")) {
+                        self.metadata_maintenance_interval_seconds = std.fmt.parseInt(u64, value, 10) catch return error.InvalidYaml;
+                    } else if (std.mem.eql(u8, key, "metadata_maintenance_batch_size")) {
+                        self.metadata_maintenance_batch_size = std.fmt.parseInt(usize, value, 10) catch return error.InvalidYaml;
                     } else {
                         return error.UnknownKey;
                     }
@@ -245,7 +251,11 @@ pub const Config = struct {
 
     fn validate(self: Config) ParseError!void {
         if (self.stream_buffer_size < min_stream_buffer_size or
-            self.stream_buffer_size > max_stream_buffer_size)
+            self.stream_buffer_size > max_stream_buffer_size or
+            self.metadata_maintenance_interval_seconds < 1 or
+            self.metadata_maintenance_interval_seconds > 3600 or
+            self.metadata_maintenance_batch_size < 1 or
+            self.metadata_maintenance_batch_size > 10000)
         {
             return error.InvalidStorageConfig;
         }
@@ -390,6 +400,27 @@ test "S3 public endpoint is an absolute HTTP authority without path or credentia
 
     config.s3_public_endpoint = "https://user@objects.example.test/path";
     try std.testing.expectError(error.InvalidS3Config, config.validate());
+}
+
+test "metadata maintenance settings parse and reject unsafe bounds" {
+    var config: Config = .{};
+    try config.applyYaml(
+        \\storage:
+        \\  metadata_maintenance_interval_seconds: 5
+        \\  metadata_maintenance_batch_size: 250
+    );
+    try std.testing.expectEqual(@as(u64, 5), config.metadata_maintenance_interval_seconds);
+    try std.testing.expectEqual(@as(usize, 250), config.metadata_maintenance_batch_size);
+    try config.validate();
+    config.metadata_maintenance_batch_size = 0;
+    try std.testing.expectError(error.InvalidStorageConfig, config.validate());
+    config.metadata_maintenance_batch_size = 10001;
+    try std.testing.expectError(error.InvalidStorageConfig, config.validate());
+    config.metadata_maintenance_batch_size = 1000;
+    config.metadata_maintenance_interval_seconds = 0;
+    try std.testing.expectError(error.InvalidStorageConfig, config.validate());
+    config.metadata_maintenance_interval_seconds = 3601;
+    try std.testing.expectError(error.InvalidStorageConfig, config.validate());
 }
 
 test "command line overrides yaml" {

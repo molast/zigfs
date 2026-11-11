@@ -100,6 +100,10 @@ pub const routes = [_]Route{
     .{ .method = .put, .path = "/_admin/v1/settings/logs" },
     .{ .method = .get, .path = "/_admin/v1/settings/logs/query" },
     .{ .method = .get, .path = "/_admin/v1/settings/logs/download" },
+    .{ .method = .get, .path = "/_admin/v1/settings/audit-logs" },
+    .{ .method = .put, .path = "/_admin/v1/settings/audit-logs" },
+    .{ .method = .get, .path = "/_admin/v1/settings/audit-logs/query" },
+    .{ .method = .get, .path = "/_admin/v1/settings/audit-logs/download" },
     .{ .method = .get, .path = "/_admin/v1/settings/kms" },
     .{ .method = .put, .path = "/_admin/v1/settings/kms" },
     .{ .method = .post, .path = "/_admin/v1/settings/kms/stop" },
@@ -117,7 +121,10 @@ pub fn serveRequest(
     caller: management_auth.Principal,
     audit_context: *AuditContext,
 ) !std.http.Status {
-    const target = request.head.target;
+    // Body reads can refill the HTTP reader and invalidate head.target. Keep
+    // route parameters (including multipart upload IDs) alive for the handler.
+    const target = try application.allocator.dupe(u8, request.head.target);
+    defer application.allocator.free(target);
     const path = requestPath(target);
 
     if (std.mem.eql(u8, path, api_prefix ++ "/oidc/providers") or std.mem.startsWith(u8, path, api_prefix ++ "/oidc/providers/")) return serveOidc(request, application, request_id, path, caller);
@@ -242,7 +249,7 @@ pub fn serveRequest(
         if (request.head.method != .POST) {
             return respondMethodNotAllowed(request, request_id, "POST");
         }
-        return servePresignObject(request, application, request_id, audit_context);
+        return servePresignObject(request, application, request_id, caller, audit_context);
     }
     if (std.mem.eql(u8, path, api_prefix ++ "/multipart-uploads")) {
         if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
@@ -320,9 +327,12 @@ pub fn serveRequest(
         if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
         return serveListBucketEvents(request, application, request_id, "", request.head.target);
     }
-    if (std.mem.eql(u8, path, api_prefix ++ "/settings/logs")) return serveLogSettings(request, application, request_id, null);
-    if (std.mem.eql(u8, path, api_prefix ++ "/settings/logs/query")) return serveLogSettings(request, application, request_id, false);
-    if (std.mem.eql(u8, path, api_prefix ++ "/settings/logs/download")) return serveLogSettings(request, application, request_id, true);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/logs")) return serveLogSettings(request, application, request_id, null, false);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/logs/query")) return serveLogSettings(request, application, request_id, false, false);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/logs/download")) return serveLogSettings(request, application, request_id, true, false);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/audit-logs")) return serveLogSettings(request, application, request_id, null, true);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/audit-logs/query")) return serveLogSettings(request, application, request_id, false, true);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/audit-logs/download")) return serveLogSettings(request, application, request_id, true, true);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings")) {
         if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
         return serveSettings(request, application, request_id);
@@ -956,7 +966,7 @@ fn queryAllVersions(target: []const u8) bool {
 }
 
 const PresignObjectRequest = struct {
-    access_key: []const u8,
+    access_key: []const u8 = "",
     bucket: []const u8,
     key: []const u8,
     method: []const u8,
@@ -968,6 +978,7 @@ const PresignObjectRequest = struct {
     copy_source_key: ?[]const u8 = null,
     copy_source_version_id: ?[]const u8 = null,
     tagging: bool = false,
+    download: bool = false,
 };
 
 const CreateMultipartUploadRequest = struct {
@@ -1197,8 +1208,21 @@ fn servePresignObject(
     request: *std.http.Server.Request,
     application: *Application,
     request_id: []const u8,
+    caller: management_auth.Principal,
     audit_context: *AuditContext,
 ) !std.http.Status {
+    var bearer: ?[]u8 = null;
+    defer if (bearer) |token| {
+        std.crypto.secureZero(u8, token);
+        application.allocator.free(token);
+    };
+    var iterator = request.iterateHeaders();
+    while (iterator.next()) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, "authorization") and std.mem.startsWith(u8, header.value, "Bearer ")) {
+            bearer = try application.allocator.dupe(u8, header.value[7..]);
+            break;
+        }
+    }
     const parsed = try parseJsonBody(PresignObjectRequest, request, application.allocator, request_id) orelse {
         return .bad_request;
     };
@@ -1225,6 +1249,7 @@ fn servePresignObject(
         !std.mem.eql(u8, value.method, "PUT") and
         !std.mem.eql(u8, value.method, "DELETE")) or
         value.expires_seconds == 0 or value.expires_seconds > sigv4.max_presigned_expiry_seconds or
+        (value.download and (!std.mem.eql(u8, value.method, "GET") or value.tagging)) or
         (multipart_part and (value.upload_id == null or value.part_number == null or
             !std.mem.eql(u8, value.method, "PUT") or value.part_number.? == 0 or
             value.part_number.? > multipart_domain.max_parts)) or
@@ -1242,7 +1267,16 @@ fn servePresignObject(
     };
 
     const credentials = application.credentialService() orelse return respondNotReady(request, request_id);
-    var material = credentials.resolveForAuth(value.access_key) catch |err| {
+    const console = @import("console_auth.zig");
+    const now = std.Io.Clock.real.now(application.io.?).toSeconds();
+    var session_token: ?[]u8 = null;
+    defer if (session_token) |token| application.allocator.free(token);
+    if (value.access_key.len == 0) {
+        if (bearer) |token| session_token = try console.issue(application.allocator, application, token, @min(caller.expires_at, now + @as(i64, @intCast(value.expires_seconds))));
+        if (session_token == null) return respondError(request, request_id, .unauthorized, "AccessDenied", "login session is required");
+    }
+    const signing_key = if (session_token != null) console.access_key else value.access_key;
+    var material = if (session_token) |token| console.resolve(application.allocator, application, token, now) catch return respondError(request, request_id, .unauthorized, "AccessDenied", "login session is invalid") else credentials.resolveForAuth(value.access_key) catch |err| {
         return respondCredentialError(request, request_id, err);
     };
     defer material.deinit(application.allocator);
@@ -1260,7 +1294,16 @@ fn servePresignObject(
     }
 
     const iam_action = if (required_action == .get_object) (if (value.version_id != null) "s3:GetObjectVersion" else "s3:GetObject") else if (required_action == .delete_object) (if (value.version_id != null) "s3:DeleteObjectVersion" else "s3:DeleteObject") else "s3:PutObject";
-    if (!material.allowsPresign(application.allocator, iam_action, value.bucket, value.key)) return respondError(request, request_id, .forbidden, "AccessDenied", "inherited policy denies this operation");
+    const caller_action = if (value.tagging) (if (required_action == .get_object) "s3:GetObjectTagging" else if (required_action == .delete_object) "s3:DeleteObjectTagging" else "s3:PutObjectTagging") else iam_action;
+    const resource = try std.fmt.allocPrint(application.allocator, "arn:aws:s3:::{s}/{s}", .{ value.bucket, value.key });
+    defer application.allocator.free(resource);
+    if (!caller.allows(application.allocator, caller_action, resource, .{ .defer_conditions = true })) return respondError(request, request_id, .forbidden, "AccessDenied", "current user cannot perform this object operation");
+    if (value.copy_source_bucket) |source| {
+        const source_resource = try std.fmt.allocPrint(application.allocator, "arn:aws:s3:::{s}/{s}", .{ source, value.copy_source_key.? });
+        defer application.allocator.free(source_resource);
+        if (!caller.allows(application.allocator, if (value.copy_source_version_id != null) "s3:GetObjectVersion" else "s3:GetObject", source_resource, .{ .defer_conditions = true })) return respondError(request, request_id, .forbidden, "AccessDenied", "current user cannot read the copy source");
+    }
+    if (!material.allowsPresign(application.allocator, caller_action, value.bucket, value.key)) return respondError(request, request_id, .forbidden, "AccessDenied", "inherited policy denies this operation");
     if (value.copy_source_bucket) |source| if (!material.allowsPresign(application.allocator, if (value.copy_source_version_id != null) "s3:GetObjectVersion" else "s3:GetObject", source, value.copy_source_key)) return respondError(request, request_id, .forbidden, "AccessDenied", "inherited policy denies copy source access");
 
     const buckets = application.bucketService() orelse return respondNotReady(request, request_id);
@@ -1297,7 +1340,7 @@ fn servePresignObject(
     else
         try std.fmt.allocPrint(application.allocator, "/{s}/{s}", .{ bucket.name, encoded_key });
     defer application.allocator.free(base_target);
-    const unsigned_target = if (multipart_part)
+    const operation_target = if (multipart_part)
         try std.fmt.allocPrint(application.allocator, "{s}?partNumber={d}&uploadId={s}", .{
             base_target,
             value.part_number.?,
@@ -1309,7 +1352,12 @@ fn servePresignObject(
         try std.fmt.allocPrint(application.allocator, "{s}?tagging", .{base_target})
     else
         base_target;
-    defer if (multipart_part or value.version_id != null or value.tagging) application.allocator.free(unsigned_target);
+    defer if (multipart_part or value.version_id != null or value.tagging) application.allocator.free(operation_target);
+    const unsigned_target = if (value.download)
+        try std.fmt.allocPrint(application.allocator, "{s}{s}response-content-disposition=attachment", .{ operation_target, if (value.version_id != null) "&" else "?" })
+    else
+        operation_target;
+    defer if (value.download) application.allocator.free(unsigned_target);
     const encoded_source_key = if (value.copy_source_key) |source_key|
         try encodePath(application.allocator, source_key)
     else
@@ -1337,7 +1385,6 @@ fn servePresignObject(
         headers[header_count] = .{ .name = "x-amz-copy-source", .value = source };
         header_count += 1;
     }
-    const now = std.Io.Clock.real.now(application.io.?).toSeconds();
     var date_buffer: [16]u8 = undefined;
     const amz_date = time.formatAmzDate(now, &date_buffer) catch {
         return respondError(request, request_id, .internal_server_error, "InternalError", "could not create presigned URL");
@@ -1346,7 +1393,7 @@ fn servePresignObject(
         .method = value.method,
         .target = unsigned_target,
         .headers = headers[0..header_count],
-        .access_key = value.access_key,
+        .access_key = signing_key,
         .secret_key = material.secret_key,
         .amz_date = amz_date,
         .region = application.config.s3_region,
@@ -2185,6 +2232,11 @@ pub fn respondError(
     code: []const u8,
     message: []const u8,
 ) !std.http.Status {
+    if (@backingInt(status) >= 500) {
+        var buffer: [2048]u8 = undefined;
+        const diagnostic = std.fmt.bufPrint(&buffer, "{s} request_id={s}", .{ message, request_id }) catch message;
+        @import("../application/logging.zig").reportDiagnostic("api", code, diagnostic, null, @src());
+    }
     return respondJson(request, request_id, status, ErrorBody{
         .code = code,
         .message = message,
@@ -3073,20 +3125,39 @@ fn logError(request: *std.http.Server.Request, request_id: []const u8, err: anye
         else => "Log storage is unavailable. Check the data directory permissions and free space.",
     });
 }
-fn serveLogSettings(request: *std.http.Server.Request, app: *Application, request_id: []const u8, download: ?bool) !std.http.Status {
-    const logger = if (app.logger) |*value| value else return respondNotReady(request, request_id);
+fn serveLogSettings(request: *std.http.Server.Request, app: *Application, request_id: []const u8, download: ?bool, audit_log: bool) !std.http.Status {
+    const selected = if (audit_log) &app.audit_logger else &app.logger;
+    const logger = if (selected.*) |*value| value else return respondNotReady(request, request_id);
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     if (download) |is_download| {
         if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
-        const result = logger.query(a, is_download) catch |err| return logError(request, request_id, err);
+        var from: ?i64 = null;
+        var to: ?i64 = null;
+        if (std.mem.indexOfScalar(u8, request.head.target, '?')) |start| {
+            var parameters = std.mem.splitScalar(u8, request.head.target[start + 1 ..], '&');
+            while (parameters.next()) |parameter| {
+                const equals = std.mem.indexOfScalar(u8, parameter, '=') orelse continue;
+                const key = parameter[0..equals];
+                if (!std.mem.eql(u8, key, "from") and !std.mem.eql(u8, key, "to")) continue;
+                const value = std.fmt.parseInt(i64, parameter[equals + 1 ..], 10) catch return logError(request, request_id, error.InvalidLogConfig);
+                if (std.mem.eql(u8, key, "from")) from = value else to = value;
+            }
+        }
+        const result = logger.queryRange(a, is_download, from, to) catch |err| return logError(request, request_id, err);
         return respondJson(request, request_id, .ok, result);
     }
     if (request.head.method == .PUT) {
-        const input = try parseJsonBody(@import("../application/logging.zig").Config, request, a, request_id) orelse return .bad_request;
-        logger.save(input.value) catch |err| return logError(request, request_id, err);
-        std.log.info("Log configuration updated", .{});
+        const log = @import("../application/logging.zig");
+        const input: log.Config = if (audit_log) blk: {
+            const parsed = try parseJsonBody(log.AuditConfig, request, a, request_id) orelse return .bad_request;
+            break :blk log.auditConfig(parsed.value);
+        } else (try parseJsonBody(log.Config, request, a, request_id) orelse return .bad_request).value;
+        if (audit_log and !std.mem.eql(u8, input.output, "file")) return respondError(request, request_id, .bad_request, "InvalidAuditLogOutput", "Audit logs support file output only.");
+        logger.save(input) catch |err| return logError(request, request_id, err);
+        if (audit_log) logger.maintain() catch |err| return logError(request, request_id, err);
+        if (!audit_log) std.log.info("Log configuration updated", .{});
     } else if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET, PUT");
     const saved = logger.snapshot(a) catch |err| return logError(request, request_id, err);
     defer saved.deinit();

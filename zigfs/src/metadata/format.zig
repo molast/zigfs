@@ -1,5 +1,6 @@
 const std = @import("std");
 const id = @import("../common/id.zig");
+const durable = @import("durable.zig");
 
 pub const path = ".zigfs/format.meta";
 pub const magic = [8]u8{ 'Z', 'I', 'G', 'F', 'S', 'F', 'M', 'T' };
@@ -13,6 +14,8 @@ const flags_offset: usize = 14;
 pub const Metadata = struct {
     instance_id: id.Uuid,
     created_at_unix_seconds: i64,
+    // Old binaries reject this required feature as UnsupportedFlags.
+    checkpoints: bool = false,
 };
 
 pub const DecodeError = error{
@@ -48,7 +51,7 @@ pub fn encode(metadata: Metadata) [encoded_length]u8 {
     std.mem.writeInt(u16, bytes[8..10], major_version, .little);
     std.mem.writeInt(u16, bytes[10..12], minor_version, .little);
     std.mem.writeInt(u16, bytes[12..14], encoded_length, .little);
-    std.mem.writeInt(u16, bytes[flags_offset..16], 0, .little);
+    std.mem.writeInt(u16, bytes[flags_offset..16], @intFromBool(metadata.checkpoints), .little);
     @memcpy(bytes[16..32], &metadata.instance_id);
     std.mem.writeInt(i64, bytes[32..checksum_offset], metadata.created_at_unix_seconds, .little);
     writeChecksum(&bytes);
@@ -64,7 +67,8 @@ pub fn decode(bytes: []const u8) DecodeError!Metadata {
     if (std.mem.readInt(u16, bytes[12..14], .little) != encoded_length) {
         return error.InvalidHeaderLength;
     }
-    if (std.mem.readInt(u16, bytes[flags_offset..16], .little) != 0) {
+    const flags = std.mem.readInt(u16, bytes[flags_offset..16], .little);
+    if (flags & ~@as(u16, 1) != 0) {
         return error.UnsupportedFlags;
     }
 
@@ -81,7 +85,24 @@ pub fn decode(bytes: []const u8) DecodeError!Metadata {
     return .{
         .instance_id = instance_id,
         .created_at_unix_seconds = std.mem.readInt(i64, bytes[32..checksum_offset], .little),
+        .checkpoints = flags & 1 != 0,
     };
+}
+
+// Call only after the first checkpoint is durable, and before any reclamation.
+pub fn enableCheckpoints(dir: std.Io.Dir, io: std.Io) !void {
+    var buffer: [encoded_length + 1]u8 = undefined;
+    var metadata = try decode(try dir.readFile(io, path, &buffer));
+    if (!metadata.checkpoints) {
+        metadata.checkpoints = true;
+        var file = try dir.createFileAtomic(io, path, .{ .replace = true });
+        defer file.deinit(io);
+        try file.file.writeStreamingAll(io, &encode(metadata));
+        try file.file.sync(io);
+        try file.replace(io);
+    }
+    // Also stabilize a rename left by an earlier failed directory sync.
+    try durable.syncParent(dir, io, path);
 }
 
 fn create(dir: std.Io.Dir, io: std.Io) Error!Metadata {
@@ -137,7 +158,7 @@ test "format metadata rejects malformed fields and corruption" {
     try std.testing.expectError(error.InvalidHeaderLength, decode(&changed));
 
     changed = valid;
-    changed[flags_offset] = 1;
+    changed[flags_offset] = 2;
     writeChecksum(&changed);
     try std.testing.expectError(error.UnsupportedFlags, decode(&changed));
 

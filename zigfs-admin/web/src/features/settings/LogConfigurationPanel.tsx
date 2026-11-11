@@ -14,8 +14,9 @@ const initialDraft = {
   retention: '7', maxSize: '100', sizeUnit: 'MiB', cleanup: 'enabled', downloads: 'enabled', range: '24h',
 }
 
-export function LogConfigurationPanel({ api }: { api: ApiClient }) {
-  const [draft, setDraft] = useState(initialDraft)
+export function LogConfigurationPanel({ api, kind = 'system' }: { api: ApiClient; kind?: 'system' | 'audit' }) {
+  const audit = kind === 'audit'
+  const [draft, setDraft] = useState({ ...initialDraft, ...(audit ? { output: 'file', directory: 'audit-logs', retention: 'forever' } : {}) })
   const [busy, setBusy] = useState(false)
   const [ready, setReady] = useState(false)
   const toast = useToast()
@@ -23,10 +24,10 @@ export function LogConfigurationPanel({ api }: { api: ApiClient }) {
   const [invalidSize, setInvalidSize] = useState(false)
   const load = useCallback(async () => {
     setBusy(true)
-    try { setDraft(await api.logSettings()); setReady(true); setInvalidSize(false) }
+    try { setDraft(await (audit ? api.auditLogSettings() : api.logSettings())); setReady(true); setInvalidSize(false) }
     catch (error) { notifyError(error instanceof Error ? error.message : t('settings.logLoadFailed')) }
     finally { setBusy(false) }
-  }, [api, notifyError])
+  }, [api, audit, notifyError])
   useEffect(() => { void load() }, [load])
   const save = async () => {
     if (busy || !ready) return
@@ -37,7 +38,7 @@ export function LogConfigurationPanel({ api }: { api: ApiClient }) {
     }
     setInvalidSize(false)
     setBusy(true)
-    try { setDraft(await api.saveLogSettings(draft)); toast(t('settings.logConfigurationSaved')) }
+    try { setDraft(await (audit ? api.saveAuditLogSettings(draft) : api.saveLogSettings(draft))); toast(t('settings.logConfigurationSaved')) }
     catch (error) { notifyError(error instanceof Error ? error.message : t('settings.logSaveFailed')) }
     finally { setBusy(false) }
   }
@@ -48,14 +49,14 @@ export function LogConfigurationPanel({ api }: { api: ApiClient }) {
   const enabledOptions = [{ value: 'enabled', label: t('common.enabled') }, { value: 'disabled', label: t('common.disabled') }]
   return <div className="settings-detail-stack">
     <Card className="settings-detail-card">
-      <CardHeader><div className="system-settings-section-heading"><FileText aria-hidden="true" /><div><CardTitle>{t('settings.logConfiguration')}</CardTitle><CardDescription>{t('settings.systemLogLevelFormatAndDestinations')}</CardDescription></div></div></CardHeader>
+      <CardHeader><div className="system-settings-section-heading"><FileText aria-hidden="true" /><div><CardTitle>{t('settings.logConfiguration')}</CardTitle><CardDescription>{audit ? t('settings.auditLogConfigurationDescription') : t('settings.systemLogLevelFormatAndDestinations')}</CardDescription></div></div></CardHeader>
       <CardContent><FieldGroup>
         {field('level', t('settings.logLevel'), ['trace', 'debug', 'info', 'warn', 'error', 'off'].map(value => ({ value, label: value.toUpperCase() })))}
         {field('format', t('settings.logFormat'), [{ value: 'json', label: 'JSON' }, { value: 'text', label: t('settings.logPlainText') }])}
-        {field('output', t('settings.logOutput'), [{ value: 'console', label: t('settings.logConsole') }, { value: 'file', label: t('settings.logFile') }, { value: 'both', label: t('settings.logConsoleAndFile') }])}
+        {!audit && field('output', t('settings.logOutput'), [{ value: 'console', label: t('settings.logConsole') }, { value: 'file', label: t('settings.logFile') }, { value: 'both', label: t('settings.logConsoleAndFile') }])}
         <Field className="settings-detail-field">
           <FieldLabel htmlFor="log-config-directory">{t('settings.logDirectory')}</FieldLabel>
-          <div><Input id="log-config-directory" disabled={busy || !ready} placeholder="logs" value={draft.directory} aria-describedby="log-config-directory-help" onChange={event => setDraft(current => ({ ...current, directory: event.target.value }))} />
+          <div><Input id="log-config-directory" disabled={busy || !ready} placeholder={audit ? 'audit-logs' : 'logs'} value={draft.directory} aria-describedby="log-config-directory-help" onChange={event => setDraft(current => ({ ...current, directory: event.target.value }))} />
             <FieldDescription id="log-config-directory-help">{t('settings.logDirectoryDataRoot')}</FieldDescription></div>
         </Field>
       </FieldGroup></CardContent>

@@ -5,12 +5,13 @@ const id = @import("../common/id.zig");
 
 pub const magic = [4]u8{ 'Z', 'F', 'O', 'B' };
 pub const major_version: u16 = 1;
-pub const minor_version: u16 = 6;
+pub const minor_version: u16 = 7;
 pub const legacy_header_length: usize = 136;
 pub const etag_header_length: usize = 140;
 pub const encryption_header_length: usize = 252;
 pub const retention_header_length: usize = encryption_header_length + 16;
-pub const header_length: usize = retention_header_length + 805;
+pub const kms_header_length: usize = retention_header_length + 805;
+pub const header_length: usize = kms_header_length + 50;
 pub const multipart_part_length: usize = 64;
 
 const flags_offset: usize = 8;
@@ -161,6 +162,12 @@ pub fn encode(allocator: std.mem.Allocator, value: Value) EncodeError![]u8 {
     bytes[retention_mode_offset] = if (value.retention_mode) |mode| @backingInt(mode) else 0;
     bytes[legal_hold_offset] = @intFromBool(value.legal_hold);
 
+    bytes[1073] = @backingInt(value.data_layout);
+    if (value.multipart_completion) |completion| {
+        bytes[1074] = 1;
+        @memcpy(bytes[1075..1091], &completion.upload_id);
+        @memcpy(bytes[1091..1123], &completion.parts_digest);
+    }
     var offset = header_length;
     copyField(bytes, &offset, value.bucket_name);
     copyField(bytes, &offset, value.key);
@@ -202,6 +209,7 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
         2, 3 => 164,
         4 => encryption_header_length,
         5 => retention_header_length,
+        6 => kms_header_length,
         else => header_length,
     };
     if (bytes.len < encoded_header_length) return error.InvalidLength;
@@ -285,6 +293,14 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
         else => return error.UnsupportedFlags,
     };
 
+    const data_layout: object_domain.DataLayout = if (encoded_minor_version < 7) .contiguous else switch (bytes[1073]) {
+        0 => .contiguous,
+        1 => .segments,
+        else => return error.UnsupportedFlags,
+    };
+    const completion: ?object_domain.MultipartCompletion = if (encoded_minor_version >= 7 and bytes[1074] == 1) .{ .upload_id = bytes[1075..1091].*, .parts_digest = bytes[1091..1123].* } else null;
+    if (encoded_minor_version >= 7 and bytes[1074] > 1) return error.UnsupportedFlags;
+    if (completion) |value| if (!id.isValidV4(value.upload_id)) return error.InvalidMultipartManifest;
     const bucket_name_length = std.mem.readInt(u16, bytes[bucket_name_length_offset..key_length_offset], .little);
     const key_length = std.mem.readInt(u16, bytes[key_length_offset..content_type_length_offset], .little);
     const content_type_length = std.mem.readInt(u16, bytes[content_type_length_offset..metadata_count_offset], .little);
@@ -370,6 +386,8 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
             .etag_md5 = etag_md5,
             .etag_part_count = etag_part_count,
             .checksum_sha256 = checksum_sha256,
+            .data_layout = data_layout,
+            .multipart_completion = completion,
             .content_type = content_type,
             .last_modified_unix_seconds = modified_at,
             .user_metadata = metadata,
@@ -568,4 +586,28 @@ test "object payload reads V1.0 records without multipart ETag fields" {
     defer decoded.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u16, 0), decoded.value.etag_part_count);
     try std.testing.expectEqualStrings(testValue().key, decoded.value.key);
+}
+
+test "segment layout and completion receipt survive object metadata roundtrip" {
+    var value = testValue();
+    value.data_layout = .segments;
+    value.multipart_completion = .{ .upload_id = value.data_generation, .parts_digest = @splat(0x77) };
+    const bytes = try encode(std.testing.allocator, value);
+    defer std.testing.allocator.free(bytes);
+    const decoded = try decode(std.testing.allocator, bytes);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(.segments, decoded.value.data_layout);
+    try std.testing.expectEqualSlices(u8, &value.multipart_completion.?.parts_digest, &decoded.value.multipart_completion.?.parts_digest);
+}
+
+test "v6 object metadata remains readable after segment layout extension" {
+    const current = try encode(std.testing.allocator, testValue());
+    defer std.testing.allocator.free(current);
+    const old = try std.mem.concat(std.testing.allocator, u8, &.{ current[0..kms_header_length], current[header_length..] });
+    defer std.testing.allocator.free(old);
+    std.mem.writeInt(u16, old[6..8], 6, .little);
+    const decoded = try decode(std.testing.allocator, old);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(.contiguous, decoded.value.data_layout);
+    try std.testing.expect(decoded.value.multipart_completion == null);
 }

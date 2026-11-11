@@ -53,9 +53,11 @@ limit of 512 bytes. Saving checks directory writability before committing.
 ## Output and retention
 
 Levels are trace/debug/info/warn/error/off. Zig has no separate trace emission
-level, so trace currently includes the same messages as debug. JSON records have
-Unix-second `timestamp`, `level`, `scope` and `message`; text records contain the
-same fields on one line. Console output writes stderr; file/both writes mode
+level, so trace currently includes the same messages as debug. JSON records use SystemLog v1: `schema_version`, UTC RFC 3339 millisecond
+`timestamp`, uppercase `level`, `message`, `service`, `source`, `context`,
+`error` and `metadata`. Service identity is `zigfs`, its version and configured
+API address as the single-node instance ID. Text output keeps its original
+Unix-second timestamp, lowercase level, scope and message format. Console output writes stderr; file/both writes mode
 `0600` segments named `zigfs-{unix_seconds}-{random_id}.log`. Console-only output
 is not captured for later queries. Early initialization logs use stderr before
 the configured logger is installed.
@@ -77,7 +79,9 @@ Both return JSON `{ "content": "...", "truncated": false, "range": "24h" }`.
 The Admin UI converts downloaded content into a `zigfs.log` attachment. Disabled
 downloads return HTTP 403; querying remains available to authorized admins.
 
-The configured range (1h/24h/7d/30d) filters record timestamps. Queries consider
+The configured range (1h/24h/7d/30d) filters record timestamps. Optional `from`
+and `to` query parameters specify inclusive Unix-second bounds without changing
+the saved configuration. Negative or reversed bounds return HTTP 400. Queries consider
 at most 1024 segments and read at most 1 MiB of segment data, taking file tails
 when necessary and discarding partial first lines. Limits set `truncated`;
 this is a bounded diagnostic export, not a full log archive. Segments are read
@@ -102,3 +106,18 @@ status) is printed directly to stderr independently of the runtime log output an
 level settings. These terminal status messages are not runtime log records: they
 are not written to log files or included in log queries, downloads, or retention.
 Startup warnings and failures remain diagnostic logs and follow the logging pipeline.
+
+
+## Independent audit settings
+
+`GET/PUT /_admin/v1/settings/audit-logs` (BFF: `/api/v1/settings/audit-logs`)
+uses a separate config file `data/.zigfs/config/audit_log_config.json` and an
+independent logging service. `/query` and `/download` have the same bounded
+content response as runtime logs but read only audit files. System Settings
+provides one **Logs** navigation item with **System logs** and **Audit logs**
+tabs inside the page. The shared
+form omits output selection for audit logs; the server rejects any output other
+than `file`.
+
+See [audit-log-configuration.md](audit-log-configuration.md) for storage,
+migration, severity mapping and how existing audit queries use these settings.

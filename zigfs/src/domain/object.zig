@@ -81,7 +81,8 @@ pub const OwnedUserMetadata = struct {
 };
 
 pub const MultipartPart = struct {
-    // Only used while consuming encrypted upload parts into a final object.
+    // Backend composition uses these fields to validate immutable upload parts.
+    etag_md5: ?[16]u8 = null,
     encrypted: bool = false,
     number: u16,
     size: u64,
@@ -107,6 +108,9 @@ pub const MultipartManifest = struct {
     }
 };
 
+pub const DataLayout = enum(u8) { contiguous = 0, segments = 1 };
+pub const MultipartCompletion = struct { upload_id: id.Uuid, parts_digest: [32]u8 };
+
 pub const View = struct {
     id: id.Uuid,
     bucket_id: id.Uuid,
@@ -115,7 +119,11 @@ pub const View = struct {
     size: u64,
     etag_md5: [16]u8,
     etag_part_count: u16 = 0,
+    // For segmented layouts this authenticates the segment manifest, not the
+    // full object byte stream. Per-segment SHA-256 remains the data checksum.
     checksum_sha256: [32]u8,
+    data_layout: DataLayout = .contiguous,
+    multipart_completion: ?MultipartCompletion = null,
     content_type: []const u8,
     last_modified_unix_seconds: i64,
     user_metadata: []const UserMetadata,
@@ -138,7 +146,11 @@ pub const Object = struct {
     size: u64,
     etag_md5: [16]u8,
     etag_part_count: u16 = 0,
+    // For segmented layouts this authenticates the segment manifest, not the
+    // full object byte stream. Per-segment SHA-256 remains the data checksum.
     checksum_sha256: [32]u8,
+    data_layout: DataLayout = .contiguous,
+    multipart_completion: ?MultipartCompletion = null,
     content_type: []u8,
     last_modified_unix_seconds: i64,
     user_metadata: []OwnedUserMetadata,
@@ -172,6 +184,8 @@ pub const Object = struct {
             .etag_md5 = self.etag_md5,
             .etag_part_count = self.etag_part_count,
             .checksum_sha256 = self.checksum_sha256,
+            .data_layout = self.data_layout,
+            .multipart_completion = self.multipart_completion,
             .content_type = self.content_type,
             .last_modified_unix_seconds = self.last_modified_unix_seconds,
             .user_metadata = ownedMetadataViews(self.user_metadata),
@@ -226,6 +240,8 @@ pub fn cloneFromView(
         .etag_md5 = source.etag_md5,
         .etag_part_count = source.etag_part_count,
         .checksum_sha256 = source.checksum_sha256,
+        .data_layout = source.data_layout,
+        .multipart_completion = source.multipart_completion,
         .content_type = content_type,
         .last_modified_unix_seconds = source.last_modified_unix_seconds,
         .user_metadata = metadata,

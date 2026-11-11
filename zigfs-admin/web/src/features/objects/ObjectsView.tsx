@@ -42,15 +42,18 @@ import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
 import { useErrorToast, useToast } from '../../components/ToastProvider'
 import { ToolbarSearch } from '../../components/ui/ToolbarControls'
-import type { AccessKey, Bucket, MultipartUpload, MultipartUploadSummary, ObjectSummary, ObjectVersion, PresignObjectResponse } from '../../types/api'
+import type { Bucket, MultipartUpload, MultipartUploadSummary, ObjectSummary, ObjectVersion, PresignObjectResponse } from '../../types/api'
 import {
   choosePartSize,
+  chooseUploadConcurrency,
   formatBytes,
+  formatUploadProgress,
   inferPartSize,
   loadPersistedTasks,
   persistTasks,
   putPart,
   validateResumeFile,
+  uploadPartsConcurrently,
   type UploadTask,
 } from './multipart-upload'
 
@@ -98,11 +101,9 @@ interface FolderSizeSummary {
 export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNavigatePath }: ObjectsViewProps) {
   const confirm = useConfirm()
   const { startLoading, withLoading } = useLoading()
-  const [accessKeys, setAccessKeys] = useState<AccessKey[]>([])
   const [buckets, setBuckets] = useState<Bucket[]>([])
   const [, setBucketInfo] = useState<Bucket | null>(null)
   const bucket = initialBucket
-  const [accessKey, setAccessKey] = useState('')
   const [prefix, setPrefix] = useState(initialPrefix)
   const [searchQuery, setSearchQuery] = useState('')
   const [viewMode, setViewMode] = useState<'current' | 'versions'>('current')
@@ -158,17 +159,18 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   const [detailTagsSaving, setDetailTagsSaving] = useState(false)
   const [directorySizeSummaries, setDirectorySizeSummaries] = useState<Map<string, FolderSizeSummary>>(new Map())
   const [directorySizeLoading, setDirectorySizeLoading] = useState<Set<string>>(new Set())
+  const [uploadSpeed, setUploadSpeed] = useState(0)
   const fileInput = useRef<HTMLInputElement>(null)
   const uploadControl = useRef<{
     uploadId: string
     paused: boolean
     cancelled: boolean
     completing: boolean
-    request: XMLHttpRequest | null
+    stopped: boolean
+    requests: Set<XMLHttpRequest>
   } | null>(null)
   const uploadsHydrated = useRef(false)
   const routeLocation = useRef({ bucket: initialBucket, prefix: initialPrefix })
-  const accessKeysLoaded = useRef(false)
   const bucketInfoLoaded = useRef('')
   const multipartSyncBucket = useRef('')
   const initialLoadKey = useRef('')
@@ -183,20 +185,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   const filteredDeletedObjects = [...deletedObjects].filter(item => item.key.toLocaleLowerCase().includes(normalizedSearchQuery)).sort((a, b) => Number(isDirectoryKey(b.key)) - Number(isDirectoryKey(a.key)) || sortDirection * (sortField === 'size' ? (a.size ?? 0) - (b.size ?? 0) : sortField === 'last_modified' ? Date.parse(a.last_modified) - Date.parse(b.last_modified) : a.key.localeCompare(b.key)))
   const filteredVersions = [...visibleVersions].filter(item => item.key.toLocaleLowerCase().includes(normalizedSearchQuery)).sort((a, b) => Number(isDirectoryKey(b.key)) - Number(isDirectoryKey(a.key)) || sortDirection * (sortField === 'size' ? (a.size ?? 0) - (b.size ?? 0) : sortField === 'last_modified' ? Date.parse(a.last_modified) - Date.parse(b.last_modified) : a.key.localeCompare(b.key)))
 
-  useEffect(() => {
-    if (accessKeysLoaded.current) return
-    accessKeysLoaded.current = true
-    withLoading(t('objects.loadingAccessKeys'), () => api.listAccessKeys())
-      .then((keyItems) => {
-        const enabledKeys = keyItems.filter((item) => item.enabled)
-        setAccessKeys(enabledKeys)
-        setAccessKey((current) => current || enabledKeys[0]?.access_key || '')
-      })
-      .catch((reason: Error) => {
-        accessKeysLoaded.current = false
-        notifyError(reason.message)
-      })
-  }, [api, withLoading])
 
   useEffect(() => {
     if (!bucket || bucketInfoLoaded.current === bucket) return
@@ -343,7 +331,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   useEffect(() => () => {
     if (uploadControl.current) {
       uploadControl.current.paused = true
-      uploadControl.current.request?.abort()
+      uploadControl.current.requests.forEach(request => request.abort())
     }
   }, [])
 
@@ -580,7 +568,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   }
 
   async function beginUploads(files: File[], destinationPrefix: string) {
-    if (!bucket || !accessKey || files.length === 0) return
+    if (!bucket || files.length === 0) return
 
     const tasks: UploadTask[] = []
     const failures: string[] = []
@@ -621,7 +609,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   async function createPath(event: FormEvent) {
     event.preventDefault()
     const name = pathName.trim().replace(/^\/+|\/+$/g, '')
-    if (!name || !bucket || !accessKey) return
+    if (!name || !bucket) return
     if (name.includes('/')) {
       notifyError(t('objects.enterASingleDirectoryNameWithout'))
       return
@@ -646,15 +634,28 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   }
 
   async function runUpload(task: UploadTask, selectedFile: File) {
-    if (!accessKey || uploadControl.current) return
+    if (uploadControl.current) return
     const control = {
       uploadId: task.uploadId,
       paused: false,
       cancelled: false,
       completing: false,
-      request: null as XMLHttpRequest | null,
+      stopped: false,
+      requests: new Set<XMLHttpRequest>(),
     }
     uploadControl.current = control
+    setUploadSpeed(0)
+    let transferredBytes = 0
+    const speedSamples = [{ time: performance.now(), bytes: 0 }]
+    // A rolling three-second average smooths progress events across parts.
+    // Sample even without progress so a stalled transfer falls back to zero.
+    const speedTimer = window.setInterval(() => {
+      const now = performance.now()
+      speedSamples.push({ time: now, bytes: transferredBytes })
+      while (speedSamples.length > 2 && speedSamples[1].time <= now - 3000) speedSamples.shift()
+      const first = speedSamples[0]
+      setUploadSpeed(Math.round((transferredBytes - first.bytes) * 1000 / Math.max(1, now - first.time)))
+    }, 1000)
     setUploading(true)
     let committedBytes = task.uploadedBytes
     let committedParts = task.completedParts
@@ -680,38 +681,53 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       })
       reportUploadProgress(committedBytes, selectedFile.size)
 
-      for (let partNumber = 1; partNumber <= partCount; partNumber += 1) {
-        if (completed.has(partNumber)) continue
-        if (control.paused) throw abortError()
+      const inFlight = new Map<number, number>()
+      const reportProgress = () => {
+        const totalLoaded = Math.min(selectedFile.size, committedBytes + [...inFlight.values()].reduce((sum, bytes) => sum + bytes, 0))
+        reportUploadProgress(totalLoaded, selectedFile.size)
+        updateUploadTask(task.uploadId, { uploadedBytes: totalLoaded, completedParts: committedParts })
+      }
+      const pendingParts = Array.from({ length: partCount }, (_, index) => index + 1).filter(number => !completed.has(number))
+      await uploadPartsConcurrently(pendingParts, chooseUploadConcurrency(partSize), async (partNumber) => {
+        if (control.paused || control.stopped) throw abortError()
         const start = (partNumber - 1) * partSize
         const body = selectedFile.slice(start, Math.min(start + partSize, selectedFile.size))
         let etag = ''
         let lastError: Error | null = null
         for (let attempt = 1; attempt <= 3; attempt += 1) {
+          if (control.paused || control.stopped) throw abortError()
+          let activeRequest: XMLHttpRequest | undefined
           try {
-            const presigned = await api.presignObject(accessKey, task.bucket, task.key, 'PUT', 900, {
+            const presigned = await api.presignObject('', task.bucket, task.key, 'PUT', 900, {
               uploadId: task.uploadId,
               partNumber,
             })
-            if (control.paused) throw abortError()
+            if (control.paused || control.stopped) throw abortError()
+            let attemptLoaded = 0
             etag = await putPart(
               presigned.url,
               body,
               task.contentType,
               ({ loaded }) => {
-                const totalLoaded = Math.min(selectedFile.size, committedBytes + loaded)
-                reportUploadProgress(totalLoaded, selectedFile.size)
-                updateUploadTask(task.uploadId, { uploadedBytes: totalLoaded })
+                transferredBytes += Math.max(0, loaded - attemptLoaded)
+                attemptLoaded = loaded
+                inFlight.set(partNumber, loaded)
+                reportProgress()
               },
-              (request) => { control.request = request },
+              (request) => {
+                activeRequest = request
+                control.requests.add(request)
+              },
             )
-            control.request = null
             break
           } catch (reason) {
-            control.request = null
-            if (control.paused || (reason instanceof Error && reason.name === 'AbortError')) throw abortError()
+            inFlight.delete(partNumber)
+            reportProgress()
+            if (control.paused || control.stopped || (reason instanceof Error && reason.name === 'AbortError')) throw abortError()
             lastError = reason as Error
             if (attempt < 3) await delay(attempt * 300)
+          } finally {
+            if (activeRequest) control.requests.delete(activeRequest)
           }
         }
         if (!etag) throw lastError ?? new Error(t('objects.partValueFailedToUpload', { '0': partNumber }))
@@ -721,13 +737,14 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
           etag,
           last_modified: new Date().toISOString(),
         })
+        inFlight.delete(partNumber)
         committedBytes += body.size
         committedParts = completed.size
-        updateUploadTask(task.uploadId, {
-          uploadedBytes: committedBytes,
-          completedParts: committedParts,
-        })
-      }
+        reportProgress()
+      }, () => {
+        control.stopped = true
+        control.requests.forEach(request => request.abort())
+      })
       if (control.paused) throw abortError()
       control.completing = true
       updateUploadTask(task.uploadId, {
@@ -773,10 +790,12 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         showToast(t('objects.pausedValue', { '0': displayFileName(task.key) }))
       } else {
         const message = (reason as Error).message
-        updateUploadTask(task.uploadId, { status: 'failed', error: message })
+        updateUploadTask(task.uploadId, { uploadedBytes: committedBytes, completedParts: committedParts, status: 'failed', error: message })
         notifyError(message)
       }
     } finally {
+      window.clearInterval(speedTimer)
+      setUploadSpeed(0)
       if (uploadControl.current === control) uploadControl.current = null
       setUploading(false)
       setUploadProgress(null)
@@ -787,7 +806,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const control = uploadControl.current
     if (!control || control.uploadId !== task.uploadId || control.completing) return
     control.paused = true
-    control.request?.abort()
+    control.requests.forEach(request => request.abort())
   }
 
   async function abortUpload(task: UploadTask) {
@@ -805,7 +824,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     if (control?.uploadId === task.uploadId) {
       control.paused = true
       control.cancelled = true
-      control.request?.abort()
+      control.requests.forEach(request => request.abort())
     }
     const stopLoading = startLoading(t('objects.cancellingMultipartUpload'))
     try {
@@ -867,55 +886,42 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     return false
   }
 
+  function startBrowserDownload(url: string, key: string) {
+    // Content-Disposition on the signed S3 response also works across origins.
+    // The browser owns the transfer; never buffer the object with fetch/blob.
+    const link = document.createElement('a')
+    link.href = url
+    link.download = key.split('/').pop() || key
+    link.target = '_blank'
+    link.rel = 'noopener noreferrer'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  }
+
   async function download(object: ObjectSummary) {
-    if (!accessKey || !bucket) return false
-    const stopLoading = startLoading(t('objects.downloadingObject'))
+    if (!bucket) return false
     try {
-      const presigned = await api.presignObject(accessKey, bucket, object.key, 'GET', 900)
-      const response = await fetch(presigned.url)
-      if (!response.ok) throw new Error(t('objects.downloadFailedValue', { '0': response.status }))
-      const blob = await response.blob()
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = object.key.split('/').pop() || object.key
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-      showToast(t('objects.downloadedValue', { '0': displayFileName(object.key) }))
+      const presigned = await api.presignObject('', bucket, object.key, 'GET', 900, { download: true })
+      startBrowserDownload(presigned.url, object.key)
+      showToast(t('objects.downloadStartedValue', { '0': displayFileName(object.key) }))
       return true
     } catch (reason) {
       notifyError((reason as Error).message)
       return false
-    } finally {
-      stopLoading()
     }
   }
 
   async function downloadVersion(version: ObjectVersion) {
-    if (!accessKey || !bucket || version.is_delete_marker) return false
-    const stopLoading = startLoading(t('objects.downloadingObjectVersion'))
+    if (!bucket || version.is_delete_marker) return false
     try {
-      const presigned = await api.presignObject(accessKey, bucket, version.key, 'GET', 900, { versionId: version.version_id })
-      const response = await fetch(presigned.url)
-      if (!response.ok) throw new Error(t('objects.downloadFailedValue', { '0': response.status }))
-      const blob = await response.blob()
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = version.key.split('/').pop() || version.key
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-      showToast(t('objects.downloadedVersionValueOfValue', { '0': displayFileName(version.key), '1': shortVersionId(version.version_id) }))
+      const presigned = await api.presignObject('', bucket, version.key, 'GET', 900, { versionId: version.version_id, download: true })
+      startBrowserDownload(presigned.url, version.key)
+      showToast(t('objects.downloadStartedValue', { '0': displayFileName(version.key) }))
       return true
     } catch (reason) {
       notifyError((reason as Error).message)
       return false
-    } finally {
-      stopLoading()
     }
   }
 
@@ -934,11 +940,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   }
 
   async function copyObjectKey(sourceKey: string, destinationBucket: string, destinationKey: string, versionId?: string) {
-    if (!accessKey || !bucket) return
+    if (!bucket) return
     if (destinationBucket === bucket && destinationKey === sourceKey) {
       throw new Error(t('objects.destinationMatchesTheSourceValue', { '0': displayKeyForMessage(sourceKey) }))
     }
-    const presigned = await api.presignObject(accessKey, destinationBucket, destinationKey, 'PUT', 900, {
+    const presigned = await api.presignObject('', destinationBucket, destinationKey, 'PUT', 900, {
       copySource: { bucket, key: sourceKey, ...(versionId ? { versionId } : {}) },
     })
     const response = await fetch(presigned.url, {
@@ -963,8 +969,8 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   }
 
   async function deleteObjectKey(key: string, versionId?: string) {
-    if (!accessKey || !bucket) return
-    const presigned = await api.presignObject(accessKey, bucket, key, 'DELETE', 900, versionId ? { versionId } : undefined)
+    if (!bucket) return
+    const presigned = await api.presignObject('', bucket, key, 'DELETE', 900, versionId ? { versionId } : undefined)
     const response = await fetch(presigned.url, { method: 'DELETE' })
     if (!response.ok) throw new Error(t('objects.failedToDeleteValueValue', { '0': key, '1': response.status }))
   }
@@ -1008,24 +1014,24 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   }
 
   async function deleteItem(item: SelectedObject) {
-    if (!accessKey || !bucket) return
+    if (!bucket) return
     if (item.kind === 'current') {
       if (isDirectoryKey(item.object.key)) {
         await deleteDirectory(item.object.key)
         return
       }
-      const presigned = await api.presignObject(accessKey, bucket, item.object.key, 'DELETE', 900)
+      const presigned = await api.presignObject('', bucket, item.object.key, 'DELETE', 900)
       const response = await fetch(presigned.url, { method: 'DELETE' })
       if (!response.ok) throw new Error(t('objects.failedToDeleteValueValue', { '0': displayKeyForMessage(item.object.key), '1': response.status }))
       return
     }
-    const presigned = await api.presignObject(accessKey, bucket, item.version.key, 'DELETE', 900, { versionId: item.version.version_id })
+    const presigned = await api.presignObject('', bucket, item.version.key, 'DELETE', 900, { versionId: item.version.version_id })
     const response = await fetch(presigned.url, { method: 'DELETE' })
     if (!response.ok) throw new Error(t('objects.failedToDeleteVersionValueValue', { '0': shortVersionId(item.version.version_id), '1': response.status }))
   }
 
   async function purgeObject(key: string) {
-    if (!accessKey || !bucket) return
+    if (!bucket) return
     // Deleting a version rewrites the metadata history. Re-read after every
     // pass so a large history cannot leave a stale marker behind.
     for (;;) {
@@ -1039,7 +1045,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   }
 
   async function removeDeletedObject(version: ObjectVersion) {
-    if (!accessKey || !bucket || !version.is_delete_marker) return
+    if (!bucket || !version.is_delete_marker) return
     if (!await ensureDirectoryCanBeDeleted(version.key)) return
     if (!await confirm({
       title: t('objects.permanentlyDeleteObject'),
@@ -1158,7 +1164,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 
   async function submitRename(event: FormEvent) {
     event.preventDefault()
-    if (!renameObject || !accessKey || !bucket || renaming) return
+    if (!renameObject || !bucket || renaming) return
     if (renameInvalid) { notifyError(t('objects.renameNameHint')); return }
     const sourceKey = renameObject.key
     const destinationKey = sourceKey.slice(0, sourceKey.lastIndexOf('/') + 1) + renameName
@@ -1223,11 +1229,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     setDetailVersionId(null)
     setDetailUrl(null)
     setDetailTags('')
-    if (!accessKey || !bucket) return
+    if (!bucket) return
     const stopLoading = startLoading(t('objects.generatingPreviewLink'))
     try {
-      setDetailUrl(await api.presignObject(accessKey, bucket, object.key, 'GET', 900))
-      const tagUrl = await api.presignObject(accessKey, bucket, object.key, 'GET', 900, { tagging: true })
+      setDetailUrl(await api.presignObject('', bucket, object.key, 'GET', 900))
+      const tagUrl = await api.presignObject('', bucket, object.key, 'GET', 900, { tagging: true })
       const tagResponse = await fetch(tagUrl.url)
       if (!tagResponse.ok) throw new Error(t('objects.failedToReadObjectTagsValue', { '0': tagResponse.status }))
       const xml = new DOMParser().parseFromString(await tagResponse.text(), 'application/xml')
@@ -1245,10 +1251,10 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     setDetailVersionId(version.version_id)
     setDetailUrl(null)
     setDetailTags('')
-    if (!accessKey || !bucket) return
+    if (!bucket) return
     try {
-      setDetailUrl(await api.presignObject(accessKey, bucket, version.key, 'GET', 900, { versionId: version.version_id }))
-      const tagUrl = await api.presignObject(accessKey, bucket, version.key, 'GET', 900, { versionId: version.version_id, tagging: true })
+      setDetailUrl(await api.presignObject('', bucket, version.key, 'GET', 900, { versionId: version.version_id }))
+      const tagUrl = await api.presignObject('', bucket, version.key, 'GET', 900, { versionId: version.version_id, tagging: true })
       const response = await fetch(tagUrl.url)
       if (!response.ok) throw new Error(t('objects.failedToReadVersionTagsValue', { '0': response.status }))
       const xml = new DOMParser().parseFromString(await response.text(), 'application/xml')
@@ -1259,13 +1265,13 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   }
 
   async function saveDetailTags() {
-    if (!detail || !accessKey || !bucket) return
+    if (!detail || !bucket) return
     setDetailTagsSaving(true)
     try {
       const parsed = JSON.parse(detailTags || '{}') as Record<string, string>
       const tagEntries = Object.entries(parsed)
       if (tagEntries.some(([key, value]) => !key || typeof value !== 'string')) throw new Error(t('objects.objectTagsMustBeAJsonObjectOfString'))
-      const signed = await api.presignObject(accessKey, bucket, detail.key, tagEntries.length === 0 ? 'DELETE' : 'PUT', 900, { tagging: true, ...(detailVersionId ? { versionId: detailVersionId } : {}) })
+      const signed = await api.presignObject('', bucket, detail.key, tagEntries.length === 0 ? 'DELETE' : 'PUT', 900, { tagging: true, ...(detailVersionId ? { versionId: detailVersionId } : {}) })
       if (tagEntries.length === 0) {
         const response = await fetch(signed.url, { method: 'DELETE', headers: signed.required_headers })
         if (!response.ok) throw new Error(t('objects.failedToDeleteObjectTagsValue', { '0': response.status }))
@@ -1343,7 +1349,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       await removeDirectory(object)
       return
     }
-    if (!accessKey) return
     if (!await ensureDirectoryCanBeDeleted(object.key)) return
     if (!await confirm({
       title: t('objects.deleteObject'),
@@ -1368,7 +1373,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 
   async function removeVersion(version: ObjectVersion) {
     const target = version.is_delete_marker ? t('objects.deletemarker') : t('objects.objectVersion')
-    if (!accessKey || !bucket) return
+    if (!bucket) return
     if (!await ensureDirectoryCanBeDeleted(version.key)) return
     if (!await confirm({
       title: t('objects.permanentlyDeleteVersion'),
@@ -1392,7 +1397,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   }
 
   async function restoreDeletedObject(version: ObjectVersion) {
-    if (!accessKey || !bucket || !version.is_delete_marker || !version.is_latest) return
+    if (!bucket || !version.is_delete_marker || !version.is_latest) return
     if (!await confirm({
       title: t('objects.restoreDeletedObjects'),
       message: t('objects.removeTheLatestDeleteMarkerAndRestoreValue', { '0': version.key }),
@@ -1402,7 +1407,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setRestoringVersion(identity)
-      const presigned = await api.presignObject(accessKey, bucket, version.key, 'DELETE', 900, { versionId: version.version_id })
+      const presigned = await api.presignObject('', bucket, version.key, 'DELETE', 900, { versionId: version.version_id })
       const response = await fetch(presigned.url, { method: 'DELETE' })
       if (!response.ok) throw new Error(t('objects.objectRestorationFailedValue', { '0': response.status }))
       initialLoadKey.current = ''
@@ -1418,7 +1423,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   }
 
   async function rewindVersion(version: ObjectVersion) {
-    if (!accessKey || !bucket || version.is_delete_marker || version.is_latest) return
+    if (!bucket || version.is_delete_marker || version.is_latest) return
     if (!await confirm({
       title: t('objects.rewindObjectVersion'),
       message: t('objects.rewindValueToVersionValueZigfsWillCreateA', { '0': version.key, '1': shortVersionId(version.version_id) }),
@@ -1428,7 +1433,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setRestoringVersion(identity)
-      const presigned = await api.presignObject(accessKey, bucket, version.key, 'PUT', 900, {
+      const presigned = await api.presignObject('', bucket, version.key, 'PUT', 900, {
         copySource: { bucket, key: version.key, versionId: version.version_id },
       })
       const response = await fetch(presigned.url, {
@@ -1447,7 +1452,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   }
 
   async function restoreVersion(version: ObjectVersion) {
-    if (!accessKey || !bucket || version.is_delete_marker || version.is_latest) return
+    if (!bucket || version.is_delete_marker || version.is_latest) return
     const deleted = versions.some((item) => item.key === version.key && item.is_delete_marker && item.is_latest)
     if (!deleted) return
     if (!await confirm({
@@ -1459,7 +1464,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setRestoringVersion(identity)
-      const presigned = await api.presignObject(accessKey, bucket, version.key, 'PUT', 900, {
+      const presigned = await api.presignObject('', bucket, version.key, 'PUT', 900, {
         copySource: { bucket, key: version.key, versionId: version.version_id },
       })
       const response = await fetch(presigned.url, {
@@ -1550,7 +1555,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
               </EmptyHeader>
             </Empty>}</div>
           </div>
-          <div className="ui-dialog-footer"><Button size="sm" disabled={startingUploads || uploading || !pendingFiles.length || !accessKey} onClick={() => void startPendingUploads()}><Upload />{t('objects.startUpload')}</Button></div>
+          <div className="ui-dialog-footer"><Button size="sm" disabled={startingUploads || uploading || !pendingFiles.length} onClick={() => void startPendingUploads()}><Upload />{t('objects.startUpload')}</Button></div>
         </DialogContent>
       </Dialog>
       {prefix.trim() && <div className="objects-directory-heading" aria-label={t('objects.currentObjectPath')}>
@@ -1572,12 +1577,12 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         <div className="objects-top-actions">
           {selectedCount > 0 && <div className="selection-toolbar-actions">
             {selectedFiles.length > 0 && <>
-              <button className="secondary-button" type="button" onClick={() => void downloadSelected()} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />{t('objects.download')}</button>
-              <button className="secondary-button" type="button" onClick={() => openTransfer('copy')} disabled={!accessKey}><Copy className="button-icon" aria-hidden="true" />{t('objects.copy')}</button>
+              <button className="secondary-button" type="button" onClick={() => void downloadSelected()}><Download className="button-icon" aria-hidden="true" />{t('objects.download')}</button>
+              <button className="secondary-button" type="button" onClick={() => openTransfer('copy')}><Copy className="button-icon" aria-hidden="true" />{t('objects.copy')}</button>
             </>}
-            {selectedData.length > 0 && <button className="secondary-button" type="button" onClick={() => openTransfer('move')} disabled={!accessKey}><FolderInput className="button-icon" aria-hidden="true" />{t('objects.move')}</button>}
-            {selectedDeleted.length > 0 && <button className="secondary-button" type="button" onClick={() => void restoreSelected()} disabled={!accessKey}><RotateCcw className="button-icon" aria-hidden="true" />{t('objects.restore')}</button>}
-            <button className="danger-button" type="button" onClick={() => void removeSelected()} disabled={!accessKey}><Trash2 className="button-icon" aria-hidden="true" />{permanentDeleteOnly ? t('objects.permanentlyDelete') : t('objects.delete')}</button>
+            {selectedData.length > 0 && <button className="secondary-button" type="button" onClick={() => openTransfer('move')}><FolderInput className="button-icon" aria-hidden="true" />{t('objects.move')}</button>}
+            {selectedDeleted.length > 0 && <button className="secondary-button" type="button" onClick={() => void restoreSelected()}><RotateCcw className="button-icon" aria-hidden="true" />{t('objects.restore')}</button>}
+            <button className="danger-button" type="button" onClick={() => void removeSelected()}><Trash2 className="button-icon" aria-hidden="true" />{permanentDeleteOnly ? t('objects.permanentlyDelete') : t('objects.delete')}</button>
           </div>}
           <input ref={fileInput} className="hidden-file-input" type="file" multiple onChange={selectFile} disabled={uploading} />
           <input ref={folderInput} className="hidden-file-input" type="file" multiple {...{ webkitdirectory: '' }} onChange={selectFile} disabled={uploading} />
@@ -1585,7 +1590,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
             {uploadTasks.length === 0 && taskCounts.processing === 0 && taskCounts.failed === 0 && taskCounts.completed > 0 ? <CheckCircle2 /> : <List />}
             {uploadTasks.length === 0 && taskCounts.processing === 0 && taskCounts.failed === 0 && taskCounts.completed > 0 ? t('objects.taskCompleted') : t('objects.taskManagement')}
           </Button>}
-          <Button variant="outline" size="sm" disabled={!bucket || !accessKey || uploading || startingUploads} onClick={() => { setUploadSubdirectory(prefix); setUploadDialogOpen(true) }}><Upload />{t('objects.uploadFileFolder')}</Button>
+          <Button variant="outline" size="sm" disabled={!bucket || uploading || startingUploads} onClick={() => { setUploadSubdirectory(prefix); setUploadDialogOpen(true) }}><Upload />{t('objects.uploadFileFolder')}</Button>
           <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="icon-sm" aria-label={t('objects.actions')}><EllipsisVertical /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem disabled={!bucket || loading} onSelect={() => void load(true)}><RefreshCw />{t('objects.refresh')}</DropdownMenuItem><DropdownMenuItem disabled={!bucket} onSelect={openRewind}><Undo2 />{viewMode === 'versions' ? t('objects.backToCurrentObjects') : t('objects.openVersionHistory')}</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
         </div>
       </div>
@@ -1606,7 +1611,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                     const calculating = directorySizeLoading.has(object.key)
                     return <div className="directory-size-cell" title={summary ? t('objects.generatedAtValue', { '0': new Date(summary.generatedAt).toLocaleString(getFormatLocale()) }) : t('objects.calculateFileSizesInThisDirectoryAndItsSubdirectories')}>
                       <span>{summary ? formatBytes(summary.bytes) : t('objects.notCalculated')}</span>
-                      <button className="icon-button directory-size-refresh" type="button" onClick={() => void refreshDirectorySize(object.key)} disabled={calculating} aria-label={t('objects.refreshSizeOfDirectoryValue', { '0': displayObjectKey(object.key, prefix) })} title={t('objects.refreshDirectorySize')}><RefreshCw className={calculating ? 'spinning' : ''} aria-hidden="true" /></button>
+                      {!summary && <button className="icon-button directory-size-refresh" type="button" onClick={() => void refreshDirectorySize(object.key)} disabled={calculating} aria-label={t('objects.refreshSizeOfDirectoryValue', { '0': displayObjectKey(object.key, prefix) })} title={t('objects.refreshDirectorySize')}><RefreshCw className={calculating ? 'spinning' : ''} aria-hidden="true" /></button>}
                     </div>
                   })() : formatBytes(object.size)}</td>
                   <td>{object.last_modified ? new Date(object.last_modified).toLocaleString(getFormatLocale()) : '-'}</td>
@@ -1614,11 +1619,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild><Button variant="outline" size="icon-sm" aria-label={`${t('objects.manage')} ${displayKeyForMessage(object.key)}`}><Ellipsis /></Button></DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="object-actions-menu"><DropdownMenuGroup>
-                        {!isDirectoryKey(object.key) && <DropdownMenuItem onSelect={() => void download(object)} disabled={!accessKey}><Download />{t('objects.download')}</DropdownMenuItem>}
-                        {!isDirectoryKey(object.key) && <DropdownMenuItem onSelect={() => openTransfer('copy', { kind: 'current', object })} disabled={!accessKey}><Copy />{t('objects.copy')}</DropdownMenuItem>}
-                        {!isDirectoryKey(object.key) && <DropdownMenuItem onSelect={() => { setRenameObject(object); setRenameName(object.key.slice(object.key.lastIndexOf('/') + 1)) }} disabled={!accessKey}><Pencil />{t('objects.rename')}</DropdownMenuItem>}
-                        {!isDirectoryKey(object.key) && <DropdownMenuItem onSelect={() => openTransfer('move', { kind: 'current', object })} disabled={!accessKey}><FolderInput />{t('objects.move')}</DropdownMenuItem>}
-                        <DropdownMenuItem variant="destructive" onSelect={() => void removeObject(object)} disabled={(!isDirectoryKey(object.key) && !accessKey) || !!deletingKey}><Trash2 />{t('objects.delete')}</DropdownMenuItem>
+                        {!isDirectoryKey(object.key) && <DropdownMenuItem onSelect={() => void download(object)}><Download />{t('objects.download')}</DropdownMenuItem>}
+                        {!isDirectoryKey(object.key) && <DropdownMenuItem onSelect={() => openTransfer('copy', { kind: 'current', object })}><Copy />{t('objects.copy')}</DropdownMenuItem>}
+                        {!isDirectoryKey(object.key) && <DropdownMenuItem onSelect={() => { setRenameObject(object); setRenameName(object.key.slice(object.key.lastIndexOf('/') + 1)) }}><Pencil />{t('objects.rename')}</DropdownMenuItem>}
+                        {!isDirectoryKey(object.key) && <DropdownMenuItem onSelect={() => openTransfer('move', { kind: 'current', object })}><FolderInput />{t('objects.move')}</DropdownMenuItem>}
+                        <DropdownMenuItem variant="destructive" onSelect={() => void removeObject(object)} disabled={!!deletingKey}><Trash2 />{t('objects.delete')}</DropdownMenuItem>
                         {isDirectoryKey(object.key) && <DropdownMenuItem variant="destructive" onSelect={() => void forceCleanupFolder(object)} disabled={!!deletingKey}><Trash2 />{t('objects.forceCleanupFolder')}</DropdownMenuItem>}
                       </DropdownMenuGroup></DropdownMenuContent>
                     </DropdownMenu>
@@ -1636,8 +1641,8 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                   <td>{new Date(version.last_modified).toLocaleString(getFormatLocale())}</td>
                   <td className="table-actions sticky-actions-column">
                     <ActionMenu label={t('objects.manageDeletedObjectValue', { '0': version.key })}>
-                      <button type="button" role="menuitem" onClick={() => void restoreDeletedObject(version)} disabled={!accessKey || restoring}><RotateCcw className="button-icon" aria-hidden="true" />{t('objects.restoreObjects')}</button>
-                      <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeDeletedObject(version)} disabled={!accessKey || deletingVersion === identity}><Trash2 className="button-icon" aria-hidden="true" />{t('objects.permanentlyDelete')}</button>
+                      <button type="button" role="menuitem" onClick={() => void restoreDeletedObject(version)} disabled={restoring}><RotateCcw className="button-icon" aria-hidden="true" />{t('objects.restoreObjects')}</button>
+                      <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeDeletedObject(version)} disabled={deletingVersion === identity}><Trash2 className="button-icon" aria-hidden="true" />{t('objects.permanentlyDelete')}</button>
                     </ActionMenu>
                   </td>
                 </tr>
@@ -1658,16 +1663,16 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                 <td>{new Date(version.last_modified).toLocaleString(getFormatLocale())}</td>
                 <td className="table-actions sticky-actions-column">
                   <ActionMenu label={t('objects.manageVersionValueOfValue', { '0': version.key, '1': shortVersionId(version.version_id) })}>
-                    {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => void openVersionTagDetail(version)} disabled={!accessKey}>{t('objects.editObjectTags')}</button>}
-                    {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => void downloadVersion(version)} disabled={!accessKey}><Download className="button-icon" aria-hidden="true" />{t('objects.download')}</button>}
-                    {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => openTransfer('copy', { kind: 'version', version })} disabled={!accessKey}><Copy className="button-icon" aria-hidden="true" />{t('objects.copy')}</button>}
-                    {!version.is_delete_marker && <button type="button" role="menuitem" onClick={() => openTransfer('move', { kind: 'version', version })} disabled={!accessKey}><FolderInput className="button-icon" aria-hidden="true" />{t('objects.move')}</button>}
-                    {version.is_delete_marker && version.is_latest && <button type="button" role="menuitem" onClick={() => void restoreDeletedObject(version)} disabled={!accessKey || restoring}><RotateCcw className="button-icon" aria-hidden="true" />{t('objects.restoreObjects')}</button>}
-                    {!version.is_delete_marker && !version.is_latest && <button type="button" role="menuitem" onClick={() => void rewindVersion(version)} disabled={!accessKey || restoring}><History className="button-icon" aria-hidden="true" />{t('objects.rewindToThisVersion')}</button>}
-                    {!version.is_delete_marker && !version.is_latest && objectDeleted && <button type="button" role="menuitem" onClick={() => void restoreVersion(version)} disabled={!accessKey || restoring}><RotateCcw className="button-icon" aria-hidden="true" />{t('objects.restore')}</button>}
+                    {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => void openVersionTagDetail(version)}>{t('objects.editObjectTags')}</button>}
+                    {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => void downloadVersion(version)}><Download className="button-icon" aria-hidden="true" />{t('objects.download')}</button>}
+                    {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => openTransfer('copy', { kind: 'version', version })}><Copy className="button-icon" aria-hidden="true" />{t('objects.copy')}</button>}
+                    {!version.is_delete_marker && <button type="button" role="menuitem" onClick={() => openTransfer('move', { kind: 'version', version })}><FolderInput className="button-icon" aria-hidden="true" />{t('objects.move')}</button>}
+                    {version.is_delete_marker && version.is_latest && <button type="button" role="menuitem" onClick={() => void restoreDeletedObject(version)} disabled={restoring}><RotateCcw className="button-icon" aria-hidden="true" />{t('objects.restoreObjects')}</button>}
+                    {!version.is_delete_marker && !version.is_latest && <button type="button" role="menuitem" onClick={() => void rewindVersion(version)} disabled={restoring}><History className="button-icon" aria-hidden="true" />{t('objects.rewindToThisVersion')}</button>}
+                    {!version.is_delete_marker && !version.is_latest && objectDeleted && <button type="button" role="menuitem" onClick={() => void restoreVersion(version)} disabled={restoring}><RotateCcw className="button-icon" aria-hidden="true" />{t('objects.restore')}</button>}
                     {version.is_delete_marker
-                      ? <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeDeletedObject(version)} disabled={!accessKey || deletingVersion === identity || (isDirectoryKey(version.key) && versions.some((item) => item.key !== version.key && item.key.startsWith(version.key)))}><Trash2 className="button-icon" aria-hidden="true" />{t('objects.permanentlyDelete')}</button>
-                      : <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeVersion(version)} disabled={!accessKey || deletingVersion === identity || (isDirectoryKey(version.key) && versions.some((item) => item.key !== version.key && item.key.startsWith(version.key)))}><Trash2 className="button-icon" aria-hidden="true" />{t('objects.permanentlyDelete')}</button>}
+                      ? <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeDeletedObject(version)} disabled={deletingVersion === identity || (isDirectoryKey(version.key) && versions.some((item) => item.key !== version.key && item.key.startsWith(version.key)))}><Trash2 className="button-icon" aria-hidden="true" />{t('objects.permanentlyDelete')}</button>
+                      : <button className="danger-menu-item" type="button" role="menuitem" onClick={() => void removeVersion(version)} disabled={deletingVersion === identity || (isDirectoryKey(version.key) && versions.some((item) => item.key !== version.key && item.key.startsWith(version.key)))}><Trash2 className="button-icon" aria-hidden="true" />{t('objects.permanentlyDelete')}</button>}
                   </ActionMenu>
                 </td>
               </tr>
@@ -1714,7 +1719,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                 <article className="upload-task" key={task.uploadId}>
                   <div className="upload-task-main">
                     <div className="upload-task-title"><strong>{displayFileName(task.key)}</strong><span className={`upload-status ${task.status}`}>{task.status === 'uploading' ? t('objects.uploading') : task.status === 'completing' ? t('objects.completing') : task.status === 'failed' ? t('objects.failed') : t('objects.paused')}</span></div>
-                    <span>{task.fileName} · {task.fileSize > 0 ? `${formatBytes(taskProgress.loaded)} / ${formatBytes(task.fileSize)}` : formatBytes(task.uploadedBytes)} · {task.completedParts} {t('objects.parts')}</span>
+                    <span>{task.fileName} · {task.fileSize > 0 ? formatUploadProgress(taskProgress.loaded, task.fileSize) : formatBytes(task.uploadedBytes)} · {task.completedParts} {t('objects.parts')}{task.status === 'uploading' && uploadControl.current?.uploadId === task.uploadId && <> · {t('objects.uploadSpeed', { speed: formatBytes(uploadSpeed) })}</>}</span>
                     {task.status === 'completing' && <span>{t('objects.zigfsIsCompletingTheObject')}</span>}
                     {task.error && <span className="upload-task-error">{task.error}</span>}
                     {!task.file && task.status !== 'uploading' && <span>{t('objects.selectTheLocalFileAgain')}</span>}
@@ -1725,16 +1730,16 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                     ) : task.status === 'completing' ? (
                       <button className="secondary-button" type="button" disabled><RefreshCw className="button-icon spinning" aria-hidden="true" />{t('objects.completing')}</button>
                     ) : task.file ? (
-                      <button className="secondary-button" type="button" disabled={uploading || !accessKey} onClick={() => void runUpload(task, task.file!)}>
+                      <button className="secondary-button" type="button" disabled={uploading} onClick={() => void runUpload(task, task.file!)}>
                         {task.status === 'failed' ? <RotateCcw className="button-icon" aria-hidden="true" /> : <Play className="button-icon" aria-hidden="true" />}
                         {task.status === 'failed' ? t('objects.retry') : t('objects.resume')}
                       </button>
                     ) : (
-                      <label className={`secondary-button file-picker-button${uploading ? ' disabled' : ''}`}>
-                        <Upload className="button-icon" aria-hidden="true" />{t('objects.selectOriginalFile')}<input type="file" disabled={uploading} onChange={(event) => attachResumeFile(task, event)} />
+                      <label className="secondary-button file-picker-button">
+                        <Upload className="button-icon" aria-hidden="true" />{t('objects.selectOriginalFile')}<input type="file" onChange={(event) => attachResumeFile(task, event)} />
                       </label>
                     )}
-                    <button className="danger-button" type="button" disabled={task.status === 'completing' || (uploading && !active)} onClick={() => void abortUpload(task)}><Trash2 className="button-icon" aria-hidden="true" />{t('objects.cancel')}</button>
+                    <button className="danger-button" type="button" disabled={task.status === 'completing'} onClick={() => void abortUpload(task)}><Trash2 className="button-icon" aria-hidden="true" />{t('objects.cancel')}</button>
                   </div>
                   <div
                     className="upload-progress-track"
@@ -1818,7 +1823,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
             </Field></FieldGroup>
             <div className="flex justify-end gap-2">
               <Button variant="outline" type="button" onClick={() => setRenameObject(null)} disabled={renaming}>{t('objects.cancel')}</Button>
-              <Button type="submit" disabled={renaming || renameInvalid || !accessKey}>{renaming ? t('objects.renaming') : t('objects.rename')}</Button>
+              <Button type="submit" disabled={renaming || renameInvalid}>{renaming ? t('objects.renaming') : t('objects.rename')}</Button>
             </div>
           </form>
         </DialogContent>

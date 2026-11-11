@@ -75,16 +75,24 @@ Admin 不直接访问数据目录，也不保存 Bucket、Object、版本、AK/S
 ./start.sh
 ```
 
+菜单可直接选择 `Debug` 或 `Release`；Release 对应 `ReleaseSafe`，兼顾吞吐量、运行时安全检查和错误追踪。
+菜单明确选择的模式优先于环境变量；构建模式会在启动时显示。
+直接运行 `zig build` 仍沿用 Zig 默认的 Debug 模式，不建议用它评估上传性能。
+
 Windows PowerShell 或命令提示符请使用：
 
 ```bat
 start.cmd
 ```
 
+Windows 启动脚本提供相同选项，也支持 `./start.ps1 -Service debug` 或 `-Service release`。
+兼容原来的 `fs` 入口：默认 ReleaseSafe，可通过 `ZIGFS_BUILD_MODE` 覆盖。
+
 顶层菜单包含：
 
-1. 启动本地 ZigFS
-2. 启动本地 Admin
+1. 启动本地 ZigFS (Debug)
+2. 启动本地 ZigFS (Release)
+3. 启动本地 Admin
 0. 退出
 
 本地 Admin 只启动本地 Go Admin Server，不会自动启动 ZigFS；使用本地 Admin 前，请先在另一个终端启动 ZigFS。首次启动 Admin 前先安装前端依赖：
@@ -122,6 +130,28 @@ DOCKERHUB_NAMESPACE=your-name DOCKERHUB_TAG=0.1.0 ./docker.sh
 ```
 
 本地构建标签由 `ZIGFS_DOCKER_TAG` 控制，默认是 `0.1.0`；`DOCKERHUB_TAG` 未设置时使用相同版本。推送指定版本标签时，脚本会同时将同一个镜像推送为 `latest`；当 `DOCKERHUB_TAG=latest` 时只推送一次。推送不会修改 Compose 使用的本地镜像标签。
+
+#### GitHub Actions 自动构建与推送
+
+`.github/workflows/docker-publish.yml` 默认构建并上传 Docker Hub 镜像 `molast/zigfs` 和 `molast/zigfs-admin`，均支持 `linux/amd64`、`linux/arm64`，并使用 GitHub Actions 构建缓存。
+
+在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 中配置：
+
+| 类型 | 名称 | 用途 |
+| --- | --- | --- |
+| Secret | `DOCKERHUB_USERNAME` | Docker Hub 登录用户名 |
+| Secret | `DOCKERHUB_TOKEN` | 有目标镜像仓库写入权限的 Docker Hub access token |
+| Variable（可选） | `DOCKERHUB_NAMESPACE` | Docker Hub 组织名或用户名；默认使用 `molast` |
+
+触发方式与镜像标签：
+
+- 推送 `v*` Git 标签自动发布。例如 `v0.1.0` 生成 `v0.1.0`、`0.1.0`、`0.1`、`latest` 和 `sha-<短提交哈希>` 镜像标签。预发布版本（例如 `v0.2.0-rc.1`）不会更新 `latest`。
+- 在 **Actions → Docker build and publish → Run workflow** 手动发布。选择分支时生成分支名和提交哈希标签；选择默认分支时同时更新 `latest`。
+- 修改 Docker workflow、`zigfs/` 或 `zigfs-admin/` 的 PR 自动验证两个镜像的构建，不登录或上传 Docker Hub，无需发布凭据。
+
+仓库代码需要先推送到 GitHub 才能运行此 workflow。发布前确认 Docker Hub 账号能够写入命名空间下的两个镜像仓库。
+
+#### 直接使用 Compose
 
 也可以直接运行 Compose：
 

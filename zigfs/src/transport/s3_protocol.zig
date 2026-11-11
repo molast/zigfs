@@ -306,12 +306,18 @@ fn classify(
             else => .unsupported,
         };
     }
-    if (key != null and queryShape(parameters, "tagging") == .empty and parameters.len == 1) return switch (method) {
-        .GET => .get_object_tagging,
-        .PUT => .put_object_tagging,
-        .DELETE => .delete_object_tagging,
-        else => .unsupported,
-    };
+    if (key != null and queryShape(parameters, "tagging") != .missing) {
+        if (queryShape(parameters, "tagging") != .empty) return .unsupported;
+        for (parameters) |parameter| {
+            if (!std.mem.eql(u8, parameter.name, "tagging") and !std.mem.eql(u8, parameter.name, "versionId") and !std.mem.startsWith(u8, parameter.name, "X-Amz-")) return .unsupported;
+        }
+        return switch (method) {
+            .GET => .get_object_tagging,
+            .PUT => .put_object_tagging,
+            .DELETE => .delete_object_tagging,
+            else => .unsupported,
+        };
+    }
 
     const uploads = queryShape(parameters, "uploads");
     const upload_id = queryShape(parameters, "uploadId");
@@ -724,4 +730,20 @@ test "bucket encryption routing supports presigned auth and rejects ambiguous su
         defer invalid.deinit();
         try std.testing.expectEqual(.unsupported, invalid.operation);
     }
+}
+
+test "presigned object tags never route to object mutations" {
+    const cases = .{
+        .{ std.http.Method.GET, Operation.get_object_tagging },
+        .{ std.http.Method.PUT, Operation.put_object_tagging },
+        .{ std.http.Method.DELETE, Operation.delete_object_tagging },
+    };
+    inline for (cases) |case| {
+        const parsed = try parseTarget(std.testing.allocator, case[0], "/bucket/key?tagging=&versionId=123&X-Amz-Signature=abc");
+        defer parsed.deinit();
+        try std.testing.expectEqual(case[1], parsed.operation);
+    }
+    const invalid = try parseTarget(std.testing.allocator, .DELETE, "/bucket/key?tagging=bad");
+    defer invalid.deinit();
+    try std.testing.expectEqual(Operation.unsupported, invalid.operation);
 }

@@ -5,6 +5,14 @@
 
 ## 升级前
 
+### 支持元数据检查点的版本
+
+包含元数据自动维护的版本在启动恢复完成后会写入检查点并启用格式 required-feature
+flag bit 0，随后回收历史 journal 与已结束 multipart 标记。这是恢复协议升级：即使
+没有接收新的业务写入，首次启动也可能改变回退边界。务必先停机备份完整数据根。
+主版本仍为 1，但不支持该 feature flag 的历史二进制会以 `UnsupportedFlags` 拒绝打开。
+不要清除 flag 或删除 `checkpoint.meta`；需要回退时恢复升级前完整备份。
+
 1. 记录当前服务版本、配置文件摘要、数据根路径和最近一次健康状态。
 2. 停止 Admin 写操作和所有 S3 写入，确认没有 Multipart 上传仍在进行。
 3. 优雅停止旧 ZigFS，确认旧进程已释放 `.zigfs/instance.lock`。

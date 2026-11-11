@@ -3,13 +3,18 @@ const byte_stream = @import("byte_stream.zig");
 const secret_box = @import("../auth/secret_box.zig");
 const object_domain = @import("../domain/object.zig");
 
+/// Identifies a complete logical generation, independent of its physical layout.
+/// A backend may map it to one file or to multiple durable blocks.
 pub const Location = struct {
     bucket_id: id.Uuid,
     object_id: id.Uuid,
     data_generation: id.Uuid,
 };
 
+pub const ComposeEncryption = struct { key: secret_box.Key, associated_data: []const u8 };
+
 pub const Staged = struct {
+    data_layout: object_domain.DataLayout = .contiguous,
     token: id.Uuid,
     size: u64,
     etag_md5: [16]u8,
@@ -56,7 +61,10 @@ pub const ObjectDataStore = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
+        stage_multipart: ?*const fn (*anyopaque, id.Uuid, object_domain.MultipartManifestView, ?ComposeEncryption) Error!?Staged = null,
         cleanup_staged: *const fn (context: *anyopaque) Error!usize,
+        /// Consume the source through EOF and persist the complete logical data.
+        /// Staged storage must be independent of temporary multipart uploads.
         stage: *const fn (
             context: *anyopaque,
             token: id.Uuid,
@@ -69,6 +77,8 @@ pub const ObjectDataStore = struct {
             associated_data: []const u8,
             source: byte_stream.Source,
         ) Error!Staged,
+        /// Durably associate all staged data (including block maps, if any)
+        /// with this generation before the caller publishes object metadata.
         publish: *const fn (
             context: *anyopaque,
             staged: Staged,
@@ -128,6 +138,12 @@ pub const ObjectDataStore = struct {
         source: byte_stream.Source,
     ) Error!Staged {
         return self.vtable.stage(self.context, token, source);
+    }
+
+    /// Null indicates this backend/layout needs the streaming fallback.
+    pub fn stageMultipart(self: ObjectDataStore, token: id.Uuid, manifest: object_domain.MultipartManifestView, encryption: ?ComposeEncryption) Error!?Staged {
+        const compose = self.vtable.stage_multipart orelse return null;
+        return compose(self.context, token, manifest, encryption);
     }
 
     pub fn stageEncrypted(

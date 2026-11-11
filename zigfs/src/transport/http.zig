@@ -1,3 +1,4 @@
+const logging = @import("../application/logging.zig");
 const AuditContext = @import("audit_context.zig").Context;
 const std = @import("std");
 const Application = @import("../application/mod.zig").Application;
@@ -66,12 +67,13 @@ pub fn serve(
 
     var background: std.Io.Group = .init;
     defer background.cancel(io);
-    background.async(io, serveLogMaintenance, .{application});
-    background.async(io, serveLifecycleScanner, .{
+    try background.concurrent(io, serveLogMaintenance, .{application});
+    try background.concurrent(io, serveMetadataMaintenance, .{application});
+    try background.concurrent(io, serveLifecycleScanner, .{
         application,
         config.s3_lifecycle_scan_interval_seconds,
     });
-    background.async(io, serveStorageScanner, .{
+    try background.concurrent(io, serveStorageScanner, .{
         application,
         config.s3_lifecycle_scan_interval_seconds,
     });
@@ -95,7 +97,7 @@ pub fn serve(
     defer listeners.cancel(io);
 
     std.debug.print("Prometheus metrics listening on http://{s}{s}\n", .{ config.metrics_address, metrics_path });
-    listeners.async(io, serveLoopBackground, .{ &metrics_listener, &metrics_context });
+    try listeners.concurrent(io, serveLoopBackground, .{ &metrics_listener, &metrics_context });
     return serveLoop(&api_listener, &api_context);
 }
 
@@ -104,9 +106,42 @@ fn serveLogMaintenance(application: *Application) void {
     const interval: std.Io.Clock.Duration = .{ .clock = .awake, .raw = std.Io.Duration.fromSeconds(60) };
     while (true) {
         interval.sleep(io) catch return;
+        if (application.audit_logger) |*logger| logger.maintain() catch |err| {
+            logging.reportFailure(.observability, err, @errorReturnTrace(), @src(), "Audit log retention cleanup failed: {t}", .{err});
+        };
         if (application.logger) |*logger| logger.maintain() catch {
             std.log.defaultLog(.err, .default, "Log retention cleanup failed", .{});
         };
+    }
+}
+
+fn serveMetadataMaintenance(application: *Application) void {
+    const io = application.io orelse return;
+    var delay_seconds = application.config.metadata_maintenance_interval_seconds;
+    while (true) {
+        const interval: std.Io.Clock.Duration = .{ .clock = .awake, .raw = std.Io.Duration.fromSeconds(@intCast(delay_seconds)) };
+        interval.sleep(io) catch return;
+        delay_seconds = application.config.metadata_maintenance_interval_seconds;
+        if (!application.recoveryState().isReady()) continue;
+        const started = std.Io.Clock.awake.now(io);
+        const report = application.runMetadataMaintenance() catch |err| {
+            logging.reportFailure(.storage, err, @errorReturnTrace(), @src(), "ZigFS metadata maintenance failed (unresolved commits require restart recovery): {t}", .{err});
+            continue;
+        };
+        // Drain a backlog without waiting a full idle interval between batches.
+        if (report.has_more) delay_seconds = 1;
+        if (report.removed_journal_files != 0 or report.removed_tombstones != 0) {
+            std.log.scoped(.storage).info("ZigFS metadata maintenance checkpoint={d} journal_removed={d} tombstones_removed={d} multipart_tombstones_removed={d} journal_scanned={d} metadata_scanned={d} has_more={} duration_ms={d}", .{
+                report.checkpoint_generation,
+                report.removed_journal_files,
+                report.removed_tombstones,
+                report.removed_multipart_tombstones,
+                report.scanned_journal_entries,
+                report.scanned_metadata_entries,
+                report.has_more,
+                started.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds(),
+            });
+        }
     }
 }
 
@@ -122,11 +157,11 @@ fn serveLifecycleScanner(application: *Application, interval_seconds: u64) void 
         const service = application.lifecycleService() orelse continue;
         const now = std.Io.Clock.real.now(io).toSeconds();
         const report = service.scan(now) catch |err| {
-            std.log.err("ZigFS lifecycle scan failed: {t}", .{err});
+            logging.reportFailure(.storage, err, @errorReturnTrace(), @src(), "ZigFS lifecycle scan failed: {t}", .{err});
             continue;
         };
         if (report.current_expired != 0 or report.noncurrent_expired != 0 or report.delete_markers_removed != 0) {
-            std.log.info(
+            std.log.scoped(.storage).info(
                 "ZigFS lifecycle scan completed buckets={d} versions={d} current_expired={d} noncurrent_expired={d} delete_markers_removed={d}",
                 .{ report.buckets_scanned, report.versions_scanned, report.current_expired, report.noncurrent_expired, report.delete_markers_removed },
             );
@@ -143,11 +178,11 @@ fn serveStorageScanner(application: *Application, interval_seconds: u64) void {
     while (true) {
         interval.sleep(io) catch return;
         const report = application.runStorageScanner() catch |err| {
-            std.log.err("ZigFS storage scanner failed: {t}", .{err});
+            logging.reportFailure(.storage, err, @errorReturnTrace(), @src(), "ZigFS storage scanner failed: {t}", .{err});
             continue;
         };
         if (report.removed_generations != 0 or report.expired_multipart_uploads != 0) {
-            std.log.info(
+            std.log.scoped(.storage).info(
                 "ZigFS storage scanner partition={d}/{d} scanned={d} retained={d} purged={d} expired_mpu={d}",
                 .{ report.partition orelse 0, report.partitions, report.scanned_generations, report.retained_generations, report.removed_generations, report.expired_multipart_uploads },
             );
@@ -158,7 +193,7 @@ fn serveStorageScanner(application: *Application, interval_seconds: u64) void {
 fn serveLoopBackground(listener: *std.Io.net.Server, context: *ListenerContext) void {
     serveLoop(listener, context) catch |err| {
         if (err == error.Canceled) return;
-        std.log.err("{t} listener stopped: {t}", .{ context.kind, err });
+        logging.reportFailure(.network, err, @errorReturnTrace(), @src(), "{t} listener stopped: {t}", .{ context.kind, err });
     };
 }
 
@@ -168,7 +203,13 @@ fn serveLoop(listener: *std.Io.net.Server, context: *ListenerContext) !void {
 
     while (true) {
         const stream = try listener.accept(context.io);
-        connections.async(context.io, serveConnection, .{ context, stream });
+        // async may run inline when the CPU-based worker budget is exhausted.
+        // A keep-alive reader would then block accept indefinitely. Connections
+        // require guaranteed concurrency; reject only this socket on exhaustion.
+        connections.concurrent(context.io, serveConnection, .{ context, stream }) catch |err| {
+            stream.close(context.io);
+            std.log.scoped(.api).warn("cannot schedule HTTP connection: {t}", .{err});
+        };
     }
 }
 
@@ -186,20 +227,20 @@ fn serveConnection(context: *ListenerContext, stream: std.Io.net.Stream) void {
         var request = receiveHeadAllowAwsChunked(&server) catch |err| switch (err) {
             error.HttpConnectionClosing => return,
             else => {
-                std.log.warn("closing invalid HTTP connection: {t}", .{err});
+                std.log.scoped(.api).warn("closing invalid HTTP connection: {t}", .{err});
                 return;
             },
         };
 
         const started: std.Io.Clock.Timestamp = .now(io, .awake);
         const path = std.heap.smp_allocator.dupe(u8, requestPath(request.head.target)) catch {
-            std.log.warn("closing HTTP connection after failing to preserve the request path", .{});
+            std.log.scoped(.api).warn("closing HTTP connection after failing to preserve the request path", .{});
             return;
         };
         defer std.heap.smp_allocator.free(path);
         var request_id_buffer: [request_id.max_length]u8 = undefined;
         const current_request_id = resolveRequestId(&request, io, &request_id_buffer) catch |err| {
-            std.log.warn("failed to create request ID for {s}: {t}", .{ path, err });
+            std.log.scoped(.api).warn("failed to create request ID for {s}: {t}", .{ path, err });
             return;
         };
 
@@ -214,7 +255,11 @@ fn serveConnection(context: *ListenerContext, stream: std.Io.net.Stream) void {
         const status = serveRequest(&request, context, current_request_id, stream.socket.address, &audit_context) catch |err| {
             if (err == error.OutputWriteFailed) return;
             const duration_ms = started.untilNow(io).raw.toMilliseconds();
-            std.log.warn(
+            logging.reportFailure(
+                .api,
+                err,
+                @errorReturnTrace(),
+                @src(),
                 "http request failed method={s} path={s} request_id={s} duration_ms={d} error={t}",
                 .{ @tagName(request.head.method), path, current_request_id, duration_ms, err },
             );
@@ -222,11 +267,8 @@ fn serveConnection(context: *ListenerContext, stream: std.Io.net.Stream) void {
         };
 
         audit_status = status;
-        const duration_ms = started.untilNow(io).raw.toMilliseconds();
-        std.log.info(
-            "http request method={s} path={s} status={d} request_id={s} duration_ms={d}",
-            .{ @tagName(request.head.method), path, @backingInt(status), current_request_id, duration_ms },
-        );
+        // Successful HTTP traffic belongs to audit/access tracking, not runtime diagnostics.
+        // In particular, viewing logs must never generate more system logs.
         if (!request.head.keep_alive) return;
     }
 }
@@ -520,7 +562,8 @@ fn serveAuthorizedManagement(request: *std.http.Server.Request, context: *const 
     const principal = (management_auth.resolve(a, context.application, token, now) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
     try audit_context.identify(principal.username);
     try audit_context.authenticate(if (principal.federated) "oidc" else "internal", principal.id, null);
-    if (!principal.is_root) {
+    // Presigning checks the exact action and resource from its body.
+    if (!principal.is_root and !std.mem.eql(u8, requestPath(request.head.target), "/_admin/v1/objects/presign")) {
         var headers: std.ArrayList(sigv4.Header) = .empty;
         var iterator = request.iterateHeaders();
         while (iterator.next()) |header| try headers.append(a, .{ .name = header.name, .value = header.value });

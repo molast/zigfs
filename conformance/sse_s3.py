@@ -142,7 +142,7 @@ admin:
             encrypted(s3.complete_multipart_upload(Bucket=bucket, Key='part-copy', UploadId=upload['UploadId'],
                 MultipartUpload={'Parts': [{'PartNumber': 1, 'ETag': copied['CopyPartResult']['ETag']}]}))
             rejected('ServiceUnavailable', s3.put_object, Bucket=bucket, Key='kms', Body=b'x', ServerSideEncryption='aws:kms')
-            s3.put_bucket_encryption(Bucket=bucket, ServerSideEncryptionConfiguration={'Rules': [{'ApplyServerSideEncryptionByDefault': {'SSEAlgorithm': 'aws:kms'}}]})
+            rejected('ServiceUnavailable', s3.put_bucket_encryption, Bucket=bucket, ServerSideEncryptionConfiguration={'Rules': [{'ApplyServerSideEncryptionByDefault': {'SSEAlgorithm': 'aws:kms'}}]})
             s3.delete_bucket_encryption(Bucket=bucket)
             rejected('NotImplemented', s3.put_object, Bucket=bucket, Key='customer', Body=b'x', SSECustomerAlgorithm='AES256', SSECustomerKey=b'x'*32)
             # A signed browser POST policy must cover the encryption field.

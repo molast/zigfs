@@ -31,10 +31,15 @@ build_admin_web_assets() {
 
 start_fs() {
   require_command zig
+  local build_mode="${1:-${ZIGFS_BUILD_MODE:-ReleaseSafe}}"
+  case "${build_mode}" in
+    Debug | ReleaseSafe | ReleaseFast | ReleaseSmall) ;;
+    *) fail "无效的 ZIGFS_BUILD_MODE: ${build_mode}" ;;
+  esac
 
-  printf '正在启动本地 ZigFS...\n'
+  printf '正在启动本地 ZigFS（%s）...\n' "${build_mode}"
   cd "${FS_DIR}"
-  exec zig build run --watch
+  exec zig build run --watch "-Doptimize=${build_mode}"
 }
 
 start_admin() {
@@ -53,16 +58,23 @@ start_admin() {
 
 printf '%s\n' \
   '请选择操作:' \
-  '  1) 启动本地 ZigFS' \
-  '  2) 启动本地 Admin' \
+  '  1) 启动本地 ZigFS (Debug)' \
+  '  2) 启动本地 ZigFS (Release)' \
+  '  3) 启动本地 Admin' \
   '  0) 退出'
-read -r -p '请输入选项 [0-2]: ' choice
+read -r -p '请输入选项 [0-3]: ' choice
 
 case "${choice}" in
-  1 | fs | FS)
+  1 | debug | Debug | DEBUG)
+    start_fs Debug
+    ;;
+  2 | release | Release | RELEASE)
+    start_fs ReleaseSafe
+    ;;
+  fs | FS)
     start_fs
     ;;
-  2 | admin | Admin | ADMIN)
+  3 | admin | Admin | ADMIN)
     start_admin
     ;;
   0 | q | Q)

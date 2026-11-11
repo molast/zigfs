@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -81,6 +82,7 @@ type ManagementService interface {
 	Health(ctx context.Context) (contract.ManagementHealthResponse, error)
 	AuditEvents(context.Context, string, string) (json.RawMessage, error)
 	LogSettings(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
+	AuditLogSettings(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
 	KMSSettings(ctx context.Context) (contract.KMSStatus, error)
 	StartKMS(ctx context.Context) (contract.KMSStatus, error)
 	KMSKeys(ctx context.Context, method string, action bool, input json.RawMessage) (json.RawMessage, error)
@@ -934,6 +936,17 @@ func (handler *Management) LogSettings(ctx *gin.Context) {
 	if strings.HasSuffix(ctx.FullPath(), "/download") {
 		operation = "download"
 	}
+	if operation != "" {
+		values := url.Values{}
+		for _, key := range []string{"from", "to"} {
+			if value := ctx.Query(key); value != "" {
+				values.Set(key, value)
+			}
+		}
+		if len(values) > 0 {
+			operation += "?" + values.Encode()
+		}
+	}
 	var input json.RawMessage
 	if ctx.Request.Method == http.MethodPut {
 		if err := ctx.ShouldBindJSON(&input); err != nil {
@@ -941,7 +954,11 @@ func (handler *Management) LogSettings(ctx *gin.Context) {
 			return
 		}
 	}
-	response, err := handler.service.LogSettings(ctx.Request.Context(), ctx.Request.Method, operation, input)
+	call := handler.service.LogSettings
+	if strings.Contains(ctx.FullPath(), "/settings/audit-logs") {
+		call = handler.service.AuditLogSettings
+	}
+	response, err := call(ctx.Request.Context(), ctx.Request.Method, operation, input)
 	if err != nil {
 		writeStorageError(ctx, err)
 		return

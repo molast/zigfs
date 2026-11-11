@@ -60,6 +60,7 @@ pub const LocalStorageBackend = struct {
         if (!try lock_file.tryLock(io, .exclusive)) return error.DataRootLocked;
         errdefer lock_file.unlock(io);
 
+        _ = @import("../metadata/atomic_cleanup.zig").run(root, io) catch return error.StorageNotWritable;
         const format_metadata = try format.loadOrCreate(root, io);
         try root.createDirPath(io, ".zigfs/system/credentials");
         try root.createDirPath(io, ".zigfs/system/configuration");

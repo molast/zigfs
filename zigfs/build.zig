@@ -8,6 +8,8 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .error_tracing = true,
+        .strip = false,
         .link_libc = true,
     });
 
@@ -22,6 +24,8 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .error_tracing = true,
+            .strip = false,
             .link_libc = true,
             .imports = &.{.{ .name = "zigfs", .module = mod }},
         }),

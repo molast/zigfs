@@ -1,18 +1,29 @@
 const std = @import("std");
 const durable = @import("../metadata/durable.zig");
 pub const config_path = ".zigfs/config/log_config.json";
-pub const Config = struct {
-    level: []const u8 = "info",
-    format: []const u8 = "json",
-    output: []const u8 = "console",
-    directory: []const u8 = "logs",
-    retention: []const u8 = "7",
-    maxSize: []const u8 = "100",
-    sizeUnit: []const u8 = "MiB",
-    cleanup: []const u8 = "enabled",
-    downloads: []const u8 = "enabled",
-    range: []const u8 = "24h",
-};
+pub const audit_config_path = ".zigfs/config/audit_log_config.json";
+pub const Config = ConfigType(false);
+pub const AuditConfig = ConfigType(true);
+pub fn auditConfig(value: AuditConfig) Config {
+    var result: Config = .{};
+    inline for (@typeInfo(Config).@"struct".field_names) |name| @field(result, name) = @field(value, name);
+    return result;
+}
+fn ConfigType(comptime audit_log: bool) type {
+    return struct {
+        level: []const u8 = "info",
+        format: []const u8 = "json",
+        output: []const u8 = if (audit_log) "file" else "console",
+        directory: []const u8 = if (audit_log) "audit-logs" else "logs",
+        retention: []const u8 = if (audit_log) "forever" else "7",
+        maxSize: []const u8 = "100",
+        sizeUnit: []const u8 = "MiB",
+        cleanup: []const u8 = "enabled",
+        downloads: []const u8 = "enabled",
+        range: []const u8 = "24h",
+    };
+}
+
 fn oneOf(value: []const u8, choices: []const []const u8) bool {
     for (choices) |choice| if (std.mem.eql(u8, value, choice)) return true;
     return false;
@@ -34,8 +45,17 @@ pub fn validate(c: Config) !void {
         for (part) |ch| if (!std.ascii.isAlphanumeric(ch) and ch != '-' and ch != '_' and ch != '.') return error.InvalidLogDirectory;
     }
 }
+pub const Diagnostic = struct {
+    code: ?[]const u8 = null,
+    stack_trace: ?[]const u8 = null,
+    trace_kind: ?[]const u8 = null,
+    source: ?std.builtin.SourceLocation = null,
+};
+
 pub const Service = struct {
+    kind: enum { system, audit } = .system,
     root: std.Io.Dir,
+    instance_id: []const u8 = "local",
     io: std.Io,
     allocator: std.mem.Allocator,
     mutex: std.Io.Mutex = .init,
@@ -45,10 +65,13 @@ pub const Service = struct {
     last_cleanup: i64 = 0,
 
     fn config(self: *Service) Config {
-        return if (self.parsed) |p| p.value else .{};
+        return if (self.parsed) |p| p.value else if (self.kind == .audit) .{ .output = "file", .directory = "audit-logs", .retention = "forever" } else .{};
+    }
+    fn configPath(self: *Service) []const u8 {
+        return if (self.kind == .audit) audit_config_path else config_path;
     }
     pub fn init(self: *Service) !void {
-        const bytes = self.root.readFileAlloc(self.io, config_path, self.allocator, .limited(16384)) catch |err| {
+        const bytes = self.root.readFileAlloc(self.io, self.configPath(), self.allocator, .limited(16384)) catch |err| {
             if (err == error.FileNotFound) return;
             return err;
         };
@@ -56,6 +79,7 @@ pub const Service = struct {
         const parsed = try std.json.parseFromSlice(Config, self.allocator, bytes, .{ .allocate = .alloc_always });
         errdefer parsed.deinit();
         try validate(parsed.value);
+        if (self.kind == .audit and !std.mem.eql(u8, parsed.value.output, "file")) return error.InvalidLogConfig;
         self.parsed = parsed;
     }
     pub fn deinit(self: *Service) void {
@@ -89,7 +113,8 @@ pub const Service = struct {
     }
     pub fn save(self: *Service, input: Config) !void {
         var c = input;
-        if (c.directory.len == 0) c.directory = "logs";
+        if (c.directory.len == 0) c.directory = if (self.kind == .audit) "audit-logs" else "logs";
+        if (self.kind == .audit and !std.mem.eql(u8, c.output, "file")) return error.InvalidLogConfig;
         try validate(c);
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -106,13 +131,13 @@ pub const Service = struct {
         const parsed = try std.json.parseFromSlice(Config, self.allocator, bytes, .{ .allocate = .alloc_always });
         errdefer parsed.deinit();
         try self.root.createDirPath(self.io, ".zigfs/config");
-        var atomic = try self.root.createFileAtomic(self.io, config_path, .{ .replace = true });
+        var atomic = try self.root.createFileAtomic(self.io, self.configPath(), .{ .replace = true });
         defer atomic.deinit(self.io);
         try atomic.file.setPermissions(self.io, .fromMode(0o600));
         try atomic.file.writeStreamingAll(self.io, bytes);
         try atomic.file.sync(self.io);
         try atomic.replace(self.io);
-        try durable.syncParent(self.root, self.io, config_path);
+        try durable.syncParent(self.root, self.io, self.configPath());
         if (self.active_file) |file| file.close(self.io);
         self.active_file = null;
         self.active_bytes = 0;
@@ -129,6 +154,9 @@ pub const Service = struct {
         return 0;
     }
     pub fn emit(self: *Service, level: []const u8, scope: []const u8, message: []const u8) !void {
+        return self.emitDiagnostic(level, scope, message, .{});
+    }
+    pub fn emitDiagnostic(self: *Service, level: []const u8, scope: []const u8, message: []const u8, diagnostic: Diagnostic) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         const c = self.config();
@@ -143,16 +171,46 @@ pub const Service = struct {
         const a = arena.allocator();
         // Bound each record and keep text logs on a single line.
         const bounded = message[0..@min(message.len, 32 * 1024)];
+        const source = .{
+            .type = "application",
+            .component = if (std.mem.eql(u8, scope, "default")) "server" else scope,
+            .file = if (diagnostic.source) |src| src.file else @as(?[]const u8, null),
+            .line = if (diagnostic.source) |src| src.line else @as(?u32, null),
+            .function = if (diagnostic.source) |src| src.fn_name else @as(?[]const u8, null),
+        };
+        const error_details = if (std.mem.eql(u8, level, "error") or diagnostic.code != null) .{
+            .code = diagnostic.code orelse messageField(bounded, "error="),
+            .type = "RuntimeError",
+            .message = bounded,
+            .stack_trace = diagnostic.stack_trace,
+            .trace_kind = diagnostic.trace_kind,
+        } else null;
         const line = if (std.mem.eql(u8, c.format, "json")) blk: {
-            const json = try std.json.Stringify.valueAlloc(a, .{ .timestamp = now, .level = level, .scope = scope, .message = bounded }, .{});
+            var time_buffer: [24]u8 = undefined;
+            const timestamp = try @import("../common/time.zig").formatIso8601Milliseconds(@intCast(std.Io.Clock.real.now(self.io).toMilliseconds()), &time_buffer);
+            const json = try std.json.Stringify.valueAlloc(a, .{
+                .schema_version = "1.0",
+                .timestamp = timestamp,
+                .level = try std.ascii.allocUpperString(a, level),
+                .message = bounded,
+                .service = .{ .name = "zigfs", .version = @import("../version.zig").value, .instance_id = self.instance_id },
+                .source = source,
+                .context = .{ .request_id = messageField(bounded, "request_id="), .trace_id = @as(?[]const u8, null), .bucket = @as(?[]const u8, null), .object_key = @as(?[]const u8, null) },
+                .@"error" = error_details,
+                .metadata = .{},
+            }, .{});
             break :blk try std.fmt.allocPrint(a, "{s}\n", .{json});
         } else blk: {
             const clean = try a.dupe(u8, bounded);
             for (clean) |*ch| if (ch.* == '\n' or ch.* == '\r') {
                 ch.* = ' ';
             };
-            break :blk try std.fmt.allocPrint(a, "{d} {s} [{s}] {s}\n", .{ now, level, scope, clean });
+            const suffix = if (error_details != null) try std.fmt.allocPrint(a, "\t@zigfs:{s}", .{try std.json.Stringify.valueAlloc(a, .{ .source = source, .@"error" = error_details }, .{})}) else "";
+            break :blk try std.fmt.allocPrint(a, "{d} {s} [{s}] {s}{s}\n", .{ now, level, scope, clean, suffix });
         };
+        try self.writeLineLocked(c, line, now);
+    }
+    fn writeLineLocked(self: *Service, c: Config, line: []const u8, now: i64) !void {
         if (!std.mem.eql(u8, c.output, "file")) try std.Io.File.stderr().writeStreamingAll(self.io, line);
         if (std.mem.eql(u8, c.output, "console")) return;
         const limit = try maxBytes(c);
@@ -165,14 +223,21 @@ pub const Service = struct {
             var dir = try self.directory(c.directory, true);
             defer dir.close(self.io);
             const id = try @import("../common/id.zig").randomV4(self.io);
-            const name = try std.fmt.allocPrint(a, "zigfs-{d}-{s}.log", .{ now, std.fmt.bytesToHex(id, .lower) });
+            const name = try std.fmt.allocPrint(self.allocator, "{s}{d}-{s}.log", .{ if (self.kind == .audit) "audit-" else "zigfs-", now, std.fmt.bytesToHex(id, .lower) });
+            defer self.allocator.free(name);
             self.active_file = try dir.createFile(self.io, name, .{ .exclusive = true, .permissions = .fromMode(0o600) });
+            if (self.kind == .audit) {
+                const full_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ c.directory, name });
+                defer self.allocator.free(full_path);
+                try durable.syncParent(self.root, self.io, full_path);
+            }
         }
         try self.active_file.?.writeStreamingAll(self.io, line);
         self.active_bytes += line.len;
+        if (self.kind == .audit) try self.active_file.?.sync(self.io);
     }
-    fn segmentTime(name: []const u8) ?i64 {
-        if (!std.mem.startsWith(u8, name, "zigfs-") or !std.mem.endsWith(u8, name, ".log")) return null;
+    fn segmentTime(self: *Service, name: []const u8) ?i64 {
+        if (!std.mem.startsWith(u8, name, if (self.kind == .audit) "audit-" else "zigfs-") or !std.mem.endsWith(u8, name, ".log")) return null;
         const end = std.mem.indexOfScalarPos(u8, name, 6, '-') orelse return null;
         if (name.len != end + 1 + 32 + 4) return null;
         for (name[end + 1 .. name.len - 4]) |ch| if (!std.ascii.isHex(ch)) return null;
@@ -194,7 +259,7 @@ pub const Service = struct {
         const cutoff = now - (try std.fmt.parseInt(i64, c.retention, 10)) * 86400;
         var iter = dir.iterate();
         while (try iter.next(self.io)) |entry| {
-            if (entry.kind != .file or segmentTime(entry.name) == null) continue;
+            if (entry.kind != .file or self.segmentTime(entry.name) == null) continue;
             const stat = try dir.statFile(self.io, entry.name, .{ .follow_symlinks = false });
             if (stat.mtime.toSeconds() >= cutoff) continue;
             // A quiet active file may also expire; close before unlinking it.
@@ -209,14 +274,81 @@ pub const Service = struct {
             try dir.deleteFile(self.io, entry.name);
         }
     }
+    pub fn emitAudit(self: *Service, event: @import("audit_schema.zig").Event, importing: bool) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const c = self.config();
+        const status = event.response.status;
+        const level: []const u8 = if (std.mem.eql(u8, status, "error") or std.mem.eql(u8, status, "failure")) "error" else if (std.mem.eql(u8, status, "denied")) "warn" else "info";
+        if (!importing and rank(level) < rank(c.level)) return;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const json = try std.json.Stringify.valueAlloc(a, event, .{});
+        const line = if (std.mem.eql(u8, c.format, "text")) try std.fmt.allocPrint(a, "{d} {s} [audit] {s}\n", .{ event.timestamp_unix_seconds, level, json }) else try std.fmt.allocPrint(a, "{s}\n", .{json});
+        const now = std.Io.Clock.real.now(self.io).toSeconds();
+        if (!importing and now - self.last_cleanup >= 60) {
+            try self.cleanupLocked(now);
+            self.last_cleanup = now;
+        }
+        try self.writeLineLocked(c, line, now);
+    }
+
+    pub fn readAuditEvents(self: *Service, a: std.mem.Allocator, from: ?i64, to: ?i64, use_config_range: bool) !std.ArrayList(@import("audit_schema.zig").Event) {
+        const schema = @import("audit_schema.zig");
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const c = self.config();
+        const now = std.Io.Clock.real.now(self.io).toSeconds();
+        const configured_seconds: i64 = if (std.mem.eql(u8, c.range, "1h")) 3600 else if (std.mem.eql(u8, c.range, "24h")) 86400 else if (std.mem.eql(u8, c.range, "7d")) 604800 else 2592000;
+        const cutoff = from orelse (if (use_config_range) now - configured_seconds else 0);
+        const retention_cutoff = if (use_config_range and std.mem.eql(u8, c.cleanup, "enabled") and !std.mem.eql(u8, c.retention, "forever")) now - (try std.fmt.parseInt(i64, c.retention, 10)) * 86400 else 0;
+        var result: std.ArrayList(schema.Event) = .empty;
+        errdefer {
+            for (result.items) |event| schema.free(a, event);
+            result.deinit(a);
+        }
+        var dir = self.directory(c.directory, false) catch |err| {
+            if (err == error.FileNotFound) return result;
+            return err;
+        };
+        defer dir.close(self.io);
+        var iter = dir.iterate();
+        var buffer: [256 * 1024]u8 = undefined;
+        while (try iter.next(self.io)) |entry| {
+            if (entry.kind != .file or self.segmentTime(entry.name) == null) continue;
+            var file = try dir.openFile(self.io, entry.name, .{ .follow_symlinks = false });
+            defer file.close(self.io);
+            var reader = file.reader(self.io, &buffer);
+            while (try reader.interface.takeDelimiter('\n')) |line| {
+                const json = if (std.mem.startsWith(u8, line, "{")) line else if (std.mem.indexOf(u8, line, " [audit] ")) |index| line[index + 9 ..] else continue;
+                const parsed = std.json.parseFromSlice(schema.Event, a, json, .{}) catch continue;
+                defer parsed.deinit();
+                const stamp = parsed.value.timestamp_unix_seconds;
+                if (stamp < cutoff or stamp < retention_cutoff or stamp > (to orelse std.math.maxInt(i64))) continue;
+                try result.append(a, try schema.clone(a, parsed.value));
+            }
+        }
+        return result;
+    }
+
     pub const Query = struct { content: []const u8, truncated: bool, range: []const u8 };
     pub fn query(self: *Service, a: std.mem.Allocator, download: bool) !Query {
+        return self.queryRange(a, download, null, null);
+    }
+    pub fn queryRange(self: *Service, a: std.mem.Allocator, download: bool, from: ?i64, to: ?i64) !Query {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         const c = self.config();
         if (download and !std.mem.eql(u8, c.downloads, "enabled")) return error.LogDownloadsDisabled;
         const seconds: i64 = if (std.mem.eql(u8, c.range, "1h")) 3600 else if (std.mem.eql(u8, c.range, "24h")) 86400 else if (std.mem.eql(u8, c.range, "7d")) 7 * 86400 else 30 * 86400;
-        const cutoff = std.Io.Clock.real.now(self.io).toSeconds() - seconds;
+        const now = std.Io.Clock.real.now(self.io).toSeconds();
+        const requested_cutoff = from orelse (now - seconds);
+        if (requested_cutoff < 0) return error.InvalidLogConfig;
+        const retention_cutoff = if (self.kind == .audit and std.mem.eql(u8, c.cleanup, "enabled") and !std.mem.eql(u8, c.retention, "forever")) now - (try std.fmt.parseInt(i64, c.retention, 10)) * 86400 else 0;
+        const cutoff = @max(requested_cutoff, retention_cutoff);
+        const end = to orelse std.math.maxInt(i64);
+        if (end < requested_cutoff) return error.InvalidLogConfig;
         var dir = self.directory(c.directory, false) catch |err| {
             if (err == error.FileNotFound) return .{ .content = "", .truncated = false, .range = try a.dupe(u8, c.range) };
             return err;
@@ -226,7 +358,7 @@ pub const Service = struct {
         var iter = dir.iterate();
         var truncated = false;
         while (try iter.next(self.io)) |entry| {
-            if (entry.kind != .file or segmentTime(entry.name) == null) continue;
+            if (entry.kind != .file or self.segmentTime(entry.name) == null) continue;
             const stat = try dir.statFile(self.io, entry.name, .{ .follow_symlinks = false });
             if (stat.mtime.toSeconds() < cutoff) continue;
             if (names.items.len == 1024) {
@@ -262,14 +394,19 @@ pub const Service = struct {
             if (offset > 0) _ = lines.next();
             while (lines.next()) |line| {
                 if (line.len == 0) continue;
-                const timestamp = if (line[0] == '{') blk: {
-                    const parsed = std.json.parseFromSlice(std.json.Value, a, line, .{}) catch continue;
-                    if (parsed.value != .object) continue;
-                    const value = parsed.value.object.get("timestamp") orelse continue;
-                    if (value != .integer) continue;
-                    break :blk value.integer;
-                } else std.fmt.parseInt(i64, line[0 .. std.mem.indexOfScalar(u8, line, ' ') orelse continue], 10) catch continue;
-                if (timestamp < cutoff) continue;
+                const timestamp: ?i64 = if (line[0] == '{') blk: {
+                    const parsed = std.json.parseFromSlice(std.json.Value, a, line, .{}) catch break :blk null;
+                    if (parsed.value != .object) break :blk null;
+                    const value = parsed.value.object.get("timestamp") orelse parsed.value.object.get("timestamp_unix_seconds") orelse break :blk null;
+                    break :blk switch (value) {
+                        .integer => value.integer,
+                        .string => |text| @import("../common/time.zig").parseIso8601(text) catch null,
+                        else => null,
+                    };
+                } else std.fmt.parseInt(i64, line[0 .. std.mem.indexOfScalar(u8, line, ' ') orelse line.len], 10) catch null;
+                if (timestamp) |stamp| {
+                    if (stamp < cutoff or stamp > end) continue;
+                }
                 try result.appendSlice(a, line);
                 try result.append(a, '\n');
             }
@@ -278,11 +415,53 @@ pub const Service = struct {
     }
 };
 
+fn messageField(message: []const u8, key: []const u8) ?[]const u8 {
+    const index = std.mem.indexOf(u8, message, key) orelse return null;
+    const value = message[index + key.len ..];
+    return value[0 .. std.mem.indexOfScalar(u8, value, ' ') orelse value.len];
+}
+
+var trace_mutex: std.Io.Mutex = .init;
+
+/// Call from the catch site, passing @errorReturnTrace() before doing more work.
+pub fn reportFailure(comptime scope: @EnumLiteral(), err: anyerror, trace: ?*const std.builtin.StackTrace, comptime source: std.builtin.SourceLocation, comptime format: []const u8, args: anytype) void {
+    const service = active orelse return std.log.defaultLog(.err, scope, format, args);
+    const message = std.fmt.allocPrint(service.allocator, format, args) catch return;
+    defer service.allocator.free(message);
+    reportDiagnostic(@tagName(scope), @errorName(err), message, trace, source);
+}
+
+/// Errors converted to HTTP responses have a reporting-site stack, not a fabricated throw-site stack.
+pub fn reportDiagnostic(scope: []const u8, code: ?[]const u8, message: []const u8, trace: ?*const std.builtin.StackTrace, source: ?std.builtin.SourceLocation) void {
+    const service = active orelse return;
+    var buffer: [16 * 1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    const terminal: std.Io.Terminal = .{ .writer = &writer, .mode = .no_color };
+    const has_error_trace = if (trace) |value| value.index > 0 else false;
+    trace_mutex.lockUncancelable(service.io);
+    if (has_error_trace) {
+        std.debug.writeErrorReturnTrace(trace.?, terminal) catch {};
+    } else {
+        std.debug.writeCurrentStackTrace(.{ .first_address = @returnAddress() }, terminal) catch {};
+    }
+    trace_mutex.unlock(service.io);
+    service.emitDiagnostic("error", scope, message, .{
+        .code = code,
+        .source = source,
+        .stack_trace = writer.buffered(),
+        .trace_kind = if (has_error_trace) "error_return" else "reporting_site",
+    }) catch {
+        std.log.defaultLog(.err, .default, "Unable to persist diagnostic: {s}", .{message});
+        std.debug.print("{s}", .{writer.buffered()});
+    };
+}
+
 pub var active: ?*Service = null;
 pub fn logFn(comptime level: std.log.Level, comptime scope: @EnumLiteral(), comptime format: []const u8, args: anytype) void {
     const service = active orelse return std.log.defaultLog(level, scope, format, args);
     const message = std.fmt.allocPrint(service.allocator, format, args) catch return;
     defer service.allocator.free(message);
+    if (level == .err) return reportDiagnostic(@tagName(scope), messageField(message, "error="), message, null, null);
     service.emit(if (level == .err) "error" else @tagName(level), @tagName(scope), message) catch {
         // Avoid recursive logging and never silently lose a file-write error.
         std.log.defaultLog(.err, .default, "Configured log output failed", .{});
@@ -336,4 +515,105 @@ test "log settings persist, filter, rotate and gate downloads" {
     try std.testing.expectEqualStrings("off", saved.value.level);
     try std.testing.expectEqualStrings("forever", saved.value.retention);
     try std.testing.expectEqualStrings("disabled", saved.value.downloads);
+}
+
+test "system logs schema, mixed formats and explicit time bounds" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var service: Service = .{ .root = tmp.dir, .io = std.testing.io, .allocator = std.testing.allocator, .instance_id = "test-node" };
+    defer service.deinit();
+    try service.save(.{ .output = "file" });
+    try service.emit("error", "kms", "backend failed request_id=req-test error=Unavailable");
+    const emitted = try service.query(a, false);
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, std.mem.trim(u8, emitted.content, "\n"), .{});
+    const object = parsed.value.object;
+    try std.testing.expectEqualStrings("ERROR", object.get("level").?.string);
+    try std.testing.expectEqualStrings("test-node", object.get("service").?.object.get("instance_id").?.string);
+    try std.testing.expectEqualStrings("req-test", object.get("context").?.object.get("request_id").?.string);
+    _ = try @import("../common/time.zig").parseIso8601(object.get("timestamp").?.string);
+    const file = try tmp.dir.createFile(std.testing.io, "logs/zigfs-100-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log", .{});
+    defer file.close(std.testing.io);
+    try file.writeStreamingAll(std.testing.io, "100 info [server] included\n200 info [server] excluded\n{\"timestamp\":150,\"level\":\"warn\",\"message\":\"legacy-json\"}\nunparsed record\n");
+    const result = try service.queryRange(a, false, 100, 150);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "included") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "legacy-json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "unparsed record") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "excluded") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "backend failed") == null);
+    try std.testing.expectError(error.InvalidLogConfig, service.queryRange(a, false, 200, 100));
+}
+
+noinline fn diagnosticTestFailure() error{DiagnosticTestFailure}!void {
+    return error.DiagnosticTestFailure;
+}
+
+test "caught errors persist an actual return trace and source in JSON and text" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var service: Service = .{ .root = tmp.dir, .io = std.testing.io, .allocator = std.testing.allocator };
+    defer service.deinit();
+    active = &service;
+    defer active = null;
+    try service.save(.{ .output = "file" });
+    diagnosticTestFailure() catch |err| reportFailure(.storage, err, @errorReturnTrace(), @src(), "test operation failed: {t}", .{err});
+    const result = try service.query(a, false);
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, std.mem.trim(u8, result.content, "\n"), .{});
+    const diagnostic = parsed.value.object.get("error").?.object;
+    try std.testing.expectEqualStrings("DiagnosticTestFailure", diagnostic.get("code").?.string);
+    try std.testing.expectEqualStrings("error_return", diagnostic.get("trace_kind").?.string);
+    try std.testing.expect(std.mem.indexOf(u8, diagnostic.get("stack_trace").?.string, "diagnosticTestFailure") != null);
+    try std.testing.expect(std.mem.indexOf(u8, parsed.value.object.get("source").?.object.get("file").?.string, "logging.zig") != null);
+    try service.save(.{ .output = "file", .format = "text", .directory = "text" });
+    diagnosticTestFailure() catch |err| reportFailure(.storage, err, @errorReturnTrace(), @src(), "text operation failed: {t}", .{err});
+    const text = try service.query(a, false);
+    try std.testing.expect(std.mem.indexOf(u8, text.content, "\t@zigfs:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text.content, "stack_trace") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, text.content, "\n"));
+}
+
+test "audit settings and files are isolated from system settings in a shared directory" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var system: Service = .{ .root = tmp.dir, .io = std.testing.io, .allocator = std.testing.allocator };
+    defer system.deinit();
+    var audit: Service = .{ .kind = .audit, .root = tmp.dir, .io = std.testing.io, .allocator = std.testing.allocator };
+    defer audit.deinit();
+    try system.save(.{ .directory = "shared", .output = "file" });
+    try audit.save(.{ .directory = "shared", .output = "file", .format = "text", .retention = "forever", .downloads = "disabled" });
+    try system.emit("info", "server", "system only");
+    const event = try @import("audit_schema.zig").clone(a, .{ .timestamp_unix_seconds = std.Io.Clock.real.now(std.testing.io).toSeconds(), .request_id = "audit-only", .action = "put_object", .outcome = "success:200" });
+    try audit.emitAudit(event, false);
+    const sys_content = try system.query(a, false);
+    const audit_content = try audit.query(a, false);
+    try std.testing.expect(std.mem.indexOf(u8, sys_content.content, "system only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sys_content.content, "audit-only") == null);
+    try std.testing.expect(std.mem.indexOf(u8, audit_content.content, "audit-only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, audit_content.content, "system only") == null);
+    try std.testing.expectError(error.LogDownloadsDisabled, audit.query(a, true));
+    try std.testing.expectError(error.InvalidLogConfig, audit.save(.{ .output = "console" }));
+    const parsed = try audit.readAuditEvents(a, 0, null, false);
+    try std.testing.expectEqual(@as(usize, 1), parsed.items.len);
+    try std.testing.expectEqualStrings("audit-only", parsed.items[0].request_id);
+    try system.save(.{ .level = "off", .output = "console" });
+    const config = try audit.snapshot(a);
+    defer config.deinit();
+    try std.testing.expectEqualStrings("info", config.value.level);
+    try std.testing.expectEqualStrings("text", config.value.format);
+    try std.testing.expectEqualStrings("file", config.value.output);
+    var restored: Service = .{ .kind = .audit, .root = tmp.dir, .io = std.testing.io, .allocator = std.testing.allocator };
+    defer restored.deinit();
+    try restored.init();
+    const restored_config = try restored.snapshot(a);
+    defer restored_config.deinit();
+    try std.testing.expectEqualStrings("shared", restored_config.value.directory);
+    try std.testing.expectEqualStrings("disabled", restored_config.value.downloads);
 }

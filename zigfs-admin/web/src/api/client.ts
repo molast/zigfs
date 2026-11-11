@@ -52,6 +52,9 @@ import type {
 } from '../types/api'
 
 const REQUEST_TIMEOUT_MS = 15000
+// Complete reads and publishes the whole object; allow the BFF's 15-minute
+// upstream timeout to return an error before aborting in the browser.
+const MULTIPART_COMPLETE_TIMEOUT_MS = 16 * 60 * 1000
 
 export class ApiError extends Error {
   constructor(
@@ -64,7 +67,7 @@ export class ApiError extends Error {
 
 export function createApiClient() {
   let oidcRefresh: Promise<AdminSession> | undefined
-  async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  async function request<T>(path: string, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
     const headers = new Headers(init.headers)
     headers.set('Accept', 'application/json')
     if (init.body) headers.set('Content-Type', 'application/json')
@@ -74,7 +77,7 @@ export function createApiClient() {
     const timeout = window.setTimeout(() => {
       timedOut = true
       controller.abort()
-    }, REQUEST_TIMEOUT_MS)
+    }, timeoutMs)
     let response: Response
     try {
       response = await fetch(path, {
@@ -161,9 +164,12 @@ export function createApiClient() {
     storageScanner: () => request<StorageScannerStatus>('/api/v1/storage/scanner'),
     runStorageGC: () => request<StorageScanReport>('/api/v1/storage/gc', { method: 'POST' }),
     managementHealth: () => request<ManagementHealth>('/api/v1/management-health'),
+    auditLogSettings: () => request<LogConfig>('/api/v1/settings/audit-logs'),
+    saveAuditLogSettings: (config: LogConfig) => request<LogConfig>('/api/v1/settings/audit-logs', { method: 'PUT', body: JSON.stringify({ ...config, output: 'file' }) }),
+    queryAuditLogs: (download = false, range?: { from: number; to: number }) => request<LogQuery>(`/api/v1/settings/audit-logs/${download ? 'download' : 'query'}${range ? `?from=${range.from}&to=${range.to}` : ''}`),
     logSettings: () => request<LogConfig>('/api/v1/settings/logs'),
     saveLogSettings: (config: LogConfig) => request<LogConfig>('/api/v1/settings/logs', { method: 'PUT', body: JSON.stringify(config) }),
-    queryLogs: (download = false) => request<LogQuery>(`/api/v1/settings/logs/${download ? 'download' : 'query'}`),
+    queryLogs: (download = false, range?: { from: number; to: number }) => request<LogQuery>(`/api/v1/settings/logs/${download ? 'download' : 'query'}${range ? `?from=${range.from}&to=${range.to}` : ''}`),
     settings: () => request<Settings>('/api/v1/settings'),
     stopKms: () => request<KmsStatus>('/api/v1/settings/kms/stop', { method: 'POST' }),
     clearKmsCache: () => request<KmsStatus>('/api/v1/settings/kms/clear-cache', { method: 'POST' }),
@@ -255,6 +261,7 @@ export function createApiClient() {
         partNumber?: number
         versionId?: string
         tagging?: boolean
+        download?: boolean
         copySource?: { bucket: string; key: string; versionId?: string }
       },
     ) => request<PresignObjectResponse>('/api/v1/objects/presign', {
@@ -268,6 +275,7 @@ export function createApiClient() {
         ...(options?.uploadId && options.partNumber ? { upload_id: options.uploadId, part_number: options.partNumber } : {}),
         ...(options?.versionId ? { version_id: options.versionId } : {}),
         ...(options?.tagging ? { tagging: true } : {}),
+        ...(options?.download ? { download: true } : {}),
         ...(options?.copySource ? {
           copy_source_bucket: options.copySource.bucket,
           copy_source_key: options.copySource.key,
@@ -304,7 +312,7 @@ export function createApiClient() {
     ) => request<ObjectSummary>(`/api/v1/multipart-uploads/${encodeURIComponent(uploadId)}/complete`, {
       method: 'POST',
       body: JSON.stringify({ bucket, key, parts }),
-    }),
+    }, MULTIPART_COMPLETE_TIMEOUT_MS),
     abortMultipartUpload: (uploadId: string, bucket: string, key: string) => {
       const query = new URLSearchParams({ bucket, key })
       return request<void>(

@@ -186,7 +186,7 @@
 
 ## 保存和兼容
 
-数据位于 `data/.zigfs/system/audit-events.json`，文件权限 0600。活动窗口为 4096 条，溢出进入 `data/.zigfs/system/audit-archive/`，查询包括归档。运行日志的级别、输出和保留时间不控制审计。
+审计数据默认位于 `data/audit-logs/audit-*.log`，文件权限 0600。写入级别、格式、目录、轮转、保留时间、下载权限及默认查询范围由独立的 `data/.zigfs/config/audit_log_config.json` 控制；输出固定为文件。旧的 `data/.zigfs/system/audit-events.json` 和 `audit-archive/` 在首次启动时幂等导入，原文件作为只读迁移备份保留，不再写入或参与查询。系统日志配置不控制审计。
 
 旧记录读取时转换为 V1，并设置 `metadata.legacy=true`；旧记录没有采集的真实身份 ID、认证类型、来源 IP、耗时、HTTP 错误码不补造。历史事件 ID 按原始记录确定性生成，重启后保持不变。六个原有平铺字段暂时保留，用于 Bucket 事件客户端兼容。
 
@@ -199,3 +199,8 @@
 - Go：筛选与结构化 JSON 透传；前端：构建、语言目录、筛选联动、操作搜索、详情、分页和错误提示。
 
 表中操作的接入依据为统一请求链路和映射目录，不代表已经逐一执行过每个 API 的端到端测试。
+
+
+新增审计日志配置操作：`GetAuditLogSettings`、`UpdateAuditLogSettings`、
+`QueryAuditLogs`、`DownloadAuditLogs`，均归类为 `system_management`。
+审计级别与保留策略见 [audit-log-configuration.md](audit-log-configuration.md)。

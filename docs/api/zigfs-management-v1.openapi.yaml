@@ -915,6 +915,12 @@ paths:
   /_admin/v1/multipart-uploads/{uploadId}/complete:
     post:
       operationId: completeManagementMultipartUpload
+      description: >-
+        Validates committed part metadata and atomically publishes a logical segmented object.
+        Local compatible filesystems reuse durable part data without rereading the payload.
+        Repeating the same upload ID and ordered Part Number/ETag list returns the original
+        object while that version is retained; a changed list is rejected. Unsupported
+        filesystem layouts retain the streaming compatibility path.
       summary: 使用已提交 Part 原子完成对象
       parameters:
         - $ref: "#/components/parameters/UploadID"
@@ -1246,7 +1252,16 @@ paths:
   /_admin/v1/settings/logs/query:
     get:
       summary: Read bounded runtime log content
-      description: Uses the configured directory and time range. Reads at most 1024 segments and 1 MiB; returns JSON, not a binary attachment.
+      description: Reads configured file logs, including legacy text/JSON and SystemLog v1 JSON. Optional Unix-second bounds override the configured range. Reads at most 1024 segments and 1 MiB; truncated results are partial. Console output is not captured.
+      parameters:
+        - in: query
+          name: from
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive start time in Unix seconds; defaults to configured range.
+        - in: query
+          name: to
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive end time in Unix seconds; must not precede from.
       responses:
         '200':
           description: Log content and truncation status
@@ -1259,7 +1274,90 @@ paths:
   /_admin/v1/settings/logs/download:
     get:
       summary: Download bounded runtime log content
-      description: Uses the configured directory and time range. Reads at most 1024 segments and 1 MiB; returns JSON, not a binary attachment.
+      description: Reads configured file logs, including legacy text/JSON and SystemLog v1 JSON. Optional Unix-second bounds override the configured range. Reads at most 1024 segments and 1 MiB; truncated results are partial. Console output is not captured.
+      parameters:
+        - in: query
+          name: from
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive start time in Unix seconds; defaults to configured range.
+        - in: query
+          name: to
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive end time in Unix seconds; must not precede from.
+      responses:
+        '200':
+          description: Log content and truncation status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LogQuery' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required or downloads disabled }
+        '503': { description: Log storage unavailable }
+  /_admin/v1/settings/audit-logs:
+    get:
+      summary: Read persisted audit log configuration
+      responses:
+        '200':
+          description: Current configuration (defaults when not configured)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditLogConfig' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Log service unavailable }
+    put:
+      summary: Persist and immediately apply audit log configuration
+      description: Paths are relative to the ZigFS data root; absolute paths, traversal and symlinks are rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuditLogConfig' }
+      responses:
+        '200':
+          description: Saved normalized configuration
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditLogConfig' }
+        '400': { description: Invalid log configuration or directory }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Directory or configuration persistence failed }
+  /_admin/v1/settings/audit-logs/query:
+    get:
+      summary: Read bounded audit log content
+      description: Reads configured file logs, including structured audit JSON and text audit records. Optional Unix-second bounds override the configured range. Reads at most 1024 segments and 1 MiB; truncated results are partial. Audit output is file-only and independent of runtime log settings.
+      parameters:
+        - in: query
+          name: from
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive start time in Unix seconds; defaults to configured range.
+        - in: query
+          name: to
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive end time in Unix seconds; must not precede from.
+      responses:
+        '200':
+          description: Log content and truncation status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LogQuery' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Log storage unavailable }
+  /_admin/v1/settings/audit-logs/download:
+    get:
+      summary: Download bounded audit log content
+      description: Reads configured file logs, including structured audit JSON and text audit records. Optional Unix-second bounds override the configured range. Reads at most 1024 segments and 1 MiB; truncated results are partial. Audit output is file-only and independent of runtime log settings.
+      parameters:
+        - in: query
+          name: from
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive start time in Unix seconds; defaults to configured range.
+        - in: query
+          name: to
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive end time in Unix seconds; must not precede from.
       responses:
         '200':
           description: Log content and truncation status
@@ -1555,6 +1653,15 @@ components:
         cleanup: { type: string, enum: [enabled, disabled], default: enabled }
         downloads: { type: string, enum: [enabled, disabled], default: enabled }
         range: { type: string, enum: [1h, 24h, 7d, 30d], default: 24h }
+    AuditLogConfig:
+      allOf:
+        - $ref: '#/components/schemas/LogConfig'
+        - type: object
+          properties:
+            output: { type: string, enum: [file], default: file }
+            directory: { type: string, default: audit-logs }
+            retention: { type: string, default: forever }
+      description: Independent audit configuration stored in data/.zigfs/config/audit_log_config.json. Output must be file. INFO records successful events, WARN also records denied events, ERROR records failure/error events; off stops new audit records. Retention defaults to forever to preserve existing history.
     LogQuery:
       type: object
       required: [content, truncated, range]
@@ -1945,13 +2052,14 @@ components:
     PresignObjectRequest:
       type: object
       additionalProperties: false
-      required: [access_key, bucket, key, method, expires_seconds]
+      required: [bucket, key, method, expires_seconds]
       properties:
         access_key:
           type: string
           description: >-
-            ZigFS 使用该 Credential 的加密 Secret 生成签名，并校验其启用状态、
-            Policy 和 Bucket Owner；Secret 不由调用方传入。
+            可选。省略或留空时使用当前登录会话的权限生成短期对象操作链接，无需创建 AK/SK。
+            链接使用时重新检查会话有效性和当前权限，且不超过登录会话有效期。
+            提供时继续使用指定 Credential，并同时校验当前用户权限；Secret 不由调用方传入。
         bucket:
           type: string
         key:
@@ -1974,6 +2082,13 @@ components:
         version_id:
           type: string
           description: GET 或 DELETE 时生成指定对象版本的 Presigned URL。
+        download:
+          type: boolean
+          default: false
+          description: >-
+            仅适用于对象 GET（可带 version_id，不可与 tagging 同用）。
+            将 response-content-disposition=attachment 纳入签名，浏览器可直接流式下载，
+            无需先在 Admin 页面读取完整对象。
         copy_source_bucket:
           type: string
           description: >-

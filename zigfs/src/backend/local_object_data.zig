@@ -7,6 +7,7 @@ const byte_stream = @import("../ports/byte_stream.zig");
 const data_store_port = @import("../ports/object_data_store.zig");
 const secret_box = @import("../auth/secret_box.zig");
 const encrypted_stream = @import("../application/object_encrypted_stream.zig");
+const composed = @import("composed_object.zig");
 const encryption_frames = @import("../application/object_encryption_frames.zig");
 
 pub const max_path_length: usize = 192;
@@ -16,6 +17,7 @@ pub const LocalObjectDataStore = struct {
     root: std.Io.Dir,
     io: std.Io,
     buffer_size: usize,
+    master_key: ?secret_box.Key = null,
     fault_injector: fault_injection.Injector = .disabled,
 
     pub fn init(
@@ -43,6 +45,7 @@ pub const LocalObjectDataStore = struct {
         return .{ .context = self, .vtable = &.{
             .cleanup_staged = cleanupStagedImpl,
             .stage = stageImpl,
+            .stage_multipart = stageMultipartImpl,
             .stage_encrypted = stageEncryptedImpl,
             .publish = publishImpl,
             .discard = discardImpl,
@@ -65,13 +68,13 @@ pub const LocalObjectDataStore = struct {
         var removed: usize = 0;
         var iterator = directory.iterate();
         while (iterator.next(self.io) catch return error.Unavailable) |entry| {
-            if (entry.kind != .file or
+            if ((entry.kind != .file and entry.kind != .directory) or
                 !std.mem.startsWith(u8, entry.name, "object-") or
                 !std.mem.endsWith(u8, entry.name, ".data"))
             {
                 continue;
             }
-            directory.deleteFile(self.io, entry.name) catch return error.Unavailable;
+            directory.deleteTree(self.io, entry.name) catch return error.Unavailable;
             removed += 1;
         }
         if (removed > 0) {
@@ -80,6 +83,30 @@ pub const LocalObjectDataStore = struct {
             };
         }
         return removed;
+    }
+
+    fn composedStore(self: *LocalObjectDataStore) composed.Store {
+        return .{ .allocator = self.allocator, .root = self.root, .io = self.io, .buffer_size = self.buffer_size, .master_key = self.master_key };
+    }
+
+    fn isComposed(self: *LocalObjectDataStore, path: []const u8) bool {
+        const info = self.root.statFile(self.io, path, .{}) catch return false;
+        return info.kind == .directory;
+    }
+
+    fn stageMultipartImpl(context: *anyopaque, token: id.Uuid, manifest: @import("../domain/object.zig").MultipartManifestView, encryption: ?data_store_port.ComposeEncryption) data_store_port.Error!?data_store_port.Staged {
+        const self: *LocalObjectDataStore = @ptrCast(@alignCast(context));
+        if (!id.isValidV4(token)) return error.InvalidValue;
+        for (manifest.parts) |part| if (part.encrypted != (encryption != null)) return null;
+        var path_buffer: [max_path_length]u8 = undefined;
+        const path = temporaryPath(token, &path_buffer) catch return error.InvalidValue;
+        if (self.fault_injector.trigger(.object_data_write)) return error.Unavailable;
+        const staged = self.composedStore().stage(token, path, manifest, encryption) catch |err| switch (err) {
+            error.UnsupportedComposition => return null,
+            else => |other| return other,
+        };
+        if (self.fault_injector.trigger(.object_stage_synced)) return error.Unavailable;
+        return staged;
     }
 
     fn stageImpl(
@@ -161,6 +188,10 @@ pub const LocalObjectDataStore = struct {
         };
         file.sync(self.io) catch return error.Unavailable;
         durable.syncParent(self.root, self.io, path) catch return error.Unavailable;
+        if (self.fault_injector.trigger(.object_stage_synced)) {
+            keep_file = true;
+            return error.Unavailable;
+        }
         keep_file = true;
         return .{
             .token = token,
@@ -216,7 +247,7 @@ pub const LocalObjectDataStore = struct {
         const self: *LocalObjectDataStore = @ptrCast(@alignCast(context));
         var path_buffer: [max_path_length]u8 = undefined;
         const path = temporaryPath(token, &path_buffer) catch return;
-        self.root.deleteFile(self.io, path) catch return;
+        self.root.deleteTree(self.io, path) catch return;
         durable.syncParent(self.root, self.io, path) catch {};
     }
 
@@ -232,6 +263,7 @@ pub const LocalObjectDataStore = struct {
             error.FileNotFound => return error.NotFound,
             else => return error.Unavailable,
         };
+        if (stat.kind == .directory) return try self.composedStore().stat(paths.dataPath());
         if (stat.kind != .file) return error.CorruptData;
         return stat.size;
     }
@@ -246,6 +278,7 @@ pub const LocalObjectDataStore = struct {
         if (!validLocation(location)) return error.InvalidValue;
         var paths: PathSet = undefined;
         paths.format(location) catch return error.InvalidValue;
+        if (self.isComposed(paths.dataPath())) return self.composedStore().read(paths.dataPath(), integrity, null, 0, integrity.size, sink);
         var file = self.root.openFile(self.io, paths.dataPath(), .{}) catch |err| switch (err) {
             error.FileNotFound => return error.NotFound,
             else => return error.Unavailable,
@@ -277,6 +310,7 @@ pub const LocalObjectDataStore = struct {
         if (!validLocation(location)) return error.InvalidValue;
         var paths: PathSet = undefined;
         paths.format(location) catch return error.InvalidValue;
+        if (self.isComposed(paths.dataPath())) return self.composedStore().read(paths.dataPath(), .{ .size = plaintext_size, .checksum_sha256 = @splat(0) }, .{ .key = key, .associated_data = associated_data }, 0, plaintext_size, sink);
         const file = self.root.openFile(self.io, paths.dataPath(), .{}) catch |err| switch (err) {
             error.FileNotFound => return error.NotFound,
             else => return error.Unavailable,
@@ -327,6 +361,7 @@ pub const LocalObjectDataStore = struct {
         if (!validLocation(location)) return error.InvalidValue;
         var paths: PathSet = undefined;
         paths.format(location) catch return error.InvalidValue;
+        if (self.isComposed(paths.dataPath())) return self.composedStore().read(paths.dataPath(), .{ .size = plaintext_size, .checksum_sha256 = @splat(0) }, .{ .key = key, .associated_data = associated_data }, offset, length, sink);
         const file = self.root.openFile(self.io, paths.dataPath(), .{}) catch |err| switch (err) {
             error.FileNotFound => return error.NotFound,
             else => return error.Unavailable,
@@ -376,6 +411,7 @@ pub const LocalObjectDataStore = struct {
         if (!validLocation(location)) return error.InvalidValue;
         var paths: PathSet = undefined;
         paths.format(location) catch return error.InvalidValue;
+        if (self.isComposed(paths.dataPath())) return self.composedStore().read(paths.dataPath(), null, null, offset, length, sink);
         var file = self.root.openFile(self.io, paths.dataPath(), .{}) catch |err| switch (err) {
             error.FileNotFound => return error.NotFound,
             else => return error.Unavailable,
@@ -449,7 +485,7 @@ pub const LocalObjectDataStore = struct {
             directory.close(self.io);
             return error.Unavailable;
         }) |entry| {
-            if (entry.kind != .file or
+            if ((entry.kind != .file and entry.kind != .directory) or
                 !std.mem.eql(u8, entry.name, "data") or
                 data_present)
             {
@@ -605,7 +641,7 @@ fn inspectGeneration(
     var iterator = directory.iterate();
     while (iterator.next(self.io) catch return error.Unavailable) |entry| {
         if (isIgnoredSystemEntry(entry.name)) continue;
-        if (entry.kind != .file or
+        if ((entry.kind != .file and entry.kind != .directory) or
             !std.mem.eql(u8, entry.name, "data") or
             data_present)
         {
@@ -615,6 +651,7 @@ fn inspectGeneration(
     }
     if (!data_present) return null;
     const stat = self.root.statFile(self.io, paths.dataPath(), .{}) catch return error.Unavailable;
+    if (stat.kind == .directory) return try self.composedStore().stat(paths.dataPath());
     if (stat.kind != .file) return error.CorruptData;
     return stat.size;
 }

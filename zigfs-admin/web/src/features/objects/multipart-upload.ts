@@ -34,7 +34,50 @@ type PersistedUploadTask = Omit<UploadTask, 'file' | 'status' | 'error'>
 export function choosePartSize(fileSize: number) {
   const required = Math.ceil(fileSize / MAX_PARTS)
   const oneMiB = 1024 * 1024
-  return Math.max(DEFAULT_PART_SIZE, Math.ceil(required / oneMiB) * oneMiB)
+  const preferred = fileSize >= 4 * 1024 * oneMiB ? 64 * oneMiB
+    : fileSize >= 256 * oneMiB ? 32 * oneMiB : DEFAULT_PART_SIZE
+  return Math.max(preferred, Math.ceil(required / oneMiB) * oneMiB)
+}
+
+export function chooseUploadConcurrency(
+  partSize: number,
+  logicalCores = typeof navigator === 'undefined' ? 8 : navigator.hardwareConcurrency,
+) {
+  // This is a client-side scheduling hint, not a measure of server capacity.
+  // Keep the previously tested four-connection / 128 MiB ceilings and reduce
+  // parallelism on smaller clients. Missing CPU information retains four lanes.
+  const cores = Number.isFinite(logicalCores) && logicalCores >= 1 ? logicalCores : 8
+  const cpuLimit = Math.max(1, Math.floor(cores / 2))
+  return Math.max(1, Math.min(cpuLimit, 4, Math.floor(128 * 1024 * 1024 / partSize)))
+}
+
+export async function uploadPartsConcurrently(
+  parts: number[],
+  concurrency: number,
+  upload: (partNumber: number) => Promise<void>,
+  stop: () => void,
+) {
+  let next = 0
+  let failed = false
+  let failure: unknown
+  async function worker() {
+    while (!failed && next < parts.length) {
+      const part = parts[next++]
+      try {
+        await upload(part)
+      } catch (error) {
+        if (!failed) {
+          failed = true
+          failure = error
+          stop()
+        }
+      }
+    }
+  }
+  // Drain active workers before allowing resume/completion, including pending
+  // presign calls. Preserve the original error rather than a sibling's abort.
+  await Promise.all(Array.from({ length: Math.min(parts.length, concurrency) }, worker))
+  if (failed) throw failure
 }
 
 export function inferPartSize(upload: MultipartUpload, fileSize: number, persistedPartSize = 0) {
@@ -73,33 +116,63 @@ export function putPart(
 ) {
   return new Promise<string>((resolve, reject) => {
     const request = new XMLHttpRequest()
+    let settled = false
+    let idleTimer: number | undefined
+    let lastLoaded = 0
+    const finish = (error?: Error, etag = '') => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(idleTimer)
+      if (error) reject(error)
+      else resolve(etag)
+    }
+    const resetIdleTimer = () => {
+      window.clearTimeout(idleTimer)
+      idleTimer = window.setTimeout(() => {
+        finish(new Error(t('objects.partUploadTimedOut')))
+        request.abort()
+      }, 60_000)
+    }
     request.open('PUT', url)
+    request.timeout = 15 * 60 * 1000
     request.setRequestHeader('Content-Type', contentType || 'application/octet-stream')
     request.upload.addEventListener('progress', (event) => {
+      if (settled) return
+      if (event.loaded > lastLoaded) {
+        lastLoaded = event.loaded
+        resetIdleTimer()
+      }
       const total = event.lengthComputable && event.total > 0 ? event.total : body.size
       onProgress({ loaded: Math.min(event.loaded, total), total })
     })
     request.addEventListener('load', () => {
+      if (settled) return
       if (request.status < 200 || request.status >= 300) {
-        reject(new Error(t('objects.partUploadFailedValue', { '0': request.status })))
+        finish(new Error(t('objects.partUploadFailedValue', { '0': request.status })))
         return
       }
       const etag = normalizeEtag(request.getResponseHeader('ETag') ?? '')
       if (!etag) {
-        reject(new Error(t('objects.partUploadResponseHasNoValidEtag')))
+        finish(new Error(t('objects.partUploadResponseHasNoValidEtag')))
         return
       }
       onProgress({ loaded: body.size, total: body.size })
-      resolve(etag)
+      finish(undefined, etag)
     })
-    request.addEventListener('error', () => reject(new Error(t('objects.partUploadFailedDueToANetworkError'))))
+    request.addEventListener('error', () => finish(new Error(t('objects.partUploadFailedDueToANetworkError'))))
+    request.addEventListener('timeout', () => finish(new Error(t('objects.partUploadTimedOut'))))
     request.addEventListener('abort', () => {
       const error = new Error(t('objects.uploadPaused'))
       error.name = 'AbortError'
-      reject(error)
+      finish(error)
     })
-    onRequest(request)
-    request.send(body)
+    try {
+      onRequest(request)
+      resetIdleTimer()
+      request.send(body)
+    } catch (error) {
+      finish(error as Error)
+    }
   })
 }
 
@@ -124,6 +197,30 @@ export function persistTasks(tasks: UploadTask[], bucket?: string) {
   } catch {
     // The FS remains the source of truth when browser storage is unavailable.
   }
+}
+
+// Never round a partially uploaded file up to its total size.
+export function formatUploadProgress(loaded: number, total: number) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const format = (bytes: number, maxUnit: number) => {
+    let value = Math.max(0, Math.floor(bytes))
+    let unit = 0
+    while (value >= 1024 && unit < maxUnit) {
+      value /= 1024
+      unit += 1
+    }
+    const truncated = Math.floor(value * 100) / 100
+    return `${truncated} ${units[unit]}`
+  }
+  let maxUnit = units.length - 1
+  let uploaded = format(loaded, maxUnit)
+  let size = format(total, maxUnit)
+  while (loaded < total && uploaded === size && maxUnit > 0) {
+    maxUnit -= 1
+    uploaded = format(loaded, maxUnit)
+    size = format(total, maxUnit)
+  }
+  return `${uploaded} / ${size}`
 }
 
 export function formatBytes(bytes: number) {

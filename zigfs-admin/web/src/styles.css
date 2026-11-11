@@ -20,6 +20,12 @@
   --input: var(--border-strong);
   --ring: var(--accent);
   --destructive: var(--danger);
+  --chart-1: var(--accent);
+  --chart-2: var(--success);
+  --chart-3: var(--accent-strong);
+  --chart-4: var(--warning);
+  --chart-5: var(--text-muted);
+  --warning: #b7791f;
   --accent: #1683c4;
   --accent-strong: #0b6fae;
   --accent-soft: #eaf5fb;
@@ -152,6 +158,7 @@ html[data-theme="dark"], .app-shell.theme-dark {
   --text-muted: #aab4bd;
   --text-faint: #7e8994;
   --danger: #f2777a;
+  --warning: #e5b85c;
   --danger-soft: #3b2225;
   --success: #62c88c;
   --success-soft: #183b2b;

@@ -276,6 +276,10 @@ func (service *Management) KMSKeys(ctx context.Context, method string, action bo
 	return service.zig.KMSKeys(ctx, method, action, input)
 }
 
+func (service *Management) AuditLogSettings(ctx context.Context, method, operation string, input json.RawMessage) (json.RawMessage, error) {
+	return service.zig.AuditLogSettings(ctx, method, operation, input)
+}
+
 func (service *Management) LogSettings(ctx context.Context, method, operation string, input json.RawMessage) (json.RawMessage, error) {
 	return service.zig.LogSettings(ctx, method, operation, input)
 }

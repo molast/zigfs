@@ -1,4 +1,5 @@
 const std = @import("std");
+const fault_injection = @import("../common/fault_injection.zig");
 const streaming = @import("../common/streaming.zig");
 const durable = @import("../metadata/durable.zig");
 const id = @import("../common/id.zig");
@@ -18,6 +19,11 @@ pub const LocalMultipartDataStore = struct {
     io: std.Io,
     buffer_size: usize,
     master_key: ?secret_box.Key = null,
+    fault_injector: fault_injection.Injector = .disabled,
+
+    pub fn setFaultInjectorForTesting(self: *LocalMultipartDataStore, injector: fault_injection.Injector) void {
+        self.fault_injector = injector;
+    }
 
     pub fn init(allocator: std.mem.Allocator, root: std.Io.Dir, io: std.Io, buffer_size: usize) LocalMultipartDataStore {
         return .{ .allocator = allocator, .root = root, .io = io, .buffer_size = buffer_size };
@@ -139,6 +145,7 @@ pub const LocalMultipartDataStore = struct {
             error.FileNotFound => return error.NotFound,
             else => return error.Unavailable,
         };
+        try @import("multipart_part_meta.zig").write(self.allocator, self.root, self.io, paths.generationDirectory(), staged, location);
         durable.syncParent(self.root, self.io, paths.dataPath()) catch return error.Unavailable;
         durable.syncParent(self.root, self.io, temporary_path) catch return error.Unavailable;
     }
@@ -234,6 +241,7 @@ pub const LocalMultipartDataStore = struct {
     fn deleteUploadImpl(context: *anyopaque, upload_id: id.Uuid) data_store_port.Error!void {
         const self: *LocalMultipartDataStore = @ptrCast(@alignCast(context));
         if (!id.isValidV4(upload_id)) return error.InvalidValue;
+        if (self.fault_injector.trigger(.multipart_upload_cleanup)) return error.Unavailable;
         var upload_buffer: [max_path_length]u8 = undefined;
         var shard_buffer: [max_path_length]u8 = undefined;
         const upload_hex = std.fmt.bytesToHex(upload_id, .lower);
@@ -244,8 +252,14 @@ pub const LocalMultipartDataStore = struct {
             else => return error.Unavailable,
         };
         directory.close(self.io);
-        self.root.deleteTree(self.io, upload) catch return error.Unavailable;
+        // Durable cleanup queue: detach the terminated upload in O(1), then
+        // let startup/periodic GC reclaim its directory tree outside Complete.
+        var trash_buffer: [max_path_length]u8 = undefined;
+        const trash = std.fmt.bufPrint(&trash_buffer, ".zigfs/trash/multipart/upload-{s}", .{&upload_hex}) catch return error.InvalidValue;
+        self.root.createDirPath(self.io, ".zigfs/trash/multipart") catch return error.Unavailable;
+        self.root.renamePreserve(upload, self.root, trash, self.io) catch return error.Unavailable;
         durable.syncParent(self.root, self.io, upload) catch return error.Unavailable;
+        durable.syncParent(self.root, self.io, trash) catch return error.Unavailable;
         self.root.deleteDir(self.io, shard) catch |err| switch (err) {
             error.FileNotFound, error.DirNotEmpty => return,
             else => return error.Unavailable,
@@ -285,6 +299,8 @@ pub const LocalMultipartDataStore = struct {
             directory.close(self.io);
             return error.Unavailable;
         }) |entry| {
+            if (isIgnoredSystemEntry(entry.name)) continue;
+            if (entry.kind == .file and std.mem.eql(u8, entry.name, "part.meta")) continue;
             if (entry.kind != .file or !std.mem.eql(u8, entry.name, "data") or data_present) {
                 directory.close(self.io);
                 return error.CorruptData;
@@ -324,7 +340,7 @@ const FileSink = struct {
     }
 };
 
-const PathSet = struct {
+pub const PathSet = struct {
     shard_buffer: [max_path_length]u8,
     upload_buffer: [max_path_length]u8,
     part_buffer: [max_path_length]u8,
@@ -336,7 +352,7 @@ const PathSet = struct {
     generation_length: usize,
     data_length: usize,
 
-    fn format(self: *PathSet, location: data_store_port.Location) error{NoSpaceLeft}!void {
+    pub fn format(self: *PathSet, location: data_store_port.Location) error{NoSpaceLeft}!void {
         const upload_hex = std.fmt.bytesToHex(location.upload_id, .lower);
         const generation_hex = std.fmt.bytesToHex(location.data_generation, .lower);
         const shard = try std.fmt.bufPrint(&self.shard_buffer, "multipart/{s}", .{upload_hex[0..2]});
@@ -360,10 +376,10 @@ const PathSet = struct {
     fn partDirectory(self: *const PathSet) []const u8 {
         return self.part_buffer[0..self.part_length];
     }
-    fn generationDirectory(self: *const PathSet) []const u8 {
+    pub fn generationDirectory(self: *const PathSet) []const u8 {
         return self.generation_buffer[0..self.generation_length];
     }
-    fn dataPath(self: *const PathSet) []const u8 {
+    pub fn dataPath(self: *const PathSet) []const u8 {
         return self.data_buffer[0..self.data_length];
     }
 };
@@ -452,6 +468,7 @@ fn inspectGeneration(self: *LocalMultipartDataStore, location: data_store_port.L
     var iterator = directory.iterate();
     while (iterator.next(self.io) catch return error.Unavailable) |entry| {
         if (isIgnoredSystemEntry(entry.name)) continue;
+        if (entry.kind == .file and std.mem.eql(u8, entry.name, "part.meta")) continue;
         if (entry.kind != .file or !std.mem.eql(u8, entry.name, "data") or data_present) return error.CorruptData;
         data_present = true;
     }

@@ -922,6 +922,12 @@ paths:
   /api/v1/multipart-uploads/{uploadId}/complete:
     post:
       operationId: completeMultipartUpload
+      description: >-
+        Validates committed part metadata and atomically publishes a logical segmented object.
+        Local compatible filesystems reuse durable part data without rereading the payload.
+        Repeating the same upload ID and ordered Part Number/ETag list returns the original
+        object while that version is retained; a changed list is rejected. Unsupported
+        filesystem layouts retain the streaming compatibility path.
       parameters:
         - $ref: "./zigfs-management-v1.openapi.yaml#/components/parameters/UploadID"
       requestBody:
@@ -1144,7 +1150,16 @@ paths:
   /api/v1/settings/logs/query:
     get:
       summary: Read bounded runtime log content
-      description: Uses the configured directory and time range. Reads at most 1024 segments and 1 MiB; returns JSON, not a binary attachment.
+      description: Reads configured file logs, including legacy text/JSON and SystemLog v1 JSON. Optional Unix-second bounds override the configured range. Reads at most 1024 segments and 1 MiB; truncated results are partial. Console output is not captured.
+      parameters:
+        - in: query
+          name: from
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive start time in Unix seconds; defaults to configured range.
+        - in: query
+          name: to
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive end time in Unix seconds; must not precede from.
       responses:
         '200':
           description: Log content and truncation status
@@ -1157,7 +1172,90 @@ paths:
   /api/v1/settings/logs/download:
     get:
       summary: Download bounded runtime log content
-      description: Uses the configured directory and time range. Reads at most 1024 segments and 1 MiB; returns JSON, not a binary attachment.
+      description: Reads configured file logs, including legacy text/JSON and SystemLog v1 JSON. Optional Unix-second bounds override the configured range. Reads at most 1024 segments and 1 MiB; truncated results are partial. Console output is not captured.
+      parameters:
+        - in: query
+          name: from
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive start time in Unix seconds; defaults to configured range.
+        - in: query
+          name: to
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive end time in Unix seconds; must not precede from.
+      responses:
+        '200':
+          description: Log content and truncation status
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/LogQuery' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required or downloads disabled }
+        '503': { description: Log storage unavailable }
+  /api/v1/settings/audit-logs:
+    get:
+      summary: Read persisted audit log configuration
+      responses:
+        '200':
+          description: Current configuration (defaults when not configured)
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/AuditLogConfig' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Log service unavailable }
+    put:
+      summary: Persist and immediately apply audit log configuration
+      description: Paths are relative to the ZigFS data root; absolute paths, traversal and symlinks are rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/AuditLogConfig' }
+      responses:
+        '200':
+          description: Saved normalized configuration
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/AuditLogConfig' }
+        '400': { description: Invalid log configuration or directory }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Directory or configuration persistence failed }
+  /api/v1/settings/audit-logs/query:
+    get:
+      summary: Read bounded audit log content
+      description: Reads configured file logs, including structured audit JSON and text audit records. Optional Unix-second bounds override the configured range. Reads at most 1024 segments and 1 MiB; truncated results are partial. Audit output is file-only and independent of runtime log settings.
+      parameters:
+        - in: query
+          name: from
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive start time in Unix seconds; defaults to configured range.
+        - in: query
+          name: to
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive end time in Unix seconds; must not precede from.
+      responses:
+        '200':
+          description: Log content and truncation status
+          content:
+            application/json:
+              schema: { $ref: './zigfs-management-v1.openapi.yaml#/components/schemas/LogQuery' }
+        '401': { description: Authentication required }
+        '403': { description: Management authority required }
+        '503': { description: Log storage unavailable }
+  /api/v1/settings/audit-logs/download:
+    get:
+      summary: Download bounded audit log content
+      description: Reads configured file logs, including structured audit JSON and text audit records. Optional Unix-second bounds override the configured range. Reads at most 1024 segments and 1 MiB; truncated results are partial. Audit output is file-only and independent of runtime log settings.
+      parameters:
+        - in: query
+          name: from
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive start time in Unix seconds; defaults to configured range.
+        - in: query
+          name: to
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: Inclusive end time in Unix seconds; must not precede from.
       responses:
         '200':
           description: Log content and truncation status

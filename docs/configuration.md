@@ -46,6 +46,8 @@ admin:
 | `observability.metrics_address` | `127.0.0.1:9090` | string | Prometheus Metrics 监听地址 |
 | `storage.data_root` | `data` | string | ZigFS 独占数据根目录 |
 | `storage.stream_buffer_size` | `65536` | integer | Object 流式 I/O 缓冲区，允许 4096 至 1048576 bytes |
+| `storage.metadata_maintenance_interval_seconds` | `60` | integer | 元数据检查点与历史回收周期，允许 1 至 3600 秒；目录扫描尚未完成时下一轮间隔缩短到 1 秒 |
+| `storage.metadata_maintenance_batch_size` | `1000` | integer | 每轮分别最多访问多少个 journal 目录条目和元数据目录条目，允许 1 至 10000；活跃文件也占预算，游标跨批次续扫；不是毫秒耗时上限 |
 | `s3.region` | `us-east-1` | string | Signature V4 Credential Scope 和 CreateBucket LocationConstraint 所属 Region |
 | `s3.public_endpoint` | `http://127.0.0.1:9000` | string | 客户端访问的 S3 authority；不能包含路径、凭证或 Query |
 | `s3.virtual_hosted_style` | `false` | bool | 是否接受 `<bucket>.<public_endpoint authority>/<key>`；关闭时仅使用 Path-style |

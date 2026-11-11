@@ -588,6 +588,20 @@ func (client *Client) LogSettings(ctx context.Context, method, operation string,
 	return response, err
 }
 
+func (client *Client) AuditLogSettings(ctx context.Context, method, operation string, input json.RawMessage) (json.RawMessage, error) {
+	path := "/_admin/v1/settings/audit-logs"
+	if operation != "" {
+		path += "/" + operation
+	}
+	var response json.RawMessage
+	var body any
+	if len(input) > 0 {
+		body = input
+	}
+	err := client.requestJSON(ctx, method, path, body, &response)
+	return response, err
+}
+
 func (client *Client) Logout(ctx context.Context) error {
 	return client.requestJSON(ctx, http.MethodPost, "/_admin/v1/auth/logout", nil, nil)
 }

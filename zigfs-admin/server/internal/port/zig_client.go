@@ -63,6 +63,7 @@ type ZigClient interface {
 	ManagementHealth(ctx context.Context) (contract.ManagementHealthResponse, error)
 	AuditEvents(context.Context, string, string) (json.RawMessage, error)
 	LogSettings(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
+	AuditLogSettings(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
 	KMSSettings(ctx context.Context) (contract.KMSStatus, error)
 	StartKMS(ctx context.Context) (contract.KMSStatus, error)
 	KMSKeys(ctx context.Context, method string, action bool, input json.RawMessage) (json.RawMessage, error)

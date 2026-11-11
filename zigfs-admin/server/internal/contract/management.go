@@ -144,7 +144,7 @@ type CreateDirectoryRequest struct {
 }
 
 type PresignObjectRequest struct {
-	AccessKey           string `json:"access_key" binding:"required"`
+	AccessKey           string `json:"access_key,omitempty"`
 	Bucket              string `json:"bucket" binding:"required"`
 	Key                 string `json:"key" binding:"required"`
 	Method              string `json:"method" binding:"required"`
@@ -156,6 +156,7 @@ type PresignObjectRequest struct {
 	CopySourceKey       string `json:"copy_source_key,omitempty"`
 	CopySourceVersionID string `json:"copy_source_version_id,omitempty"`
 	Tagging             bool   `json:"tagging,omitempty"`
+	Download            bool   `json:"download,omitempty"`
 }
 
 type PresignObjectResponse struct {

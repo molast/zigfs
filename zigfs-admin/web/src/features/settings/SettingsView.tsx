@@ -20,7 +20,7 @@ const categories = [
   { id: 'general', get label() { return t('settings.general') }, get subtitle() { return t('settings.instanceDetails') }, get description() { return t('settings.viewInstanceDetailsAndRuntimeSettings') }, icon: Home },
   { id: 'network', get label() { return t('settings.network') }, get subtitle() { return t('settings.networkAndAccess') }, get description() { return t('settings.viewApiListenAddressesPublicEndpointsAndS3Addressing') }, icon: Globe },
   { id: 'security', get label() { return t('settings.security') }, get subtitle() { return t('settings.securityConfiguration') }, get description() { return t('settings.viewAdminSessionAndRequestSignatureSettings') }, icon: ShieldCheck },
-  { id: 'logs', get label() { return t('settings.logs') }, get subtitle() { return t('settings.logsAndObservability') }, get description() { return t('settings.systemLogLevelFormatAndDestinations') }, icon: FileText },
+  { id: 'logs', get label() { return t('settings.logs') }, get subtitle() { return t('settings.logsAndObservability') }, get description() { return t('settings.logSettingsDescription') }, icon: FileText },
   { id: 'about', get label() { return t('settings.aboutZigfs') }, get subtitle() { return t('settings.versionAndInformation') }, get description() { return t('settings.viewTheServiceVersionAndInstanceRuntimeInformation') }, icon: Info },
 ] as const
 
@@ -110,7 +110,7 @@ export function SettingsView({ api }: { api: ApiClient }) {
         <Card className="system-settings-editor">
           {categories.map(item => <TabsContent key={item.id} value={item.id} data-settings-category={item.id} className="system-settings-tab">
             <CardHeader><div className="system-settings-section-heading"><item.icon aria-hidden="true" /><div><CardTitle>{item.label}</CardTitle><CardDescription>{item.description}</CardDescription></div>{item.id !== 'security' && item.id !== 'logs' && <Badge>{busy ? t('settings.loading') : settings ? t('settings.effectiveReadOnly') : t('settings.configurationUnavailable')}</Badge>}</div></CardHeader>
-            <CardContent className="system-settings-scroll"><div className="settings-detail-stack">{item.id === 'security' ? <KmsSettingsPanel api={api} status={kmsStatus} setStatus={setKmsStatus} draft={kmsDraft} setDraft={setKmsDraft} /> : item.id === 'logs' ? <LogConfigurationPanel api={api} /> : groups[item.id] ? <Card className="system-settings-form"><CardContent>
+            <CardContent className="system-settings-scroll"><div className="settings-detail-stack">{item.id === 'security' ? <KmsSettingsPanel api={api} status={kmsStatus} setStatus={setKmsStatus} draft={kmsDraft} setDraft={setKmsDraft} /> : item.id === 'logs' ? <LogSettingsTabs api={api} /> : groups[item.id] ? <Card className="system-settings-form"><CardContent>
               {groups[item.id]?.map((group, index) => <div key={group.title}>{index > 0 && <Separator />}<FieldSet><FieldLegend>{group.title}</FieldLegend><FieldGroup>
                 {group.items.map(setting => <Field key={setting.id} className="system-settings-field"><FieldLabel htmlFor={`system-${setting.id}`}>{setting.label}</FieldLabel>{setting.multiline ? <Textarea id={`system-${setting.id}`} readOnly value={setting.value} rows={2} aria-describedby={setting.help ? `system-${setting.id}-help` : undefined} /> : <Input id={`system-${setting.id}`} readOnly value={setting.value} aria-describedby={setting.help ? `system-${setting.id}-help` : undefined} />}{setting.help && <FieldDescription id={`system-${setting.id}-help`}>{setting.help}</FieldDescription>}</Field>)}
               </FieldGroup></FieldSet></div>)}
@@ -126,6 +126,17 @@ export function SettingsView({ api }: { api: ApiClient }) {
       </div>
     </Tabs>
   </section>
+}
+
+function LogSettingsTabs({ api }: { api: ApiClient }) {
+  return <Tabs defaultValue="system" className="settings-log-tabs">
+    <TabsList aria-label={t('settings.logs')}>
+      <TabsTrigger value="system">{t('navigation.systemLogs')}</TabsTrigger>
+      <TabsTrigger value="audit">{t('settings.auditLogs')}</TabsTrigger>
+    </TabsList>
+    <TabsContent value="system"><LogConfigurationPanel api={api} kind="system" /></TabsContent>
+    <TabsContent value="audit"><LogConfigurationPanel api={api} kind="audit" /></TabsContent>
+  </Tabs>
 }
 
 function duration(seconds: number) {

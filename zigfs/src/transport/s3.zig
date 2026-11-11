@@ -169,9 +169,15 @@ pub fn serveRequest(
     const credentials = application.credentialService() orelse {
         return respondError(request, allocator, .service_unavailable, request_id);
     };
-    var auth_material = credentials.resolveForAuth(access_key) catch |err| {
-        return respondError(request, allocator, mapCredentialError(err), request_id);
-    };
+    const console = @import("console_auth.zig");
+    const console_request = std.mem.eql(u8, access_key, console.access_key);
+    if (console_request and presigned == null) return respondError(request, allocator, .access_denied, request_id);
+    var auth_material = if (console_request)
+        console.resolve(allocator, application, presigned.?.security_token_storage orelse return respondError(request, allocator, .invalid_token, request_id), std.Io.Clock.real.now(application.io.?).toSeconds()) catch return respondError(request, allocator, .invalid_token, request_id)
+    else
+        credentials.resolveForAuth(access_key) catch |err| {
+            return respondError(request, allocator, mapCredentialError(err), request_id);
+        };
     defer auth_material.deinit(allocator);
     const provided_session_token = if (presigned) |value|
         value.security_token_storage
@@ -203,7 +209,7 @@ pub fn serveRequest(
     }
 
     try audit_context.identify(auth_material.owner);
-    try audit_context.authenticate(if (auth_material.session_token != null) "sts" else "s3_access_key", auth_material.subject_id, access_key);
+    try audit_context.authenticate(if (console_request) "management_session" else if (auth_material.session_token != null) "sts" else "s3_access_key", auth_material.subject_id, if (console_request) null else access_key);
 
     if (singleHeader(headers.items, "x-amz-server-side-encryption") catch return respondError(request, allocator, .invalid_argument, request_id)) |algorithm| {
         if ((parsed.operation != .put_object and parsed.operation != .create_multipart_upload) or (!std.mem.eql(u8, algorithm, "AES256") and !std.mem.eql(u8, algorithm, "aws:kms"))) return respondError(request, allocator, .invalid_argument, request_id);
@@ -2467,6 +2473,9 @@ fn serveGetObject(
         include_version_id,
     );
     defer response_headers.deinit(application.allocator);
+    response_headers.content_disposition = parseResponseContentDisposition(parsed) catch {
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    };
     const header_values = response_headers.populate(object, request_id);
     var response_buffer: [16 * 1024]u8 = undefined;
     var body_writer = try request.respondStreaming(&response_buffer, .{
@@ -2974,17 +2983,26 @@ fn serveCompleteMultipartUpload(
     const multiparts = application.multipartService() orelse {
         return respondError(request, application.allocator, .service_unavailable, request_id);
     };
-    const upload_config = multiparts.listParts(parsed.bucket.?, parsed.key.?, upload_id) catch |err| return respondError(request, application.allocator, mapMultipartError(err), request_id);
-    defer upload_config.deinit(application.allocator);
-    if (upload_config.kms) |kms| {
-        const principal = access.principal orelse return respondError(request, application.allocator, .access_denied, request_id);
-        if (!principal.allowsKms(application.allocator, "kms:GenerateDataKey", kms.key(), access.context) or !principal.allowsKms(application.allocator, "kms:Decrypt", kms.key(), access.context)) return respondError(request, application.allocator, .access_denied, request_id);
+    const upload_config: ?@import("../domain/multipart.zig").Upload = multiparts.listParts(parsed.bucket.?, parsed.key.?, upload_id) catch |err| blk: {
+        if (err != error.UploadNotFound) return respondError(request, application.allocator, mapMultipartError(err), request_id);
+        break :blk null;
+    };
+    defer if (upload_config) |upload| upload.deinit(application.allocator);
+    if (upload_config) |upload| {
+        if (upload.kms) |kms| {
+            const principal = access.principal orelse return respondError(request, application.allocator, .access_denied, request_id);
+            if (!principal.allowsKms(application.allocator, "kms:GenerateDataKey", kms.key(), access.context) or !principal.allowsKms(application.allocator, "kms:Decrypt", kms.key(), access.context)) return respondError(request, application.allocator, .access_denied, request_id);
+        }
+    } else {
+        const completed = (multiparts.lookupCompleted(parsed.bucket.?, parsed.key.?, upload_id, completion.parts) catch |err| return respondError(request, application.allocator, mapMultipartError(err), request_id)) orelse return respondError(request, application.allocator, .no_such_upload, request_id);
+        defer completed.deinit(application.allocator);
+        if (!kmsReadAllowed(application.allocator, access, &completed)) return respondError(request, application.allocator, .access_denied, request_id);
     }
     const object = multiparts.complete(parsed.bucket.?, parsed.key.?, upload_id, completion.parts) catch |err| {
         return respondError(request, application.allocator, mapMultipartError(err), request_id);
     };
     defer object.deinit(application.allocator);
-    if (application.data_root != null and application.io != null) {
+    if (upload_config != null and application.data_root != null and application.io != null) {
         const root = application.data_root.?;
         const io = application.io.?;
         const pending = object_tags.load(application.allocator, root, io, parsed.bucket.?, parsed.key.?, upload_id) catch object_tags.Record{};
@@ -3006,7 +3024,8 @@ fn serveCompleteMultipartUpload(
     writer.writeAll("</Bucket><Key>") catch return error.WriteFailed;
     protocol.writeXmlEscaped(writer, parsed.key.?) catch return error.WriteFailed;
     writer.print("</Key><ETag>{s}</ETag></CompleteMultipartUploadResult>\n", .{etag}) catch return error.WriteFailed;
-    return respondXmlEncryption(request, encryptionInfo(&object), xml.written(), .ok, request_id, &.{});
+    var version_buffer: [object_domain.VersionId.encoded_length]u8 = undefined;
+    return respondXmlEncryption(request, encryptionInfo(&object), xml.written(), .ok, request_id, &.{.{ .name = "x-amz-version-id", .value = object.version_id.write(&version_buffer) }});
 }
 
 fn serveAbortMultipartUpload(
@@ -4005,7 +4024,17 @@ const HttpSink = struct {
     }
 };
 
+fn parseResponseContentDisposition(parsed: protocol.ParsedTarget) error{InvalidArgument}!?[]const u8 {
+    const value = (parsed.query("response-content-disposition") catch return error.InvalidArgument) orelse return null;
+    if (value.len == 0 or value.len > 4096) return error.InvalidArgument;
+    for (value) |byte| {
+        if (byte < 0x20 or byte == 0x7f) return error.InvalidArgument;
+    }
+    return value;
+}
+
 const ObjectResponseHeaders = struct {
+    content_disposition: ?[]const u8 = null,
     headers: []std.http.Header,
     owned_names: [][]u8,
     etag: [40]u8,
@@ -4068,7 +4097,7 @@ const ObjectResponseHeaders = struct {
             @as(usize, @intFromBool(include_content_length)) +
             @as(usize, @intFromBool(range != null)) +
             @as(usize, @intFromBool(include_version_id));
-        result.headers = try allocator.alloc(std.http.Header, fixed_count + object.user_metadata.len);
+        result.headers = try allocator.alloc(std.http.Header, fixed_count + object.user_metadata.len + 1);
         errdefer allocator.free(result.headers);
         result.owned_names = try allocator.alloc([]u8, object.user_metadata.len);
         var initialized_names: usize = 0;
@@ -4090,6 +4119,10 @@ const ObjectResponseHeaders = struct {
         request_id: []const u8,
     ) []const std.http.Header {
         var index: usize = 0;
+        if (self.content_disposition) |value| {
+            self.headers[index] = .{ .name = "content-disposition", .value = value };
+            index += 1;
+        }
         self.headers[index] = .{ .name = "content-type", .value = object.content_type };
         index += 1;
         if (self.include_content_length) {
@@ -4282,6 +4315,11 @@ fn respondErrorWithHeaders(
     request_id: []const u8,
     additional_headers: []const std.http.Header,
 ) !std.http.Status {
+    if (@backingInt(protocol.describe(kind).status) >= 500) {
+        var buffer: [256]u8 = undefined;
+        const diagnostic = std.fmt.bufPrint(&buffer, "S3 operation failed error={s} request_id={s}", .{ @tagName(kind), request_id }) catch "S3 operation failed";
+        @import("../application/logging.zig").reportDiagnostic("storage", @tagName(kind), diagnostic, null, @src());
+    }
     const xml = protocol.errorXml(allocator, kind, request.head.target, request_id) catch {
         return error.OutOfMemory;
     };
@@ -4943,4 +4981,21 @@ fn requestedKmsKey(headers: []const sigv4.Header) ?[]const u8 {
 fn kmsReadAllowed(a: std.mem.Allocator, access: BucketAccess, object: *const object_domain.Object) bool {
     if (encryptionInfo(object).kms_key) |key_name| return if (access.principal) |principal| principal.allowsKms(a, "kms:Decrypt", key_name, access.context) else false;
     return true;
+}
+
+test "download disposition override rejects header injection and duplicate values" {
+    const valid = try protocol.parseTarget(std.testing.allocator, .GET, "/bucket/file?response-content-disposition=attachment%3B%20filename%3D%22video.mp4%22");
+    defer valid.deinit();
+    try std.testing.expectEqualStrings("attachment; filename=\"video.mp4\"", (try parseResponseContentDisposition(valid)).?);
+    const invalid_targets = [_][]const u8{
+        "/bucket/file?response-content-disposition=attachment%0D%0AX-Injected%3Ayes",
+        "/bucket/file?response-content-disposition=attachment%00",
+        "/bucket/file?response-content-disposition=",
+        "/bucket/file?response-content-disposition=attachment&response-content-disposition=inline",
+    };
+    for (invalid_targets) |target| {
+        const parsed = try protocol.parseTarget(std.testing.allocator, .GET, target);
+        defer parsed.deinit();
+        try std.testing.expectError(error.InvalidArgument, parseResponseContentDisposition(parsed));
+    }
 }

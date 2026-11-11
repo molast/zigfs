@@ -252,6 +252,7 @@ pub const MultipartService = struct {
         var prepared = self.index.prepareUpload(upload_id) catch |err| return mapIndexError(err);
         defer prepared.deinit(self.index.allocator);
         self.data_store.publish(staged, .{
+            .encrypted = initial.encryption orelse false,
             .upload_id = upload.id,
             .part_number = part_number,
             .data_generation = data_generation,
@@ -437,16 +438,37 @@ pub const MultipartService = struct {
     ) Error!object_domain.Object {
         try validateMultipartAddress(bucket_name, key, upload_id);
         if (requested_parts.len == 0 or requested_parts.len > multipart_domain.max_parts) return error.InvalidPart;
+        var request_hash = std.crypto.hash.sha2.Sha256.init(.{});
         var previous: u16 = 0;
         for (requested_parts) |part| {
             if (part.number < multipart_domain.min_part_number or part.number > multipart_domain.max_parts) return error.InvalidPart;
             if (part.number <= previous) return error.InvalidPartOrder;
             previous = part.number;
+            var number_bytes: [2]u8 = undefined;
+            std.mem.writeInt(u16, &number_bytes, part.number, .little);
+            request_hash.update(&number_bytes);
+            request_hash.update(&part.etag_md5);
         }
+
+        var parts_digest: [32]u8 = undefined;
+        request_hash.final(&parts_digest);
 
         const upload_lock = self.upload_locks.get("multipart", upload_id);
         upload_lock.lockUncancelable(self.io);
         defer upload_lock.unlock(self.io);
+        if (try self.completedObject(bucket_name, key, upload_id, parts_digest)) |completed| {
+            errdefer completed.deinit(self.allocator);
+            self.state_mutex.lockUncancelable(self.io);
+            const residual = self.loadMatchingUploadLocked(bucket_name, key, upload_id) catch |err| {
+                self.state_mutex.unlock(self.io);
+                if (err == error.UploadNotFound) return completed;
+                return err;
+            };
+            self.state_mutex.unlock(self.io);
+            defer residual.deinit(self.allocator);
+            try self.terminateCompletedUpload(residual, bucket_name, key, upload_id);
+            return completed;
+        }
         self.state_mutex.lockUncancelable(self.io);
         const upload = self.loadMatchingUploadLocked(bucket_name, key, upload_id) catch |err| {
             self.state_mutex.unlock(self.io);
@@ -471,6 +493,7 @@ pub const MultipartService = struct {
             composite_hash.update(&stored.etag_md5);
             parts[index] = .{
                 .number = stored.number,
+                .etag_md5 = stored.etag_md5,
                 .size = stored.size,
                 .checksum_sha256 = stored.checksum_sha256,
                 .data_generation = stored.data_generation,
@@ -487,6 +510,7 @@ pub const MultipartService = struct {
             .encryption = upload.encryption,
             .kms_selection = upload.kms,
             .user_metadata = @ptrCast(upload.user_metadata),
+            .parts_digest = parts_digest,
             .etag = .{
                 .digest = composite_etag,
                 .part_count = @intCast(parts.len),
@@ -495,21 +519,7 @@ pub const MultipartService = struct {
         errdefer object.deinit(self.allocator);
         if (object.size != total_size) return error.CorruptData;
 
-        self.state_mutex.lockUncancelable(self.io);
-        _ = self.multipart_store.tombstone(
-            self.allocator,
-            upload_id,
-            upload.metadata_generation,
-        ) catch |err| {
-            self.state_mutex.unlock(self.io);
-            return mapStoreError(err);
-        };
-        if (!self.index.removeUpload(upload_id)) {
-            self.state_mutex.unlock(self.io);
-            return error.CorruptMetadata;
-        }
-        self.state_mutex.unlock(self.io);
-        self.cleanupUnreferencedUploadParts(upload.id, parts) catch {};
+        try self.terminateCompletedUpload(upload, bucket_name, key, upload_id);
         return object;
     }
 
@@ -648,26 +658,85 @@ pub const MultipartService = struct {
         };
     }
 
-    fn cleanupUnreferencedUploadParts(
-        self: MultipartService,
-        upload_id: id.Uuid,
-        retained: []const object_domain.MultipartPart,
-    ) data_store_port.Error!void {
-        const scan = try self.data_store.scanGenerations(self.allocator);
-        defer scan.deinit(self.allocator);
-        for (scan.generations) |generation| {
-            if (!std.mem.eql(u8, &generation.location.upload_id, &upload_id)) continue;
-            var reachable = false;
-            for (retained) |part| {
-                if (generation.location.part_number == part.number and
-                    std.mem.eql(u8, &generation.location.data_generation, &part.data_generation))
-                {
-                    reachable = true;
-                    break;
-                }
-            }
-            if (!reachable) _ = try self.data_store.deleteGeneration(generation.location);
+    pub fn lookupCompleted(self: MultipartService, bucket: []const u8, key: []const u8, upload_id: []const u8, parts: []const CompletePart) Error!?object_domain.Object {
+        try validateMultipartAddress(bucket, key, upload_id);
+        var hash = std.crypto.hash.sha2.Sha256.init(.{});
+        for (parts) |part| {
+            var number: [2]u8 = undefined;
+            std.mem.writeInt(u16, &number, part.number, .little);
+            hash.update(&number);
+            hash.update(&part.etag_md5);
         }
+        var digest: [32]u8 = undefined;
+        hash.final(&digest);
+        return self.completedObject(bucket, key, upload_id, digest);
+    }
+
+    fn completedObject(self: MultipartService, bucket_name: []const u8, key: []const u8, upload_id: []const u8, digest: [32]u8) Error!?object_domain.Object {
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
+        const bucket = try self.loadBucketLocked(bucket_name);
+        defer bucket.deinit(self.allocator);
+        const history = self.objects.object_store.getHistory(self.allocator, bucket_name, key) catch |err| switch (err) {
+            error.NotFound => return null,
+            else => return error.Unavailable,
+        };
+        defer history.deinit(self.allocator);
+        const upload_uuid = multipart_domain.parseUploadId(upload_id) orelse return error.InvalidUploadId;
+        switch (history) {
+            .active => |record| for (record.entries) |entry| switch (entry) {
+                .object => |object| if (object.multipart_completion) |completion| {
+                    if (!std.mem.eql(u8, &completion.upload_id, &upload_uuid)) continue;
+                    if (!std.mem.eql(u8, &object.bucket_id, &bucket.id)) return null;
+                    if (!std.mem.eql(u8, &completion.parts_digest, &digest)) return error.InvalidPart;
+                    return object_domain.cloneFromView(self.allocator, object.view(), record.metadata_generation) catch return error.OutOfMemory;
+                },
+                else => {},
+            },
+            else => {},
+        }
+        return null;
+    }
+
+    fn terminateCompletedUpload(self: MultipartService, upload: multipart_domain.Upload, bucket_name: []const u8, key: []const u8, upload_id: []const u8) Error!void {
+        self.state_mutex.lockUncancelable(self.io);
+        _ = self.multipart_store.tombstone(
+            self.allocator,
+            upload_id,
+            upload.metadata_generation,
+        ) catch |err| {
+            self.state_mutex.unlock(self.io);
+            return mapStoreError(err);
+        };
+        if (!self.index.removeUpload(upload_id)) {
+            self.state_mutex.unlock(self.io);
+            return error.CorruptMetadata;
+        }
+        self.state_mutex.unlock(self.io);
+        self.cleanupCompletedUpload(bucket_name, key, upload.id) catch |err| {
+            std.log.warn("multipart cleanup deferred to GC: upload={s} error={s}", .{ upload_id, @errorName(err) });
+        };
+    }
+
+    fn cleanupCompletedUpload(self: MultipartService, bucket: []const u8, key: []const u8, upload_id: id.Uuid) !void {
+        // A retry of an older completion may still have a version referencing
+        // these parts. Leave those generations to reference-aware GC.
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
+        const record = try self.objects.object_store.getHistory(self.allocator, bucket, key);
+        defer record.deinit(self.allocator);
+        switch (record) {
+            .active => |history| for (history.entries) |entry| {
+                switch (entry) {
+                    .object => |object| if (object.multipart_manifest) |manifest| {
+                        if (std.mem.eql(u8, &manifest.upload_id, &upload_id)) return;
+                    },
+                    .delete_marker => {},
+                }
+            },
+            .tombstone => {},
+        }
+        try self.data_store.deleteUpload(upload_id);
     }
 };
 

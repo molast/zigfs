@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('fs', 'admin')]
+    [ValidateSet('fs', 'debug', 'release', 'admin')]
     [string]$Service
 )
 
@@ -22,11 +22,17 @@ function Invoke-InDirectory([string]$Path, [scriptblock]$Action) {
     }
 }
 
-function Start-Fs {
+function Start-Fs([string]$BuildMode) {
     Require-Command 'zig'
-    Write-Host 'Starting local ZigFS...'
+    if (-not $BuildMode) {
+        $BuildMode = if ($env:ZIGFS_BUILD_MODE) { $env:ZIGFS_BUILD_MODE } else { 'ReleaseSafe' }
+    }
+    if ($buildMode -cnotin @('Debug', 'ReleaseSafe', 'ReleaseFast', 'ReleaseSmall')) {
+        throw "Invalid ZIGFS_BUILD_MODE: $buildMode"
+    }
+    Write-Host "Starting local ZigFS ($buildMode)..."
     Invoke-InDirectory (Join-Path $rootDir 'zigfs') {
-        & zig build run --watch
+        & zig build run --watch "-Doptimize=$buildMode"
         if ($LASTEXITCODE -ne 0) { throw "ZigFS exited with code $LASTEXITCODE" }
     }
 }
@@ -58,13 +64,16 @@ function Start-Admin {
 
 if (-not $Service) {
     Write-Host 'Choose an action:'
-    Write-Host '  1) Start local ZigFS'
-    Write-Host '  2) Start local Admin'
+    Write-Host '  1) Start local ZigFS (Debug)'
+    Write-Host '  2) Start local ZigFS (Release)'
+    Write-Host '  3) Start local Admin'
     Write-Host '  0) Exit'
-    $choice = Read-Host 'Enter choice [0-2]'
+    $choice = Read-Host 'Enter choice [0-3]'
     $Service = switch ($choice) {
-        { $_ -in '1', 'fs' } { 'fs'; break }
-        { $_ -in '2', 'admin' } { 'admin'; break }
+        { $_ -in '1', 'debug' } { 'debug'; break }
+        { $_ -in '2', 'release' } { 'release'; break }
+        'fs' { 'fs'; break }
+        { $_ -in '3', 'admin' } { 'admin'; break }
         { $_ -in '0', 'q' } { return }
         default { throw "Invalid choice: $choice" }
     }
@@ -72,5 +81,7 @@ if (-not $Service) {
 
 switch ($Service) {
     'fs' { Start-Fs }
+    'debug' { Start-Fs 'Debug' }
+    'release' { Start-Fs 'ReleaseSafe' }
     'admin' { Start-Admin }
 }

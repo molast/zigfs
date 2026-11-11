@@ -8,6 +8,22 @@ const repository_payload = @import("repository_payload.zig");
 const id = @import("../common/id.zig");
 const repository_port = @import("../ports/metadata_repository.zig");
 const journal_port = @import("../ports/transaction_journal.zig");
+const checkpoint = @import("checkpoint.zig");
+const local_journal = @import("local_journal.zig");
+const Cursor = @import("scan_cursor.zig").Cursor;
+const reclaim_types = [_]metadata_record.Type{ .multipart, .object, .directory, .bucket, .credential, .system };
+
+pub const MaintenanceReport = struct {
+    checkpoint_generation: u64,
+    removed_journal_files: usize = 0,
+    removed_multipart_tombstones: usize = 0,
+    scanned_multipart_records: usize = 0,
+    scanned_journal_entries: usize = 0,
+    scanned_metadata_entries: usize = 0,
+    removed_tombstones: usize = 0,
+    has_more: bool = false,
+};
+pub const MaintenanceError = repository_port.Error || error{RecoveryRequired};
 
 pub const LocalMetadataRepository = struct {
     root: std.Io.Dir,
@@ -15,6 +31,117 @@ pub const LocalMetadataRepository = struct {
     journal: journal_port.TransactionJournal,
     mutex: std.Io.Mutex = .init,
     fault_injector: fault_injection.Injector = .disabled,
+    maintenance_mutex: std.Io.Mutex = .init,
+    recovered: bool = false,
+    // Same lock used by business services for their read/conditional-write
+    // sequences. Lock order: business state -> repository, never the reverse.
+    reclamation_guard: ?*std.Io.Mutex = null,
+    journal_cursor: Cursor = .{},
+    record_cursors: [reclaim_types.len]Cursor = @splat(.{}),
+    next_namespace: usize = 0,
+    // Sticky until startup recovery: a failed publication must never be hidden
+    // by advancing a checkpoint, even if later independent writes succeed.
+    unresolved_commit: bool = false,
+
+    /// Called once, before serving requests, after successful recovery.
+    pub fn markRecovered(self: *LocalMetadataRepository, allocator: std.mem.Allocator) MaintenanceError!void {
+        const last = generation.load(self.root, self.io) catch return error.CorruptRecord;
+        const scan = try self.journal.scan(allocator);
+        defer scan.deinit(allocator);
+        for (scan.entries) |entry| {
+            if (entry.generation > last) return error.CorruptRecord;
+        }
+        self.recovered = true;
+    }
+
+    pub fn deinit(self: *LocalMetadataRepository) void {
+        self.journal_cursor.reset(self.io);
+        for (&self.record_cursors) |*cursor| cursor.reset(self.io);
+    }
+
+    /// Each pass visits at most limit journal entries and limit metadata entries,
+    /// including live/irrelevant files. Persistent streams and round-robin
+    /// namespaces guarantee progress without rescanning a live prefix each time.
+    pub fn maintain(self: *LocalMetadataRepository, allocator: std.mem.Allocator, limit: usize) MaintenanceError!MaintenanceReport {
+        self.maintenance_mutex.lockUncancelable(self.io);
+        defer self.maintenance_mutex.unlock(self.io);
+        errdefer self.deinit();
+        const boundary = boundary: {
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
+            if (!self.recovered or self.unresolved_commit) return error.RecoveryRequired;
+            const last = generation.load(self.root, self.io) catch return error.CorruptRecord;
+            try checkpoint.publish(self.root, self.io, last, self.fault_injector);
+            break :boundary last;
+        };
+        const journals = try local_journal.prune(self.root, self.io, boundary, limit, &self.journal_cursor, self.fault_injector);
+        var report: MaintenanceReport = .{
+            .checkpoint_generation = boundary,
+            .removed_journal_files = journals.removed,
+            .scanned_journal_entries = journals.scanned,
+            .has_more = journals.has_more,
+        };
+        var drained: [reclaim_types.len]bool = @splat(false);
+        var drained_count: usize = 0;
+        while (report.scanned_metadata_entries < limit and drained_count < reclaim_types.len) {
+            const index = self.next_namespace;
+            self.next_namespace = (index + 1) % reclaim_types.len;
+            if (drained[index]) continue;
+            const cursor = &self.record_cursors[index];
+            const kind = reclaim_types[index];
+            const directory = layout.typeDirectory(kind);
+            const entry = (cursor.next(self.root, self.io, directory) catch return error.Unavailable) orelse {
+                durable.syncDirectory(cursor.dir.?, self.io) catch return error.Unavailable;
+                cursor.reset(self.io);
+                drained[index] = true;
+                drained_count += 1;
+                continue;
+            };
+            report.scanned_metadata_entries += 1;
+            if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".record")) continue;
+            if (kind == .multipart) report.scanned_multipart_records += 1;
+            // Only a fixed-size header is read outside the locks for live files.
+            // A candidate's full checksum, key and generation are checked again
+            // under both locks before deletion; a concurrent replacement is safe.
+            if (!try self.mightBeTombstone(cursor.dir.?, entry.name)) continue;
+            _ = self.fault_injector.trigger(.metadata_tombstone_observed);
+            if (self.reclamation_guard) |guard| guard.lockUncancelable(self.io);
+            defer if (self.reclamation_guard) |guard| guard.unlock(self.io);
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
+            // A failed post-checkpoint resurrection may still reference this
+            // tombstone as its previous generation. Do not remove that evidence.
+            if (self.unresolved_commit) return error.RecoveryRequired;
+            const record = self.readPath(allocator, kind, directory, entry.name) catch |err| switch (err) {
+                error.NotFound => continue,
+                else => return err,
+            };
+            defer record.deinit(allocator);
+            if (!record.tombstone or record.generation > boundary) continue;
+            cursor.dir.?.deleteFile(self.io, entry.name) catch return error.Unavailable;
+            report.removed_tombstones += 1;
+            if (kind == .multipart) report.removed_multipart_tombstones += 1;
+            if (self.fault_injector.trigger(.metadata_tombstone_pruned)) return error.Unavailable;
+        }
+        for (&self.record_cursors) |*cursor| {
+            if (cursor.dir) |dir| durable.syncDirectory(dir, self.io) catch return error.Unavailable;
+        }
+        report.has_more = report.has_more or drained_count < reclaim_types.len;
+        return report;
+    }
+
+    fn mightBeTombstone(self: *LocalMetadataRepository, dir: std.Io.Dir, name: []const u8) repository_port.Error!bool {
+        var prefix: [metadata_record.header_length + repository_payload.header_length]u8 = undefined;
+        const bytes = dir.readFile(self.io, name, &prefix) catch |err| switch (err) {
+            error.FileNotFound => return false,
+            else => return error.Unavailable,
+        };
+        if (bytes.len != prefix.len or !std.mem.eql(u8, prefix[0..4], &metadata_record.magic) or
+            !std.mem.eql(u8, prefix[32..36], &repository_payload.magic)) return error.CorruptRecord;
+        const flags = std.mem.readInt(u16, prefix[38..40], .little);
+        if (flags > 1) return error.CorruptRecord;
+        return flags == 1;
+    }
 
     pub fn init(
         root: std.Io.Dir,
@@ -113,99 +240,71 @@ pub const LocalMetadataRepository = struct {
             },
         }
 
-        const next_generation = generation.allocate(self.root, self.io) catch |err| switch (err) {
-            error.GenerationExhausted => return error.GenerationExhausted,
-            error.InvalidLength,
-            error.InvalidMagic,
-            error.UnsupportedMajorVersion,
-            error.UnsupportedFlags,
-            error.ChecksumMismatch,
-            => return error.CorruptRecord,
-            else => return error.Unavailable,
+        // Validate and allocate before starting a transaction. Oversized input
+        // and allocation failures here cannot leave any recovery work behind.
+        if (payload.len > metadata_record.max_payload_length or
+            repository_payload.header_length + key.len > metadata_record.max_payload_length - payload.len)
+            return error.PayloadTooLarge;
+        const inner_payload = (if (tombstone)
+            repository_payload.encodeTombstone(allocator, key)
+        else
+            repository_payload.encode(allocator, key, payload)) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.InvalidKey => return error.InvalidKey,
+            error.PayloadTooLarge => return error.PayloadTooLarge,
         };
+        defer allocator.free(inner_payload);
         const transaction_id = id.randomV4(self.io) catch return error.Unavailable;
-        const key_hash = layout.hashKey(key);
+        const next_generation = generation.allocate(self.root, self.io) catch |err| {
+            // An unsuccessful counter publication must be recovered before it
+            // can certify a checkpoint. Exhaustion did not write anything.
+            if (err != error.GenerationExhausted) self.unresolved_commit = true;
+            return switch (err) {
+                error.GenerationExhausted => error.GenerationExhausted,
+                error.InvalidLength, error.InvalidMagic, error.UnsupportedMajorVersion, error.UnsupportedFlags, error.ChecksumMismatch => error.CorruptRecord,
+                else => error.Unavailable,
+            };
+        };
+        // A gap in generation numbers is safe if this allocation fails.
+        const encoded = metadata_record.encode(allocator, record_type, next_generation, inner_payload) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.PayloadTooLarge => return error.PayloadTooLarge,
+        };
+        defer allocator.free(encoded);
+        var temporary_path_buffer: [layout.max_path_length]u8 = undefined;
+        const temporary_path = layout.temporaryPath(next_generation, transaction_id, &temporary_path_buffer) catch return error.Unavailable;
         const journal_entry: journal_port.Entry = .{
             .transaction_id = transaction_id,
             .state = .intent,
             .record_type = record_type,
             .generation = next_generation,
             .previous_generation = previous_generation,
-            .key_hash = key_hash,
+            .key_hash = layout.hashKey(key),
         };
+        var may_abort = false;
+        errdefer {
+            if (!may_abort or !self.abortAndDiscard(journal_entry, temporary_path)) self.unresolved_commit = true;
+        }
         self.journal.append(journal_entry) catch |err| return mapJournalError(err);
+        may_abort = true;
         if (self.fault_injector.trigger(.journal_intent_persisted)) {
+            may_abort = false; // Model a crash, not a handled error.
             return error.Unavailable;
         }
-
-        const inner_payload = (if (tombstone)
-            repository_payload.encodeTombstone(allocator, key)
-        else
-            repository_payload.encode(allocator, key, payload)) catch |err| switch (err) {
-            error.OutOfMemory => {
-                self.appendAbort(journal_entry);
-                return error.OutOfMemory;
-            },
-            error.InvalidKey => {
-                self.appendAbort(journal_entry);
-                return error.InvalidKey;
-            },
-            error.PayloadTooLarge => {
-                self.appendAbort(journal_entry);
-                return error.PayloadTooLarge;
-            },
-        };
-        defer allocator.free(inner_payload);
-        const encoded = metadata_record.encode(
-            allocator,
-            record_type,
-            next_generation,
-            inner_payload,
-        ) catch |err| switch (err) {
-            error.OutOfMemory => {
-                self.appendAbort(journal_entry);
-                return error.OutOfMemory;
-            },
-            error.PayloadTooLarge => {
-                self.appendAbort(journal_entry);
-                return error.PayloadTooLarge;
-            },
-        };
-        defer allocator.free(encoded);
-
-        var temporary_path_buffer: [layout.max_path_length]u8 = undefined;
-        const temporary_path = layout.temporaryPath(
-            next_generation,
-            transaction_id,
-            &temporary_path_buffer,
-        ) catch {
-            self.appendAbort(journal_entry);
-            return error.Unavailable;
-        };
-        var committed = false;
-        errdefer if (!committed) self.root.deleteFile(self.io, temporary_path) catch {};
-        self.writeTemporary(temporary_path, encoded) catch |err| {
-            self.appendAbort(journal_entry);
-            return err;
-        };
+        try self.writeTemporary(temporary_path, encoded);
+        if (self.fault_injector.trigger(.metadata_precommit_failed)) return error.Unavailable;
         if (self.fault_injector.trigger(.metadata_temporary_synced)) {
-            committed = true;
+            may_abort = false;
             return error.Unavailable;
         }
-
         var commit_entry = journal_entry;
         commit_entry.state = .commit;
-        self.journal.append(commit_entry) catch |err| {
-            self.appendAbort(journal_entry);
-            return mapJournalError(err);
-        };
-        committed = true;
-        if (self.fault_injector.trigger(.metadata_commit_persisted)) {
-            return error.Unavailable;
-        }
+        self.journal.append(commit_entry) catch |err| return mapJournalError(err);
+        may_abort = false;
+        if (self.fault_injector.trigger(.metadata_commit_persisted)) return error.Unavailable;
 
         var record_path_buffer: [layout.max_path_length]u8 = undefined;
-        const record_path = layout.recordPath(record_type, key_hash, &record_path_buffer) catch {
+        const record_path = layout.recordPath(record_type, journal_entry.key_hash, &record_path_buffer) catch {
             return error.Unavailable;
         };
         self.root.rename(temporary_path, self.root, record_path, self.io) catch {
@@ -350,10 +449,17 @@ pub const LocalMetadataRepository = struct {
         durable.syncParent(self.root, self.io, path) catch return error.Unavailable;
     }
 
-    fn appendAbort(self: *LocalMetadataRepository, original: journal_port.Entry) void {
+    fn abortAndDiscard(self: *LocalMetadataRepository, original: journal_port.Entry, temporary_path: []const u8) bool {
+        if (self.fault_injector.trigger(.metadata_abort_failed)) return false;
         var aborted = original;
         aborted.state = .abort;
-        self.journal.append(aborted) catch {};
+        self.journal.append(aborted) catch return false;
+        self.root.deleteFile(self.io, temporary_path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return false,
+        };
+        durable.syncParent(self.root, self.io, temporary_path) catch return false;
+        return true;
     }
 
     fn lessThanRecord(_: void, left: repository_port.Record, right: repository_port.Record) bool {

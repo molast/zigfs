@@ -289,6 +289,13 @@ func TestKMSKeyManagementForwardsRequestAndProviderError(t *testing.T) {
 
 func TestLogSettingsForwardingAndDownloadDenial(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/_admin/v1/settings/logs/query" {
+			if r.URL.Query().Get("from") != "100" || r.URL.Query().Get("to") != "200" {
+				t.Errorf("lost time range: %s", r.URL)
+			}
+			_, _ = w.Write([]byte(`{"content":"","truncated":false,"range":"24h"}`))
+			return
+		}
 		if r.URL.Path == "/_admin/v1/settings/logs/download" {
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(`{"code":"LogDownloadsDisabled","message":"Log downloads are disabled."}`))
@@ -318,6 +325,9 @@ func TestLogSettingsForwardingAndDownloadDenial(t *testing.T) {
 		if _, err := client.LogSettings(context.Background(), method, "", input); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := client.LogSettings(context.Background(), http.MethodGet, "query?from=100&to=200", nil); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := client.LogSettings(context.Background(), http.MethodGet, "download", nil); err == nil {
 		t.Fatal("download denial swallowed")
@@ -366,5 +376,41 @@ func TestAuditV1ForwardsNestedSchemaAndFilters(t *testing.T) {
 	expectedJSON, _ := json.Marshal(expected)
 	if string(gotJSON) != string(expectedJSON) {
 		t.Fatalf("structured audit data lost: %s", result)
+	}
+}
+
+func TestAuditLogSettingsUsesIndependentEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_admin/v1/settings/audit-logs/download" || r.URL.Query().Get("from") != "100" {
+			t.Errorf("unexpected audit path %s", r.URL)
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"code":"LogDownloadsDisabled","message":"Audit downloads disabled"}`))
+	}))
+	defer server.Close()
+	client := zigclient.New(server.URL, time.Second)
+	if _, err := client.AuditLogSettings(context.Background(), http.MethodGet, "download?from=100", nil); err == nil {
+		t.Fatal("audit download denial swallowed")
+	}
+}
+
+func TestPresignObjectForwardsDownloadAndVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body contract.PresignObjectRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if !body.Download || body.VersionID != "null" || body.Method != http.MethodGet {
+			t.Fatalf("download options not forwarded: %+v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"url":"http://s3.example/file?response-content-disposition=attachment","expires_at":"2026-09-08T08:00:00Z","required_headers":{}}`))
+	}))
+	defer server.Close()
+	_, err := zigclient.New(server.URL, time.Second).PresignObject(context.Background(), contract.PresignObjectRequest{
+		Bucket: "bucket", Key: "file", Method: http.MethodGet, ExpiresSecond: 900, Download: true, VersionID: "null",
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

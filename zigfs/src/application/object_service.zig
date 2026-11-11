@@ -49,6 +49,7 @@ pub const PutOptions = struct {
     expected_crc64nvme: ?u64 = null,
     expected_checksum: ?checksum.Value = null,
     multipart_etag: ?MultipartEtag = null,
+    multipart_completion: ?object_domain.MultipartCompletion = null,
     /// Captures the object state observed before a conditional PUT.
     expected_current: ?ExpectedCurrent = null,
     /// Used by CopyObject to bind source conditions to the observed generation.
@@ -72,6 +73,7 @@ pub const MultipartCommitOptions = struct {
     content_type: []const u8 = "application/octet-stream",
     user_metadata: []const object_domain.UserMetadata = &.{},
     etag: MultipartEtag,
+    parts_digest: [32]u8 = @splat(0),
 };
 
 pub const Usage = struct {
@@ -312,7 +314,7 @@ pub const ObjectService = struct {
         } else self.data_store.stage(data_generation, source) catch |err| return mapStageError(err);
         var staged_pending = true;
         defer if (staged_pending) self.data_store.discard(staged.token);
-        const object = self.commitStaged(bucket_name, key, initial_bucket, staged, options) catch |err| return err;
+        const object = self.commitStaged(bucket_name, key, initial_bucket, staged, options, false) catch |err| return err;
         staged_pending = false;
         return object;
     }
@@ -356,97 +358,37 @@ pub const ObjectService = struct {
         self.state_mutex.unlock(self.io);
         defer initial_bucket.deinit(self.allocator);
 
-        if (options.kms_selection != null or options.kms_key != null or (options.encryption orelse (initial_bucket.encryption != .disabled))) {
+        // Prefer a backend-native durable composition. The resulting generation
+        // owns its files independently of the temporary multipart upload.
+        const data_generation = @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable;
+        var source = MultipartSource{ .store = multipart_store, .manifest = manifest, .index = 0, .offset = 0 };
+        const staged = if (options.kms_selection != null or options.kms_key != null or (options.encryption orelse (initial_bucket.encryption != .disabled))) blk: {
             const master_key = self.master_key orelse return error.Unavailable;
-            const data_generation = @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable;
-            var source = MultipartSource{ .store = multipart_store, .manifest = manifest, .index = 0, .offset = 0 };
             var dek = object_encryption.generateDataKey(self.io) catch return error.Unavailable;
             defer std.crypto.secureZero(u8, &dek);
             const associated_data = buildEncryptionAssociatedData(self.allocator, initial_bucket.id, key, data_generation) catch return error.OutOfMemory;
             defer self.allocator.free(associated_data);
             const kms_envelope = if (options.kms_selection) |selection| try wrapKmsSelection(self.kms, self.allocator, selection, associated_data, dek) else if (options.kms_key) |kms_key| try wrapKms(self.kms, self.allocator, kms_key, associated_data, dek) else if (options.encryption == null and initial_bucket.encryption == .kms) try wrapKms(self.kms, self.allocator, initial_bucket.kms_key_id.slice(), associated_data, dek) else null;
             const wrapped = if (kms_envelope != null) object_encryption.WrappedKey{ .nonce = @splat(0), .tag = @splat(0), .ciphertext = @splat(0) } else object_encryption.wrapDataKey(self.allocator, self.io, master_key.*, associated_data, dek) catch return error.Unavailable;
-            var staged = self.data_store.stageEncrypted(data_generation, dek, associated_data, source.interface()) catch |err| return mapStageError(err);
-            staged.encryption_metadata = .{ .kms = kms_envelope, .wrapped_key_nonce = wrapped.nonce, .wrapped_key_tag = wrapped.tag, .wrapped_key = wrapped.ciphertext, .data_nonce = @as([12]u8, @splat(0)), .data_tag = @as([16]u8, @splat(0)) };
-            var staged_pending = true;
-            defer if (staged_pending) self.data_store.discard(staged.token);
-            const put_options: PutOptions = .{ .content_type = options.content_type, .user_metadata = options.user_metadata, .multipart_etag = options.etag };
-            const object = self.commitStaged(bucket_name, key, initial_bucket, staged, put_options) catch |err| return err;
-            staged_pending = false;
-            multipart_store.deleteUpload(manifest.upload_id) catch {};
-            return object;
-        }
-
-        const object_lock = self.object_locks.get(bucket_name, key);
-        object_lock.lockUncancelable(self.io);
-        defer object_lock.unlock(self.io);
-        self.state_mutex.lockUncancelable(self.io);
-        defer self.state_mutex.unlock(self.io);
-
-        const bucket = try self.loadBucketLocked(bucket_name);
-        defer bucket.deinit(self.allocator);
-        if (!std.mem.eql(u8, &initial_bucket.id, &bucket.id) or initial_bucket.generation != bucket.generation) {
-            return error.BucketNotFound;
-        }
-        const current = try self.loadHistoryLocked(bucket_name, key);
-        defer if (current) |record| record.deinit(self.allocator);
-        if (current) |record| switch (record) {
-            .active => |history| if (history.entries.len != 0) switch (history.entries[0]) {
-                .object => |object| {
-                    if (object.legal_hold) return error.ObjectLocked;
-                    if (self.objectRetentionActive(object)) return error.RetentionActive;
-                },
-                else => {},
-            },
-            else => {},
-        };
-        var expected_generation: object_store_port.ExpectedGeneration = .missing;
-        if (current) |record| switch (record) {
-            .active => |history| expected_generation = .{ .exact = history.metadata_generation },
-            .tombstone => |generation| expected_generation = .{ .exact = generation },
-        };
-        try self.checkQuotaLocked(bucket, key, current, size);
-        const object_id = reusableNullVersionObjectId(current, bucket.versioning) orelse
-            (namespaceObjectId(self.io, bucket_name, key) catch return error.Unavailable);
-        const data_generation = @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable;
-        const value: object_store_port.Value = .{
-            .id = object_id,
-            .bucket_id = bucket.id,
-            .bucket_name = bucket_name,
-            .key = key,
-            .size = size,
-            .etag_md5 = options.etag.digest,
-            .etag_part_count = options.etag.part_count,
-            .checksum_sha256 = manifestIntegrityDigest(manifest),
+            var result = (self.data_store.stageMultipart(data_generation, manifest, .{ .key = dek, .associated_data = associated_data }) catch |err| return mapStageError(err)) orelse
+                (self.data_store.stageEncrypted(data_generation, dek, associated_data, source.interface()) catch |err| return source.failure orelse mapStageError(err));
+            result.encryption_metadata = .{ .kms = kms_envelope, .wrapped_key_nonce = wrapped.nonce, .wrapped_key_tag = wrapped.tag, .wrapped_key = wrapped.ciphertext, .data_nonce = @as([12]u8, @splat(0)), .data_tag = @as([16]u8, @splat(0)) };
+            break :blk result;
+        } else (self.data_store.stageMultipart(data_generation, manifest, null) catch |err| return mapStageError(err)) orelse
+            (self.data_store.stage(data_generation, source.interface()) catch |err| return source.failure orelse mapStageError(err));
+        var staged_pending = true;
+        defer if (staged_pending) self.data_store.discard(staged.token);
+        if (staged.size != size) return error.CorruptData;
+        const object = try self.commitStaged(bucket_name, key, initial_bucket, staged, .{
             .content_type = options.content_type,
-            .last_modified_unix_seconds = std.Io.Clock.real.now(self.io).toSeconds(),
             .user_metadata = options.user_metadata,
-            .data_generation = data_generation,
-            .multipart_manifest = manifest,
-            .status = .active,
-            .version_id = if (bucket.versioning == .enabled)
-                .{ .uuid = @import("../common/id.zig").randomV4(self.io) catch return error.Unavailable }
-            else
-                .null_version,
-        };
-        var owned = object_domain.cloneFromView(self.allocator, value, 0) catch return error.OutOfMemory;
-        errdefer owned.deinit(self.allocator);
-        var history = buildHistoryWithObject(self.allocator, value, current, bucket.versioning) catch return error.OutOfMemory;
-        defer history.deinit(self.allocator);
-        var prepared = self.index.prepareObject(bucket_name, key) catch |err| return mapIndexError(err);
-        defer prepared.deinit(self.index.allocator);
-        const metadata_generation = self.object_store.putHistory(
-            self.allocator,
-            &history,
-            expected_generation,
-        ) catch |err| return mapObjectStoreError(err);
-        self.index.publishObject(&prepared, metadata_generation);
-        if (self.directories) |directories| {
-            const modified_at = value.last_modified_unix_seconds;
-            directories.ensureParentsLocked(bucket_name, key, modified_at) catch |err| return mapDirectoryError(err);
-        }
-        owned.metadata_generation = metadata_generation;
-        return owned;
+            .multipart_etag = options.etag,
+            .multipart_completion = .{ .upload_id = manifest.upload_id, .parts_digest = options.parts_digest },
+        }, true);
+        staged_pending = false;
+        // MultipartService first persists the terminal upload state, then
+        // reclaims its parts. Failures before that leave resumable upload data.
+        return object;
     }
 
     /// Copies an existing object through the same staged publish path as PUT.
@@ -520,7 +462,7 @@ pub const ObjectService = struct {
         defer source_metadata.deinit(self.allocator);
         source_lease.deinit();
 
-        const object = self.commitStaged(target_bucket_name, target_key, initial_bucket, staged, copy_options) catch |err| return err;
+        const object = self.commitStaged(target_bucket_name, target_key, initial_bucket, staged, copy_options, false) catch |err| return err;
         staged_pending = false;
         return object;
     }
@@ -532,6 +474,7 @@ pub const ObjectService = struct {
         initial_bucket: bucket_domain.Bucket,
         staged: data_store_port.Staged,
         options: PutOptions,
+        check_existing_retention: bool,
     ) Error!object_domain.Object {
         if (options.expected_md5) |expected| {
             if (!std.crypto.timing_safe.eql([16]u8, expected, staged.etag_md5)) return error.ChecksumMismatch;
@@ -560,6 +503,18 @@ pub const ObjectService = struct {
 
         const current = try self.loadHistoryLocked(bucket_name, key);
         defer if (current) |record| record.deinit(self.allocator);
+        if (check_existing_retention) {
+            if (current) |record| switch (record) {
+                .active => |history| if (history.entries.len != 0) switch (history.entries[0]) {
+                    .object => |object| {
+                        if (object.legal_hold) return error.ObjectLocked;
+                        if (self.objectRetentionActive(object)) return error.RetentionActive;
+                    },
+                    else => {},
+                },
+                else => {},
+            };
+        }
         if (options.expected_current) |expected| {
             const current_generation: ?u64 = if (current) |record| switch (record) {
                 .active => |history| switch (history.entries[0]) {
@@ -598,6 +553,8 @@ pub const ObjectService = struct {
             .etag_md5 = if (options.multipart_etag) |etag| etag.digest else staged.etag_md5,
             .etag_part_count = if (options.multipart_etag) |etag| etag.part_count else 0,
             .checksum_sha256 = staged.checksum_sha256,
+            .data_layout = staged.data_layout,
+            .multipart_completion = options.multipart_completion,
             .content_type = options.content_type,
             .last_modified_unix_seconds = modified_at,
             .user_metadata = options.user_metadata,
@@ -1608,6 +1565,8 @@ const MultipartSource = struct {
     manifest: object_domain.MultipartManifestView,
     index: usize,
     offset: u64,
+    part_hash: std.crypto.hash.sha2.Sha256 = std.crypto.hash.sha2.Sha256.init(.{}),
+    failure: ?Error = null,
 
     fn interface(self: *MultipartSource) byte_stream.Source {
         return .{ .context = self, .vtable = &.{ .read = read } };
@@ -1619,14 +1578,28 @@ const MultipartSource = struct {
         while (self.index < self.manifest.parts.len) {
             const part = self.manifest.parts[self.index];
             if (self.offset == part.size) {
+                var digest: [32]u8 = undefined;
+                self.part_hash.final(&digest);
+                if (!std.crypto.timing_safe.eql([32]u8, digest, part.checksum_sha256)) {
+                    self.failure = error.CorruptData;
+                    return error.ReadFailed;
+                }
                 self.index += 1;
                 self.offset = 0;
+                self.part_hash = std.crypto.hash.sha2.Sha256.init(.{});
                 continue;
             }
             const requested = @min(part.size - self.offset, @as(u64, @intCast(buffer.len)));
             var sink = RangeBufferSink{ .buffer = buffer[0..@intCast(requested)] };
-            self.store.readRange(multipartLocation(self.manifest.upload_id, part), self.offset, requested, sink.interface()) catch return error.ReadFailed;
-            if (sink.written != requested) return error.ReadFailed;
+            self.store.readRange(multipartLocation(self.manifest.upload_id, part), self.offset, requested, sink.interface()) catch |err| {
+                self.failure = mapExistingMultipartDataError(err);
+                return error.ReadFailed;
+            };
+            if (sink.written != requested) {
+                self.failure = error.CorruptData;
+                return error.ReadFailed;
+            }
+            self.part_hash.update(buffer[0..@intCast(requested)]);
             self.offset += requested;
             return @intCast(requested);
         }
@@ -1688,22 +1661,6 @@ fn multipartLocation(upload_id: @import("../common/id.zig").Uuid, part: object_d
         .encrypted = part.encrypted,
         .data_generation = part.data_generation,
     };
-}
-
-fn manifestIntegrityDigest(manifest: object_domain.MultipartManifestView) [32]u8 {
-    var hash = std.crypto.hash.sha2.Sha256.init(.{});
-    hash.update(&manifest.upload_id);
-    var encoded: [58]u8 = undefined;
-    for (manifest.parts) |part| {
-        std.mem.writeInt(u16, encoded[0..2], part.number, .little);
-        std.mem.writeInt(u64, encoded[2..10], part.size, .little);
-        @memcpy(encoded[10..42], &part.checksum_sha256);
-        @memcpy(encoded[42..58], &part.data_generation);
-        hash.update(&encoded);
-    }
-    var result: [32]u8 = undefined;
-    hash.final(&result);
-    return result;
 }
 
 fn mapBucketStoreError(err: bucket_store_port.Error) Error {

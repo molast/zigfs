@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub const Point = enum {
+    multipart_upload_cleanup,
     object_data_write,
     object_stage_synced,
     object_generation_published,
@@ -8,6 +9,16 @@ pub const Point = enum {
     metadata_temporary_synced,
     metadata_commit_persisted,
     metadata_record_published,
+    checkpoint_written,
+    checkpoint_synced,
+    checkpoint_published,
+    checkpoint_durable,
+    checkpoint_format_enabled,
+    metadata_journal_pruned,
+    metadata_tombstone_pruned,
+    metadata_tombstone_observed,
+    metadata_precommit_failed,
+    metadata_abort_failed,
 };
 
 pub const Injector = struct {
