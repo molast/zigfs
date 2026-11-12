@@ -20,7 +20,7 @@
 三类数据必须分别处理：
 
 - **Incomplete MPU**：仍有 Multipart Metadata 引用，但上传长期未完成。服务启动和
-  Scanner 周期会按 `s3.multipart_expiry_seconds` 使其过期，先提交 Multipart
+  Scanner 周期会按 `ZIGFS_S3_MULTIPART_EXPIRY_SECONDS` 使其过期，先提交 Multipart
   Tombstone，再删除对应 Part 数据。
 - **Dangling Data**：磁盘上存在 Data Generation，但任何有效 Object Version、
   Multipart Manifest 或活跃 Multipart Upload 都不再引用它。Scanner 根据完整
@@ -91,7 +91,7 @@ Full GC 与后台 Scanner 由 Scanner Mutex 串行化，避免两次回收同时
 
 ## 运行方式
 
-- 后台 Scanner 使用 `s3.lifecycle_scan_interval_seconds` 作为当前扫描间隔，每次推进
+- 后台 Scanner 使用 `ZIGFS_S3_LIFECYCLE_SCAN_INTERVAL_SECONDS` 作为当前扫描间隔，每次推进
   一个分片。默认 300 秒，即约 80 分钟覆盖一次完整 namespace。
 - `GET /_admin/v1/storage/scanner` 返回下一个分片与最近一次扫描结果。
 - `POST /_admin/v1/storage/gc` 立即扫描完整 namespace，并清理过期 MPU 与所有确认

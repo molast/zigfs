@@ -19,16 +19,14 @@ def main():
         with socket.socket() as probe:
             probe.bind(('127.0.0.1', 0))
             port = probe.getsockname()[1]
-        config = root / 'config.yaml'
-        config.write_text(f'''server:
-  api_address: 127.0.0.1:{port}
-observability:
-  metrics_enabled: false
-storage:
-  data_root: {root}/data
+        config = root / '.env'
+        config.write_text(f'''
+ZIGFS_API_ADDRESS=127.0.0.1:{port}
+ZIGFS_METRICS_ENABLED=false
+ZIGFS_DATA_ROOT={root}/data
 ''')
         with (root / 'server.log').open('w') as log:
-            process = subprocess.Popen([str(args.binary.resolve()), '--config', str(config)], stdout=log, stderr=log)
+            process = subprocess.Popen([str(args.binary.resolve()), '--env-file', str(config)], stdout=log, stderr=log)
             idle = []
             try:
                 endpoint = f'http://127.0.0.1:{port}/health/ready'

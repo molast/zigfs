@@ -1,3 +1,4 @@
+import type { DisplayPreferences } from '../lib/dateTime'
 export interface ApiErrorBody {
   code: string
   message: string
@@ -6,6 +7,10 @@ export interface ApiErrorBody {
 }
 
 export interface AdminSession {
+  auth_source?: 'deployment' | 'local' | 'oidc' | 'sts'
+  root_access_key?: string | null
+  session_access_key?: string | null
+  display_preferences?: DisplayPreferences | null
   display_name?: string
   email?: string
   federated?: boolean
@@ -15,6 +20,7 @@ export interface AdminSession {
   authenticated: boolean
   username: string
   expires_at: number
+  capabilities?: { admin: boolean; kms: boolean; s3: boolean; sts: boolean }
 }
 
 export interface SystemInfo {
@@ -230,6 +236,14 @@ export interface ManagementHealth {
 }
 
 export interface Settings {
+  pending_api_address?: string
+  api_restart_required?: boolean
+  pending_admin_listen_address?: string
+  admin_restart_required?: boolean
+  upstream_endpoint?: string
+  pending_upstream_endpoint?: string
+  trusted_proxies?: string[]
+  admin_listen_address?: string
   api_address: string
   s3_public_endpoint: string
   s3_virtual_hosted_style: boolean

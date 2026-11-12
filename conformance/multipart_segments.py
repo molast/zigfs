@@ -33,19 +33,15 @@ def main():
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
         endpoint = f'http://127.0.0.1:{port}'
-        config = root / 'config.yaml'
-        config.write_text(f'''server:
-  api_address: 127.0.0.1:{port}
-observability:
-  metrics_enabled: false
-storage:
-  data_root: {root}/data
-s3:
-  public_endpoint: {endpoint}
-admin:
-  username: test-admin
-  password: test-admin-password
-  session_secret: segmented-test-session-secret-000000000000
+        config = root / '.env'
+        config.write_text(f'''
+ZIGFS_API_ADDRESS=127.0.0.1:{port}
+ZIGFS_METRICS_ENABLED=false
+ZIGFS_DATA_ROOT={root}/data
+ZIGFS_S3_PUBLIC_ENDPOINT={endpoint}
+ZIGFS_ROOT_USER=test-admin
+ZIGFS_ROOT_PASSWORD=test-admin-password
+ZIGFS_ADMIN_SESSION_SECRET=segmented-test-session-secret-000000000000
 ''')
         log = (root / 'server.log').open('w')
         process = None
@@ -62,7 +58,7 @@ admin:
 
         def start():
             nonlocal process, token
-            process = subprocess.Popen([str(args.binary.resolve()), '--config', str(config)], stdout=log, stderr=log)
+            process = subprocess.Popen([str(args.binary.resolve()), '--env-file', str(config)], stdout=log, stderr=log)
             for _ in range(200):
                 assert process.poll() is None, (root / 'server.log').read_text()
                 try:

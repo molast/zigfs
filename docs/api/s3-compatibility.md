@@ -29,9 +29,9 @@ checksum 会明确记为 `Unsupported`，不计作 `Passed`；真正的协议、
   同时支持 Virtual-hosted-style：`Host: {bucket}.{s3.public_endpoint authority}`、
   `/{object}`；精确 `s3.public_endpoint authority` 仍支持 Path-style。
 - Bucket API 使用 Signature V4 Authorization Header；对象级 GET/PUT/DELETE 与 Multipart 全生命周期同时支持 Header 和 Presigned Query。
-- Credential Scope Service 固定为 `s3`，Region 必须等于 YAML `s3.region`。
+- Credential Scope Service 固定为 `s3`，Region 必须等于 `.env` `ZIGFS_S3_REGION`。
 - Header 鉴权必须提供 `Host`、`X-Amz-Date`、`X-Amz-Content-Sha256` 和 `Authorization`；Presigned Query 只要求请求携带其 `SignedHeaders` 中声明的 Header。
-- 默认允许 900 秒时钟偏差，可通过 `s3.request_time_skew_seconds` 配置为 60 至 3600 秒。
+- 默认允许 900 秒时钟偏差，可通过 `ZIGFS_S3_REQUEST_TIME_SKEW_SECONDS` 配置为 60 至 3600 秒。
 - Presigned URL 的 `X-Amz-Expires` 必须为 `1..604800` 秒；未来时间沿用上述偏差窗口，超过有效期立即拒绝。
 - Presigned URL 必须包含 Algorithm、Credential、Date、Expires、SignedHeaders 和 Signature；签名绑定 Method、完整 Path、全部 Query 和声明的 Header。
 - 临时凭证使用 AK/SK/Session Token：Header 请求必须携带并签名 `x-amz-security-token`，Presigned URL 必须携带签名绑定的 `X-Amz-Security-Token`；永久凭证携带 Token 同样被拒绝。
@@ -107,7 +107,7 @@ ListObjectsV2 已支持：
   `NoncurrentVersionExpiration`（NoncurrentDays/NewerNoncurrentVersions）和
   `ExpiredObjectDeleteMarker`。Tag/And/ObjectSize Filter、Transition、AbortIncompleteMultipartUpload
   返回 `NotImplemented`，不会静默忽略。
-- 后台扫描周期由 YAML `s3.lifecycle_scan_interval_seconds` 配置，默认 300 秒；规则和扫描结果
+- 后台扫描周期由 `.env` `ZIGFS_S3_LIFECYCLE_SCAN_INTERVAL_SECONDS` 配置，默认 300 秒；规则和扫描结果
   的事实来源均在 ZigFS，Admin 只读取或更新 Management API。
 
 ## Object
@@ -147,7 +147,7 @@ ListObjectsV2 已支持：
 - 未加密的 Complete 验证已选 Part 的存在性后，以 Object Metadata CAS 原子发布有序 Part Manifest，不重新读取、拼接或复制完整对象。SSE-S3 Complete 会流式解密 Part 并重新加密写入最终对象。最终 ETag 为 `MD5(concat(binary_part_md5))-part_count`。
 - Complete 成功后 Upload Metadata 提交 Tombstone，Manifest 引用的 Part 转由对象版本持有；Abort 只清理未完成 Upload，不会触碰已完成对象的 Part。
 - GET 按 Manifest 顺序读取 Part，Range 只读取相交 Part；完整 GET 逐 Part 校验 Size/SHA-256。启动 GC 同时以活动 Upload 和所有对象版本 Manifest 计算可达 Part，清理 Tombstone、覆盖 Part 和失败提交留下的孤儿。
-- `s3.multipart_expiry_seconds` 清理超时未完成上传；默认 7 天，允许 60 秒至 30 天。
+- `ZIGFS_S3_MULTIPART_EXPIRY_SECONDS` 清理超时未完成上传；默认 7 天，允许 60 秒至 30 天。
 - Multipart 接受 Signature V4 Header 和标准 Presigned Query。Presigned Query 可用于 Create、UploadPart、ListParts、ListMultipartUploads、Complete 和 Abort，完整绑定 `uploadId`、`partNumber` 等 Query 参数。
 - 暂停/恢复以 Part 为边界：客户端暂停时停止或中止当前请求；恢复时通过 ListMultipartUploads/ListParts 跳过已提交 Part。PutObject 和单个 UploadPart 不支持从请求体中间继续，中断的 Part 必须重传。
 

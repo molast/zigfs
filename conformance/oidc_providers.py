@@ -24,17 +24,14 @@ def main():
     with tempfile.TemporaryDirectory(prefix='zigfs-oidc-') as directory:
         root = Path(directory)
         api_port, bff_port = free_port(), free_port()
-        config = root / 'config.yaml'
-        config.write_text(f'''server:
-  api_address: 127.0.0.1:{api_port}
-observability:
-  metrics_enabled: false
-storage:
-  data_root: {root}/data
-admin:
-  username: qa
-  password: oidc-test-only-password
-  session_secret: oidc-test-only-session-secret-123456789
+        config = root / '.env'
+        config.write_text(f'''
+ZIGFS_API_ADDRESS=127.0.0.1:{api_port}
+ZIGFS_METRICS_ENABLED=false
+ZIGFS_DATA_ROOT={root}/data
+ZIGFS_ROOT_USER=qa
+ZIGFS_ROOT_PASSWORD=oidc-test-only-password
+ZIGFS_ADMIN_SESSION_SECRET=oidc-test-only-session-secret-123456789
 ''')
         log = (root / 'services.log').open('w')
         browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
@@ -49,7 +46,7 @@ admin:
                 time.sleep(.05)
             raise RuntimeError('readiness timeout')
         def start_zig():
-            process = subprocess.Popen([str(args.zig_bin.resolve()), '--config', str(config)], stdout=log, stderr=log)
+            process = subprocess.Popen([str(args.zig_bin.resolve()), '--env-file', str(config)], stdout=log, stderr=log)
             processes.append(process)
             ready(f'http://127.0.0.1:{api_port}')
             return process

@@ -286,29 +286,27 @@ async function deleteProvisionedCredential(endpoint, credential) {
   }
 }
 
-function yamlQuote(value) {
-  return JSON.stringify(String(value))
+function envQuote(value) {
+  const text = String(value)
+  if (/[\r\n'"\\]/.test(text)) throw new Error('Unsupported dotenv fixture character')
+  return `'${text}'`
 }
 
 function createConfig(endpoint, dataRoot, region, port) {
-  return `server:
-  api_address: ${yamlQuote(`127.0.0.1:${port}`)}
-observability:
-  metrics_enabled: false
-  metrics_address: ${yamlQuote(`127.0.0.1:${port + 1}`)}
-storage:
-  data_root: ${yamlQuote(dataRoot)}
-  stream_buffer_size: 65536
-s3:
-  public_endpoint: ${yamlQuote(endpoint)}
-  region: ${yamlQuote(region)}
-  request_time_skew_seconds: 900
-  multipart_expiry_seconds: 604800
-admin:
-  username: ${yamlQuote(process.env.ZIGFS_ADMIN_USERNAME ?? defaultAdminUsername)}
-  password: ${yamlQuote(process.env.ZIGFS_ADMIN_PASSWORD ?? defaultAdminPassword)}
-  session_secret: ${yamlQuote('phase9-isolated-session-secret-000000000000')}
-  session_ttl_seconds: 3600
+  return `
+ZIGFS_API_ADDRESS=${envQuote(`127.0.0.1:${port}`)}
+ZIGFS_METRICS_ENABLED=false
+ZIGFS_METRICS_ADDRESS=${envQuote(`127.0.0.1:${port + 1}`)}
+ZIGFS_DATA_ROOT=${envQuote(dataRoot)}
+ZIGFS_STREAM_BUFFER_SIZE=65536
+ZIGFS_S3_PUBLIC_ENDPOINT=${envQuote(endpoint)}
+ZIGFS_S3_REGION=${envQuote(region)}
+ZIGFS_S3_REQUEST_TIME_SKEW_SECONDS=900
+ZIGFS_S3_MULTIPART_EXPIRY_SECONDS=604800
+ZIGFS_ROOT_USER=${envQuote(process.env.ZIGFS_ADMIN_USERNAME ?? defaultAdminUsername)}
+ZIGFS_ROOT_PASSWORD=${envQuote(process.env.ZIGFS_ADMIN_PASSWORD ?? defaultAdminPassword)}
+ZIGFS_ADMIN_SESSION_SECRET=${envQuote('phase9-isolated-session-secret-000000000000')}
+ZIGFS_ADMIN_SESSION_TTL_SECONDS=3600
 `
 }
 
@@ -641,7 +639,7 @@ async function main() {
       region: options.region,
       version: null,
       config: {
-        mode: options.skipStart ? 'external endpoint' : 'isolated temporary YAML configuration',
+        mode: options.skipStart ? 'external endpoint' : 'isolated temporary dotenv configuration',
         api_address: endpointUrl.host,
         metrics_enabled: false,
         data_root: options.dataRoot,
@@ -675,13 +673,13 @@ async function main() {
       }
       report.server.config.data_root = options.dataRoot
       tempRoot ??= await mkdtemp(join(tmpdir(), 'zigfs-phase9-compatibility-log-'))
-      const configPath = join(tempRoot, 'config.yaml')
+      const configPath = join(tempRoot, '.env')
       serverLogPath = join(tempRoot, 'zigfs.log')
       await writeFile(configPath, createConfig(options.endpoint, options.dataRoot, options.region, port))
       const build = await runCommand('zig', ['build'], { cwd: zigfsRoot, timeoutMs: 300_000 })
       if (build.code !== 0) throw new Error(`zig build failed: ${build.stderr || build.stdout}`)
       const logHandle = createWriteStream(serverLogPath)
-      serverProcess = spawn(join(zigfsRoot, 'zig-out', 'bin', 'zigfs'), ['--config', configPath], { cwd: zigfsRoot, stdio: ['ignore', 'pipe', 'pipe'] })
+      serverProcess = spawn(join(zigfsRoot, 'zig-out', 'bin', 'zigfs'), ['--env-file', configPath], { cwd: zigfsRoot, stdio: ['ignore', 'pipe', 'pipe'] })
       serverProcess.stdout.pipe(logHandle)
       serverProcess.stderr.pipe(logHandle)
       serverProcess.exitCode = null

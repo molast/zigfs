@@ -1,4 +1,4 @@
-export type View = 'buckets' | 'bucket-detail' | 'objects' | 'users' | 'user-groups' | 'access-keys' | 'policies' | 'storage' | 'logs' | 'system-logs' | 'system' | 'settings' | 'oidc-settings'
+export type View = 'buckets' | 'bucket-detail' | 'objects' | 'users' | 'user-groups' | 'access-keys' | 'policies' | 'storage' | 'logs' | 'system-logs' | 'system' | 'settings' | 'oidc-settings' | 'profile' | 'account-security'
 
 export interface AppRoute {
   view: View
@@ -42,6 +42,9 @@ export function parseAppRoute(pathname: string, search = ''): AppRoute {
     return { view: 'objects', bucket, prefix }
   }
 
+  if (segments[0] === 'account' && segments.length === 1) return createAppRoute('profile')
+  if (segments[0] === 'account' && segments[1] === 'security' && segments.length === 2) return createAppRoute('account-security')
+
   const view = segments.length === 1 ? staticRoutes[segments[0]] : undefined
   return { view: view ?? 'buckets', bucket: '', prefix: '' }
 }
@@ -75,6 +78,8 @@ export function appRoutePath(route: AppRoute): string {
     case 'system-logs': return '/system-logs'
     case 'system': return '/system'
     case 'settings': return '/settings'
+    case 'profile': return '/account'
+    case 'account-security': return '/account/security'
   }
 }
 

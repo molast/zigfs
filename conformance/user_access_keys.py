@@ -37,19 +37,15 @@ def main():
     processes = []
     with tempfile.TemporaryDirectory(prefix='zigfs-user-keys-') as directory:
         root = Path(directory)
-        config = root / 'config.yaml'
-        config.write_text(f'''server:
-  api_address: 127.0.0.1:{api_port}
-s3:
-  public_endpoint: http://127.0.0.1:{api_port}
-observability:
-  metrics_enabled: false
-storage:
-  data_root: {root}/data
-admin:
-  username: qa
-  password: user-key-test-only
-  session_secret: user-key-test-only-session-secret-123456789
+        config = root / '.env'
+        config.write_text(f'''
+ZIGFS_API_ADDRESS=127.0.0.1:{api_port}
+ZIGFS_S3_PUBLIC_ENDPOINT=http://127.0.0.1:{api_port}
+ZIGFS_METRICS_ENABLED=false
+ZIGFS_DATA_ROOT={root}/data
+ZIGFS_ROOT_USER=qa
+ZIGFS_ROOT_PASSWORD=user-key-test-only
+ZIGFS_ADMIN_SESSION_SECRET=user-key-test-only-session-secret-123456789
 ''')
         log = (root / 'services.log').open('w')
         jar = http.cookiejar.CookieJar()
@@ -116,7 +112,7 @@ admin:
             return response(urllib.request.build_opener(), request, status)
 
         try:
-            zig = start(args.zig_bin, extra=('--config', str(config)))
+            zig = start(args.zig_bin, extra=('--env-file', str(config)))
             ready(api_base, zig)
             env = dict(os.environ, ZIGFS_ADMIN_LISTEN=f'127.0.0.1:{bff_port}', ZIGFS_ENDPOINT=api_base,
                        ZIGFS_WEB_ROOT=str(Path('zigfs-admin/web/dist').resolve()))
@@ -295,7 +291,7 @@ admin:
             req('PATCH', '/users/alice', dict(user, enabled=True))
             s3(key)
             zig.terminate(); zig.wait(timeout=10)
-            zig = start(args.zig_bin, extra=('--config', str(config)))
+            zig = start(args.zig_bin, extra=('--env-file', str(config)))
             ready(api_base, zig)
             assert len(req('GET', path)['items']) == 4
             restored = next(item for item in req('GET', path)['items'] if item['id'] == inherited['id'])

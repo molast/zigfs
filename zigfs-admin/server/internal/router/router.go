@@ -18,6 +18,7 @@ func New(auth *handler.Auth, system *handler.System, management *handler.Managem
 		gin.Recovery(),
 		middleware.RequestID(),
 		middleware.SecurityHeaders(),
+		middleware.Forwarding(),
 	)
 
 	engine.GET("/health/live", system.Live)
@@ -44,6 +45,16 @@ func New(auth *handler.Auth, system *handler.System, management *handler.Managem
 	private.POST("/storage/gc", management.RunStorageGC)
 	private.GET("/management-health", management.Health)
 	private.GET("/settings", management.Settings)
+	private.GET("/settings/instance", management.InstanceSettings)
+	private.GET("/settings/display", management.DisplaySettings)
+	private.PUT("/settings/display", management.DisplaySettings)
+	private.GET("/settings/region", management.RegionSettings)
+	private.PUT("/settings/region", management.RegionSettings)
+	private.GET("/settings/authentication", management.AuthenticationSettings)
+	private.PUT("/settings/authentication", management.AuthenticationSettings)
+	private.PUT("/settings/instance", management.InstanceSettings)
+	private.PUT("/settings/network", management.SaveNetworkSettings)
+	private.PUT("/settings/listeners", management.SaveListeners)
 	private.GET("/settings/audit-logs", management.LogSettings)
 	private.PUT("/settings/audit-logs", management.LogSettings)
 	private.GET("/settings/audit-logs/query", management.LogSettings)

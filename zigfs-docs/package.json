@@ -1,0 +1,32 @@
+{
+  "name": "zig-docs",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "scripts": {
+    "dev": "fumapress dev",
+    "build": "fumapress build",
+    "start": "fumapress start",
+    "types:check": "tsc --noEmit",
+    "check": "node scripts/docs-check.mjs"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.9.0",
+    "fumadocs-core": "^16.18.3",
+    "fumadocs-mdx": "^15.5.3",
+    "fumadocs-ui": "npm:@fumadocs/base-ui@^16.18.3",
+    "fumapress": "2.0.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
+    "@types/mdx": "^2.0.14",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "tailwindcss": "^4.3.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6"
+  }
+}

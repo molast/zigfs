@@ -1,7 +1,7 @@
 # V1 已知限制
 
 - V1 是单数据根、单写进程架构；不提供多节点共识、跨节点复制或在线分片扩容。
-- S3 默认使用 path-style 请求；Virtual-hosted-style 可通过 `s3.virtual_hosted_style` 开启。
+- S3 默认使用 path-style 请求；Virtual-hosted-style 可通过 `ZIGFS_S3_VIRTUAL_HOSTED_STYLE` 开启。
   Temporary Credentials 已支持标准 Session Token Header/Query；S3 POST Policy 已支持
   SigV4 Policy、条件和文件流；Flexible Checksum 的 CRC32、CRC32C、CRC64NVME、SHA1、SHA256
   Header/Trailer 均已实现，ACL/redirect 以及外部客户端矩阵仍在补齐。

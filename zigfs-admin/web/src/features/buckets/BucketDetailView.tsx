@@ -1,3 +1,4 @@
+import { formatDateTime } from '@/lib/dateTime'
 import { Textarea } from '../../components/ui/Textarea'
 import { Alert, AlertTitle, AlertDescription } from '../../components/ui/alert'
 import { OptionSelect } from '../../components/ui/OptionSelect'
@@ -454,7 +455,7 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
         <div className="bucket-settings-content">
           <div className="bucket-settings-title">
             <div><p className="eyebrow">{t('buckets.bucketConfiguration')}</p>{activeSection !== 'Summary' && <h3>{displayValue(activeSection)}</h3>}</div>
-            <span>{t('buckets.createdOn')} {bucket ? new Date(bucket.created_at).toLocaleString(getFormatLocale()) : '-'}</span>
+            <span>{t('buckets.createdOn')} {bucket ? formatDateTime(bucket.created_at) : '-'}</span>
           </div>
 
           {activeSection === 'Summary' ? <>
@@ -762,7 +763,7 @@ function EventsOverview({ api, bucket, configuration }: { api: ApiClient; bucket
         <button type="button" className="secondary-button" onClick={() => void loadEvents()} disabled={loading}>{t('buckets.apply')}</button>
       </div>
       <div className="bucket-events-list">
-        {events.map((event) => <div key={`${event.request_id}-${event.timestamp_unix_seconds}`}><span>{new Date(event.timestamp_unix_seconds * 1000).toLocaleString(getFormatLocale())}</span><b>{event.action} · {event.outcome}</b></div>)}
+        {events.map((event) => <div key={`${event.request_id}-${event.timestamp_unix_seconds}`}><span>{formatDateTime(event.timestamp_unix_seconds * 1000)}</span><b>{event.action} · {event.outcome}</b></div>)}
       </div>
       {loaded && events.length === 0 && <p className="bucket-access-note">{t('buckets.noAuditEventsMatchTheCurrentFilters')}</p>}
       <div className="bucket-events-actions">

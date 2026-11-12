@@ -98,8 +98,8 @@ export function LoginView({ onLogin, onStsLogin, darkTheme, onToggleTheme }: Log
             value={mode === 'sts' ? stsSecret : password}
             onChange={(event) => mode === 'sts' ? setStsSecret(event.target.value) : setPassword(event.target.value)}
             required
-            type={mode === 'sts' ? (showSecret ? 'text' : 'password') : 'password'}
-          />{mode === 'sts' || mode === 'password' ? <button type="button" className="login-eye" aria-label={showSecret ? t('auth.hideSecret') : t('auth.showSecret')} onClick={() => setShowSecret(value => !value)}>{showSecret ? <EyeOff /> : <Eye />}</button> : null}</div></Field>
+            type={showSecret ? 'text' : 'password'}
+          /><Button type="button" variant="ghost" size="icon-sm" className="login-eye" aria-pressed={showSecret} aria-controls="admin-password" aria-label={showSecret ? t('auth.hideSecret') : t('auth.showSecret')} onClick={() => setShowSecret(value => !value)}>{showSecret ? <EyeOff /> : <Eye />}</Button></div></Field>
           {mode === 'sts' && <Field><FieldLabel htmlFor="sts-token">{t('auth.stsSessionToken')}</FieldLabel><Input id="sts-token" type="text" placeholder={t('auth.enterStsSessionToken')} value={stsToken} onChange={event => setStsToken(event.target.value)} required /></Field>}
           <Button className="w-full" type="submit" disabled={submitting} aria-busy={submitting}>{t('auth.signIn')}</Button>
           </FieldGroup>

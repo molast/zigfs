@@ -17,6 +17,8 @@ const time = @import("../common/time.zig");
 const s3_multipart = @import("s3_multipart.zig");
 const version = @import("../version.zig").value;
 const management_auth = @import("management_auth.zig");
+const iam = @import("../auth/iam_policy.zig");
+const resource_policies = @import("../application/resource_policy_store.zig");
 
 pub const api_prefix = "/_admin/v1";
 const max_body_size = 1024 * 1024;
@@ -96,6 +98,16 @@ pub const routes = [_]Route{
     .{ .method = .get, .path = "/_admin/v1/system" },
     .{ .method = .get, .path = "/_admin/v1/health" },
     .{ .method = .get, .path = "/_admin/v1/settings" },
+    .{ .method = .get, .path = "/_admin/v1/settings/authentication" },
+    .{ .method = .put, .path = "/_admin/v1/settings/authentication" },
+    .{ .method = .get, .path = "/_admin/v1/settings/display" },
+    .{ .method = .put, .path = "/_admin/v1/settings/display" },
+    .{ .method = .get, .path = "/_admin/v1/settings/region" },
+    .{ .method = .put, .path = "/_admin/v1/settings/region" },
+    .{ .method = .get, .path = "/_admin/v1/settings/instance" },
+    .{ .method = .put, .path = "/_admin/v1/settings/instance" },
+    .{ .method = .put, .path = "/_admin/v1/settings/network" },
+    .{ .method = .put, .path = "/_admin/v1/settings/listener" },
     .{ .method = .get, .path = "/_admin/v1/settings/logs" },
     .{ .method = .put, .path = "/_admin/v1/settings/logs" },
     .{ .method = .get, .path = "/_admin/v1/settings/logs/query" },
@@ -135,14 +147,14 @@ pub fn serveRequest(
     if (std.mem.startsWith(u8, path, api_prefix ++ "/users/") and std.mem.indexOf(u8, path, "/access-keys") != null) return serveUserAccessKeys(request, application, request_id, path);
     if (std.mem.eql(u8, path, api_prefix ++ "/organizations") or std.mem.startsWith(u8, path, api_prefix ++ "/organizations/")) return serveRoles(true, request, application, request_id, path);
     if (std.mem.eql(u8, path, api_prefix ++ "/roles") or std.mem.startsWith(u8, path, api_prefix ++ "/roles/")) return serveRoles(false, request, application, request_id, path);
-    if (std.mem.eql(u8, path, api_prefix ++ "/users") or std.mem.startsWith(u8, path, api_prefix ++ "/users/")) return serveIdentities(false, request, application, request_id, path, audit_context);
-    if (std.mem.eql(u8, path, api_prefix ++ "/groups") or std.mem.startsWith(u8, path, api_prefix ++ "/groups/")) return serveIdentities(true, request, application, request_id, path, audit_context);
+    if (std.mem.eql(u8, path, api_prefix ++ "/users") or std.mem.startsWith(u8, path, api_prefix ++ "/users/")) return serveIdentities(false, request, application, request_id, path, caller, audit_context);
+    if (std.mem.eql(u8, path, api_prefix ++ "/groups") or std.mem.startsWith(u8, path, api_prefix ++ "/groups/")) return serveIdentities(true, request, application, request_id, path, caller, audit_context);
     if (std.mem.eql(u8, path, api_prefix ++ "/policies") or std.mem.startsWith(u8, path, api_prefix ++ "/policies/")) {
         return servePolicies(request, application, request_id, path, audit_context);
     }
     if (std.mem.eql(u8, path, api_prefix ++ "/buckets")) {
         return switch (request.head.method) {
-            .GET => serveListBuckets(request, application, request_id),
+            .GET => serveListBuckets(request, application, request_id, caller),
             .POST => serveCreateBucket(request, application, request_id, audit_context),
             else => respondMethodNotAllowed(request, request_id, "GET, POST"),
         };
@@ -333,6 +345,12 @@ pub fn serveRequest(
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/audit-logs")) return serveLogSettings(request, application, request_id, null, true);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/audit-logs/query")) return serveLogSettings(request, application, request_id, false, true);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/audit-logs/download")) return serveLogSettings(request, application, request_id, true, true);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/listener")) return serveListenerSettings(request, application, request_id);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/authentication")) return serveAuthenticationSettings(request, application, request_id);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/display")) return serveDisplaySettings(request, application, request_id);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/region")) return serveRegionSettings(request, application, request_id);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/instance")) return serveInstanceSettings(request, application, request_id);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/network")) return serveNetworkSettings(request, application, request_id);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings")) {
         if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
         return serveSettings(request, application, request_id);
@@ -345,10 +363,16 @@ fn serveListBuckets(
     request: *std.http.Server.Request,
     application: *Application,
     request_id: []const u8,
+    caller: management_auth.Principal,
 ) !std.http.Status {
     const service = application.bucketService() orelse return respondNotReady(request, request_id);
     const result = service.list() catch |err| return respondBucketError(request, request_id, err);
     defer result.deinit(application.allocator);
+
+    const io = application.io orelse return respondNotReady(request, request_id);
+    const root = application.data_root orelse return respondNotReady(request, request_id);
+    application.policy_mutex.lockUncancelable(io);
+    defer application.policy_mutex.unlock(io);
 
     var output: std.Io.Writer.Allocating = .init(application.allocator);
     defer output.deinit();
@@ -356,10 +380,52 @@ fn serveListBuckets(
     try json.beginObject();
     try json.objectField("items");
     try json.beginArray();
-    for (result.buckets) |bucket| try writeBucket(&json, bucket);
+    for (result.buckets) |bucket| {
+        if (bucketVisibleToCaller(application.allocator, root, io, caller, bucket.name, bucket.id)) {
+            try writeBucket(&json, bucket);
+        }
+    }
     try json.endArray();
     try json.endObject();
     return respondJsonBytes(request, request_id, .ok, output.written());
+}
+
+fn bucketVisibleToCaller(
+    a: std.mem.Allocator,
+    root: std.Io.Dir,
+    io: std.Io,
+    caller: management_auth.Principal,
+    bucket_name: []const u8,
+    bucket_id: [16]u8,
+) bool {
+    if (caller.is_root) return true;
+    const resource = std.fmt.allocPrint(a, "arn:aws:s3:::{s}", .{bucket_name}) catch return false;
+    defer a.free(resource);
+
+    // Identity policies grant access to the bucket. An explicit identity deny
+    // remains authoritative even when a bucket policy grants the same action.
+    const identity_decision = iam.decisionWithContext(a, caller.documents, "s3:ListBucket", resource, .{});
+    if (identity_decision == .deny) return false;
+    const identity_allowed = identity_decision == .allow;
+
+    // Bucket policies can grant access to an otherwise restricted identity and
+    // can explicitly deny an identity-wide grant. Evaluate them with the same
+    // principal bindings used by the S3 data plane.
+    const record = resource_policies.load(a, root, io, bucket_id) catch return identity_allowed;
+    if (record) |value| {
+        const principal_arn = std.fmt.allocPrint(a, "arn:aws:iam::{s}:user/{s}", .{ resource_policies.account_id, caller.username }) catch return identity_allowed;
+        defer a.free(principal_arn);
+        var entries = [_]iam.Entry{
+            .{ .key = "aws:userid", .value = caller.id },
+            .{ .key = "aws:PrincipalAccount", .value = resource_policies.account_id },
+            .{ .key = "aws:PrincipalArn", .value = principal_arn },
+        };
+        const context: iam.Context = .{ .kind = .resource, .principal_bindings = value.value.bindings, .entries = &entries };
+        const decision = iam.decisionWithContext(a, &[_][]const u8{value.value.document}, "s3:ListBucket", resource, context);
+        if (decision == .deny) return false;
+        if (decision == .allow) return true;
+    }
+    return identity_allowed;
 }
 
 fn serveListBucketEvents(
@@ -1329,13 +1395,16 @@ fn servePresignObject(
 
     const encoded_key = try encodePath(application.allocator, value.key);
     defer application.allocator.free(encoded_key);
-    const endpoint_host = publicEndpointHost(application.config.s3_public_endpoint);
-    const host = if (application.config.s3_virtual_hosted_style)
+    var network_arena = std.heap.ArenaAllocator.init(application.allocator);
+    defer network_arena.deinit();
+    const network = readNetworkSettings(network_arena.allocator(), application) catch return respondNotReady(request, request_id);
+    const endpoint_host = publicEndpointHost(network.s3_public_endpoint);
+    const host = if (network.s3_virtual_hosted_style)
         try std.fmt.allocPrint(application.allocator, "{s}.{s}", .{ bucket.name, endpoint_host })
     else
         endpoint_host;
-    defer if (application.config.s3_virtual_hosted_style) application.allocator.free(host);
-    const base_target = if (application.config.s3_virtual_hosted_style)
+    defer if (network.s3_virtual_hosted_style) application.allocator.free(host);
+    const base_target = if (network.s3_virtual_hosted_style)
         try std.fmt.allocPrint(application.allocator, "/{s}", .{encoded_key})
     else
         try std.fmt.allocPrint(application.allocator, "/{s}/{s}", .{ bucket.name, encoded_key });
@@ -1404,12 +1473,12 @@ fn servePresignObject(
         return respondError(request, request_id, .internal_server_error, "InternalError", "could not create presigned URL");
     };
     defer application.allocator.free(signed_target);
-    const url = if (application.config.s3_virtual_hosted_style)
+    const url = if (network.s3_virtual_hosted_style)
         try std.fmt.allocPrint(
             application.allocator,
             "{s}{s}{s}",
             .{
-                if (std.mem.startsWith(u8, application.config.s3_public_endpoint, "http://")) "http://" else "https://",
+                if (std.mem.startsWith(u8, network.s3_public_endpoint, "http://")) "http://" else "https://",
                 host,
                 signed_target,
             },
@@ -1418,7 +1487,7 @@ fn servePresignObject(
         try std.fmt.allocPrint(
             application.allocator,
             "{s}{s}",
-            .{ application.config.s3_public_endpoint, signed_target },
+            .{ network.s3_public_endpoint, signed_target },
         );
     defer application.allocator.free(url);
     var expiry_buffer: [20]u8 = undefined;
@@ -1689,10 +1758,17 @@ fn serveSettings(
     request_id: []const u8,
 ) !std.http.Status {
     const config = application.config;
+    var network_arena = std.heap.ArenaAllocator.init(application.allocator);
+    defer network_arena.deinit();
+    const network = readNetworkSettings(network_arena.allocator(), application) catch return respondNotReady(request, request_id);
+    const pending = try @import("../application/listener_settings.zig").load(network_arena.allocator(), application.data_root.?, application.io.?, config.api_address);
     return respondJson(request, request_id, .ok, .{
+        .pending_api_address = pending,
+        .api_restart_required = !std.mem.eql(u8, pending, config.api_address),
         .api_address = config.api_address,
-        .s3_public_endpoint = config.s3_public_endpoint,
-        .s3_virtual_hosted_style = config.s3_virtual_hosted_style,
+        .trusted_proxies = network.trusted_proxies,
+        .s3_public_endpoint = network.s3_public_endpoint,
+        .s3_virtual_hosted_style = network.s3_virtual_hosted_style,
         .s3_region = config.s3_region,
         .request_time_skew_seconds = config.s3_request_time_skew_seconds,
         .multipart_expiry_seconds = config.s3_multipart_expiry_seconds,
@@ -2655,7 +2731,7 @@ fn serveRoleSessions(request: *std.http.Server.Request, app: *Application, reque
     return respondNoContent(request, request_id);
 }
 
-fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8, audit_context: *AuditContext) !std.http.Status {
+fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8, caller: management_auth.Principal, audit_context: *AuditContext) !std.http.Status {
     const store = @import("../application/identity_store.zig");
     const policies = @import("../application/policy_store.zig");
     const T = if (is_group) store.Group else store.User;
@@ -2726,6 +2802,7 @@ fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, a
         }
     }
     if (!is_group and method == .DELETE) {
+        if (std.mem.eql(u8, items[index.?].id, caller.id)) return respondError(request, request_id, .forbidden, "CannotRemoveCurrentUser", "cannot remove the current user");
         const credentials = app.credentialService() orelse return respondNotReady(request, request_id);
         const keys = credentials.list() catch |err| return respondCredentialError(request, request_id, err);
         defer keys.deinit(app.allocator);
@@ -3162,4 +3239,161 @@ fn serveLogSettings(request: *std.http.Server.Request, app: *Application, reques
     const saved = logger.snapshot(a) catch |err| return logError(request, request_id, err);
     defer saved.deinit();
     return respondJson(request, request_id, .ok, saved.value);
+}
+
+fn readNetworkSettings(a: std.mem.Allocator, app: *Application) !@import("../application/network_settings.zig").Settings {
+    const io = app.io orelse return error.Unavailable;
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
+    return @import("../application/network_settings.zig").load(a, app.data_root orelse return error.Unavailable, io, app.config);
+}
+fn serveNetworkSettings(request: *std.http.Server.Request, app: *Application, request_id: []const u8) !std.http.Status {
+    const store = @import("../application/network_settings.zig");
+    if (request.head.method != .PUT) return respondMethodNotAllowed(request, request_id, "PUT");
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const input = try parseJsonBody(store.Settings, request, a, request_id) orelse return .bad_request;
+    store.validate(input.value) catch |err| return respondError(request, request_id, .bad_request, @errorName(err), "invalid network configuration");
+    const io = app.io orelse return respondNotReady(request, request_id);
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
+    store.save(a, app.data_root orelse return respondNotReady(request, request_id), io, input.value) catch return respondError(request, request_id, .service_unavailable, "NetworkSettingsUnavailable", "cannot persist network configuration");
+    return respondJson(request, request_id, .ok, input.value);
+}
+
+fn serveListenerSettings(request: *std.http.Server.Request, app: *Application, request_id: []const u8) !std.http.Status {
+    const store = @import("../application/listener_settings.zig");
+    if (request.head.method != .PUT) return respondMethodNotAllowed(request, request_id, "PUT");
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const input = try parseJsonBody(store.Settings, request, a, request_id) orelse return .bad_request;
+    const address = store.validate(input.value.api_address) catch return respondError(request, request_id, .bad_request, "InvalidListenAddress", "invalid listener address");
+    const io = app.io orelse return respondNotReady(request, request_id);
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
+    if (!std.mem.eql(u8, input.value.api_address, app.config.api_address)) {
+        var probe_address = address;
+        const current = try store.validate(app.config.api_address);
+        const current_port = switch (current) {
+            .ip4 => |v| v.port,
+            .ip6 => |v| v.port,
+        };
+        switch (probe_address) {
+            .ip4 => |*v| {
+                if (v.port == current_port) v.port = 0;
+            },
+            .ip6 => |*v| {
+                if (v.port == current_port) v.port = 0;
+            },
+        }
+        var probe = probe_address.listen(io, .{ .reuse_address = true }) catch return respondError(request, request_id, .conflict, "ListenAddressUnavailable", "listener address is unavailable");
+        probe.deinit(io);
+    }
+    store.save(a, app.data_root orelse return respondNotReady(request, request_id), io, input.value.api_address) catch return respondError(request, request_id, .service_unavailable, "ListenerSettingsUnavailable", "cannot persist listener configuration");
+    return respondJson(request, request_id, .ok, input.value);
+}
+
+fn serveInstanceSettings(request: *std.http.Server.Request, app: *Application, request_id: []const u8) !std.http.Status {
+    const store = @import("../application/instance_settings.zig");
+    if (request.head.method != .GET and request.head.method != .PUT) return respondMethodNotAllowed(request, request_id, "GET, PUT");
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = app.io orelse return respondNotReady(request, request_id);
+    const root = app.data_root orelse return respondNotReady(request, request_id);
+    const id = app.local_storage.instanceId() orelse return respondNotReady(request, request_id);
+    const Input = struct { service_name: []const u8, description: []const u8 };
+    const input = if (request.head.method == .PUT) (try parseJsonBody(Input, request, a, request_id) orelse return .bad_request).value else null;
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
+    const value: store.Settings = if (input) |v| .{ .service_name = v.service_name, .description = v.description } else store.load(a, root, io) catch return respondError(request, request_id, .service_unavailable, "InstanceSettingsUnavailable", "cannot read instance settings");
+    if (input != null) {
+        store.validate(value) catch |err| return respondError(request, request_id, .bad_request, @errorName(err), "invalid instance settings");
+        store.save(a, root, io, value) catch return respondError(request, request_id, .service_unavailable, "InstanceSettingsUnavailable", "cannot save instance settings");
+    }
+    const hex = std.fmt.bytesToHex(id, .lower);
+    const instance_id = try std.fmt.allocPrint(a, "{s}-{s}-{s}-{s}-{s}", .{ hex[0..8], hex[8..12], hex[12..16], hex[16..20], hex[20..32] });
+    return respondJson(request, request_id, .ok, .{
+        .service_name = value.service_name,
+        .description = value.description,
+        .instance_id = instance_id,
+        .started_at_unix_seconds = app.started_at_unix_seconds,
+        .uptime_seconds = @max(0, std.Io.Clock.real.now(io).toSeconds() - app.started_at_unix_seconds),
+    });
+}
+
+fn serveRegionSettings(request: *std.http.Server.Request, app: *Application, request_id: []const u8) !std.http.Status {
+    const store = @import("../application/region_settings.zig");
+    if (request.head.method != .GET and request.head.method != .PUT) return respondMethodNotAllowed(request, request_id, "GET, PUT");
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = app.io orelse return respondNotReady(request, request_id);
+    const root = app.data_root orelse return respondNotReady(request, request_id);
+    const input = if (request.head.method == .PUT) (try parseJsonBody(store.Settings, request, a, request_id) orelse return .bad_request).value else null;
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
+    const pending = if (input) |value| value.s3_region else store.load(a, root, io, app.config.s3_region) catch return respondError(request, request_id, .service_unavailable, "RegionSettingsUnavailable", "cannot read region settings");
+    if (input != null) {
+        store.validate(pending) catch return respondError(request, request_id, .bad_request, "InvalidRegion", "invalid S3 region");
+        store.save(a, root, io, pending) catch return respondError(request, request_id, .service_unavailable, "RegionSettingsUnavailable", "cannot save region settings");
+    }
+    return respondJson(request, request_id, .ok, .{
+        .s3_region = app.config.s3_region,
+        .pending_s3_region = pending,
+        .restart_required = !std.mem.eql(u8, pending, app.config.s3_region),
+    });
+}
+
+fn serveAuthenticationSettings(request: *std.http.Server.Request, app: *Application, request_id: []const u8) !std.http.Status {
+    const store = @import("../application/auth_settings.zig");
+    if (request.head.method != .GET and request.head.method != .PUT) return respondMethodNotAllowed(request, request_id, "GET, PUT");
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = app.io orelse return respondNotReady(request, request_id);
+    const root = app.data_root orelse return respondNotReady(request, request_id);
+    const input: ?store.Settings = if (request.head.method == .PUT) input: {
+        const Raw = struct { admin_session_ttl_seconds: std.json.Value, request_time_skew_seconds: std.json.Value };
+        const raw = (try parseJsonBody(Raw, request, a, request_id) orelse return .bad_request).value;
+        if (raw.admin_session_ttl_seconds != .integer or raw.admin_session_ttl_seconds.integer < 60 or raw.admin_session_ttl_seconds.integer > 86400)
+            return respondError(request, request_id, .bad_request, "InvalidSessionLifetime", "session lifetime must be an integer from 60 to 86400 seconds");
+        if (raw.request_time_skew_seconds != .integer or raw.request_time_skew_seconds.integer < 60 or raw.request_time_skew_seconds.integer > 3600)
+            return respondError(request, request_id, .bad_request, "InvalidSignatureClockSkew", "signature clock skew must be an integer from 60 to 3600 seconds");
+        break :input .{ .admin_session_ttl_seconds = @intCast(raw.admin_session_ttl_seconds.integer), .request_time_skew_seconds = @intCast(raw.request_time_skew_seconds.integer) };
+    } else null;
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
+    const current = store.Settings.fromConfig(app.config);
+    const pending = input orelse (store.load(a, root, io, current) catch return respondError(request, request_id, .service_unavailable, "AuthenticationSettingsUnavailable", "cannot read authentication settings"));
+    if (input != null) {
+        pending.validate() catch |err| return respondError(request, request_id, .bad_request, @errorName(err), "invalid authentication settings");
+        store.save(a, root, io, pending) catch return respondError(request, request_id, .service_unavailable, "AuthenticationSettingsUnavailable", "cannot save authentication settings");
+    }
+    return respondJson(request, request_id, .ok, .{ .current = current, .pending = pending, .restart_required = !current.eql(pending) });
+}
+
+fn serveDisplaySettings(request: *std.http.Server.Request, app: *Application, request_id: []const u8) !std.http.Status {
+    const store = @import("../application/display_settings.zig");
+    if (request.head.method != .GET and request.head.method != .PUT) return respondMethodNotAllowed(request, request_id, "GET, PUT");
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = app.io orelse return respondNotReady(request, request_id);
+    const root = app.data_root orelse return respondNotReady(request, request_id);
+    const Input = struct { timezone: []const u8, date_format: []const u8 };
+    const input = if (request.head.method == .PUT) (try parseJsonBody(Input, request, a, request_id) orelse return .bad_request).value else null;
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
+    const value: store.Settings = if (input) |v| .{ .timezone = v.timezone, .date_format = v.date_format } else store.load(a, root, io) catch return respondError(request, request_id, .service_unavailable, "DisplaySettingsUnavailable", "cannot read display settings");
+    if (input != null) {
+        store.validate(value) catch |err| return respondError(request, request_id, .bad_request, @errorName(err), "invalid display settings");
+        store.save(a, root, io, value) catch return respondError(request, request_id, .service_unavailable, "DisplaySettingsUnavailable", "cannot save display settings");
+    }
+    var zones: std.ArrayList([]const u8) = .empty;
+    var iterator = std.mem.tokenizeScalar(u8, store.timezones, '\n');
+    while (iterator.next()) |zone| try zones.append(a, zone);
+    return respondJson(request, request_id, .ok, .{ .timezone = value.timezone, .date_format = value.date_format, .supported_timezones = zones.items });
 }

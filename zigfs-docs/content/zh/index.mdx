@@ -1,0 +1,30 @@
+---
+title: ZigFS 文档
+description: ZigFS 官方文档，介绍 S3 兼容对象存储服务的使用与运维。
+---
+
+# ZigFS
+
+ZigFS 是一个快速、可自托管的对象存储服务，提供 S3 兼容 API、管理中心和 `zc` 命令行客户端。
+
+## 文档导航
+
+- [快速开始](./getting-started)
+- [核心概念](./concepts)
+- [S3 API 参考](./s3-api)
+- [CLI 参考](./cli)
+- [管理中心](./administration)
+- [安全](./security)
+- [部署](./deployment)
+- [故障排查](./troubleshooting)
+- [参考](./reference)
+
+## 架构概览
+
+```mermaid
+flowchart LR
+  Client --> S3["S3 API"]
+  Client --> Admin["管理 API"]
+  S3 --> Metadata["元数据"]
+  S3 --> Objects["对象存储"]
+```

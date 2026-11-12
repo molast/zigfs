@@ -1,7 +1,8 @@
 import { t } from '@/locales'
-import { useId } from 'react'
+import { useId, useState } from 'react'
 import { Copy, Download, Info } from 'lucide-react'
 import type { CreatedAccessKey } from '../../types/api'
+import type { ApiClient } from '../../api/client'
 import { useToast } from '../../components/ToastProvider'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
@@ -9,19 +10,30 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Field, FieldGroup, FieldLabel } from '../../components/ui/field'
 import { Alert, AlertDescription, AlertTitle } from '../../components/ui/alert'
 
-export function AccessKeyCreatedDialog({ value, onClose }: { value: CreatedAccessKey; onClose: () => void }) {
+export function AccessKeyCreatedDialog({ api, value, onClose }: { api: ApiClient; value: CreatedAccessKey; onClose: () => void }) {
   const toast = useToast()
-  function download() {
+  const [downloading, setDownloading] = useState(false)
+  async function download() {
+    if (downloading) return
+    setDownloading(true)
     try {
-      const data = JSON.stringify({ access_key: value.access_key, secret_key: value.secret_key, session_token: value.session_token, owner: value.owner, expires_at: value.expires_at }, null, 2)
+      const settings = await api.settings()
+      const data = JSON.stringify({
+        url: settings.s3_public_endpoint || '',
+        accessKey: value.access_key,
+        secretKey: value.secret_key,
+        api: 's3v4',
+        path: settings.s3_virtual_hosted_style === true ? 'vhost' : settings.s3_virtual_hosted_style === false ? 'path' : 'auto',
+      })
       const url = URL.createObjectURL(new Blob([data], { type: 'application/json' }))
-      const anchor = document.createElement('a'); anchor.href = url; anchor.download = `zigfs-${value.access_key}.json`
+      const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'credentials.json'
       document.body.appendChild(anchor); anchor.click(); anchor.remove()
       setTimeout(() => URL.revokeObjectURL(url), 1000)
       toast(t('access_keys.credentialsDownloaded'))
     } catch { toast(t('access_keys.downloadFailedCopyTheCredentialsToSaveThem'), 'error') }
+    finally { setDownloading(false) }
   }
-  return <Dialog open onOpenChange={open => { if (!open) onClose() }}><DialogContent className="identity-dialog created-key-dialog" showCloseButton={false}><DialogHeader><DialogTitle>{t('access_keys.newAccessKeyHasBeenCreated')}</DialogTitle><DialogDescription className="sr-only">{t('access_keys.copyOrDownloadTheNewCredentialsBeforeClosing')}</DialogDescription></DialogHeader><div className="identity-form-body"><FieldGroup><Alert><Info /><AlertTitle>{t('access_keys.warning')}</AlertTitle><AlertDescription>{t('access_keys.theSecretKeyIsShownOnlyOnceCopyOr')}</AlertDescription></Alert><CredentialValue label={t('access_keys.accessKey')} value={value.access_key} /><CredentialValue label={t('access_keys.secretKey')} value={value.secret_key} />{value.session_token && <CredentialValue label={t('access_keys.sessionToken')} value={value.session_token} />}</FieldGroup></div><footer className="identity-form-footer"><Button type="button" variant="outline" onClick={onClose}>{t('access_keys.close')}</Button><Button type="button" onClick={download}><Download data-icon="inline-start" />{t('access_keys.download')}</Button></footer></DialogContent></Dialog>
+  return <Dialog open onOpenChange={open => { if (!open) onClose() }}><DialogContent className="identity-dialog created-key-dialog" showCloseButton={false}><DialogHeader><DialogTitle>{t('access_keys.newAccessKeyHasBeenCreated')}</DialogTitle><DialogDescription className="sr-only">{t('access_keys.copyOrDownloadTheNewCredentialsBeforeClosing')}</DialogDescription></DialogHeader><div className="identity-form-body"><FieldGroup><Alert><Info /><AlertTitle>{t('access_keys.warning')}</AlertTitle><AlertDescription>{t('access_keys.theSecretKeyIsShownOnlyOnceCopyOr')}</AlertDescription></Alert><CredentialValue label={t('access_keys.accessKey')} value={value.access_key} /><CredentialValue label={t('access_keys.secretKey')} value={value.secret_key} />{value.session_token && <CredentialValue label={t('access_keys.sessionToken')} value={value.session_token} />}</FieldGroup></div><footer className="identity-form-footer"><Button type="button" variant="outline" onClick={onClose}>{t('access_keys.close')}</Button><Button type="button" disabled={downloading} onClick={() => void download()}><Download data-icon="inline-start" />{t('access_keys.download')}</Button></footer></DialogContent></Dialog>
 }
 
 function CredentialValue({ label, value }: { label: string; value: string }) {

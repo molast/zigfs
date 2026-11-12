@@ -1,3 +1,4 @@
+import { formatDate, formatDateTime } from '@/lib/dateTime'
 import { t, getFormatLocale } from '@/locales'
 import { Activity, Archive, CheckCircle2, ChevronDown, Database, Layers, RefreshCw, Server, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -82,7 +83,7 @@ export function SystemView({ api }: { api: ApiClient }) {
   const diagnostics = [
     { name: t('system.peerHealth'), state: t('system.notApplicable'), detail: t('system.singleNodeDeploymentNoClusterPeersAreConfigured'), source: 'deployment_topology' },
     { name: t('system.storageReadiness'), state: health ? health.status === 'ready' && health.recovery === 'ready' ? t('system.healthy') : t('system.needsAttention') : t('system.unknown'), detail: health ? t('system.storageRecoveryValueValue', { '0': health.recovery, '1': health.reason || t('common.storageReportsReady') }) : t('system.storageReadinessCouldNotBeRetrieved'), source: 'runtime_readiness' },
-    { name: t('system.usageFreshness'), state: !scanner ? t('system.unknown') : scanner.last_attempt_succeeded === false ? t('system.needsAttention') : scanner.last_completed_at ? t('system.reported') : t('system.awaitingScan'), detail: scanner?.last_attempt_succeeded === false ? t('system.theLatestScanAttemptFailedTheLastSuccessfulResult') : scanner?.last_completed_at ? t('system.namespaceScanResultsAreAvailableThisTimestampRecordsA') : t('system.noSuccessfulScanHasBeenReportedSinceStartup'), extra: scanner?.last_completed_at ? t('system.lastSuccessfulScanValue', { '0': new Date(scanner.last_completed_at * 1000).toLocaleString(getFormatLocale()) }) : undefined, source: 'storage_scanner' },
+    { name: t('system.usageFreshness'), state: !scanner ? t('system.unknown') : scanner.last_attempt_succeeded === false ? t('system.needsAttention') : scanner.last_completed_at ? t('system.reported') : t('system.awaitingScan'), detail: scanner?.last_attempt_succeeded === false ? t('system.theLatestScanAttemptFailedTheLastSuccessfulResult') : scanner?.last_completed_at ? t('system.namespaceScanResultsAreAvailableThisTimestampRecordsA') : t('system.noSuccessfulScanHasBeenReportedSinceStartup'), extra: scanner?.last_completed_at ? t('system.lastSuccessfulScanValue', { '0': formatDateTime(scanner.last_completed_at * 1000) }) : undefined, source: 'storage_scanner' },
     { name: t('system.listingAndMetacache'), state: t('system.notReported'), detail: t('system.objectListingsUseLocalMetadataMetacacheHealthAndListing'), source: 'local_metadata', extra: t('system.clusterQuorumAndInternodeTimeoutMetricsDoNotApply') },
     { name: t('system.workloadAdmission'), state: t('system.notReported'), detail: t('system.theCurrentRuntimeDoesNotPublishPerClassWorkload'), source: 'runtime_admission' },
   ]
@@ -90,7 +91,7 @@ export function SystemView({ api }: { api: ApiClient }) {
   return <section className="monitoring-page" aria-busy={busy}>
     <header className="monitoring-header">
       <h2>{t('system.runningStatus')}</h2>
-      <div className="monitoring-refresh"><span>{t('system.lastRefreshed')} {snapshot ? <time dateTime={snapshot.refreshedAt.toISOString()} title={snapshot.refreshedAt.toLocaleString(getFormatLocale())}>{relativeTime(snapshot.refreshedAt.getTime() / 1000, now)}</time> : '—'}</span><Button size="sm" variant="outline" disabled={busy} onClick={() => void refresh()}><RefreshCw data-icon="inline-start" />{busy ? t('system.refreshing') : t('system.refresh')}</Button></div>
+      <div className="monitoring-refresh"><span>{t('system.lastRefreshed')} {snapshot ? <time dateTime={snapshot.refreshedAt.toISOString()} title={formatDateTime(snapshot.refreshedAt)}>{relativeTime(snapshot.refreshedAt.getTime() / 1000, now)}</time> : '—'}</span><Button size="sm" variant="outline" disabled={busy} onClick={() => void refresh()}><RefreshCw data-icon="inline-start" />{busy ? t('system.refreshing') : t('system.refresh')}</Button></div>
     </header>
 
     <Card className="monitoring-summary" role="status">
@@ -163,7 +164,7 @@ function relativeTime(timestamp: number, now: number) {
   if (seconds < 3600) return relativeTimeFormatter.format(-Math.floor(seconds / 60), 'minute')
   if (seconds < 86400) return relativeTimeFormatter.format(-Math.floor(seconds / 3600), 'hour')
   if (seconds < 604800) return relativeTimeFormatter.format(-Math.floor(seconds / 86400), 'day')
-  return new Date(timestamp * 1000).toLocaleDateString(getFormatLocale())
+  return formatDate(timestamp * 1000)
 }
 function formatScanDuration(milliseconds: number) {
   if (milliseconds < 1000) return t('common.lessThanOneSecond')

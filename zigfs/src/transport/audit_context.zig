@@ -4,6 +4,7 @@ const schema = @import("../application/audit_schema.zig");
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
+    secure_transport: bool = false,
     actor: []const u8 = "anonymous",
     action: []const u8,
     target: []const u8,
@@ -18,7 +19,7 @@ pub const Context = struct {
         self.request.protocol = if (request.head.version == .@"HTTP/1.1") "HTTP/1.1" else "HTTP/1.0";
         const address = try std.fmt.allocPrint(a, "{f}", .{peer});
         self.request.source_ip = if (address[0] == '[') address[1..std.mem.indexOfScalar(u8, address, ']').?] else address[0..std.mem.lastIndexOfScalar(u8, address, ':').?];
-        // No trusted-proxy configuration exists: never trust client-supplied forwarding headers.
+        // peer has already been resolved using the trusted-proxy policy.
         var headers = request.iterateHeaders();
         while (headers.next()) |header| if (std.ascii.eqlIgnoreCase(header.name, "user-agent")) {
             self.request.user_agent = try a.dupe(u8, header.value[0..@min(header.value.len, 1024)]);

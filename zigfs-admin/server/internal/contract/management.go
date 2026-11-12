@@ -304,19 +304,33 @@ type ManagementHealthResponse struct {
 	Actions  []string `json:"actions"`
 }
 
+type ListenerSettings struct {
+	APIAddress         string `json:"api_address"`
+	AdminListenAddress string `json:"admin_listen_address"`
+	UpstreamEndpoint   string `json:"upstream_endpoint"`
+}
 type SettingsResponse struct {
-	APIAddress                   string `json:"api_address"`
-	S3PublicEndpoint             string `json:"s3_public_endpoint"`
-	S3VirtualHostedStyle         bool   `json:"s3_virtual_hosted_style"`
-	S3Region                     string `json:"s3_region"`
-	RequestTimeSkewSeconds       int64  `json:"request_time_skew_seconds"`
-	MultipartExpirySeconds       int64  `json:"multipart_expiry_seconds"`
-	LifecycleScanIntervalSeconds int64  `json:"lifecycle_scan_interval_seconds"`
-	StreamBufferSize             int64  `json:"stream_buffer_size"`
-	MetricsEnabled               bool   `json:"metrics_enabled"`
-	MetricsAddress               string `json:"metrics_address"`
-	AdminSessionTTLSeconds       int64  `json:"admin_session_ttl_seconds"`
-	ReloadRequired               bool   `json:"reload_required"`
+	PendingAPIAddress         string `json:"pending_api_address"`
+	APIRestartRequired        bool   `json:"api_restart_required"`
+	PendingAdminListenAddress string `json:"pending_admin_listen_address"`
+	AdminRestartRequired      bool   `json:"admin_restart_required"`
+	UpstreamEndpoint          string `json:"upstream_endpoint"`
+	PendingUpstreamEndpoint   string `json:"pending_upstream_endpoint"`
+
+	TrustedProxies               []string `json:"trusted_proxies"`
+	AdminListenAddress           string   `json:"admin_listen_address"`
+	APIAddress                   string   `json:"api_address"`
+	S3PublicEndpoint             string   `json:"s3_public_endpoint"`
+	S3VirtualHostedStyle         bool     `json:"s3_virtual_hosted_style"`
+	S3Region                     string   `json:"s3_region"`
+	RequestTimeSkewSeconds       int64    `json:"request_time_skew_seconds"`
+	MultipartExpirySeconds       int64    `json:"multipart_expiry_seconds"`
+	LifecycleScanIntervalSeconds int64    `json:"lifecycle_scan_interval_seconds"`
+	StreamBufferSize             int64    `json:"stream_buffer_size"`
+	MetricsEnabled               bool     `json:"metrics_enabled"`
+	MetricsAddress               string   `json:"metrics_address"`
+	AdminSessionTTLSeconds       int64    `json:"admin_session_ttl_seconds"`
+	ReloadRequired               bool     `json:"reload_required"`
 }
 
 type ManagedPolicy struct {

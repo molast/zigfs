@@ -176,6 +176,9 @@ pub const CredentialService = struct {
     index: *index_module.MetadataIndex,
     mutex: *std.Io.Mutex,
     master_key: *const secret_box.Key,
+    root_access_key: []const u8 = "",
+    root_secret_key: []const u8 = "",
+    root_username: []const u8 = "admin",
     identity_root: ?std.Io.Dir = null,
     identity_mutex: ?*std.Io.Mutex = null,
 
@@ -240,6 +243,10 @@ pub const CredentialService = struct {
         while (attempts < 16) : (attempts += 1) {
             const generated_access_key = generateAccessKey(self.io) catch return error.Unavailable;
             const access_key = options.access_key orelse &generated_access_key;
+            if (std.mem.eql(u8, access_key, self.root_access_key)) {
+                if (options.access_key != null) return error.Conflict;
+                continue;
+            }
             var expected_generation: credential_store_port.ExpectedGeneration = .missing;
             const current = self.store.get(self.allocator, access_key) catch |err| switch (err) {
                 error.NotFound => null,
@@ -339,6 +346,14 @@ pub const CredentialService = struct {
         self: CredentialService,
         access_key: []const u8,
     ) Error!AuthMaterial {
+        if (self.root_access_key.len > 0 and std.mem.eql(u8, access_key, self.root_access_key)) {
+            var material: AuthMaterial = .{ .owner = try std.fmt.allocPrint(self.allocator, "user:{s}", .{self.root_username}), .policy = .all, .secret_key = &.{}, .session_token = null };
+            errdefer material.deinit(self.allocator);
+            material.secret_key = try self.allocator.dupe(u8, self.root_secret_key);
+            material.subject_id = try self.allocator.dupe(u8, "deployment-root");
+            material.key_document = try self.allocator.dupe(u8, "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"*\",\"Resource\":\"*\"}]}");
+            return material;
+        }
         if (self.identity_mutex) |mutex| mutex.lockUncancelable(self.io);
         defer if (self.identity_mutex) |mutex| mutex.unlock(self.io);
         credential_domain.validateAccessKey(access_key) catch return error.InvalidAccessKey;

@@ -3,6 +3,12 @@
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *, .dark, .dark *));
 
+@layer base {
+  *, ::before, ::after {
+    border-color: var(--border);
+  }
+}
+
 :root {
   --radius: 6px;
   --background: var(--surface);
@@ -96,7 +102,7 @@ code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
 .ui-textarea { width: 100%; min-height: 180px; padding: 12px; resize: vertical; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); background: var(--surface); font: inherit; }
 .ui-textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 28%, transparent); border-color: var(--accent); }
 .ui-dialog-backdrop { position: fixed; z-index: 80; inset: 0; padding: 24px; display: grid; place-items: center; background: rgba(15, 23, 42, .42); }
-.ui-dialog-content { position: fixed; z-index: 81; top: 50%; left: 50%; width: min(820px, calc(100vw - 48px)); max-height: min(760px, calc(100vh - 48px)); overflow-y: auto; transform: translate(-50%, -50%); border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text); background: var(--surface); box-shadow: 0 22px 55px rgba(15, 23, 42, .28); }
+.ui-dialog-content { position: fixed; z-index: 81; top: 50%; left: 50%; width: min(820px, calc(100vw - 48px)); max-height: min(760px, calc(100vh - 48px)); overflow-y: auto; transform: translate(-50%, -50%); border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--surface); box-shadow: 0 22px 55px rgba(15, 23, 42, .28); }
 .ui-dialog-content:has(.bucket-tag-dialog-fields) { width: min(660px, calc(100vw - 48px)); padding: 28px 36px 24px; }
 .ui-dialog-content:has(.bucket-tag-dialog-fields) { width: min(440px, calc(100vw - 32px)); padding: 20px 22px 18px; }
 .ui-dialog-content:has(.bucket-tag-dialog-fields) .ui-dialog-header { margin-bottom: 24px; }
@@ -1054,6 +1060,10 @@ td small { display: block; margin-top: 3px; color: var(--text-muted); font-size:
 .login-secret-input .ui-input { padding-right: 44px; }
 .login-eye { position: absolute; top: 50%; right: 10px; display: grid; width: 28px; height: 28px; padding: 0; place-items: center; transform: translateY(-50%); border: 0; color: var(--text-muted); background: transparent; cursor: pointer; }
 .login-eye svg { width: 19px; height: 19px; }
+.identity-selected-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.identity-secret-input { position: relative; }
+.identity-secret-input .ui-input { padding-right: 44px; }
+.identity-password-eye { right: 10px; }
 .login-footer { display: flex; gap: 18px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 13px; }
 .login-footer a { color: var(--text); text-decoration: none; }
 .login-panel .primary-button { width: 100%; margin-top: 10px; min-height: 40px; }

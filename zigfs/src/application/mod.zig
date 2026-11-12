@@ -1,3 +1,5 @@
+pub const region_settings = @import("region_settings.zig");
+pub const listener_settings = @import("listener_settings.zig");
 const std = @import("std");
 const builtin = @import("builtin");
 const Config = @import("../config.zig").Config;
@@ -742,6 +744,9 @@ pub const Application = struct {
             &self.state_mutex,
             master_key,
         );
+        service.root_access_key = self.config.root_access_key;
+        service.root_secret_key = self.config.root_secret_key;
+        service.root_username = self.config.admin_username;
         service.identity_root = self.data_root;
         service.identity_mutex = &self.policy_mutex;
         return service;
@@ -2911,3 +2916,7 @@ test "legacy parts without sidecars compose and pending cleanup survives restart
     (try app.objectService().?.get("legacy-parts", "file", sink.interface())).deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("legacy sidecar-free payload", sink.bytes.items);
 }
+
+pub const auth_settings = @import("auth_settings.zig");
+
+pub const display_settings = @import("display_settings.zig");

@@ -414,3 +414,71 @@ func TestPresignObjectForwardsDownloadAndVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRequestForwardsObservedOriginChain(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Forwarded-For") != "198.51.100.7, 192.0.2.1" || r.Header.Get("X-Forwarded-Proto") != "https, http" {
+			t.Errorf("unexpected forwarding headers: %v", r.Header)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer server.Close()
+	request := httptest.NewRequest("GET", "/", nil)
+	request.RemoteAddr = "192.0.2.1:9001"
+	request.Header.Set("X-Forwarded-For", "198.51.100.7")
+	request.Header.Set("X-Forwarded-Proto", "https")
+	ctx := managementauth.WithForwarding(context.Background(), request)
+	if _, err := zigclient.New(server.URL, time.Second).Settings(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEndpointFailoverOnlyOnDialFailure(t *testing.T) {
+	calls := 0
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodPut {
+			t.Errorf("method %s", r.Method)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["api_address"] != "127.0.0.1:19000" {
+			t.Errorf("lost request body: %v %v", body, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer live.Close()
+	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	dead := closed.URL
+	closed.Close()
+	client := zigclient.New(dead, time.Second)
+	client.SetEndpoints([]string{dead, live.URL})
+	if err := client.SaveListenerSettings(context.Background(), "127.0.0.1:19000"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || client.Endpoint() != live.URL {
+		t.Fatalf("calls=%d endpoint=%s", calls, client.Endpoint())
+	}
+	denied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
+	defer denied.Close()
+	client.SetEndpoints([]string{denied.URL, live.URL})
+	if err := client.SaveListenerSettings(context.Background(), "127.0.0.1:19000"); err == nil {
+		t.Fatal("expected denial")
+	}
+	if calls != 1 {
+		t.Fatal("retried a rejected write")
+	}
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, _, _ := w.(http.Hijacker).Hijack()
+		connection.Close()
+	}))
+	defer broken.Close()
+	client.SetEndpoints([]string{broken.URL, live.URL})
+	if err := client.SaveListenerSettings(context.Background(), "127.0.0.1:19000"); err == nil {
+		t.Fatal("expected interrupted response")
+	}
+	if calls != 1 {
+		t.Fatal("replayed an already sent write")
+	}
+}

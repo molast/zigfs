@@ -12,27 +12,45 @@ type STSLoginRequest struct {
 }
 
 type LoginResponse struct {
-	CookieExpiresAt int64  `json:"cookie_expires_at"`
-	DisplayName     string `json:"display_name"`
-	Email           string `json:"email"`
-	Federated       bool   `json:"federated"`
-	Refreshable     bool   `json:"refreshable"`
-	SubjectID       string `json:"subject_id"`
-	IsRoot          bool   `json:"is_root"`
-	Token           string `json:"token"`
-	TokenType       string `json:"token_type"`
-	Username        string `json:"username"`
-	ExpiresAt       int64  `json:"expires_at"`
+	CookieExpiresAt int64        `json:"cookie_expires_at"`
+	DisplayName     string       `json:"display_name"`
+	Email           string       `json:"email"`
+	Federated       bool         `json:"federated"`
+	Refreshable     bool         `json:"refreshable"`
+	SubjectID       string       `json:"subject_id"`
+	IsRoot          bool         `json:"is_root"`
+	Token           string       `json:"token"`
+	TokenType       string       `json:"token_type"`
+	Username        string       `json:"username"`
+	ExpiresAt       int64        `json:"expires_at"`
+	Capabilities    Capabilities `json:"capabilities"`
+}
+
+type Capabilities struct {
+	Admin bool `json:"admin"`
+	KMS   bool `json:"kms"`
+	S3    bool `json:"s3"`
+	STS   bool `json:"sts"`
+}
+
+type DisplayPreferences struct {
+	Timezone   string `json:"timezone"`
+	DateFormat string `json:"date_format"`
 }
 
 type SessionResponse struct {
-	DisplayName   string `json:"display_name"`
-	Email         string `json:"email"`
-	Federated     bool   `json:"federated"`
-	Refreshable   bool   `json:"refreshable"`
-	SubjectID     string `json:"subject_id"`
-	IsRoot        bool   `json:"is_root"`
-	Authenticated bool   `json:"authenticated"`
-	Username      string `json:"username"`
-	ExpiresAt     int64  `json:"expires_at"`
+	AuthSource         string              `json:"auth_source"`
+	RootAccessKey      *string             `json:"root_access_key"`
+	SessionAccessKey   *string             `json:"session_access_key"`
+	DisplayPreferences *DisplayPreferences `json:"display_preferences"`
+	DisplayName        string              `json:"display_name"`
+	Email              string              `json:"email"`
+	Federated          bool                `json:"federated"`
+	Refreshable        bool                `json:"refreshable"`
+	SubjectID          string              `json:"subject_id"`
+	IsRoot             bool                `json:"is_root"`
+	Authenticated      bool                `json:"authenticated"`
+	Username           string              `json:"username"`
+	ExpiresAt          int64               `json:"expires_at"`
+	Capabilities       Capabilities        `json:"capabilities"`
 }

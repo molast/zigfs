@@ -79,7 +79,7 @@ export function StorageView({ api }: { api: ApiClient }) {
         <div><p className="eyebrow">{t('storage.capacityReclamation')}</p><h2>{t('storage.storage')}</h2><p className="page-description">{t('storage.viewLogicalObjectUsagePartitionScanProgressAndUnreferenced')}</p></div>
         <div className="flex items-center gap-2"><Button variant="outline" disabled={refreshing} onClick={() => void load().catch(reason => notifyError(reason instanceof Error ? reason.message : t('settings.someSystemInformationCouldNotBeLoadedRefreshConfiguration')))}><RefreshCw data-icon="inline-start" />{t('settings.refreshConfiguration')}</Button><Button variant="destructive" type="button" disabled={refreshing} onClick={() => void runGC()}><Trash2 data-icon="inline-start" />{t('storage.scanAndClean')}</Button></div>
       </header>
-      <SettingsPanels category="storage" settings={settings} system={null} storage={storage} scanner={scanner} health={health} />
+      <SettingsPanels api={api} onSaved={load} category="storage" settings={settings} system={null} storage={storage} scanner={scanner} health={health} />
       <p className="page-description">{t('settings.configurationIsReadOnlyRestartZigfsAfterChangingService')}</p>
       {storage && <Card className="my-4"><CardContent className="pt-4"><Metric label={t('storage.objectBytes')} value={formatBytes(storage.used)} /></CardContent></Card>}
       <div className="storage-cleanup-grid">

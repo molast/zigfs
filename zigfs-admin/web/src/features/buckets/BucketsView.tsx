@@ -1,3 +1,4 @@
+import { formatDateTime } from '@/lib/dateTime'
 import { t, getFormatLocale } from '@/locales'
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { Settings, Folder, Trash2, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
@@ -247,7 +248,7 @@ export function BucketsView({ api, onOpenBucket, onOpenObjects }: BucketsViewPro
             {filteredBuckets.map((bucket) => (
               <TableRow key={bucket.name}>
                 <TableCell><div className="bucket-cell"><Folder className="bucket-symbol" aria-hidden="true" /><Button variant="link" className="bucket-name-link" type="button" onClick={() => onOpenObjects(bucket.name)}>{bucket.name}</Button></div></TableCell>
-                <TableCell>{new Date(bucket.created_at).toLocaleString(getFormatLocale())}</TableCell>
+                <TableCell>{formatDateTime(bucket.created_at)}</TableCell>
                 <TableCell>{bucket.usage?.objects.toLocaleString(getFormatLocale()) ?? '—'}</TableCell>
                 <TableCell>{bucket.usage ? formatBucketSize(bucket.usage.bytes) : '—'}</TableCell>
                 <TableCell>{bucket.accessPolicy ? t(({ Private: 'buckets.private', Readonly: 'buckets.readonly', Public: 'buckets.public', Custom: 'buckets.customPolicy' } as const)[bucket.accessPolicy]) : '—'}</TableCell>

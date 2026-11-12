@@ -1,3 +1,4 @@
+import { browserTimezone } from '@/lib/dateTime'
 import { t, getFormatLocale } from '@/locales'
 import { useId, useState } from 'react'
 import { CalendarDays, Clock3, X } from 'lucide-react'
@@ -46,6 +47,6 @@ export function AccessKeyExpiryField({ value, onChange, disabled, invalid }: { v
         </div>
       </PopoverContent>
     </Popover>
-    <FieldDescription>{value ? t('access_keys.dateAndTimeUseYourLocalTimezone') : t('access_keys.emptyIndicatesPermanentValidity')}</FieldDescription>
+    <FieldDescription>{value ? t('settings.dateInputTimezone', { timezone: browserTimezone() }) : t('access_keys.emptyIndicatesPermanentValidity')}</FieldDescription>
   </Field>
 }

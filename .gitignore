@@ -34,7 +34,6 @@ compatibility/reports/
 .env
 .env.*
 !.env.example
-/zigfs/config.yaml
 # Local Linux Zig toolchains (all versions and architectures)
 /zigfs/zig-*.tar.xz
 /zigfs/zigfs/zig-*.tar.xz

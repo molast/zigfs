@@ -1,0 +1,15 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+@import "fumapress/css/preset.css";
+
+@theme {
+  --font-mono: "JetBrains Mono", monospace;
+  --default-font-family: "Geist", sans-serif;
+}
+
+/* The desktop sidebar sits below the full-width navigation bar. */
+#nd-docs-layout [data-sidebar-placeholder] {
+  top: var(--fd-docs-row-2);
+  height: calc(var(--fd-docs-height) - var(--fd-docs-row-2));
+}

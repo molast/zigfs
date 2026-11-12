@@ -1,3 +1,7 @@
+import { formatDateTime } from '@/lib/dateTime'
+import { NetworkListeners } from './NetworkListeners'
+import { NetworkPublicAccess } from './NetworkPublicAccess'
+import type { ApiClient } from '../../api/client'
 import { t, getFormatLocale } from '@/locales'
 import { Database, Globe, HardDrive, Info, Link, Monitor, Scale, ShieldCheck } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -12,6 +16,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import type { ManagementHealth, Settings, StorageInfo, StorageScannerStatus, SystemInfo } from '../../types/api'
 
 export interface SettingsPanelProps {
+  api: ApiClient
+  onSaved: () => Promise<void>
   category: string
   settings: Settings | null
   system: SystemInfo | null
@@ -39,28 +45,20 @@ function bytes(value: number | null | undefined) {
   return `${(value / 1024 ** index).toLocaleString(getFormatLocale(), { maximumFractionDigits: 2 })} ${['B', 'KiB', 'MiB', 'GiB', 'TiB'][index]}`
 }
 
-function addressParts(address?: string) {
-  if (!address) return ['—', '—']
-  const match = address.match(/^(\[.*\]|[^:]+):(\d+)$/)
-  return match ? [match[1], match[2]] : [address, t('settings.notReported')]
-}
 
-export function SettingsPanels({ category, settings, system, storage, scanner, health }: SettingsPanelProps) {
-  const [host, port] = addressParts(settings?.api_address)
+export function SettingsPanels({ api, onSaved, category, settings, system, storage, scanner, health }: SettingsPanelProps) {
   const percentage = storage?.physical_used != null && storage.total != null && storage.total > 0 ? Math.min(100, Math.max(0, storage.physical_used / storage.total * 100)) : null
   const ready = health?.status === 'ready' && health.recovery === 'ready'
   const scanState = !scanner ? t('settings.unavailable') : scanner.running ? t('settings.scanning') : scanner.last_attempt_succeeded === false ? t('settings.lastScanFailed') : scanner.last_scan ? t('settings.scanCompleted') : t('settings.notScannedYet')
   const capacity = <><dl className="settings-facts"><div><dt>{t('settings.usedSpace')}</dt><dd>{bytes(storage?.physical_used)}</dd></div><div><dt>{t('settings.availableSpace')}</dt><dd>{bytes(storage?.available)}</dd></div><div><dt>{t('settings.totalCapacity')}</dt><dd>{bytes(storage?.total)}</dd></div></dl>{percentage != null && <Progress value={percentage} aria-label={t('settings.diskUsageValue', { '0': percentage.toFixed(1) })} />}</>
 
   if (category === 'network') return <div className="settings-detail-stack">
-    <Section icon={Globe} title={t('settings.s3ApiService')} description={t('settings.listenAddressAndPortForTheS3CompatibleApi')}><FieldGroup className="settings-field-pair"><ReadField id="s3-host" label={t('settings.listenAddress')} value={host} /><ReadField id="s3-port" label={t('settings.port')} value={port} /></FieldGroup><Note>{t('settings.s3AndTheZigfsManagementApiShareTheListen')}{settings?.api_address ?? t('settings.unavailable')}{t('settings.networkAccessibilityDependsOnDeploymentConfiguration')}</Note></Section>
-    <Section icon={Monitor} title={t('settings.adminConsoleService')} description={t('settings.accessEndpointForTheAdminConsoleAndBff')}><FieldGroup className="settings-field-pair"><ReadField id="admin-origin" label={t('settings.currentAccessUrl')} value={window.location.origin} help={t('settings.browserAccessUrlNotTheServerListenAddress')} /><ReadField id="admin-bind" label={t('settings.listenAddressAndPort')} help={t('settings.theApiDoesNotReportTheAdminProcessListen')} /></FieldGroup></Section>
-    <Section icon={Globe} title={t('settings.publicAccess')} description={t('settings.publicDomainNameOrUrl')}><FieldGroup><ReadField id="public-endpoint" label={t('settings.publicUrl')} value={settings ? settings.s3_public_endpoint || t('common.notConfigured') : '—'} help={t('settings.publicS3EndpointForAReverseProxyOrDomain')} /><ReadField id="host-style" label={t('settings.virtualHostedAddressing')} value={settings ? settings.s3_virtual_hosted_style ? t('common.enabled') : t('common.disabled') : '—'} /></FieldGroup></Section>
-    <Section icon={ShieldCheck} title={t('settings.trustedProxies')} description={t('settings.proxyServersAndAccessBoundaries')}><FieldGroup><ReadField id="trusted-proxy" label={t('settings.proxyAddresses')} help={t('settings.theApiDoesNotReportTrustedProxiesThisDoes')} /></FieldGroup></Section>
+    <NetworkListeners api={api} settings={settings} onSaved={onSaved} />
+    <NetworkPublicAccess api={api} settings={settings} onSaved={onSaved} />
   </div>
 
   if (category === 'storage') return <div className="settings-detail-stack">
-    <Section icon={Database} title={t('settings.storageOverview')} description={t('settings.actualCapacityOfTheInstanceFilesystem')}><div className="settings-storage-overview"><div className="settings-capacity-ring" role="img" aria-label={percentage == null ? t('settings.capacityNotReported') : t('settings.valueUsed', { '0': percentage.toFixed(1) })} style={{ background: percentage == null ? 'var(--border)' : `conic-gradient(var(--accent) ${percentage}%, var(--border) 0)` }}><div><strong>{percentage == null ? '—' : `${percentage.toFixed(1)}%`}</strong><span>{t('settings.used')}</span></div></div><div>{capacity}</div><div className="settings-storage-status"><span>{t('settings.storageReadiness')}</span><Badge>{!health ? t('settings.unavailable') : ready ? t('settings.ready') : t('settings.needsAttention')}</Badge><span>{t('settings.scanStatus')}{scanState}</span><span>{t('settings.lastSuccessfulScan')}</span><strong>{scanner?.last_completed_at ? new Date(scanner.last_completed_at * 1000).toLocaleString(getFormatLocale()) : t('settings.noRecordsYet')}</strong></div></div></Section>
+    <Section icon={Database} title={t('settings.storageOverview')} description={t('settings.actualCapacityOfTheInstanceFilesystem')}><div className="settings-storage-overview"><div className="settings-capacity-ring" role="img" aria-label={percentage == null ? t('settings.capacityNotReported') : t('settings.valueUsed', { '0': percentage.toFixed(1) })} style={{ background: percentage == null ? 'var(--border)' : `conic-gradient(var(--accent) ${percentage}%, var(--border) 0)` }}><div><strong>{percentage == null ? '—' : `${percentage.toFixed(1)}%`}</strong><span>{t('settings.used')}</span></div></div><div>{capacity}</div><div className="settings-storage-status"><span>{t('settings.storageReadiness')}</span><Badge>{!health ? t('settings.unavailable') : ready ? t('settings.ready') : t('settings.needsAttention')}</Badge><span>{t('settings.scanStatus')}{scanState}</span><span>{t('settings.lastSuccessfulScan')}</span><strong>{scanner?.last_completed_at ? formatDateTime(scanner.last_completed_at * 1000) : t('settings.noRecordsYet')}</strong></div></div></Section>
     <Section icon={Database} title={t('settings.storageConfiguration')} description={t('settings.effectiveStorageAndCleanupSettings')}><FieldGroup className="settings-field-pair"><ReadField id="storage-backend" label={t('settings.storageBackend')} value={t('common.localFilesystem')} /><ReadField id="storage-buffer" label={t('settings.streamBuffer')} value={settings ? bytes(settings.stream_buffer_size) : '—'} /><ReadField id="scan-interval" label={t('settings.lifecycleScanInterval')} value={settings ? t('common.seconds', { '0': settings.lifecycle_scan_interval_seconds }) : '—'} /><ReadField id="upload-expiry" label={t('settings.incompleteUploadRetention')} value={settings ? t('common.seconds', { '0': settings.multipart_expiry_seconds }) : '—'} /></FieldGroup></Section>
     <Section icon={HardDrive} title={t('settings.diskManagement')} description={t('settings.theApiReportsFilesystemCapacityNotIndividualDisks')}><Table><TableHeader><TableRow><TableHead>{t('settings.storageScope')}</TableHead><TableHead>{t('settings.totalCapacity')}</TableHead><TableHead>{t('settings.usedSpace')}</TableHead><TableHead>{t('settings.availableSpace')}</TableHead><TableHead>{t('settings.status')}</TableHead></TableRow></TableHeader><TableBody><TableRow><TableCell>{t('settings.instanceFilesystem')}</TableCell><TableCell>{bytes(storage?.total)}</TableCell><TableCell>{bytes(storage?.physical_used)}</TableCell><TableCell>{bytes(storage?.available)}</TableCell><TableCell>{storage ? t('settings.capacityReported') : t('settings.unavailable')}</TableCell></TableRow></TableBody></Table><Note>{t('settings.singleNodeStorageDoesNotProvideDiskAdditionRemoval')}</Note></Section>
   </div>

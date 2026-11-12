@@ -4,9 +4,9 @@ const sigv4 = @import("../auth/sigv4.zig");
 const protocol = @import("s3_protocol.zig");
 const time = @import("../common/time.zig");
 
-// All strings are copied into the request arena before a body read can reuse
-// HTTP's head buffer. SourceIp comes from the accepted socket, never headers.
-pub fn build(a: std.mem.Allocator, owner: []const u8, headers: []const sigv4.Header, parsed: protocol.ParsedTarget, peer: std.Io.net.IpAddress, now: i64, auth_type: []const u8, signed_at: ?i64, region: []const u8, subject_id: ?[]const u8) !iam.Context {
+// The listener resolves peer and transport through the trusted-proxy policy.
+// Copy strings before body reads reuse the HTTP head buffer.
+pub fn build(a: std.mem.Allocator, owner: []const u8, headers: []const sigv4.Header, parsed: protocol.ParsedTarget, peer: std.Io.net.IpAddress, now: i64, auth_type: []const u8, signed_at: ?i64, region: []const u8, subject_id: ?[]const u8, secure_transport: bool) !iam.Context {
     var entries: std.ArrayList(iam.Entry) = .empty;
     if (owner.len > 0) {
         try add(a, &entries, "aws:username", if (std.mem.startsWith(u8, owner, "user:")) owner[5..] else owner);
@@ -14,7 +14,7 @@ pub fn build(a: std.mem.Allocator, owner: []const u8, headers: []const sigv4.Hea
         try add(a, &entries, "aws:PrincipalAccount", @import("../application/resource_policy_store.zig").account_id);
         const arn = if (std.mem.startsWith(u8, owner, "role:")) blk: {
             const role_suffix = owner["role:".len..];
-            const role_name = role_suffix[0 .. (std.mem.indexOfScalar(u8, role_suffix, ':') orelse role_suffix.len)];
+            const role_name = role_suffix[0..(std.mem.indexOfScalar(u8, role_suffix, ':') orelse role_suffix.len)];
             break :blk try std.fmt.allocPrint(a, "arn:aws:iam::{s}:role/{s}", .{ @import("../application/resource_policy_store.zig").account_id, role_name });
         } else if (std.mem.startsWith(u8, owner, "oidc:")) try std.fmt.allocPrint(a, "arn:aws:sts::{s}:federated-user/{s}", .{ @import("../application/resource_policy_store.zig").account_id, subject_id orelse owner[5..] }) else if (subject_id != null) try std.fmt.allocPrint(a, "arn:aws:iam::{s}:user/{s}", .{ @import("../application/resource_policy_store.zig").account_id, owner[5..] }) else "arn:aws:iam::" ++ @import("../application/resource_policy_store.zig").account_id ++ ":root";
         try add(a, &entries, "aws:PrincipalArn", arn);
@@ -22,7 +22,7 @@ pub fn build(a: std.mem.Allocator, owner: []const u8, headers: []const sigv4.Hea
     } else {
         try add(a, &entries, "aws:PrincipalAccount", "anonymous");
     }
-    try add(a, &entries, "aws:SecureTransport", "false"); // Listener is HTTP; no trusted proxy/TLS assertion exists.
+    try add(a, &entries, "aws:SecureTransport", if (secure_transport) "true" else "false");
     try add(a, &entries, "aws:RequestedRegion", region);
     const address = try std.fmt.allocPrint(a, "{f}", .{peer});
     const ip = if (address[0] == '[') address[1..std.mem.indexOfScalar(u8, address, ']').?] else address[0..std.mem.lastIndexOfScalar(u8, address, ':').?];

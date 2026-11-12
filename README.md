@@ -179,49 +179,45 @@ docker compose -f docker-compose.dev.yml down
 
 ## ⚙️ 配置
 
-ZigFS 使用 YAML 配置文件，代码内部同时提供默认值。加载优先级为：
+ZigFS 使用 `.env` 配置文件，代码内部同时提供默认值。加载优先级为：
 
 ```
-内置默认值 → YAML 配置 → 命令行覆盖
+内置默认值 → .env 文件 → 进程环境变量 → 命令行 → 控制台持久化覆盖
 ```
 
 创建本地配置：
 
 ```bash
-cd zigfs
-cp config.example.yaml config.yaml
+cp .env.example .env
 ```
+
+`./start.sh` 自动读取根目录 `.env`；Compose 也使用此文件。全部字段与优先级详见 [配置文档](docs/configuration.md)。
 
 常用配置示例：
 
-```yaml
-server:
-  api_address: "0.0.0.0:9000"
+```dotenv
+ZIGFS_API_ADDRESS="0.0.0.0:9000"
 
-observability:
-  metrics_enabled: true
-  metrics_address: "127.0.0.1:9090"
+ZIGFS_METRICS_ENABLED=true
+ZIGFS_METRICS_ADDRESS="127.0.0.1:9090"
 
-storage:
-  data_root: "data"
-  stream_buffer_size: 65536
+ZIGFS_DATA_ROOT="data"
+ZIGFS_STREAM_BUFFER_SIZE=65536
 
-s3:
-  public_endpoint: "http://127.0.0.1:9000"
-  virtual_hosted_style: false
-  region: "us-east-1"
-  request_time_skew_seconds: 900
-  multipart_expiry_seconds: 604800
-  lifecycle_scan_interval_seconds: 300
+ZIGFS_S3_PUBLIC_ENDPOINT="http://127.0.0.1:9000"
+ZIGFS_S3_VIRTUAL_HOSTED_STYLE=false
+ZIGFS_S3_REGION="us-east-1"
+ZIGFS_S3_REQUEST_TIME_SKEW_SECONDS=900
+ZIGFS_S3_MULTIPART_EXPIRY_SECONDS=604800
+ZIGFS_S3_LIFECYCLE_SCAN_INTERVAL_SECONDS=300
 
-admin:
-  username: "admin"
-  password: "zigfs-admin"
-  session_secret: "change-before-production"
-  session_ttl_seconds: 28800
+ZIGFS_ROOT_USER="admin"
+ZIGFS_ROOT_PASSWORD="zigfs-admin"
+ZIGFS_ADMIN_SESSION_SECRET="zigfs-local-session-secret-change-before-production"
+ZIGFS_ADMIN_SESSION_TTL_SECONDS=28800
 ```
 
-`server.api_address` 是实际监听地址；`s3.public_endpoint` 用于生成客户端可访问的 Presigned URL。开启 `s3.virtual_hosted_style` 后，还需要让 DNS 或反向代理解析 `<bucket>.<authority>` 形式的地址。
+`ZIGFS_API_ADDRESS` 是实际监听地址；`ZIGFS_S3_PUBLIC_ENDPOINT` 用于生成客户端可访问的 Presigned URL。开启 `ZIGFS_S3_VIRTUAL_HOSTED_STYLE` 后，还需要让 DNS 或反向代理解析 `<bucket>.<authority>` 形式的地址。
 
 管理员账号、密码和 Session Secret 都由 ZigFS 保存和校验，Admin 不维护副本。对外部署前必须修改默认凭证和 `session_secret`。
 
@@ -255,7 +251,7 @@ zig build run
 指定配置文件：
 
 ```bash
-zig build run -- --config ./config.yaml
+zig build run -- --env-file ../.env
 ```
 
 ### Admin Server
@@ -315,7 +311,6 @@ node benchmarks/run.mjs
 .
 ├── zigfs/                 # ZigFS 数据面
 │   ├── build.zig
-│   ├── config.example.yaml
 │   └── src/
 │       ├── application/   # 应用服务
 │       ├── auth/           # SigV4、策略和管理会话
@@ -338,6 +333,10 @@ node benchmarks/run.mjs
 ```
 
 ## 📚 进一步阅读
+
+- [文档首页](docs/README.md)
+- [常规设置](docs/general-settings.md)：实例信息、Region、认证参数和显示偏好。
+- [网络配置](docs/network-settings.md)与[网络部署示例](docs/deployment/network.md)
 
 - [单机 S3 与 IAM 完整权限实施计划](docs/plans/iam-permissions-completion.md)
 - [运维手册](docs/operations.md)

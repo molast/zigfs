@@ -1,7 +1,8 @@
+import { formatDateTime } from '@/lib/dateTime'
 import { useCallback, useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight, Plus, RefreshCw } from 'lucide-react'
 import type { ApiClient, KmsKey, KmsKeyAction, KmsKeyList } from '@/api/client'
-import { t, getFormatLocale } from '@/locales'
+import { t } from '@/locales'
 import { useConfirm } from '@/components/ConfirmProvider'
 import { useErrorToast, useToast } from '@/components/ToastProvider'
 import { Button } from '@/components/ui/Button'
@@ -20,7 +21,7 @@ const pageSize = 20
 function dateLabel(value: string | null) {
   if (!value) return '—'
   const date = new Date(value)
-  return Number.isNaN(date.valueOf()) ? value : date.toLocaleString(getFormatLocale())
+  return Number.isNaN(date.valueOf()) ? value : formatDateTime(date)
 }
 export function KmsKeysPanel({ api, onDefaultChanged }: { api: ApiClient; onDefaultChanged: () => Promise<void> }) {
   const [data, setData] = useState<KmsKeyList | null>(null)

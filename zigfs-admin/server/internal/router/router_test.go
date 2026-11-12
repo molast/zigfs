@@ -631,3 +631,25 @@ func (managementService) LogSettings(context.Context, string, string, json.RawMe
 func (managementService) AuditEvents(context.Context, string, string) (json.RawMessage, error) {
 	return json.RawMessage(`{"items":[]}`), nil
 }
+
+func (managementService) SaveNetworkSettings(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage("{}"), nil
+}
+
+func (managementService) SaveListeners(context.Context, contract.ListenerSettings) error { return nil }
+
+func (managementService) InstanceSettings(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage("{}"), nil
+}
+
+func (managementService) RegionSettings(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage("{}"), nil
+}
+
+func (managementService) AuthenticationSettings(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage("{}"), nil
+}
+
+func (managementService) DisplaySettings(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage("{}"), nil
+}

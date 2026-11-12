@@ -1,5 +1,9 @@
 # API 契约索引
 
+账户会话的身份来源、Root/STS AK 字段见 [账户资料与 Root 凭证](../account-and-root-credentials.md)。
+
+常规设置的接口、生效方式和审计总表见 [常规设置总览](../general-settings.md)。
+
 ZigFS 维护三套相互独立的网络契约：
 
 | 接口 | 用途 | 调用方 | 契约 |
@@ -7,6 +11,16 @@ ZigFS 维护三套相互独立的网络契约：
 | S3/Data API | Bucket、Object、Multipart、上传下载 | 文件 SDK、S3 Client、应用程序 | [s3-compatibility.md](s3-compatibility.md) |
 | ZigFS Management API | AK/SK、管理视图、Storage、System、配置 | Admin、授权用户、自动化系统 | [zigfs-management-v1.openapi.yaml](zigfs-management-v1.openapi.yaml) |
 | Admin BFF API | React 网页操作适配 | React Admin | [admin-bff-v1.openapi.yaml](admin-bff-v1.openapi.yaml) |
+
+实例信息读写接口及错误码见 [实例信息](../instance-settings.md)。
+
+显示偏好及会话返回字段见 [时区与日期显示偏好](../display-settings.md)。
+
+会话有效期和签名时间偏差接口见 [会话与请求认证](../authentication-settings.md)。
+
+Region 当前值、待生效值及读写接口见 [S3 Region](../region-settings.md)。
+
+Network 配置接口、生效状态、错误码和审计分类见 [网络配置 API](network-settings.md)。
 
 Health 与监控契约见 [operations.md](operations.md)。
 
@@ -27,7 +41,7 @@ Header/Streaming 以及五种 Flexible Checksum signed trailer 已实现，并�
 Phase 9 已补齐 GET/HEAD/PUT 的 Conditional Requests，包括 ETag/HTTP 日期条件、304/412
 响应和条件 PUT 的 Metadata Generation CAS，并实现 CopyObject 的流式复制、权限、元数据
 指令、条件和指定源 Version ID 语义；旧版本可按标准 S3 自复制为新的当前版本。
-随后完成可配置 Virtual-hosted-style Addressing：校验 `s3.public_endpoint` authority、
+随后完成可配置 Virtual-hosted-style Addressing：校验 `ZIGFS_S3_PUBLIC_ENDPOINT` authority、
 提取 Bucket 子域名并将实际 Host 绑定到 SigV4；默认仍使用 Path-style。
 Temporary Credentials 也已实现：`ZFCR` V1.1 向后兼容持久化临时 AK/SK/Session Token，
 Header 与 Presigned SigV4 均绑定 Token，并对缺失、错误和过期返回稳定 S3 错误。

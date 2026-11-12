@@ -3,13 +3,19 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"sync"
 
 	"zigfs-admin/server/internal/contract"
 	"zigfs-admin/server/internal/port"
 )
 
 type Management struct {
-	zig port.ZigClient
+	listenerMu         sync.Mutex
+	ListenerFile       string
+	SetEndpoints       func([]string)
+	Endpoint           func() string
+	AdminListenAddress string
+	zig                port.ZigClient
 }
 
 func NewManagement(zig port.ZigClient) *Management {
@@ -142,7 +148,12 @@ func (service *Management) Health(ctx context.Context) (contract.ManagementHealt
 }
 
 func (service *Management) Settings(ctx context.Context) (contract.SettingsResponse, error) {
-	return service.zig.Settings(ctx)
+	response, err := service.zig.Settings(ctx)
+	response.AdminListenAddress = service.AdminListenAddress
+	service.listenerMu.Lock()
+	defer service.listenerMu.Unlock()
+	service.addListenerStatus(&response)
+	return response, err
 }
 
 func (service *Management) ListPolicies(ctx context.Context) (contract.PolicyList, error) {
@@ -286,4 +297,24 @@ func (service *Management) LogSettings(ctx context.Context, method, operation st
 
 func (service *Management) AuditEvents(ctx context.Context, operation, query string) (json.RawMessage, error) {
 	return service.zig.AuditEvents(ctx, operation, query)
+}
+
+func (service *Management) SaveNetworkSettings(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+	return service.zig.SaveNetworkSettings(ctx, input)
+}
+
+func (service *Management) InstanceSettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error) {
+	return service.zig.InstanceSettings(ctx, method, input)
+}
+
+func (service *Management) RegionSettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error) {
+	return service.zig.RegionSettings(ctx, method, input)
+}
+
+func (service *Management) AuthenticationSettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error) {
+	return service.zig.AuthenticationSettings(ctx, method, input)
+}
+
+func (service *Management) DisplaySettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error) {
+	return service.zig.DisplaySettings(ctx, method, input)
 }

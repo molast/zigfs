@@ -2,5 +2,6 @@
 .zig-cache
 zig-out
 data
-config.yaml
+.env
+.env.*
 *.log

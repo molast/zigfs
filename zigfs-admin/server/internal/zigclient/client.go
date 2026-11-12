@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"zigfs-admin/server/internal/contract"
@@ -18,6 +21,8 @@ import (
 )
 
 type Client struct {
+	endpointMu sync.RWMutex
+	candidates []string
 	endpoint   string
 	httpClient *http.Client
 }
@@ -321,11 +326,15 @@ func (client *Client) requestJSON(ctx context.Context, method, path string, body
 		payload = bytes.NewReader(encoded)
 	}
 
-	request, err := http.NewRequestWithContext(ctx, method, client.endpoint+path, payload)
+	request, err := http.NewRequestWithContext(ctx, method, client.Endpoint()+path, payload)
 	if err != nil {
 		return fmt.Errorf("create zig request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
+	if origin := managementauth.Forwarded(ctx); origin.For != "" {
+		request.Header.Set("X-Forwarded-For", origin.For)
+		request.Header.Set("X-Forwarded-Proto", origin.Proto)
+	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -337,6 +346,34 @@ func (client *Client) requestJSON(ctx context.Context, method, path string, body
 	}
 
 	response, err := client.httpClient.Do(request)
+	if err != nil && dialFailure(err) {
+		client.endpointMu.RLock()
+		candidates := append([]string(nil), client.candidates...)
+		client.endpointMu.RUnlock()
+		for _, candidate := range candidates {
+			if candidate == request.URL.Scheme+"://"+request.URL.Host {
+				continue
+			}
+			retry := request.Clone(ctx)
+			retry.URL, _ = url.Parse(candidate + path)
+			if request.GetBody != nil {
+				retry.Body, err = request.GetBody()
+				if err != nil {
+					break
+				}
+			}
+			response, err = client.httpClient.Do(retry)
+			if err == nil {
+				client.endpointMu.Lock()
+				client.endpoint = candidate
+				client.endpointMu.Unlock()
+				break
+			}
+			if !dialFailure(err) {
+				break
+			}
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("call zig service: %w", err)
 	}
@@ -617,4 +654,71 @@ func (client *Client) AuditEvents(ctx context.Context, operation, query string) 
 	var result json.RawMessage
 	err := client.requestJSON(ctx, http.MethodGet, path, nil, &result)
 	return result, err
+}
+
+func (client *Client) SaveNetworkSettings(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+	var response json.RawMessage
+	err := client.requestJSON(ctx, http.MethodPut, "/_admin/v1/settings/network", input, &response)
+	return response, err
+}
+
+func (client *Client) SetEndpoints(values []string) {
+	client.endpointMu.Lock()
+	defer client.endpointMu.Unlock()
+	client.candidates = append([]string(nil), values...)
+	if len(values) > 0 {
+		client.endpoint = values[0]
+	}
+}
+func (client *Client) Endpoint() string {
+	client.endpointMu.RLock()
+	defer client.endpointMu.RUnlock()
+	return client.endpoint
+}
+func dialFailure(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
+}
+func (client *Client) SaveListenerSettings(ctx context.Context, address string) error {
+	return client.requestJSON(ctx, http.MethodPut, "/_admin/v1/settings/listener", map[string]string{"api_address": address}, nil)
+}
+
+func (client *Client) InstanceSettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error) {
+	var response json.RawMessage
+	var body any
+	if len(input) > 0 {
+		body = input
+	}
+	err := client.requestJSON(ctx, method, "/_admin/v1/settings/instance", body, &response)
+	return response, err
+}
+
+func (client *Client) RegionSettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error) {
+	var response json.RawMessage
+	var body any
+	if len(input) > 0 {
+		body = input
+	}
+	err := client.requestJSON(ctx, method, "/_admin/v1/settings/region", body, &response)
+	return response, err
+}
+
+func (client *Client) AuthenticationSettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error) {
+	var response json.RawMessage
+	var body any
+	if len(input) > 0 {
+		body = input
+	}
+	err := client.requestJSON(ctx, method, "/_admin/v1/settings/authentication", body, &response)
+	return response, err
+}
+
+func (client *Client) DisplaySettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error) {
+	var response json.RawMessage
+	var body any
+	if len(input) > 0 {
+		body = input
+	}
+	err := client.requestJSON(ctx, method, "/_admin/v1/settings/display", body, &response)
+	return response, err
 }

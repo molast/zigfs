@@ -1,3 +1,4 @@
+import { formatDate, formatDateTime } from '@/lib/dateTime'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/Tabs'
 import { Progress } from '../../components/ui/progress'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '../../components/ui/sheet'
@@ -11,7 +12,7 @@ import { RadioGroup, RadioGroupItem } from '../../components/ui/radio-group'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuGroup } from '../../components/ui/dropdown-menu'
 import { EllipsisVertical } from 'lucide-react'
 import { OptionSelect } from '../../components/ui/OptionSelect'
-import { t, getFormatLocale } from '@/locales'
+import { t } from '@/locales'
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react'
 import {
   CheckCircle2,
@@ -1604,17 +1605,17 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
             <tbody>{(!showDeleted || !onlyDeleted) && filteredObjects.map((object) => (
                 <tr key={object.key}>
                   <td className="selection-column"><input type="checkbox" checked={selectedObjectKeys.has(object.key)} onChange={(event) => toggleObjectSelection(object.key, event.target.checked)} aria-label={t('objects.selectValue', { '0': object.key })} /></td>
-                  <td className="object-key"><div className="file-cell object-tree-cell object-key-trigger" role="button" tabIndex={0} onClick={() => openObject(object)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openObject(object) } }} title={isDirectoryKey(object.key) ? t('objects.openDirectory') : t('objects.viewObjectDetails')}><ObjectTreeIndent depth={objectTreeDepth(object.key, prefix)} />{isDirectoryKey(object.key) ? <Folder className="file-symbol" aria-hidden="true" /> : <File className="file-symbol" aria-hidden="true" />}<span>{displayObjectKey(object.key, prefix)}</span>{object.legal_hold && <span className="status-badge locked">{t('objects.legalHold')}</span>}{object.retention_until_unix_seconds && <span className="status-badge locked">{object.retention_mode ?? t('objects.retention')} {t('objects.until')} {new Date(object.retention_until_unix_seconds * 1000).toLocaleDateString(getFormatLocale())}</span>}</div></td>
+                  <td className="object-key"><div className="file-cell object-tree-cell object-key-trigger" role="button" tabIndex={0} onClick={() => openObject(object)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openObject(object) } }} title={isDirectoryKey(object.key) ? t('objects.openDirectory') : t('objects.viewObjectDetails')}><ObjectTreeIndent depth={objectTreeDepth(object.key, prefix)} />{isDirectoryKey(object.key) ? <Folder className="file-symbol" aria-hidden="true" /> : <File className="file-symbol" aria-hidden="true" />}<span>{displayObjectKey(object.key, prefix)}</span>{object.legal_hold && <span className="status-badge locked">{t('objects.legalHold')}</span>}{object.retention_until_unix_seconds && <span className="status-badge locked">{object.retention_mode ?? t('objects.retention')} {t('objects.until')} {formatDate(object.retention_until_unix_seconds * 1000)}</span>}</div></td>
                   {showDeleted && <td>—</td>}
                   <td>{isDirectoryKey(object.key) ? (() => {
                     const summary = directorySizeSummaries.get(object.key)
                     const calculating = directorySizeLoading.has(object.key)
-                    return <div className="directory-size-cell" title={summary ? t('objects.generatedAtValue', { '0': new Date(summary.generatedAt).toLocaleString(getFormatLocale()) }) : t('objects.calculateFileSizesInThisDirectoryAndItsSubdirectories')}>
+                    return <div className="directory-size-cell" title={summary ? t('objects.generatedAtValue', { '0': formatDateTime(summary.generatedAt) }) : t('objects.calculateFileSizesInThisDirectoryAndItsSubdirectories')}>
                       <span>{summary ? formatBytes(summary.bytes) : t('objects.notCalculated')}</span>
                       {!summary && <button className="icon-button directory-size-refresh" type="button" onClick={() => void refreshDirectorySize(object.key)} disabled={calculating} aria-label={t('objects.refreshSizeOfDirectoryValue', { '0': displayObjectKey(object.key, prefix) })} title={t('objects.refreshDirectorySize')}><RefreshCw className={calculating ? 'spinning' : ''} aria-hidden="true" /></button>}
                     </div>
                   })() : formatBytes(object.size)}</td>
-                  <td>{object.last_modified ? new Date(object.last_modified).toLocaleString(getFormatLocale()) : '-'}</td>
+                  <td>{object.last_modified ? formatDateTime(object.last_modified) : '-'}</td>
                   <td className="table-actions sticky-actions-column">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild><Button variant="outline" size="icon-sm" aria-label={`${t('objects.manage')} ${displayKeyForMessage(object.key)}`}><Ellipsis /></Button></DropdownMenuTrigger>
@@ -1638,7 +1639,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
                   <td className="object-key"><div className="file-cell object-tree-cell"><ObjectTreeIndent depth={objectTreeDepth(version.key, prefix)} /><Trash2 className="file-symbol" aria-hidden="true" /><span>{displayObjectKey(version.key, prefix)}</span></div></td>
                   <td><span className="status-badge delete-marker">{t('objects.deleted')}</span></td>
                   <td>{deletedObjectSizes.has(version.key) ? formatBytes(deletedObjectSizes.get(version.key)!) : '-'}</td>
-                  <td>{new Date(version.last_modified).toLocaleString(getFormatLocale())}</td>
+                  <td>{formatDateTime(version.last_modified)}</td>
                   <td className="table-actions sticky-actions-column">
                     <ActionMenu label={t('objects.manageDeletedObjectValue', { '0': version.key })}>
                       <button type="button" role="menuitem" onClick={() => void restoreDeletedObject(version)} disabled={restoring}><RotateCcw className="button-icon" aria-hidden="true" />{t('objects.restoreObjects')}</button>
@@ -1656,11 +1657,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
               return <tr key={identity} className={version.is_delete_marker ? 'delete-marker-row' : ''}>
                 <td className="selection-column"><input type="checkbox" checked={selectedVersionIds.has(identity)} onChange={(event) => toggleVersionSelection(version, event.target.checked)} aria-label={t('objects.selectVersionOfValue', { '0': version.key })} /></td>
                 <td className="object-key"><div className="file-cell object-tree-cell"><ObjectTreeIndent depth={objectTreeDepth(version.key, prefix)} />{version.is_delete_marker ? <Trash2 className="file-symbol" aria-hidden="true" /> : isDirectoryKey(version.key) ? <Folder className="file-symbol" aria-hidden="true" /> : <File className="file-symbol" aria-hidden="true" />}<span>{displayObjectKey(version.key, prefix)}</span></div></td>
-                <td><div className="version-badges">{version.is_latest && <span className="status-badge latest">{t('objects.latest')}</span>}{version.is_delete_marker && <span className="status-badge delete-marker">{t('objects.deletemarker')}</span>}{!version.is_latest && !version.is_delete_marker && <span className="status-badge">{t('objects.previous')}</span>}{version.legal_hold && <span className="status-badge locked">{t('objects.legalHold')}</span>}{version.retention_until_unix_seconds && <span className="status-badge locked">{version.retention_mode ?? t('objects.retention')} {t('objects.until')} {new Date(version.retention_until_unix_seconds * 1000).toLocaleDateString(getFormatLocale())}</span>}</div></td>
+                <td><div className="version-badges">{version.is_latest && <span className="status-badge latest">{t('objects.latest')}</span>}{version.is_delete_marker && <span className="status-badge delete-marker">{t('objects.deletemarker')}</span>}{!version.is_latest && !version.is_delete_marker && <span className="status-badge">{t('objects.previous')}</span>}{version.legal_hold && <span className="status-badge locked">{t('objects.legalHold')}</span>}{version.retention_until_unix_seconds && <span className="status-badge locked">{version.retention_mode ?? t('objects.retention')} {t('objects.until')} {formatDate(version.retention_until_unix_seconds * 1000)}</span>}</div></td>
                 <td>{version.is_delete_marker
                   ? (deletedVersionSizes.has(version.key) ? formatBytes(deletedVersionSizes.get(version.key)!) : '-')
                   : isDirectoryKey(version.key) ? '-' : formatBytes(version.size)}</td>
-                <td>{new Date(version.last_modified).toLocaleString(getFormatLocale())}</td>
+                <td>{formatDateTime(version.last_modified)}</td>
                 <td className="table-actions sticky-actions-column">
                   <ActionMenu label={t('objects.manageVersionValueOfValue', { '0': version.key, '1': shortVersionId(version.version_id) })}>
                     {!version.is_delete_marker && !isDirectoryKey(version.key) && <button type="button" role="menuitem" onClick={() => void openVersionTagDetail(version)}>{t('objects.editObjectTags')}</button>}
@@ -1890,8 +1891,8 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
               <div><dt>{t('objects.format')}</dt><dd>{fileExtension(detail.key)}</dd></div>
               <div><dt>{t('objects.size')}</dt><dd>{formatBytes(detail.size)}</dd></div>
               <div><dt>ETag</dt><dd><code>{detail.etag}</code></dd></div>
-              <div><dt>{t('objects.modified')}</dt><dd>{new Date(detail.last_modified).toLocaleString(getFormatLocale())}</dd></div>
-              {detailUrl && <div><dt>{t('objects.linkExpires')}</dt><dd>{new Date(detailUrl.expires_at).toLocaleString(getFormatLocale())}</dd></div>}
+              <div><dt>{t('objects.modified')}</dt><dd>{formatDateTime(detail.last_modified)}</dd></div>
+              {detailUrl && <div><dt>{t('objects.linkExpires')}</dt><dd>{formatDateTime(detailUrl.expires_at)}</dd></div>}
             </dl>
             <label className="detail-tags-editor">{t('objects.objectTagsJson')}<textarea value={detailTags} onChange={(event) => setDetailTags(event.target.value)} rows={5} placeholder={'{\n  "team": "blue"\n}'} />
               <button className="primary-button" type="button" onClick={() => void saveDetailTags()} disabled={detailTagsSaving}>{detailTagsSaving ? t('objects.saving') : t('objects.saveTags')}</button>

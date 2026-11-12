@@ -134,11 +134,11 @@ Part，再上传缺失 Part。单次 PutObject 或单个 UploadPart 中断后必
 | Signature V4 Header | `Implemented` | Canonical URI/Query/Header、Region、Payload Hash、时钟偏差和错误映射。 |
 | Presigned GET/PUT/DELETE | `Implemented` | 最长 7 天；临时凭证的 Session Token 参与签名并受凭证寿命约束。 |
 | Temporary Credentials | `Implemented` | AK/SK/Session Token 由 ZigFS Metadata 持久化并加密，Admin 只调用 Management API。 |
-| Path-style / Virtual-hosted-style | `Implemented` | 默认 Path-style；Virtual-hosted-style 由 `s3.virtual_hosted_style` 开启。 |
+| Path-style / Virtual-hosted-style | `Implemented` | 默认 Path-style；Virtual-hosted-style 由 `ZIGFS_S3_VIRTUAL_HOSTED_STYLE` 开启。 |
 | Flexible Checksum | `Implemented` | CRC32、CRC32C、CRC64NVME、SHA1、SHA256；PutObject/UploadPart 支持 Header/签名 Trailer，XML Body 操作支持 Header。 |
 | Conditional Requests | `Implemented` | GET/HEAD/PUT 的 ETag 和 HTTP 日期条件，含 304/412 与条件写 CAS。 |
 | Object Versioning | `Implemented` | Bucket Enabled/Suspended、不可变 Version ID、DeleteMarker、指定版本 GET/HEAD/DELETE、ListObjectVersions，以及通过标准 CopyObject 将旧版本发布为新当前版本。 |
-| Lifecycle Scanner | `Implemented` | YAML 可配置扫描周期；清理当前版本、非当前版本和仅剩的过期 DeleteMarker。 |
+| Lifecycle Scanner | `Implemented` | `.env` 可配置扫描周期；清理当前版本、非当前版本和仅剩的过期 DeleteMarker。 |
 
 ## 0.1 已知差异
 

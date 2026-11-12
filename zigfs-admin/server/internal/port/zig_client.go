@@ -70,7 +70,13 @@ type ZigClient interface {
 	ClearKMSCache(ctx context.Context) (contract.KMSStatus, error)
 	StopKMS(ctx context.Context) (contract.KMSStatus, error)
 	SaveKMSSettings(ctx context.Context, config contract.KMSConfig) (contract.KMSStatus, error)
+	InstanceSettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error)
+	RegionSettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error)
+	DisplaySettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error)
+	AuthenticationSettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error)
 	Settings(ctx context.Context) (contract.SettingsResponse, error)
+	SaveListenerSettings(ctx context.Context, address string) error
+	SaveNetworkSettings(ctx context.Context, input json.RawMessage) (json.RawMessage, error)
 	ListBuckets(ctx context.Context) (contract.ListBucketsResponse, error)
 	CreateBucket(ctx context.Context, request contract.CreateBucketRequest) (contract.Bucket, error)
 	DeleteBucket(ctx context.Context, name string) error

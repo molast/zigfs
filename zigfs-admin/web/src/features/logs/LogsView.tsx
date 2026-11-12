@@ -1,9 +1,10 @@
+import { formatDateTime } from '@/lib/dateTime'
 import { filterAuditLogContent } from './auditLogs'
 import { FilterFields } from '@/components/ui/FilterFields'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ApiClient, LogConfig } from '@/api/client'
 import type { AuditCategory, AuditOptions, AuditPage, AuditQuery, AuditStatus, StructuredAuditEvent } from '@/types/api'
-import { t, getFormatLocale } from '@/locales'
+import { t } from '@/locales'
 import { useErrorToast, useToast } from '@/components/ToastProvider'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -130,7 +131,7 @@ export function LogsView({ api }: { api: ApiClient }) {
           <TableHeader><TableRow>{(['time', 'category', 'action', 'actor', 'target', 'outcome', 'duration', 'details'] as const).map(key => <TableHead key={key}>{t(`audit.${key}`)}</TableHead>)}</TableRow></TableHeader>
           <TableBody>
             {ready && page.items.map((event, index) => <TableRow key={`${event.event_id}-${index}`}>
-              <TableCell className="whitespace-nowrap">{eventDate(event)?.toLocaleString(getFormatLocale()) ?? '—'}</TableCell>
+              <TableCell className="whitespace-nowrap">{formatDateTime(eventDate(event))}</TableCell>
               <TableCell className="whitespace-nowrap">{categoryLabel(event.event_category)}</TableCell>
               <TableCell>{event.event_action}</TableCell><TableCell>{event.identity.principal_name || t('audit.anonymous')}</TableCell>
               <TableCell className="max-w-64 break-all whitespace-normal">{targetLabel(event)}</TableCell>
@@ -165,7 +166,7 @@ function AuditDetails({ event, onClose }: { event: StructuredAuditEvent | null; 
     <SheetHeader><SheetTitle>{t('audit.details')}</SheetTitle><SheetDescription>{event?.event_action}</SheetDescription></SheetHeader>
     {event && <div className="flex flex-col gap-4 px-4 pb-4">
       {event.metadata.legacy && <FieldDescription>{t('audit.legacyNotice')}</FieldDescription>}
-      {section(t('audit.event'), [[t('audit.eventId'), event.event_id], [t('audit.schemaVersion'), event.schema_version], [t('audit.time'), eventDate(event)?.toISOString()], [t('audit.category'), categoryLabel(event.event_category)], [t('audit.eventType'), event.event_type]])}
+      {section(t('audit.event'), [[t('audit.eventId'), event.event_id], [t('audit.schemaVersion'), event.schema_version], [t('audit.time'), formatDateTime(eventDate(event))], [t('audit.category'), categoryLabel(event.event_category)], [t('audit.eventType'), event.event_type]])}
       {section(t('audit.request'), [[t('audit.requestId'), event.request.request_id], [t('audit.method'), event.request.method], [t('audit.protocol'), event.request.protocol], [t('audit.path'), event.request.path], [t('audit.sourceIp'), event.request.source_ip], [t('audit.userAgent'), event.request.user_agent], [t('audit.query'), JSON.stringify(Object.fromEntries(Object.entries(event.request.query).filter(([, value]) => value != null)), null, 2)]])}
       {section(t('audit.identity'), [[t('audit.authType'), event.identity.auth_type], [t('audit.principalId'), event.identity.principal_id], [t('audit.actor'), event.identity.principal_name], [t('audit.accessKeyId'), event.identity.access_key_id], [t('audit.sessionId'), event.identity.session_id]])}
       {section(t('audit.resource'), [[t('audit.resourceType'), event.resource.type], [t('audit.bucket'), event.resource.bucket], [t('audit.objectKey'), event.resource.object_key], [t('audit.versionId'), event.resource.version_id], [t('audit.resourceName'), event.resource.name]])}

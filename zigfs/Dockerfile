@@ -65,7 +65,7 @@ RUN addgroup -S -g 10001 zigfs \
     && chown -R zigfs:zigfs /var/lib/zigfs
 
 COPY --from=builder /out/bin/zigfs /usr/local/bin/zigfs
-COPY config.docker.yaml /etc/zigfs/config.yaml
+ENV ZIGFS_DATA_ROOT=/var/lib/zigfs ZIGFS_API_ADDRESS=0.0.0.0:9000 ZIGFS_METRICS_ADDRESS=0.0.0.0:9090
 
 USER zigfs:zigfs
 WORKDIR /var/lib/zigfs
@@ -75,4 +75,3 @@ EXPOSE 9000 9090
 STOPSIGNAL SIGTERM
 
 ENTRYPOINT ["/usr/local/bin/zigfs"]
-CMD ["--config", "/etc/zigfs/config.yaml"]

@@ -387,7 +387,7 @@ fn number(value: []const u8, date: bool) error{InvalidPolicy}!f64 {
     if (!std.math.isFinite(result)) return error.InvalidPolicy;
     return result;
 }
-fn ipContains(cidr: []const u8, actual: []const u8) !bool {
+pub fn ipContains(cidr: []const u8, actual: []const u8) !bool {
     var split = std.mem.splitScalar(u8, cidr, '/');
     const base = try std.Io.net.IpAddress.parse(split.next().?, 0);
     var ip = std.Io.net.IpAddress.parse(actual, 0) catch return false;

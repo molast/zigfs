@@ -108,19 +108,16 @@ def run(binary, count, timeout, all_types=False, crash_probe=None):
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
-        config = base / 'config.yaml'
-        config.write_text(f'''server:
-  api_address: 127.0.0.1:{port}
-observability:
-  metrics_enabled: false
-storage:
-  data_root: {root}
-  metadata_maintenance_interval_seconds: 1
-  metadata_maintenance_batch_size: 10000
-admin:
-  username: maintenance-test
-  password: isolated-maintenance-password
-  session_secret: isolated-maintenance-secret-0000000000000000
+        config = base / '.env'
+        config.write_text(f'''
+ZIGFS_API_ADDRESS=127.0.0.1:{port}
+ZIGFS_METRICS_ENABLED=false
+ZIGFS_DATA_ROOT={root}
+ZIGFS_METADATA_MAINTENANCE_INTERVAL_SECONDS=1
+ZIGFS_METADATA_MAINTENANCE_BATCH_SIZE=10000
+ZIGFS_ROOT_USER=maintenance-test
+ZIGFS_ROOT_PASSWORD=isolated-maintenance-password
+ZIGFS_ADMIN_SESSION_SECRET=isolated-maintenance-secret-0000000000000000
 ''')
         console_path = base / 'console.log'
         process = None
@@ -139,7 +136,7 @@ admin:
         def start(console):
             nonlocal process
             began = time.monotonic()
-            process = subprocess.Popen([str(binary), '--config', str(config)], stdout=console, stderr=console)
+            process = subprocess.Popen([str(binary), '--env-file', str(config)], stdout=console, stderr=console)
             while time.monotonic() - began < timeout:
                 if process.poll() is not None:
                     raise AssertionError(console_path.read_text())

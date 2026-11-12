@@ -83,26 +83,22 @@ def run():
         endpoint = f'http://127.0.0.1:{port()}'
         vault = ThreadingHTTPServer(('127.0.0.1', 0), Vault)
         threading.Thread(target=vault.serve_forever, daemon=True).start()
-        config = root / 'config.yaml'
-        config.write_text(f'''server:
-  api_address: {endpoint[7:]}
-observability:
-  metrics_enabled: false
-storage:
-  data_root: {root}/data
-s3:
-  public_endpoint: {endpoint}
-admin:
-  username: phase7-admin
-  password: phase7-admin-password
-  session_secret: phase7-isolated-session-secret-000000000000
+        config = root / '.env'
+        config.write_text(f'''
+ZIGFS_API_ADDRESS={endpoint[7:]}
+ZIGFS_METRICS_ENABLED=false
+ZIGFS_DATA_ROOT={root}/data
+ZIGFS_S3_PUBLIC_ENDPOINT={endpoint}
+ZIGFS_ROOT_USER=phase7-admin
+ZIGFS_ROOT_PASSWORD=phase7-admin-password
+ZIGFS_ADMIN_SESSION_SECRET=phase7-isolated-session-secret-000000000000
 ''')
         log = (root / 'server.log').open('w')
         process = None
         tls_vault = None
         def start():
             nonlocal process
-            process = subprocess.Popen([str(Path('zigfs/zig-out/bin/zigfs').resolve()), '--config', str(config)], stdout=log, stderr=log, env={**os.environ, 'ZIGFS_KMS_ALLOW_INSECURE_DEV_DEFAULTS':'true'})
+            process = subprocess.Popen([str(Path('zigfs/zig-out/bin/zigfs').resolve()), '--env-file', str(config)], stdout=log, stderr=log, env={**os.environ, 'ZIGFS_KMS_ALLOW_INSECURE_DEV_DEFAULTS':'true'})
             for _ in range(200):
                 if process.poll() is not None: raise AssertionError((root / 'server.log').read_text())
                 try:

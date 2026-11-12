@@ -160,17 +160,14 @@ def main():
                 self.respond(response)
         server = ThreadingHTTPServer(('127.0.0.1', idp_port), IdP)
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        config = root / 'config.yaml'
-        config.write_text(f'''server:
-  api_address: 127.0.0.1:{api_port}
-observability:
-  metrics_enabled: false
-storage:
-  data_root: {root}/data
-admin:
-  username: qa
-  password: oidc-test-only-password
-  session_secret: oidc-test-only-session-secret-123456789
+        config = root / '.env'
+        config.write_text(f'''
+ZIGFS_API_ADDRESS=127.0.0.1:{api_port}
+ZIGFS_METRICS_ENABLED=false
+ZIGFS_DATA_ROOT={root}/data
+ZIGFS_ROOT_USER=qa
+ZIGFS_ROOT_PASSWORD=oidc-test-only-password
+ZIGFS_ADMIN_SESSION_SECRET=oidc-test-only-session-secret-123456789
 ''')
         log = (root / 'services.log').open('w')
         def call(client, url, method='GET', body=None, status=200):
@@ -191,7 +188,7 @@ admin:
                 time.sleep(.05)
             raise RuntimeError('readiness failed')
         def start_zig():
-            p = subprocess.Popen([str(args.zig_bin.resolve()), '--config', str(config)], env=dict(os.environ,ZIGFS_OIDC_PROVIDERS=json.dumps(env_providers)),stdout=log, stderr=log); processes.append(p); ready(api); return p
+            p = subprocess.Popen([str(args.zig_bin.resolve()), '--env-file', str(config)], env=dict(os.environ,ZIGFS_OIDC_PROVIDERS=json.dumps(env_providers)),stdout=log, stderr=log); processes.append(p); ready(api); return p
         def root_login(): req('/auth/login', 'POST', dict(username='qa', password='oidc-test-only-password'))
         def login(kind='valid', success=True, provider_id='mock'):
             mode['value'] = kind

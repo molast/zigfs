@@ -1,3 +1,4 @@
+import type { DisplayPreferences } from '../lib/dateTime'
 import type { AuditOptions, AuditQuery, AuditPage } from '@/types/api'
 export interface LogConfig { level: string; format: string; output: string; directory: string; retention: string; maxSize: string; sizeUnit: string; cleanup: string; downloads: string; range: string }
 export interface LogQuery { content: string; truncated: boolean; range: string }
@@ -55,6 +56,29 @@ const REQUEST_TIMEOUT_MS = 15000
 // Complete reads and publishes the whole object; allow the BFF's 15-minute
 // upstream timeout to return an error before aborting in the browser.
 const MULTIPART_COMPLETE_TIMEOUT_MS = 16 * 60 * 1000
+
+export interface AuthenticationValues {
+  admin_session_ttl_seconds: number
+  request_time_skew_seconds: number
+}
+export interface AuthenticationSettings {
+  current: AuthenticationValues
+  pending: AuthenticationValues
+  restart_required: boolean
+}
+export interface DisplaySettings extends DisplayPreferences { supported_timezones: string[] }
+export interface RegionSettings {
+  s3_region: string
+  pending_s3_region: string
+  restart_required: boolean
+}
+export interface InstanceSettings {
+  service_name: string
+  description: string
+  instance_id: string
+  started_at_unix_seconds: number
+  uptime_seconds: number
+}
 
 export class ApiError extends Error {
   constructor(
@@ -170,6 +194,16 @@ export function createApiClient() {
     logSettings: () => request<LogConfig>('/api/v1/settings/logs'),
     saveLogSettings: (config: LogConfig) => request<LogConfig>('/api/v1/settings/logs', { method: 'PUT', body: JSON.stringify(config) }),
     queryLogs: (download = false, range?: { from: number; to: number }) => request<LogQuery>(`/api/v1/settings/logs/${download ? 'download' : 'query'}${range ? `?from=${range.from}&to=${range.to}` : ''}`),
+    saveListeners: (value: { api_address: string; admin_listen_address: string; upstream_endpoint: string }) => request<void>('/api/v1/settings/listeners', { method: 'PUT', body: JSON.stringify(value) }),
+    saveNetworkSettings: (value: { s3_public_endpoint: string; s3_virtual_hosted_style: boolean; trusted_proxies: string[] }) => request('/api/v1/settings/network', { method: 'PUT', body: JSON.stringify(value) }),
+    authenticationSettings: () => request<AuthenticationSettings>('/api/v1/settings/authentication'),
+    saveAuthenticationSettings: (value: AuthenticationValues) => request<AuthenticationSettings>('/api/v1/settings/authentication', { method: 'PUT', body: JSON.stringify(value) }),
+    displaySettings: () => request<DisplaySettings>('/api/v1/settings/display'),
+    saveDisplaySettings: (value: DisplayPreferences) => request<DisplaySettings>('/api/v1/settings/display', { method: 'PUT', body: JSON.stringify(value) }),
+    regionSettings: () => request<RegionSettings>('/api/v1/settings/region'),
+    saveRegionSettings: (s3_region: string) => request<RegionSettings>('/api/v1/settings/region', { method: 'PUT', body: JSON.stringify({ s3_region }) }),
+    instanceSettings: () => request<InstanceSettings>('/api/v1/settings/instance'),
+    saveInstanceSettings: (value: { service_name: string; description: string }) => request<InstanceSettings>('/api/v1/settings/instance', { method: 'PUT', body: JSON.stringify(value) }),
     settings: () => request<Settings>('/api/v1/settings'),
     stopKms: () => request<KmsStatus>('/api/v1/settings/kms/stop', { method: 'POST' }),
     clearKmsCache: () => request<KmsStatus>('/api/v1/settings/kms/clear-cache', { method: 'POST' }),

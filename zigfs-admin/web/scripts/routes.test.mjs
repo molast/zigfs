@@ -21,3 +21,11 @@ test('bucket configuration and object paths remain available', () => {
   })
   assert.equal(appRoutePath(createAppRoute('objects', 'photos', '2026/trip/')), '/buckets/photos/2026/trip/')
 })
+
+test('account pages support direct navigation and round trips', () => {
+  for (const [view, path] of [['profile', '/account'], ['account-security', '/account/security']]) {
+    assert.equal(parseAppRoute(path).view, view)
+    assert.equal(appRoutePath(createAppRoute(view)), path)
+    assert.equal(parseAppRoute(path + '/').view, view)
+  }
+})

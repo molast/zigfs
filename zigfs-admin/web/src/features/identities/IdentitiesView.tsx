@@ -1,7 +1,8 @@
-import { t, getFormatLocale } from '@/locales'
+import { formatDateTime } from '@/lib/dateTime'
+import { t } from '@/locales'
 import { useCallback, useEffect, useId, useMemo, useState, type FormEvent } from 'react'
-import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, Pencil, Plus, Trash2, UsersRound } from 'lucide-react'
-import type { ApiClient, GroupWrite, ManagedGroup, ManagedPolicy, ManagedUser, UserWrite } from '../../api/client'
+import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, Eye, EyeOff, Pencil, Plus, Trash2, UsersRound } from 'lucide-react'
+import { ApiError, type ApiClient, type GroupWrite, type ManagedGroup, type ManagedPolicy, type ManagedUser, type UserWrite } from '../../api/client'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useToast } from '../../components/ToastProvider'
 import { Button } from '../../components/ui/Button'
@@ -22,8 +23,11 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 type Kind = 'users' | 'groups'
 type Identity = ManagedUser | ManagedGroup
 type SortKey = 'name' | 'policies' | 'enabled' | 'groups' | 'updated_at'
-const message = (reason: unknown) => reason instanceof Error ? reason.message : t('identities.operationFailedPleaseTryAgain')
-const dateLabel = (value: number) => value ? new Date(value * 1000).toLocaleString(getFormatLocale()) : '—'
+const message = (reason: unknown) => {
+  if (reason instanceof ApiError && reason.body.code === 'CannotRemoveCurrentUser') return t('identities.cannotRemoveCurrentUser')
+  return reason instanceof Error ? reason.message : t('identities.operationFailedPleaseTryAgain')
+}
+const dateLabel = (value: number) => value ? formatDateTime(value * 1000) : '—'
 
 export function IdentitiesView({ kind, api }: { kind: Kind; api: ApiClient }) {
   const isGroup = kind === 'groups'
@@ -35,6 +39,7 @@ export function IdentitiesView({ kind, api }: { kind: Kind; api: ApiClient }) {
   const [groups, setGroups] = useState<ManagedGroup[]>([])
   const [policies, setPolicies] = useState<ManagedPolicy[]>([])
   const [loaded, setLoaded] = useState(false)
+  const [forbidden, setForbidden] = useState(false)
   const [busy, setBusy] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
   const [checked, setChecked] = useState<string[]>([])
@@ -50,11 +55,16 @@ export function IdentitiesView({ kind, api }: { kind: Kind; api: ApiClient }) {
     setBusy(true)
     try {
       const [nextUsers, nextGroups, nextPolicies] = await Promise.all([api.listUsers(), api.listGroups(), api.listPolicies()])
+      setForbidden(false)
       setUsers(nextUsers); setGroups(nextGroups); setPolicies(nextPolicies); setLoaded(true)
       const names = new Set((isGroup ? nextGroups : nextUsers).map(item => item.name))
       setSelected(current => current && names.has(current) ? current : null)
       setChecked(current => current.filter(name => names.has(name)))
-    } catch (reason) { toast(message(reason), 'error') }
+    } catch (reason) {
+      if (reason instanceof ApiError && (reason.status === 401 || reason.status === 403)) {
+        setForbidden(true)
+      } else toast(message(reason), 'error')
+    }
     finally { setBusy(false) }
   }, [api, isGroup, toast])
   useEffect(() => { void refresh() }, [refresh])
@@ -130,6 +140,8 @@ export function IdentitiesView({ kind, api }: { kind: Kind; api: ApiClient }) {
     return <TableHead aria-sort={active ? sort.desc ? 'descending' : 'ascending' : 'none'}><Button variant="ghost" size="sm" onClick={() => { setSort({ key, desc: active ? !sort.desc : false }); setPage(1) }}>{label}<Icon /></Button></TableHead>
   }
 
+  if (forbidden) return <section className="service-state identities-page" aria-live="polite"><h1>{t('navigation.accessDenied')}</h1><p>{t('navigation.yourAccountDoesNotHavePermissionToAccessThis')}</p></section>
+
   return <section className="identities-page" aria-busy={busy}>
     <header className="page-header identities-header">
       <div className="flex items-center gap-2">{current && <Button variant="ghost" size="icon" aria-label={`Back to ${title}`} onClick={() => setSelected(null)}><ArrowLeft /></Button>}<h2>{current?.name ?? title}</h2></div>
@@ -197,6 +209,7 @@ function IdentityEditor({ kind, value, users, groups, policies, onSave, onClose 
   const toast = useToast()
   const [name, setName] = useState(value?.name ?? '')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [enabled, setEnabled] = useState(value?.enabled ?? true)
   const [assigned, setAssigned] = useState(value?.policies ?? [])
   const [members, setMembers] = useState(value && 'members' in value ? value.members : [])
@@ -221,7 +234,7 @@ function IdentityEditor({ kind, value, users, groups, policies, onSave, onClose 
       <fieldset disabled={saving} className="identity-form-body"><FieldGroup>
         <div className={isGroup ? '' : 'identity-user-fields'}>
           <Field><FieldLabel htmlFor={`${id}-name`}>{isGroup ? t('identities.name') : t('identities.userName')}</FieldLabel><Input id={`${id}-name`} autoFocus value={name} disabled={Boolean(value)} maxLength={128} autoComplete="off" onChange={event => setName(event.target.value)} /></Field>
-          {!isGroup && <Field><FieldLabel htmlFor={`${id}-password`}>{t('identities.password')}</FieldLabel><Input id={`${id}-password`} type="password" autoComplete="new-password" value={password} placeholder={value ? t('identities.leaveBlankToKeepPassword') : ''} onChange={event => setPassword(event.target.value)} /></Field>}
+          {!isGroup && <Field><FieldLabel htmlFor={`${id}-password`}>{t('identities.password')}</FieldLabel><div className="identity-secret-input"><Input id={`${id}-password`} type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={password} placeholder={value ? t('identities.leaveBlankToKeepPassword') : ''} onChange={event => setPassword(event.target.value)} /><button type="button" className="login-eye identity-password-eye" aria-label={showPassword ? t('identities.hidePassword') : t('identities.showPassword')} onClick={() => setShowPassword(current => !current)}>{showPassword ? <EyeOff /> : <Eye />}</button></div></Field>}
         </div>
         {isGroup ? <MultiChoice title={t('identities.users')} placeholder={t('identities.selectUserGroupMembers')} options={users.map(user => user.name)} selected={members} onChange={setMembers} disabled={saving} /> : <>
           <MultiChoice title={t('identities.groups')} placeholder={t('identities.selectGroup')} options={groups.map(group => group.name)} selected={selectedGroups} onChange={setSelectedGroups} disabled={saving} />

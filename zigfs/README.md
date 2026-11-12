@@ -37,15 +37,15 @@ docker build \
 ```bash
 zig build
 zig build test
-cp config.example.yaml config.yaml
-zig build run
+cp ../.env.example ../.env
+zig build run -- --env-file ../.env
 ```
 
 Zig 0.16.0 or newer is required.
 
-ZigFS loads built-in defaults first and then applies `config.yaml`. Use
-`--config <path>` to select another file. Command-line address and data-root
-flags override YAML values.
+ZigFS loads built-in defaults first and then applies `.env`. Use
+`--env-file <path>` to select another file. Command-line address and data-root
+flags override process environment and `.env` values.
 
 The process remains in the foreground after initialization and listens on the
 configured API and Metrics addresses. Implemented endpoints include:
@@ -89,7 +89,7 @@ publishing Object/Part data, and a canceled GetObject releases its read lease. C
 requests, temporary credentials, virtual-hosted-style requests, and S3 POST Policy uploads
 are supported. Bucket Versioning, DeleteMarker, version-specific object operations,
 ListObjectVersions, and the declared Lifecycle expiration subset are also supported.
-The Lifecycle scanner interval is configured with `s3.lifecycle_scan_interval_seconds`.
+The Lifecycle scanner interval is configured with `ZIGFS_S3_LIFECYCLE_SCAN_INTERVAL_SECONDS`.
 The same interval advances the storage scanner by one of 16 namespace partitions;
 see `../docs/storage-reclamation.md` for dangling data, incomplete MPU, and Trash/GC semantics.
 Management authentication and business routes are available under

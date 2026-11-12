@@ -248,11 +248,16 @@ fn serveConnection(context: *ListenerContext, stream: std.Io.net.Stream) void {
         defer audit_arena.deinit();
         const audit_allocator = audit_arena.allocator();
         var audit_context: AuditContext = .{ .allocator = audit_allocator, .action = std.fmt.allocPrint(audit_allocator, "{s} {s}", .{ @tagName(request.head.method), path }) catch return, .target = path };
-        audit_context.capture(&request, stream.socket.address) catch return;
+        const origin = resolveRequestOrigin(audit_allocator, context.application, &request, stream.socket.address) catch {
+            _ = management.respondError(&request, current_request_id, .service_unavailable, "NetworkSettingsUnavailable", "network configuration unavailable") catch {};
+            return;
+        };
+        audit_context.secure_transport = origin.secure;
+        audit_context.capture(&request, origin.peer) catch return;
         const audited = shouldAudit(context.kind, request.head.method, path);
         var audit_status: std.http.Status = .internal_server_error;
         defer if (audited) audit_context.finish(context.application, current_request_id, audit_status, @intCast(@max(0, started.untilNow(io).raw.toMilliseconds())));
-        const status = serveRequest(&request, context, current_request_id, stream.socket.address, &audit_context) catch |err| {
+        const status = serveRequest(&request, context, current_request_id, origin.peer, &audit_context) catch |err| {
             if (err == error.OutputWriteFailed) return;
             const duration_ms = started.untilNow(io).raw.toMilliseconds();
             logging.reportFailure(
@@ -457,9 +462,11 @@ fn serveManagementLogin(
         const now = std.Io.Clock.real.now(context.io).toSeconds();
         const token = (management_auth.authenticateUser(a, context.application, parsed.value.username, parsed.value.password, now) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
         const principal = (management_auth.resolve(a, context.application, token.value(), now) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
+        if (!principal.hasConsoleAccess(a)) return respondUnauthorized(request, current_request_id);
+        const capabilities = principal.capabilities(a);
         try audit_context.identify(principal.username);
         try audit_context.authenticate(if (principal.federated) "oidc" else "internal", principal.id, null);
-        const body_json = try std.json.Stringify.valueAlloc(a, .{ .token = token.value(), .token_type = "Bearer", .username = principal.username, .subject_id = principal.id, .is_root = false, .expires_at = principal.expires_at }, .{});
+        const body_json = try std.json.Stringify.valueAlloc(a, .{ .token = token.value(), .token_type = "Bearer", .username = principal.username, .subject_id = principal.id, .is_root = false, .expires_at = principal.expires_at, .capabilities = capabilities }, .{});
         return respond(request, body_json, .ok, "application/json; charset=utf-8", current_request_id, null);
     }
 
@@ -475,7 +482,7 @@ fn serveManagementLogin(
     var response_buffer: [512]u8 = undefined;
     const response_body = try std.fmt.bufPrint(
         &response_buffer,
-        "{{\"token\":\"{s}\",\"token_type\":\"Bearer\",\"username\":\"{s}\",\"subject_id\":\"deployment-root\",\"is_root\":true,\"expires_at\":{d}}}\n",
+        "{{\"token\":\"{s}\",\"token_type\":\"Bearer\",\"username\":\"{s}\",\"subject_id\":\"deployment-root\",\"is_root\":true,\"expires_at\":{d},\"capabilities\":{{\"admin\":true,\"kms\":true,\"s3\":true,\"sts\":true}}}}\n",
         .{ issued.value(), config.admin_username, issued.expires_at_unix_seconds },
     );
     return respond(
@@ -516,7 +523,10 @@ fn serveManagementStsLogin(
     const issued = try management_session.issueCredential(context.io, context.config.admin_session_secret, parsed.value.username, context.config.admin_session_ttl_seconds, now);
     var arena = std.heap.ArenaAllocator.init(context.application.allocator);
     defer arena.deinit();
-    const response = try std.json.Stringify.valueAlloc(arena.allocator(), .{ .token = issued.value(), .token_type = "Bearer", .username = parsed.value.username, .subject_id = material.subject_id orelse parsed.value.username, .is_root = false, .expires_at = issued.expires_at_unix_seconds }, .{});
+    const principal = (management_auth.resolve(arena.allocator(), context.application, issued.value(), now) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
+    if (!principal.hasConsoleAccess(arena.allocator())) return respondUnauthorized(request, current_request_id);
+    const capabilities = principal.capabilities(arena.allocator());
+    const response = try std.json.Stringify.valueAlloc(arena.allocator(), .{ .token = issued.value(), .token_type = "Bearer", .username = parsed.value.username, .subject_id = material.subject_id orelse parsed.value.username, .is_root = false, .expires_at = issued.expires_at_unix_seconds, .capabilities = capabilities }, .{});
     return respond(request, response, .ok, "application/json; charset=utf-8", current_request_id, null);
 }
 
@@ -538,7 +548,15 @@ fn serveManagementSession(
     try audit_context.identify(principal.username);
     try audit_context.authenticate(if (principal.federated) "oidc" else "internal", principal.id, null);
     if (logout) return respond(request, "", .no_content, "application/json", current_request_id, null);
-    const response_body = try std.json.Stringify.valueAlloc(a, .{ .authenticated = true, .federated = principal.federated, .display_name = principal.display_name, .email = principal.email, .refreshable = principal.refreshable, .username = principal.username, .subject_id = principal.id, .is_root = principal.is_root, .expires_at = principal.expires_at }, .{});
+    const display_store = @import("../application/display_settings.zig");
+    const display: ?display_store.Settings = display: {
+        const root = context.application.data_root orelse break :display null;
+        context.application.policy_mutex.lockUncancelable(context.io);
+        defer context.application.policy_mutex.unlock(context.io);
+        break :display display_store.load(a, root, context.io) catch null;
+    };
+    const credential_claims = management_session.validateCredential(context.config.admin_session_secret, token, std.Io.Clock.real.now(context.io).toSeconds());
+    const response_body = try std.json.Stringify.valueAlloc(a, .{ .authenticated = true, .auth_source = if (principal.is_root) "deployment" else if (principal.federated) "oidc" else if (credential_claims != null) "sts" else "local", .root_access_key = if (principal.is_root and context.config.root_access_key.len > 0) context.config.root_access_key else null, .session_access_key = if (credential_claims) |claims| claims.access_key else null, .display_preferences = display, .federated = principal.federated, .display_name = principal.display_name, .email = principal.email, .refreshable = principal.refreshable, .username = principal.username, .subject_id = principal.id, .is_root = principal.is_root, .expires_at = principal.expires_at, .capabilities = principal.capabilities(a) }, .{});
     return respond(request, response_body, .ok, "application/json; charset=utf-8", current_request_id, null);
 }
 
@@ -569,7 +587,7 @@ fn serveAuthorizedManagement(request: *std.http.Server.Request, context: *const 
         while (iterator.next()) |header| try headers.append(a, .{ .name = header.name, .value = header.value });
         const parsed = try @import("s3_protocol.zig").parseTarget(a, .GET, "/");
         const owner = if (principal.federated) try std.fmt.allocPrint(a, "oidc:{s}", .{principal.id}) else try std.fmt.allocPrint(a, "user:{s}", .{principal.username});
-        const conditions = try @import("iam_context.zig").build(a, owner, headers.items, parsed, peer, now, "ManagementSession", null, context.config.s3_region, principal.id);
+        const conditions = try @import("iam_context.zig").build(a, owner, headers.items, parsed, peer, now, "ManagementSession", null, context.config.s3_region, principal.id, audit_context.secure_transport);
         const action = management_auth.routeAction(request.head.method, requestPath(request.head.target));
         const resource = managementResource(a, requestPath(request.head.target));
         if (!principal.allows(a, action, resource, conditions)) return management.respondError(request, current_request_id, .forbidden, "AccessDenied", "current identity is not authorized for this management operation");
@@ -4488,4 +4506,18 @@ test "S3 HTTP accepts signed POST policies and does not publish failed uploads" 
     );
     defer missing.deinit(std.testing.allocator);
     try std.testing.expectEqual(std.http.Status.not_found, missing.status);
+}
+
+fn resolveRequestOrigin(a: std.mem.Allocator, app: *Application, request: *std.http.Server.Request, peer: std.Io.net.IpAddress) !@import("trusted_proxy.zig").Origin {
+    const io = app.io orelse return .{ .peer = peer };
+    const root = app.data_root orelse return .{ .peer = peer };
+    const network = network: {
+        app.policy_mutex.lockUncancelable(io);
+        defer app.policy_mutex.unlock(io);
+        break :network try @import("../application/network_settings.zig").load(a, root, io, app.config);
+    };
+    var headers: std.ArrayList(sigv4.Header) = .empty;
+    var it = request.iterateHeaders();
+    while (it.next()) |header| try headers.append(a, .{ .name = header.name, .value = header.value });
+    return @import("trusted_proxy.zig").resolve(a, peer, headers.items, network.trusted_proxies);
 }

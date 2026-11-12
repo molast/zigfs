@@ -25,9 +25,14 @@ func main() {
 	}
 
 	client := zigclient.New(cfg.ZigEndpoint, cfg.UpstreamTimeout)
+	client.SetEndpoints(cfg.EndpointCandidates)
 	authService := service.NewAuth(client)
 	systemService := service.NewSystem(client)
 	managementService := service.NewManagement(client)
+	managementService.AdminListenAddress = cfg.ListenAddress
+	managementService.ListenerFile = cfg.ListenerFile
+	managementService.SetEndpoints = client.SetEndpoints
+	managementService.Endpoint = client.Endpoint
 	authHandler := handler.NewAuth(authService)
 	systemHandler := handler.NewSystem(systemService)
 	managementHandler := handler.NewManagement(managementService)

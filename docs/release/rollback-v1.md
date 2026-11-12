@@ -9,10 +9,12 @@
 2. 停止 RC ZigFS，保留 RC 的完整日志、进程输出和失败数据目录，不在原目录上反复尝试。
 3. 将失败目录重命名或复制到独立的诊断路径，确保它仍包含所有原始文件。
 4. 将升级前的完整备份恢复到新的数据根，例如 `/srv/zigfs-rollback/data`。
-5. 使用旧版本 `zigfs` 二进制、原版本配置和新的 `storage.data_root` 启动。
+5. 如回滚到只支持 YAML 的旧版本，应恢复该版本原有的 YAML 配置并使用其 `--config` 参数；下面示例仅适用于支持 `.env` 的版本。
+
+使用旧版本 `zigfs` 二进制、原版本配置和新的 `ZIGFS_DATA_ROOT` 启动。
 
 ```bash
-./zigfs-previous --config /secure/zigfs/rollback-config.yaml
+./zigfs-previous --env-file /secure/zigfs/rollback.env
 curl --fail http://127.0.0.1:19000/health/ready
 ```
 

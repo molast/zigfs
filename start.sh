@@ -39,18 +39,17 @@ start_fs() {
 
   printf '正在启动本地 ZigFS（%s）...\n' "${build_mode}"
   cd "${FS_DIR}"
-  exec zig build run --watch "-Doptimize=${build_mode}"
+  local env_args=()
+  if [[ -f "${ROOT_DIR}/.env" ]]; then env_args=(--env-file "${ROOT_DIR}/.env"); fi
+  exec zig build run --watch "-Doptimize=${build_mode}" -- "${env_args[@]}"
 }
 
 start_admin() {
-  local endpoint="${ZIGFS_ENDPOINT:-http://127.0.0.1:9000}"
-  endpoint="${endpoint%/}"
 
   require_command go
   build_admin_web_assets
 
-  export ZIGFS_ENDPOINT="${endpoint}"
-  export ZIGFS_WEB_ROOT="${ADMIN_WEB_DIR}/dist"
+  if [[ -f "${ROOT_DIR}/.env" ]]; then export ZIGFS_ENV_FILE="${ROOT_DIR}/.env"; fi
 
   printf '正在启动本地 Admin（不会自动启动 ZigFS）...\n'
   (cd "${ROOT_DIR}/zigfs-admin/server" && go run ./cmd/admin)

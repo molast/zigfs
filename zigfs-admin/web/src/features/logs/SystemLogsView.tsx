@@ -1,8 +1,9 @@
+import { browserTimezone, formatDateTime, formatTime } from '@/lib/dateTime'
 import { useEffect, useMemo, useState } from 'react'
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts'
 import { Download, Play, Copy } from 'lucide-react'
 import type { ApiClient, LogConfig, LogQuery } from '@/api/client'
-import { t, getFormatLocale } from '@/locales'
+import { t } from '@/locales'
 import { useErrorToast, useToast } from '@/components/ToastProvider'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -115,7 +116,7 @@ export function SystemLogsView({ api }: { api: ApiClient }) {
             {select('component', t('systemLogs.component'), [all, ...components.map(value => ({ value, label: value }))])}
             {select('source', t('systemLogs.source'), [all, ...sources.map(value => ({ value, label: value }))])}
             <Field><FieldLabel htmlFor="system-log-keyword">{t('systemLogs.keyword')}</FieldLabel><Input id="system-log-keyword" value={draft.keyword} onChange={event => update('keyword', event.target.value)} placeholder={t('systemLogs.searchPlaceholder')} /></Field>
-            {draft.range === 'custom' && <><Field><FieldLabel htmlFor="system-log-from">{t('systemLogs.from')}</FieldLabel><Input id="system-log-from" type="datetime-local" value={draft.from} onChange={event => update('from', event.target.value)} /></Field><Field><FieldLabel htmlFor="system-log-to">{t('systemLogs.to')}</FieldLabel><Input id="system-log-to" type="datetime-local" value={draft.to} onChange={event => update('to', event.target.value)} /></Field></>}
+            {draft.range === 'custom' && <><Field><FieldLabel htmlFor="system-log-from">{t('systemLogs.from')} ({browserTimezone()})</FieldLabel><Input id="system-log-from" type="datetime-local" value={draft.from} onChange={event => update('from', event.target.value)} /></Field><Field><FieldLabel htmlFor="system-log-to">{t('systemLogs.to')} ({browserTimezone()})</FieldLabel><Input id="system-log-to" type="datetime-local" value={draft.to} onChange={event => update('to', event.target.value)} /></Field></>}
           </FieldGroup>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Field orientation="horizontal" className="w-auto"><Switch id="system-log-live" checked={live} disabled={applied.range === 'custom'} onCheckedChange={value => { setLive(value); setPage(1) }} /><FieldLabel htmlFor="system-log-live">{t('systemLogs.live')}</FieldLabel></Field>
@@ -130,7 +131,7 @@ export function SystemLogsView({ api }: { api: ApiClient }) {
     </Card>
     <Card>
       <CardHeader><CardTitle>{t('systemLogs.volume')}</CardTitle><CardDescription>{t('systemLogs.counts', { total: filtered.length, errors: filtered.filter(log => log.level === 'ERROR').length, warnings: filtered.filter(log => log.level === 'WARN').length })}</CardDescription></CardHeader>
-      <CardContent><ChartContainer config={chartConfig} className="h-52 w-full"><BarChart data={histogram} accessibilityLayer><CartesianGrid vertical={false} /><XAxis dataKey="timestamp" tickFormatter={value => new Date(value).toLocaleTimeString(getFormatLocale(), { hour: '2-digit', minute: '2-digit' })} minTickGap={45} /><YAxis allowDecimals={false} width={32} /><ChartTooltip content={<ChartTooltipContent labelFormatter={value => new Date(Number(value)).toLocaleString(getFormatLocale())} />} /><ChartLegend content={<ChartLegendContent />} />{logLevels.map(level => <Bar key={level} dataKey={level} stackId="logs" fill={`var(--color-${level})`} isAnimationActive={false} />)}</BarChart></ChartContainer></CardContent>
+      <CardContent><ChartContainer config={chartConfig} className="h-52 w-full"><BarChart data={histogram} accessibilityLayer><CartesianGrid vertical={false} /><XAxis dataKey="timestamp" tickFormatter={value => formatTime(value)} minTickGap={45} /><YAxis allowDecimals={false} width={32} /><ChartTooltip content={<ChartTooltipContent labelFormatter={value => formatDateTime(Number(value))} />} /><ChartLegend content={<ChartLegendContent />} />{logLevels.map(level => <Bar key={level} dataKey={level} stackId="logs" fill={`var(--color-${level})`} isAnimationActive={false} />)}</BarChart></ChartContainer></CardContent>
     </Card>
     <Card>
       <CardHeader><CardTitle>{t('systemLogs.entries')}</CardTitle>
@@ -141,7 +142,7 @@ export function SystemLogsView({ api }: { api: ApiClient }) {
       </CardHeader>
       <CardContent className="[&_[data-slot=table-container]]:max-h-[32rem] [&_[data-slot=table-container]]:overflow-auto"><Table><TableHeader><TableRow>{(['time', 'level', 'service', 'component', 'message', 'correlation'] as const).map(key => <TableHead key={key}>{t(`systemLogs.${key}`)}</TableHead>)}<TableHead>{t('audit.details')}</TableHead></TableRow></TableHeader>
         <TableBody>{visible.map((log, index) => <TableRow key={`${current}-${index}`}>
-          <TableCell className="whitespace-nowrap">{log.timestamp ? new Date(log.timestamp).toLocaleString(getFormatLocale()) : '—'}</TableCell>
+          <TableCell className="whitespace-nowrap">{log.timestamp ? formatDateTime(log.timestamp) : '—'}</TableCell>
           <TableCell><Badge variant={log.level === 'ERROR' ? 'destructive' : 'default'}>{log.level}</Badge></TableCell>
           <TableCell><div>{log.service.name}</div><FieldDescription>{log.service.instance_id ?? '—'}</FieldDescription></TableCell><TableCell>{log.source.component}</TableCell>
           <TableCell className="max-w-lg"><div className={wrap ? 'font-mono whitespace-pre-wrap break-all' : 'font-mono truncate'}>{log.message}</div></TableCell>
@@ -153,7 +154,7 @@ export function SystemLogsView({ api }: { api: ApiClient }) {
     </Card>
     <Sheet open={!!selected} onOpenChange={open => { if (!open) setSelected(null) }}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
-        <SheetHeader><SheetTitle>{t('systemLogs.details')}</SheetTitle><SheetDescription>{selected?.timestamp ?? '—'}</SheetDescription></SheetHeader>
+        <SheetHeader><SheetTitle>{t('systemLogs.details')}</SheetTitle><SheetDescription>{formatDateTime(selected?.timestamp)}</SheetDescription></SheetHeader>
         {selected && <div className="flex flex-col gap-4 px-4 pb-4">
           <Field><FieldLabel>{t('systemLogs.message')}</FieldLabel><pre className="whitespace-pre-wrap break-all">{selected.message}</pre></Field>
           {selected.error && <Card><CardHeader><CardTitle>{t('systemLogs.errorDetails')}</CardTitle></CardHeader><CardContent className="flex flex-col gap-3">

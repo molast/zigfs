@@ -2,7 +2,7 @@
 
 ## 启动与就绪
 
-生产环境应以前台进程或进程管理器运行 ZigFS，并将 `zigfs/config.yaml` 以受限
+生产环境应以前台进程或进程管理器运行 ZigFS，并将 `.env` 以受限
 权限保存。推荐先检查：
 
 ```bash
@@ -17,9 +17,18 @@ Journal 回放、Metadata 扫描、索引重建和密钥可用时才返回成功
 失败会返回 `StorageNotWritable` 并阻止 HTTP 服务进入 Ready。运行期的写入错误则
 通过稳定的 `Unavailable`/`ServiceUnavailable` 语义返回，不能把成功响应伪装成持久化。
 
+## 网络变更
+
+Network 支持保存 Public URL、寻址模式、可信代理和服务监听配置。
+监听地址、端口需要重启对应进程；其他网络项即时生效。
+修改端口后还需核对 Public URL、代理上游、容器映射和健康检查地址。
+
+具体流程及无法登录时的恢复步骤见 [网络配置](network-settings.md)，
+常见拓扑和 Nginx 参考见 [网络部署](deployment/network.md)。
+
 ## 数据目录
 
-`storage.data_root` 是 ZigFS 唯一事实来源：
+`ZIGFS_DATA_ROOT` 是 ZigFS 唯一事实来源：
 
 - `metadata/` 保存版本化 Bucket/Object/Multipart/Credential 记录。
 - `.zigfs/journal/` 保存 Intent、Commit 和 Abort。

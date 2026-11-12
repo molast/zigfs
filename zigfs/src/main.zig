@@ -5,25 +5,36 @@ pub const std_options: std.Options = .{ .log_level = .debug, .logFn = zigfs.appl
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    const config = try zigfs.config.Config.load(init.io, init.arena.allocator(), args);
+    var config = try zigfs.config.Config.loadWithEnvironment(init.io, init.arena.allocator(), args, zigfs.config.Config.environmentFromMap(init.environ_map));
 
     var app = zigfs.application.Application.init(config);
     defer app.deinit(init.io);
     try app.initialize(init.io);
+    if (config.root_access_key.len > 0) {
+        const service = app.credentialService() orelse return error.Unavailable;
+        if (service.index.accessKeyGeneration(config.root_access_key) != null) return error.RootAccessKeyConflict;
+    }
+    config.api_address = try zigfs.application.listener_settings.load(init.arena.allocator(), app.data_root.?, init.io, config.api_address);
+    app.config.api_address = config.api_address;
+    config.s3_region = try zigfs.application.region_settings.load(init.arena.allocator(), app.data_root.?, init.io, config.s3_region);
+    app.config.s3_region = config.s3_region;
+    const authentication = try zigfs.application.auth_settings.load(init.arena.allocator(), app.data_root.?, init.io, zigfs.application.auth_settings.Settings.fromConfig(config));
+    authentication.apply(&config);
+    authentication.apply(&app.config);
     zigfs.application.logging.active = if (app.logger) |*logger| logger else null;
     defer zigfs.application.logging.active = null;
     if (app.kms) |*kms| {
-        kms.allow_insecure_dev_defaults = std.mem.eql(u8, init.environ_map.get("ZIGFS_KMS_ALLOW_INSECURE_DEV_DEFAULTS") orelse "", "true");
+        kms.allow_insecure_dev_defaults = config.kms_allow_insecure_dev_defaults;
         var kms_arena = std.heap.ArenaAllocator.init(app.allocator);
         defer kms_arena.deinit();
         kms.restore(kms_arena.allocator()) catch |err| zigfs.application.logging.reportFailure(.kms, err, @errorReturnTrace(), @src(), "KMS automatic startup failed: {s}", .{@errorName(err)});
     }
-    try zigfs.application.oidc_store.importEnvironment(init.arena.allocator(), app.data_root.?, init.io, app.master_key.?.bytes, init.environ_map.get("ZIGFS_OIDC_PROVIDERS") orelse "[]");
+    try zigfs.application.oidc_store.importEnvironment(init.arena.allocator(), app.data_root.?, init.io, app.master_key.?.bytes, config.oidc_providers);
 
     if (std.mem.eql(u8, config.admin_username, "admin") and
         std.mem.eql(u8, config.admin_password, "zigfs-admin"))
     {
-        std.log.warn("ZigFS is using the default local administrator credentials; change the admin section in config.yaml before external exposure", .{});
+        std.log.warn("ZigFS is using the default local administrator credentials; change ZIGFS_ROOT_USER and ZIGFS_ROOT_PASSWORD in .env before external exposure", .{});
     }
 
     const recovery_state = app.recoveryState();

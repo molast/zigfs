@@ -2,7 +2,7 @@
 
 ## 备份边界
 
-ZigFS 不使用 SQLite 或外部元数据数据库。`storage.data_root` 下的 Metadata、Journal、
+ZigFS 不使用 SQLite 或外部元数据数据库。`ZIGFS_DATA_ROOT` 下的 Metadata、Journal、
 Object Data、格式信息、实例身份和 Master Key 共同组成一个一致性备份单元，不能只
 备份 `objects/` 或只备份 `metadata/`。
 

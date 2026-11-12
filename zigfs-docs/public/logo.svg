@@ -1,0 +1,70 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ZigFS logo">
+  <title>ZigFS</title>
+
+  <defs>
+    <linearGradient id="zgrad" x1="56" y1="56" x2="200" y2="200" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7A41D"/>
+      <stop offset="1" stop-color="#FFD166"/>
+    </linearGradient>
+
+    <linearGradient id="cgrad" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#2EE6A8"/>
+      <stop offset="1" stop-color="#4C8DFF"/>
+    </linearGradient>
+
+    <clipPath id="zclip">
+      <path d="M56 56 H200 V80 H104 L200 176 V200 H56 V176 H152 L56 80 V56 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- 终端黑底 -->
+  <rect width="256" height="256" rx="56" fill="#05070D"/>
+
+  <!-- 分布式拓扑：不作为外框，只作为背景心跳 -->
+  <g stroke="#2EE6A8" stroke-opacity="0.12" stroke-width="1.5">
+    <path d="M40 64 L128 32 L216 64 L216 192 L128 224 L40 192 Z"/>
+    <path d="M128 32 L128 224"/>
+    <path d="M40 64 L216 192"/>
+    <path d="M216 64 L40 192"/>
+  </g>
+
+  <g fill="#2EE6A8" fill-opacity="0.8">
+    <circle cx="128" cy="32" r="3"/>
+    <circle cx="216" cy="64" r="3"/>
+    <circle cx="216" cy="192" r="3"/>
+    <circle cx="128" cy="224" r="3"/>
+    <circle cx="40" cy="192" r="3"/>
+    <circle cx="40" cy="64" r="3"/>
+  </g>
+
+  <!-- 分片 Z 主体 -->
+  <path d="M56 56 H200 V80 H104 L200 176 V200 H56 V176 H152 L56 80 V56 Z" fill="url(#zgrad)"/>
+
+  <!-- 黑色切割线：把 Z 切成数据块 -->
+  <g clip-path="url(#zclip)" stroke="#05070D" stroke-width="6" stroke-linecap="square">
+    <line x1="56" y1="80" x2="200" y2="80"/>
+    <line x1="56" y1="176" x2="200" y2="176"/>
+    <line x1="104" y1="56" x2="104" y2="80"/>
+    <line x1="152" y1="56" x2="152" y2="80"/>
+    <line x1="104" y1="176" x2="104" y2="200"/>
+    <line x1="152" y1="176" x2="152" y2="200"/>
+    <line x1="56" y1="104" x2="200" y2="104"/>
+    <line x1="56" y1="128" x2="200" y2="128"/>
+    <line x1="56" y1="152" x2="200" y2="152"/>
+  </g>
+
+  <!-- 青色副本 / 校验块：错位表示故障转移 -->
+  <g clip-path="url(#zclip)">
+    <rect x="108" y="60" width="36" height="16" rx="2" fill="url(#cgrad)" transform="translate(4 -4)"/>
+    <rect x="136" y="108" width="32" height="16" rx="2" fill="url(#cgrad)" transform="translate(-6 4)"/>
+    <rect x="156" y="180" width="36" height="16" rx="2" fill="url(#cgrad)" transform="translate(4 4)"/>
+  </g>
+
+  <!-- 故障转移节点：右上角心跳 -->
+  <circle cx="216" cy="80" r="5" fill="#2EE6A8"/>
+  <circle cx="216" cy="80" r="10" fill="none" stroke="#2EE6A8" stroke-opacity="0.4" stroke-width="2"/>
+
+  <!-- 极客签名：>_ -->
+  <path d="M176 208 L184 212 L176 216" stroke="#2EE6A8" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="188" y="214" width="16" height="3" fill="#F7A41D"/>
+</svg>

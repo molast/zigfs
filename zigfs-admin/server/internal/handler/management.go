@@ -89,7 +89,13 @@ type ManagementService interface {
 	ClearKMSCache(ctx context.Context) (contract.KMSStatus, error)
 	StopKMS(ctx context.Context) (contract.KMSStatus, error)
 	SaveKMSSettings(ctx context.Context, config contract.KMSConfig) (contract.KMSStatus, error)
+	InstanceSettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error)
+	RegionSettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error)
+	DisplaySettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error)
+	AuthenticationSettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error)
 	Settings(ctx context.Context) (contract.SettingsResponse, error)
+	SaveListeners(ctx context.Context, input contract.ListenerSettings) error
+	SaveNetworkSettings(ctx context.Context, input json.RawMessage) (json.RawMessage, error)
 }
 
 type Management struct {
@@ -978,4 +984,99 @@ func (handler *Management) AuditEvents(ctx *gin.Context) {
 	}
 	ctx.Header("Cache-Control", "no-store")
 	ctx.Data(http.StatusOK, "application/json", result)
+}
+
+func (handler *Management) SaveNetworkSettings(ctx *gin.Context) {
+	var input json.RawMessage
+	if err := ctx.ShouldBindJSON(&input); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "request body is invalid")
+		return
+	}
+	response, err := handler.service.SaveNetworkSettings(ctx.Request.Context(), input)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) SaveListeners(ctx *gin.Context) {
+	var input contract.ListenerSettings
+	if err := ctx.ShouldBindJSON(&input); err != nil {
+		writeError(ctx, 400, "InvalidRequest", "request body is invalid")
+		return
+	}
+	if err := handler.service.SaveListeners(ctx.Request.Context(), input); err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.Status(http.StatusNoContent)
+}
+
+func (handler *Management) InstanceSettings(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	var input json.RawMessage
+	if ctx.Request.Method == http.MethodPut {
+		if err := ctx.ShouldBindJSON(&input); err != nil {
+			writeError(ctx, 400, "InvalidRequest", "request body is invalid")
+			return
+		}
+	}
+	response, err := handler.service.InstanceSettings(ctx.Request.Context(), ctx.Request.Method, input)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) RegionSettings(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	var input json.RawMessage
+	if ctx.Request.Method == http.MethodPut {
+		if err := ctx.ShouldBindJSON(&input); err != nil {
+			writeError(ctx, 400, "InvalidRequest", "request body is invalid")
+			return
+		}
+	}
+	response, err := handler.service.RegionSettings(ctx.Request.Context(), ctx.Request.Method, input)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) AuthenticationSettings(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	var input json.RawMessage
+	if ctx.Request.Method == http.MethodPut {
+		if err := ctx.ShouldBindJSON(&input); err != nil {
+			writeError(ctx, 400, "InvalidRequest", "request body is invalid")
+			return
+		}
+	}
+	response, err := handler.service.AuthenticationSettings(ctx.Request.Context(), ctx.Request.Method, input)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) DisplaySettings(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	var input json.RawMessage
+	if ctx.Request.Method == http.MethodPut {
+		if err := ctx.ShouldBindJSON(&input); err != nil {
+			writeError(ctx, 400, "InvalidRequest", "request body is invalid")
+			return
+		}
+	}
+	response, err := handler.service.DisplaySettings(ctx.Request.Context(), ctx.Request.Method, input)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
 }

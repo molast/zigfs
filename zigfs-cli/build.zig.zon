@@ -1,0 +1,14 @@
+.{
+    .name = .zigfs_cli,
+    .version = "0.1.0",
+    .fingerprint = 0x4637759c28ef44e4,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.sh",
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+    },
+}

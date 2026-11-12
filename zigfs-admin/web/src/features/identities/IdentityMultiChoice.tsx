@@ -2,6 +2,7 @@ import { t } from '@/locales'
 import { useId, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
+import { Badge } from '../../components/ui/Badge'
 import { Input } from '../../components/ui/Input'
 import { Checkbox } from '../../components/ui/checkbox'
 import { Field, FieldLabel } from '../../components/ui/field'
@@ -11,7 +12,9 @@ export function MultiChoice({ title, placeholder, options, selected, onChange, d
   const id = useId()
   const [query, setQuery] = useState('')
   const filtered = [...new Set([...options, ...selected])].filter(name => name.toLowerCase().includes(query.toLowerCase())).sort()
-  return <Field><FieldLabel htmlFor={id}>{title}</FieldLabel><Popover><PopoverTrigger asChild><Button id={id} type="button" variant="outline" disabled={disabled} className="identity-multi-trigger"><span>{selected.length ? selected.join(', ') : placeholder}</span><ChevronDown /></Button></PopoverTrigger>
+  return <Field><FieldLabel>{title}</FieldLabel><Popover><PopoverTrigger asChild><Button id={id} type="button" variant="outline" disabled={disabled} className="identity-multi-trigger"><span>{selected.length ? selected.join(', ') : placeholder}</span><ChevronDown /></Button></PopoverTrigger>
     <PopoverContent align="start" className="identity-multi-content"><Input aria-label={`Search ${title}`} placeholder={t('identities.search')} value={query} onChange={event => setQuery(event.target.value)} /><div className="identity-choices">{filtered.length ? filtered.map((name, index) => <Field key={name} orientation="horizontal"><Checkbox id={`${id}-${index}`} disabled={disabled} checked={selected.includes(name)} onCheckedChange={checked => onChange(checked === true ? [...new Set([...selected, name])] : selected.filter(item => item !== name))} /><FieldLabel htmlFor={`${id}-${index}`}>{name}{!options.includes(name) ? t('identities.unavailable') : ''}</FieldLabel></Field>) : <span className="identity-muted">{t('identities.noResults')}</span>}</div></PopoverContent>
-  </Popover></Field>
+  </Popover>{selected.length > 0 && <div className="identity-selected-tags" aria-label={`${title} selected`}>
+    {selected.map(name => <Badge key={name}>{name}</Badge>)}
+  </div>}</Field>
 }

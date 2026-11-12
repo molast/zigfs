@@ -1,3 +1,5 @@
+import { AccountView } from './features/account/AccountView'
+import { useDisplayPreferences, setDisplayPreferences, defaultDisplayPreferences } from './lib/dateTime'
 import { Breadcrumb, BreadcrumbList, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage, BreadcrumbSeparator } from './components/ui/breadcrumb'
 import { Tooltip, TooltipContent, TooltipTrigger } from './components/ui/tooltip'
 import { ThemeSwitcher } from './components/ThemeSwitcher'
@@ -20,6 +22,7 @@ import {
   Settings,
   ContactRound,
   UsersRound,
+  UserRound,
   X,
   type LucideIcon,
 } from 'lucide-react'
@@ -87,6 +90,8 @@ const navigation: Array<{ label: string; items: NavItem[] }> = [
 ]
 
 const viewMeta: Record<View, { section: string; label: string }> = {
+  profile: { get section() { return t('account.account') }, get label() { return t('account.profile') } },
+  'account-security': { get section() { return t('account.account') }, get label() { return t('account.security') } },
   buckets: { get section() { return t('navigation.objectStorage') }, get label() { return t('navigation.objectBrowser') } },
   'bucket-detail': { get section() { return t('common.buckets') }, get label() { return t('navigation.summary') } },
   objects: { get section() { return t('common.buckets') }, get label() { return t('navigation.objects') } },
@@ -104,6 +109,7 @@ const viewMeta: Record<View, { section: string; label: string }> = {
 
 export default function App() {
   useLocale()
+  useDisplayPreferences()
   const { withLoading } = useLoading()
   const notifyError = useErrorToast()
   const [session, setSession] = useState<AdminSession | null>()
@@ -113,6 +119,15 @@ export default function App() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [darkTheme, setDarkTheme] = useState(readDarkTheme)
   const api = useMemo(() => createApiClient(), [])
+  useEffect(() => {
+    if (!session) { setDisplayPreferences(defaultDisplayPreferences); return }
+    if (session.display_preferences) setDisplayPreferences(session.display_preferences)
+    else if (session.display_preferences === null) {
+      setDisplayPreferences(defaultDisplayPreferences)
+      notifyError(t('settings.displayLoadFailed'))
+    }
+  }, [session, notifyError])
+
 
   useEffect(() => {
     try {
@@ -204,6 +219,23 @@ export default function App() {
     return () => { active = false; window.clearInterval(timer); window.removeEventListener('focus', onFocus) }
   }, [api, session?.federated, session?.refreshable, notifyError])
 
+  useEffect(() => {
+    if (!session) return
+    const capabilities = session.capabilities ?? { admin: false, kms: false, s3: false, sts: false }
+    const canAdmin = session.is_root || capabilities.admin
+    const canKms = session.is_root || capabilities.kms
+    const canS3 = session.is_root || capabilities.s3
+    const allowed = (view: View) => view === 'buckets' ? canS3
+      : ['users', 'user-groups', 'access-keys', 'policies', 'storage', 'logs', 'system-logs', 'system', 'oidc-settings'].includes(view) ? canAdmin
+        : view === 'settings' ? canAdmin || canKms : true
+    if (allowed(route.view)) return
+    const first = navigation.flatMap(group => group.items).find(item => allowed(item.view))
+    if (!first) return
+    const target = appRoutePath(createAppRoute(first.view))
+    window.history.replaceState(null, '', target)
+    setRoute(parseAppRoute(target))
+  }, [route.view, session])
+
   if (availability === 'offline' || availability === 'not-ready') {
     return <ServiceUnavailable state={availability} retry={() => void bootstrap()} />
   }
@@ -214,9 +246,11 @@ export default function App() {
 
   if (!session) {
     return <LoginView darkTheme={darkTheme} onToggleTheme={() => setDarkTheme(value => !value)} onLogin={async (username, password) => {
-      setSession(await api.login(username, password))
+      await api.login(username, password)
+      setSession(await api.session())
     }} onStsLogin={async (username, secretKey, sessionToken) => {
-      setSession(await api.stsLogin(username, secretKey, sessionToken))
+      await api.stsLogin(username, secretKey, sessionToken)
+      setSession(await api.session())
     }} />
   }
 
@@ -245,8 +279,17 @@ export default function App() {
   const meta = viewMeta[view]
   const connectionLabel = t(availability === 'ready' ? 'navigation.fsReady' : 'navigation.connectingToZigfs')
   const isBucketsActive = view === 'buckets' || view === 'bucket-detail' || view === 'objects'
-  const visibleNavigation = session.is_root ? navigation : navigation.filter(group => !group.items.some(item => ['storage', 'logs', 'system-logs', 'system', 'settings', 'oidc-settings'].includes(item.view)))
-  const restrictedView = !session.is_root && (view === 'logs' || view === 'system-logs' || view === 'storage' || view === 'system' || view === 'settings' || view === 'oidc-settings')
+  const capabilities = session.capabilities ?? { admin: false, kms: false, s3: false, sts: false }
+  const canAdmin = session.is_root || capabilities.admin
+  const canKms = session.is_root || capabilities.kms
+  const canS3 = session.is_root || capabilities.s3
+  const visibleNavigation = navigation.map(group => ({ ...group, items: group.items.filter(item => {
+    if (item.view === 'buckets') return canS3
+    if (['users', 'user-groups', 'access-keys', 'policies', 'storage', 'logs', 'system-logs', 'system', 'oidc-settings'].includes(item.view)) return canAdmin
+    if (item.view === 'settings') return canAdmin || canKms
+    return true
+  }) })).filter(group => group.items.length > 0)
+  const restrictedView = (view === 'buckets' && !canS3) || (['users', 'user-groups', 'access-keys', 'policies', 'storage', 'logs', 'system-logs', 'system', 'oidc-settings'].includes(view) && !canAdmin) || (view === 'settings' && !canAdmin && !canKms)
 
   return (
     <div className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}${mobileSidebarOpen ? ' sidebar-open' : ''}${darkTheme ? ' theme-dark' : ''}`}>
@@ -317,16 +360,22 @@ export default function App() {
             <LanguageSwitcher />
             <DropdownMenu>
               <DropdownMenuTrigger asChild><Button variant="ghost" className="topbar-user-trigger" aria-label={t('navigation.userMenu')} title={session.display_name || session.username}><span className="topbar-user-label">{session.display_name || session.username}</span><ChevronDown data-icon="inline-end" /></Button></DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuLabel><div>{session.display_name || session.username}</div>{session.email && <div>{session.email}</div>}</DropdownMenuLabel>
+              <DropdownMenuContent align="end" className="w-64 max-w-[calc(100vw-24px)]">
+                <DropdownMenuLabel><div>{session.display_name || session.username}</div><div className="text-muted-foreground">{t(canAdmin ? 'account.administrator' : 'account.user')}</div>{session.email && <div>{session.email}</div>}</DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuGroup><DropdownMenuItem onSelect={() => void logout()}>{t('navigation.signOut')}</DropdownMenuItem></DropdownMenuGroup>
+                <DropdownMenuGroup>
+                  <DropdownMenuItem onSelect={() => navigate('profile')}><UserRound />{t('account.profile')}</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => navigate('account-security')}><ShieldCheck />{t('account.security')}</DropdownMenuItem>
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator />
+                <DropdownMenuGroup><DropdownMenuItem onSelect={() => void logout()}><LogOut />{t('navigation.signOut')}</DropdownMenuItem></DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
         </header>
 
         <main className={`content${view === 'bucket-detail' ? ' content-bucket-detail' : view === 'oidc-settings' ? ' content-oidc' : view === 'settings' ? ' content-system-settings' : ''}`}>
+          {(view === 'profile' || view === 'account-security') && <AccountView session={session} security={view === 'account-security'} api={api} onSession={setSession} onNavigate={next => navigate(next)} />}
           {view === 'buckets' && <BucketsView api={api} onOpenObjects={(name) => navigate('objects', name)} onOpenBucket={(name) => {
             navigate('bucket-detail', name)
           }} />}

@@ -102,7 +102,15 @@ pub fn serveRequest(
             return respondError(request, allocator, .internal_error, request_id);
         };
     }
-    const host = if (application.config.s3_virtual_hosted_style)
+    var network_arena = std.heap.ArenaAllocator.init(allocator);
+    defer network_arena.deinit();
+    const network = network: {
+        const io = application.io orelse return respondError(request, allocator, .service_unavailable, request_id);
+        application.policy_mutex.lockUncancelable(io);
+        defer application.policy_mutex.unlock(io);
+        break :network @import("../application/network_settings.zig").load(network_arena.allocator(), application.data_root orelse return respondError(request, allocator, .service_unavailable, request_id), io, application.config) catch return respondError(request, allocator, .service_unavailable, request_id);
+    };
+    const host = if (network.s3_virtual_hosted_style)
         singleHeader(headers.items, "host") catch {
             return respondError(request, allocator, .invalid_request, request_id);
         }
@@ -113,8 +121,8 @@ pub fn serveRequest(
         request.head.method,
         raw_target,
         host,
-        application.config.s3_public_endpoint,
-        application.config.s3_virtual_hosted_style,
+        network.s3_public_endpoint,
+        network.s3_virtual_hosted_style,
     ) catch {
         return respondError(request, allocator, .invalid_request, request_id);
     };
@@ -138,7 +146,7 @@ pub fn serveRequest(
     };
     const uses_presigned_auth = sigv4.hasPresignedParameters(raw_target);
     if (authorization_header == null and !uses_presigned_auth) {
-        return serveAnonymousRead(request, application, parsed, headers.items, request_id, peer);
+        return serveAnonymousRead(request, application, parsed, headers.items, request_id, peer, audit_context.secure_transport);
     }
     if (uses_presigned_auth and authorization_header != null) {
         return respondError(request, allocator, .invalid_request, request_id);
@@ -226,7 +234,7 @@ pub fn serveRequest(
     defer condition_arena.deinit();
     const signed_date = if (uses_presigned_auth) (parsed.query("X-Amz-Date") catch null) else (singleHeader(headers.items, "x-amz-date") catch null);
     const signed_at = if (signed_date) |date| sigv4.parseAmzDate(date) catch null else null;
-    var conditions = iam_context.build(condition_arena.allocator(), auth_material.owner, headers.items, parsed, peer, auth_request.now_unix_seconds, if (uses_presigned_auth) "REST-QUERY-STRING" else "REST-HEADER", signed_at, application.config.s3_region, auth_material.subject_id) catch return respondError(request, allocator, .invalid_argument, request_id);
+    var conditions = iam_context.build(condition_arena.allocator(), auth_material.owner, headers.items, parsed, peer, auth_request.now_unix_seconds, if (uses_presigned_auth) "REST-QUERY-STRING" else "REST-HEADER", signed_at, application.config.s3_region, auth_material.subject_id, audit_context.secure_transport) catch return respondError(request, allocator, .invalid_argument, request_id);
     appendRoleOrganizationContext(condition_arena.allocator(), application, auth_material.owner, &conditions) catch return respondError(request, allocator, .invalid_argument, request_id);
     if (auth_material.token_issue_time) |issued| {
         var entries: std.ArrayList(iam.Entry) = .empty;
@@ -497,6 +505,7 @@ fn serveAnonymousRead(
     headers: []const sigv4.Header,
     request_id: []const u8,
     peer: std.Io.net.IpAddress,
+    secure_transport: bool,
 ) !std.http.Status {
     if ((singleHeader(headers, "x-amz-server-side-encryption") catch return respondError(request, application.allocator, .invalid_argument, request_id)) != null) return respondError(request, application.allocator, .invalid_argument, request_id);
     if (hasUnsupportedHeaders(parsed.operation, headers)) return respondError(request, application.allocator, .not_implemented, request_id);
@@ -520,7 +529,7 @@ fn serveAnonymousRead(
     defer arena.deinit();
     const a = arena.allocator();
     const io = application.io orelse return respondError(request, application.allocator, .service_unavailable, request_id);
-    const base = try iam_context.build(a, "", headers, parsed, peer, std.Io.Clock.real.now(io).toSeconds(), "Anonymous", null, application.config.s3_region, null);
+    const base = try iam_context.build(a, "", headers, parsed, peer, std.Io.Clock.real.now(io).toSeconds(), "Anonymous", null, application.config.s3_region, null, secure_transport);
     var ctx = resourceContext(a, application, parsed.bucket, base) catch return respondError(request, application.allocator, .service_unavailable, request_id);
     ctx.kind = .resource;
     const resource = if (parsed.key) |key| try std.fmt.allocPrint(a, "arn:aws:s3:::{s}/{s}", .{ bucket_name, key }) else try std.fmt.allocPrint(a, "arn:aws:s3:::{s}", .{bucket_name});
@@ -1845,7 +1854,7 @@ fn servePostPolicyUpload(
     try audit_context.setResource(.{ .type = "object", .bucket = parsed.bucket, .object_key = expanded_key });
     try audit_context.identify(auth_material.owner);
     try audit_context.authenticate(if (auth_material.session_token != null) "sts" else "s3_access_key", auth_material.subject_id, access_key);
-    const base_conditions = iam_context.build(ca, auth_material.owner, headers, parsed, peer, now, "POST", signed_at, application.config.s3_region, auth_material.subject_id) catch return respondError(request, application.allocator, .invalid_argument, request_id);
+    const base_conditions = iam_context.build(ca, auth_material.owner, headers, parsed, peer, now, "POST", signed_at, application.config.s3_region, auth_material.subject_id, audit_context.secure_transport) catch return respondError(request, application.allocator, .invalid_argument, request_id);
     var condition_entries: std.ArrayList(iam.Entry) = .empty;
     for (base_conditions.entries) |entry| if (!std.ascii.startsWithIgnoreCase(entry.key, "s3:x-amz-")) try condition_entries.append(ca, entry);
     for (form.fields.items) |field| {

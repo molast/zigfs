@@ -19,17 +19,14 @@ def run():
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
         endpoint = f'http://127.0.0.1:{port}'
-        config_path = root / 'config.yaml'
-        config_path.write_text(f'''server:
-  api_address: 127.0.0.1:{port}
-observability:
-  metrics_enabled: false
-storage:
-  data_root: {root}/data
-admin:
-  username: logger-admin
-  password: isolated-logger-password
-  session_secret: isolated-log-test-secret-000000000000000000
+        config_path = root / '.env'
+        config_path.write_text(f'''
+ZIGFS_API_ADDRESS=127.0.0.1:{port}
+ZIGFS_METRICS_ENABLED=false
+ZIGFS_DATA_ROOT={root}/data
+ZIGFS_ROOT_USER=logger-admin
+ZIGFS_ROOT_PASSWORD=isolated-logger-password
+ZIGFS_ADMIN_SESSION_SECRET=isolated-log-test-secret-000000000000000000
 ''')
         process = None
         console = (root / 'console.log').open('w')
@@ -47,7 +44,7 @@ admin:
 
         def start():
             nonlocal process, token
-            process = subprocess.Popen([str(Path('zigfs/zig-out/bin/zigfs').resolve()), '--config', str(config_path)], stdout=console, stderr=console)
+            process = subprocess.Popen([str(Path('zigfs/zig-out/bin/zigfs').resolve()), '--env-file', str(config_path)], stdout=console, stderr=console)
             for _ in range(200):
                 if process.poll() is not None:
                     raise AssertionError((root / 'console.log').read_text())

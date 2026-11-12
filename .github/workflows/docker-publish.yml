@@ -78,6 +78,10 @@ jobs:
         with:
           context: ./${{ matrix.image }}
           platforms: linux/amd64,linux/arm64
+          # Publish only the two runnable platform manifests, without
+          # attestation manifests displayed as unknown/unknown by registries.
+          provenance: false
+          sbom: false
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -85,3 +89,13 @@ jobs:
             GOPROXY=https://proxy.golang.org,direct
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Update Docker Hub Overview
+        if: github.event_name != 'pull_request' && matrix.image == 'zigfs'
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.DOCKERHUB_NAMESPACE }}/zigfs
+          readme-filepath: ./README.md
+          short-description: "A lightweight S3-compatible object storage server written in Zig."

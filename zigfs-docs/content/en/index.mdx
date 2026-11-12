@@ -1,0 +1,30 @@
+---
+title: ZigFS Documentation
+description: Official documentation for ZigFS, an S3-compatible object storage service.
+---
+
+# ZigFS
+
+ZigFS is a fast, self-hosted object storage service with an S3-compatible API, a management console, and the `zc` command-line client.
+
+## Explore the documentation
+
+- [Getting Started](./getting-started)
+- [Concepts](./concepts)
+- [S3 API Reference](./s3-api)
+- [CLI Reference](./cli)
+- [Administration](./administration)
+- [Security](./security)
+- [Deployment](./deployment)
+- [Troubleshooting](./troubleshooting)
+- [Reference](./reference)
+
+## Architecture
+
+```mermaid
+flowchart LR
+  Client --> S3["S3 API"]
+  Client --> Admin["Admin API"]
+  S3 --> Metadata["Metadata"]
+  S3 --> Objects["Object storage"]
+```

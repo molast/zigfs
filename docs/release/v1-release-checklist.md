@@ -7,7 +7,7 @@
 - [x] `zigfs/src/version.zig` 为 `0.1.0`，启动日志和 Management System API 一致。
 - [x] `CHANGELOG.md`、RC 发布说明、升级和回滚手册已审阅。
 - [x] S3 兼容矩阵、Management OpenAPI、SDK fixture 和 README 互相一致。
-- [x] `.docs/` 未进入发布包，发布包不包含 `config.yaml` 或测试数据。
+- [x] `.docs/` 未进入发布包，发布包不包含 `.env` 或测试数据。
 
 ## 构建与自动化测试
 

@@ -16,7 +16,7 @@ flag bit 0，随后回收历史 journal 与已结束 multipart 标记。这是�
 1. 记录当前服务版本、配置文件摘要、数据根路径和最近一次健康状态。
 2. 停止 Admin 写操作和所有 S3 写入，确认没有 Multipart 上传仍在进行。
 3. 优雅停止旧 ZigFS，确认旧进程已释放 `.zigfs/instance.lock`。
-4. 对整个 `storage.data_root` 做静态备份，保留权限、时间、稀疏文件和隐藏目录。
+4. 对整个 `ZIGFS_DATA_ROOT` 做静态备份，保留权限、时间、稀疏文件和隐藏目录。
 
 ```bash
 rsync -a --numeric-ids data/ /backup/zigfs-v1-before-rc1/
@@ -27,7 +27,7 @@ rsync -a --numeric-ids data/ /backup/zigfs-v1-before-rc1/
 
 ## 启动新版本
 
-1. 使用 RC 二进制和原有 `storage.data_root` 配置启动隔离实例；首次验证建议使用隔离端口。
+1. 使用 RC 二进制和原有 `ZIGFS_DATA_ROOT` 配置启动隔离实例；首次验证建议使用隔离端口。
 2. 等待 `/health/ready` 返回 `200`。如果返回 `503`，先读取 `recovery_required` 原因，
    不删除或手工修改数据文件。
 3. 验证 Bucket/Object 数量、对象大小、ETag、Range、Multipart 状态和 Credential 解密。
@@ -36,7 +36,7 @@ rsync -a --numeric-ids data/ /backup/zigfs-v1-before-rc1/
 示例：
 
 ```bash
-./zigfs --config /secure/zigfs/rc-config.yaml
+./zigfs --env-file /secure/zigfs/rc.env
 curl --fail http://127.0.0.1:19000/health/ready
 ```
 

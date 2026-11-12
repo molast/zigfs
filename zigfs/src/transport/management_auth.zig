@@ -18,6 +18,32 @@ pub const Principal = struct {
     pub fn allows(self: Principal, a: std.mem.Allocator, action: []const u8, resource: []const u8, context: iam.Context) bool {
         return self.is_root or iam.allowsWithContext(a, self.documents, action, resource, context);
     }
+
+    pub fn capabilities(self: Principal, a: std.mem.Allocator) struct { admin: bool, kms: bool, s3: bool, sts: bool } {
+        if (self.is_root) return .{ .admin = true, .kms = true, .s3 = true, .sts = true };
+        const context: iam.Context = .{};
+        return .{
+            .admin = allowsAny(self, a, &.{ "admin:ListUsers", "admin:ListGroups", "admin:ListUserPolicies", "admin:ListAccessKeys", "admin:ServerInfo" }, context),
+            .kms = allowsAny(self, a, &.{ "kms:ListKeys", "kms:Encrypt", "kms:Decrypt", "kms:PutKeyPolicy" }, context),
+            .s3 = allowsAnyResource(self, a, &.{ "s3:ListAllMyBuckets", "s3:ListBucket", "s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:CreateBucket" }, &.{ "arn:aws:s3:::*", "arn:aws:s3:::*/capability-check" }, context),
+            .sts = self.allows(a, "sts:AssumeRole", "*", context),
+        };
+    }
+
+    fn allowsAny(self: Principal, a: std.mem.Allocator, actions: []const []const u8, context: iam.Context) bool {
+        for (actions) |action| if (self.allows(a, action, "*", context)) return true;
+        return false;
+    }
+
+    fn allowsAnyResource(self: Principal, a: std.mem.Allocator, actions: []const []const u8, resources: []const []const u8, context: iam.Context) bool {
+        for (actions) |action| for (resources) |resource| if (self.allows(a, action, resource, context)) return true;
+        return false;
+    }
+
+    pub fn hasConsoleAccess(self: Principal, a: std.mem.Allocator) bool {
+        const value = self.capabilities(a);
+        return value.admin or value.kms or value.s3 or value.sts;
+    }
 };
 
 // Uses a request arena. Both identity and policy reads share the application's
@@ -130,6 +156,12 @@ test "management route actions never default ordinary reads to root" {
     try std.testing.expectEqualStrings("admin:ListRoles", routeAction(.GET, "/_admin/v1/roles"));
     try std.testing.expectEqualStrings("s3:ListBucket", routeAction(.GET, "/_admin/v1/buckets/photos/objects"));
     try std.testing.expectEqualStrings("s3:PutObject", routeAction(.POST, "/_admin/v1/multipart-uploads"));
+}
+
+test "S3 capability probes bucket resources used by console policies" {
+    const document = "{\"Version\":\"2012-10-17\",\"Statement\":{\"Effect\":\"Allow\",\"Action\":\"s3:*\",\"Resource\":\"arn:aws:s3:::*\"}}";
+    const principal: Principal = .{ .id = "user-id", .username = "alice", .expires_at = 0, .documents = &.{document} };
+    try std.testing.expect(principal.capabilities(std.testing.allocator).s3);
 }
 
 test "recursive folder deletion requires management authority" {

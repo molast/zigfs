@@ -31,14 +31,14 @@ Backend 时为 `null`，不能把单个平台的文件系统调用结果冒充�
 
 ## S3/Data API
 
-以下接口由 ZigFS `server.api_address` 直接提供，默认使用 Signature V4 Header 认证；
+以下接口由 ZigFS `ZIGFS_API_ADDRESS` 直接提供，默认使用 Signature V4 Header 认证；
 对象级 GetObject、PutObject、DeleteObject 与 Multipart 全生命周期也支持 Signature V4 Presigned Query：
 
 永久凭证使用 AK/SK。临时凭证还必须携带 Session Token：Header SigV4 使用已进入
 `SignedHeaders` 的 `x-amz-security-token`，Presigned Query 使用签名绑定的
 `X-Amz-Security-Token`；缺失、错误和过期分别返回稳定的 `InvalidToken` 或 `ExpiredToken`。
 
-当 `s3.virtual_hosted_style` 开启时，上述 Bucket/Object 路径也可使用
+当 `ZIGFS_S3_VIRTUAL_HOSTED_STYLE` 开启时，上述 Bucket/Object 路径也可使用
 `Host: <bucket>.<s3.public_endpoint authority>` 和 `/{object}` 的 Virtual-hosted-style；
 精确的公开 authority 始终保留 Path-style。
 
@@ -114,7 +114,7 @@ multipart 解析失败均不会发布对象。
 - 版本化 Bucket 的 Put/Copy/Multipart Complete 返回 `x-amz-version-id`；CopyObject 可在
   `x-amz-copy-source` 中指定 `versionId`，成功时返回 `x-amz-copy-source-version-id`。普通删除按状态创建
   DeleteMarker，带 `versionId` 的删除永久移除指定版本。Lifecycle Scanner 周期由
-  `s3.lifecycle_scan_interval_seconds` 配置。
+  `ZIGFS_S3_LIFECYCLE_SCAN_INTERVAL_SECONDS` 配置。
 
 Prometheus 默认通过独立的 `127.0.0.1:9090` Listener 拉取指标：
 

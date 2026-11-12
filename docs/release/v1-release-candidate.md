@@ -20,11 +20,11 @@ System API 和 Admin 页面显示的版本仍是 `0.1.0`。磁盘格式、API �
 发布包至少包含：
 
 - `zigfs/zig-out/bin/zigfs`：ZigFS S3/Data、Management 和 Health 服务。
-- `zigfs/config.example.yaml`：带默认值的 YAML 配置模板。
+- `.env.example`：带默认值的 `.env` 配置模板。
 - `zigfs-admin/server` 与 `zigfs-admin/web/dist`：可选的 Admin BFF 和 Web Console。
 - `docs/api/`、`docs/operations.md`、`docs/backup-and-recovery.md` 和本目录的发布材料。
 
-发布包不得包含真实 `config.yaml`、Access Key、Secret Key、Session Token、测试报告中的
+发布包不得包含真实 `.env`、Access Key、Secret Key、Session Token、测试报告中的
 凭证，或 `.docs/` 文件。ZigFS 不创建或依赖 SQLite、数据库文件或外部元数据服务。
 
 ## 构建与验证
@@ -63,15 +63,15 @@ node benchmarks/run.mjs --profile smoke --output /tmp/zigfs-v0.1.0-rc.1-benchmar
 
 ## 全新数据目录
 
-1. 复制 `zigfs/config.example.yaml` 到受限权限目录，修改管理员密码、Session Secret、
-   `storage.data_root` 和客户端实际可访问的 `s3.public_endpoint`。
-2. 确认 `server.api_address`、Metrics 地址和 Admin 地址没有端口冲突。默认端口为：
+1. 复制 `.env.example` 到受限权限目录，修改管理员密码、Session Secret、
+   `ZIGFS_DATA_ROOT` 和客户端实际可访问的 `ZIGFS_S3_PUBLIC_ENDPOINT`。
+2. 确认 `ZIGFS_API_ADDRESS`、Metrics 地址和 Admin 地址没有端口冲突。默认端口为：
    `9000` S3/Management/Health、`9001` Admin、`9090` Metrics。
 3. 启动 ZigFS；首次启动会创建完整数据根、`format.meta`、实例身份和 Credential Master Key。
 
 ```bash
 cd zigfs
-./zig-out/bin/zigfs --config /secure/zigfs/config.yaml
+./zig-out/bin/zigfs --env-file /secure/.env
 curl --fail http://127.0.0.1:9000/health/ready
 ```
 
@@ -80,7 +80,7 @@ Admin 退出时不会停止启动脚本之前已经存在的 ZigFS。
 
 ## 已有 V1 数据目录
 
-V1 数据目录是整个 `storage.data_root`，包括：
+V1 数据目录是整个 `ZIGFS_DATA_ROOT`，包括：
 
 - `metadata/`：Bucket、Object、Multipart、Credential 版本化记录。
 - `.zigfs/journal/`：Intent、Commit、Abort Journal。
@@ -105,7 +105,7 @@ Metadata、Journal、Object Data 或 Master Key。格式和 Payload 的兼容边
 
 ## 升级与回滚
 
-升级前必须停止写入并备份整个 `storage.data_root`，不能只复制 `objects/` 或 `metadata/`。
+升级前必须停止写入并备份整个 `ZIGFS_DATA_ROOT`，不能只复制 `objects/` 或 `metadata/`。
 详细步骤见：
 
 - [V1 升级运行手册](upgrade-v1.md)
@@ -117,7 +117,7 @@ Metadata、Journal、Object Data 或 Master Key。格式和 Payload 的兼容边
 
 ## 发布前安全边界
 
-- 只在受限权限下保存 YAML 配置和 Master Key。
+- 只在受限权限下保存 `.env` 配置和 Master Key。
 - 不把 AK/SK、Session Token、管理员密码或 Session Secret 写入日志、Benchmark 或兼容性报告。
 - Release Candidate 仍建议在隔离网络中运行；对外部署前必须更换所有默认管理员配置。
 - Admin 是可选网页客户端；移除 Admin 不影响 ZigFS S3/Data 和 Management API。

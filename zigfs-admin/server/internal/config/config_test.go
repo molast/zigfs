@@ -1,11 +1,13 @@
 package config
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestLoadUsesMultipartSafeUpstreamTimeout(t *testing.T) {
+	t.Setenv("ZIGFS_ADMIN_CONFIG", filepath.Join(t.TempDir(), "listener.json"))
 	t.Setenv("ZIGFS_UPSTREAM_TIMEOUT", "")
 	config, err := Load()
 	if err != nil {

@@ -1157,6 +1157,270 @@ paths:
                 $ref: "#/components/schemas/Health"
         default:
           $ref: "#/components/responses/Error"
+  /_admin/v1/settings/listener:
+    put:
+      summary: Save listener configuration for the next process restart
+      operationId: saveListeners
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [api_address]
+              properties:
+                api_address:
+                  type: string
+                  example: "0.0.0.0:9000"
+      responses:
+        '200':
+          description: Saved; current listeners remain active until restart
+        '400':
+          description: InvalidListenAddress or InvalidUpstreamEndpoint
+        '403':
+          description: Not authorized to manage listeners
+        '409':
+          description: ListenAddressUnavailable or AdminListenAddressUnavailable
+        '503':
+          description: ListenerSettingsUnavailable or ListenerSettingsPartiallySaved
+  /_admin/v1/settings/authentication:
+    get:
+      summary: Read effective and saved session lifetime and signature clock skew
+      operationId: getAuthenticationSettings
+      responses:
+        '200':
+          description: Current values, persisted pending values and restart status
+          content:
+            application/json:
+              schema: &AuthenticationSettings
+                type: object
+                required: [current, pending, restart_required]
+                properties:
+                  current: &AuthenticationValues
+                    type: object
+                    additionalProperties: false
+                    required: [admin_session_ttl_seconds, request_time_skew_seconds]
+                    properties:
+                      admin_session_ttl_seconds:
+                        type: integer
+                        minimum: 60
+                        maximum: 86400
+                        description: Console session lifetime in seconds
+                      request_time_skew_seconds:
+                        type: integer
+                        minimum: 60
+                        maximum: 3600
+                        description: Allowed S3 signing clock skew in seconds
+                  pending: *AuthenticationValues
+                  restart_required:
+                    type: boolean
+        '403':
+          description: Management authority required
+        '503':
+          description: AuthenticationSettingsUnavailable
+    put:
+      summary: Persist authentication limits for the next ZigFS restart
+      operationId: saveAuthenticationSettings
+      description: Existing sessions retain their original expiry. Save both current values to cancel pending changes. Validation reports the session lifetime error before the clock skew error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: *AuthenticationValues
+      responses:
+        '200':
+          description: Saved values; current values remain active until restart
+          content:
+            application/json:
+              schema: *AuthenticationSettings
+        '400':
+          description: InvalidSessionLifetime, InvalidSignatureClockSkew or InvalidRequest
+        '403':
+          description: Management authority required
+        '503':
+          description: AuthenticationSettingsUnavailable
+  /_admin/v1/settings/display:
+    get:
+      summary: Read instance-wide console display preferences and supported timezones
+      operationId: getDisplaySettings
+      responses:
+        '200':
+          description: Saved display preferences and timezone catalog
+          content:
+            application/json:
+              schema: &DisplaySettings
+                type: object
+                required: [timezone, date_format, supported_timezones]
+                properties:
+                  timezone:
+                    type: string
+                    description: browser, UTC or an IANA name from supported_timezones
+                  date_format:
+                    type: string
+                    enum: [locale, ymd, dmy, mdy]
+                  supported_timezones:
+                    type: array
+                    items:
+                      type: string
+        '403':
+          description: Management authority required
+        '503':
+          description: DisplaySettingsUnavailable
+    put:
+      summary: Save display preferences, applied immediately without restart
+      operationId: saveDisplaySettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [timezone, date_format]
+              properties:
+                timezone:
+                  type: string
+                  description: Must be in the supported_timezones list
+                date_format:
+                  type: string
+                  enum: [locale, ymd, dmy, mdy]
+      responses:
+        '200':
+          description: Saved preferences; timestamps and log files remain unchanged
+          content:
+            application/json:
+              schema: *DisplaySettings
+        '400':
+          description: InvalidDisplayTimezone, InvalidDisplayDateFormat or InvalidRequest
+        '403':
+          description: Management authority required
+        '503':
+          description: DisplaySettingsUnavailable
+  /_admin/v1/settings/region:
+    get:
+      summary: Read effective and saved S3 region
+      operationId: getRegionSettings
+      responses:
+        '200':
+          description: Effective region, saved region and whether a ZigFS restart is required
+          content:
+            application/json:
+              schema: &RegionSettings
+                type: object
+                required: [s3_region, pending_s3_region, restart_required]
+                properties:
+                  s3_region:
+                    type: string
+                  pending_s3_region:
+                    type: string
+                  restart_required:
+                    type: boolean
+        '403':
+          description: Management authority required
+        '503':
+          description: RegionSettingsUnavailable
+    put:
+      summary: Persist S3 region for the next ZigFS restart
+      operationId: saveRegionSettings
+      description: Saving the effective region cancels a pending change. Update client signing regions and regenerate presigned URLs after restart.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [s3_region]
+              properties:
+                s3_region:
+                  type: string
+                  minLength: 1
+                  maxLength: 63
+                  pattern: '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$'
+      responses:
+        '200':
+          description: Saved settings; effective region remains unchanged until restart
+          content:
+            application/json:
+              schema: *RegionSettings
+        '400':
+          description: InvalidRegion
+        '403':
+          description: Management authority required
+        '503':
+          description: RegionSettingsUnavailable
+  /_admin/v1/settings/instance:
+    get:
+      summary: Read instance display settings, persistent identity and process timing
+      operationId: getInstanceSettings
+      responses:
+        '200':
+          description: service_name, description, instance_id, started_at_unix_seconds and uptime_seconds
+        '403':
+          description: Management authority required
+        '503':
+          description: InstanceSettingsUnavailable
+    put:
+      summary: Save instance display name and description without a restart
+      operationId: saveInstanceSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [service_name, description]
+              properties:
+                service_name:
+                  type: string
+                  description: Nonempty, at most 128 UTF-8 bytes, no control characters
+                description:
+                  type: string
+                  description: At most 4096 UTF-8 bytes; newline, carriage return and tab allowed
+      responses:
+        '200':
+          description: Updated instance information including read-only identity and process timing
+        '400':
+          description: InvalidServiceName or InvalidInstanceDescription
+        '403':
+          description: Management authority required
+        '503':
+          description: InstanceSettingsUnavailable
+  /_admin/v1/settings/network:
+    put:
+      summary: Persist public S3 endpoint and addressing mode for subsequent requests
+      operationId: saveNetworkSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [s3_public_endpoint, s3_virtual_hosted_style]
+              properties:
+                s3_public_endpoint:
+                  type: string
+                  format: uri
+                  maxLength: 2048
+                s3_virtual_hosted_style:
+                  type: boolean
+                trusted_proxies:
+                  type: array
+                  maxItems: 64
+                  description: Trusted proxy IP/CIDR ranges; empty disables forwarding header trust
+                  items:
+                    type: string
+                    maxLength: 64
+      responses:
+        '200':
+          description: Saved configuration; effective immediately and retained after restart
+        '400':
+          description: InvalidPublicEndpoint, InvalidVirtualHostedEndpoint or InvalidTrustedProxy
+        '403':
+          description: Management policy does not authorize this operation
+        '503':
+          description: Configuration could not be persisted
   /_admin/v1/settings:
     get:
       operationId: getManagementSettings
@@ -1889,6 +2153,26 @@ components:
       additionalProperties: false
       required: [authenticated, username, expires_at]
       properties:
+        auth_source:
+          type: string
+          enum: [deployment, local, oidc, sts]
+        root_access_key:
+          type: [string, "null"]
+          description: Configured root S3 Access Key ID, only disclosed to deployment root; never the secret
+        session_access_key:
+          type: [string, "null"]
+          description: Access Key ID used by an STS console session; null for password and OIDC sessions
+
+        display_preferences:
+          description: Instance display preferences for authenticated console users; null if configuration cannot be read
+          type: [object, "null"]
+          properties:
+            timezone:
+              type: string
+            date_format:
+              type: string
+              enum: [locale, ymd, dmy, mdy]
+
         display_name: { type: string, description: Display-only external username claim }
         email: { type: string, description: Display-only external email claim }
         federated: { type: boolean }
