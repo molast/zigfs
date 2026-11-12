@@ -8,7 +8,7 @@ services:
       context: ./zigfs
       dockerfile: Dockerfile
       args:
-        ZIG_VERSION: ${ZIG_VERSION:-0.16.0}
+        ZIG_VERSION: ${ZIG_VERSION:-0.17.0}
         ZIG_DOWNLOAD_BASE_URL: ${ZIG_DOWNLOAD_BASE_URL:-https://ziglang.org/download}
         ZIG_TOOLCHAIN_SHA256: ${ZIG_TOOLCHAIN_SHA256:-}
     container_name: zigfs-dev

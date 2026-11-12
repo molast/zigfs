@@ -2,7 +2,7 @@
 
 FROM alpine:latest AS builder
 
-ARG ZIG_VERSION=0.16.0
+ARG ZIG_VERSION=0.17.0
 ARG TARGETARCH
 ARG ZIG_DOWNLOAD_BASE_URL=https://ziglang.org/download
 ARG ZIG_TOOLCHAIN_SHA256=
@@ -14,8 +14,8 @@ RUN --mount=type=bind,source=.,target=/build-context,ro \
     target_arch="${TARGETARCH}" \
     && if [ -z "${target_arch}" ]; then target_arch="$(uname -m)"; fi \
     && case "${target_arch}" in \
-         amd64|x86_64) zig_arch="x86_64"; zig_sha256="70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00" ;; \
-         arm64|aarch64) zig_arch="aarch64"; zig_sha256="ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17" ;; \
+         amd64|x86_64) zig_arch="x86_64"; zig_sha256="1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026" ;; \
+         arm64|aarch64) zig_arch="aarch64"; zig_sha256="9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8" ;; \
          *) echo "Unsupported Docker architecture: ${target_arch}" >&2; exit 1 ;; \
        esac \
     && local_toolchain="" \

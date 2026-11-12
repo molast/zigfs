@@ -8,7 +8,7 @@ transaction journal, indexes, recovery, and storage backends.
 ## Docker build
 
 The image uses Alpine for both the build and runtime stages. The builder downloads
-the pinned Zig `0.16.0` toolchain and verifies its SHA-256 checksum. If network
+the pinned Zig `0.17.0` toolchain and verifies its SHA-256 checksum. If network
 access to `ziglang.org` is unavailable, place a Linux archive matching the
 container architecture in this directory as `zig-toolchain.tar.xz`, or in the
 nested `zigfs/` directory using its original name or `zig-toolchain.tar.xz`.
@@ -16,7 +16,7 @@ Any Zig version is accepted for a local archive; the Dockerfile will use it
 automatically:
 
 ```sh
-cp zig-aarch64-linux-0.16.0.tar.xz zig-toolchain.tar.xz
+cp zig-aarch64-linux-0.17.0.tar.xz zig-toolchain.tar.xz
 docker build -t zigfs:0.1.0 .
 ```
 
@@ -41,7 +41,7 @@ cp ../.env.example ../.env
 zig build run -- --env-file ../.env
 ```
 
-Zig 0.16.0 or newer is required.
+Zig 0.17.0 or newer is required.
 
 ZigFS loads built-in defaults first and then applies `.env`. Use
 `--env-file <path>` to select another file. Command-line address and data-root
