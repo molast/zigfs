@@ -476,6 +476,10 @@ func (client *Client) RevokeRoleSession(ctx context.Context, accessKey string) e
 	return client.requestJSON(ctx, http.MethodPost, "/_admin/v1/role-sessions/"+url.PathEscape(accessKey)+"/revoke", nil, nil)
 }
 
+func (client *Client) DeleteRoleSession(ctx context.Context, accessKey string) error {
+	return client.requestJSON(ctx, http.MethodDelete, "/_admin/v1/role-sessions/"+url.PathEscape(accessKey), nil, nil)
+}
+
 func (client *Client) ListUsers(ctx context.Context) (contract.UserList, error) {
 	var response contract.UserList
 	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/users", nil, &response)
@@ -720,5 +724,37 @@ func (client *Client) DisplaySettings(ctx context.Context, method string, input 
 		body = input
 	}
 	err := client.requestJSON(ctx, method, "/_admin/v1/settings/display", body, &response)
+	return response, err
+}
+
+func (client *Client) GetBucketEventSubscriptions(ctx context.Context, name string) (contract.BucketEventSubscriptions, error) {
+	var response contract.BucketEventSubscriptions
+	err := client.requestJSON(ctx, http.MethodGet, "/_admin/v1/buckets/"+url.PathEscape(name)+"/event-subscriptions", nil, &response)
+	return response, err
+}
+
+func (client *Client) PutBucketEventSubscriptions(ctx context.Context, name string, input contract.BucketEventSubscriptions) (contract.BucketEventSubscriptions, error) {
+	var response contract.BucketEventSubscriptions
+	err := client.requestJSON(ctx, http.MethodPut, "/_admin/v1/buckets/"+url.PathEscape(name)+"/event-subscriptions", input, &response)
+	return response, err
+}
+
+func (client *Client) EventDestinations(ctx context.Context, method, name string, input json.RawMessage) (json.RawMessage, error) {
+	path := "/_admin/v1/event-destinations"
+	if name != "" {
+		path += "/" + url.PathEscape(name)
+	}
+	var response json.RawMessage
+	var body any
+	if len(input) > 0 {
+		body = input
+	}
+	err := client.requestJSON(ctx, method, path, body, &response)
+	return response, err
+}
+
+func (client *Client) SetObjectLegalHold(ctx context.Context, bucket string, request contract.SetObjectLegalHoldRequest) (contract.ObjectLegalHoldResponse, error) {
+	var response contract.ObjectLegalHoldResponse
+	err := client.requestJSON(ctx, http.MethodPatch, "/_admin/v1/buckets/"+url.PathEscape(bucket)+"/legal-hold", request, &response)
 	return response, err
 }

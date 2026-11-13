@@ -15,6 +15,7 @@ pub const KeyInfo = struct {
     rotatedAt: ?[]const u8 = null,
     deletionDate: ?[]const u8 = null,
     manageable: bool = true,
+    permissions: ?struct { describe: bool, rotate: bool, delete: bool } = null,
 };
 pub const KeyList = struct { items: []const KeyInfo, canCreate: bool, canRekey: bool = false };
 fn info(record: kms.LocalKey) KeyInfo {
@@ -69,6 +70,19 @@ pub fn list(service: *kms.Service, a: std.mem.Allocator) !KeyList {
         }
     }.less);
     return .{ .items = try items.toOwnedSlice(a), .canCreate = true };
+}
+pub fn describe(service: *kms.Service, a: std.mem.Allocator, name: []const u8) !KeyInfo {
+    if (!kms.validKey(name)) return error.InvalidKmsKeyRequest;
+    const stored = try service.current(a);
+    if (std.mem.eql(u8, stored.config.backend, "static")) {
+        const keys = try list(service, a);
+        if (!std.mem.eql(u8, keys.items[0].id, name)) return error.FileNotFound;
+        return keys.items[0];
+    }
+    if (!std.mem.eql(u8, stored.config.backend, "local")) return remoteInfo(service, a, stored.config, name);
+    var dir = try service.localDirectory(stored.config.localKeyDirectory, false);
+    defer dir.close(service.io);
+    return info(try recordRead(service, a, dir, name));
 }
 pub fn create(service: *kms.Service, a: std.mem.Allocator, input: CreateKey) !KeyInfo {
     if (input.name.len > 256 or input.description.len > 4096 or std.mem.indexOfScalar(u8, input.name, 0) != null or std.mem.indexOfScalar(u8, input.description, 0) != null) return error.InvalidKmsKeyRequest;

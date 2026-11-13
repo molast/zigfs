@@ -7,10 +7,12 @@ import { LanguageSwitcher } from './components/LanguageSwitcher'
 import { t, useLocale } from '@/locales'
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Activity,
+  ChartNoAxesCombined,
+  RadioTower,
   ChevronDown,
   FolderOpen,
-  FileText,
+  ScrollText,
+  Terminal,
   Fingerprint,
   HardDrive,
   KeyRound,
@@ -19,6 +21,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   ShieldCheck,
+  UserRoundCog,
   Settings,
   ContactRound,
   UsersRound,
@@ -32,8 +35,10 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuLab
 import { Button } from './components/ui/Button'
 import { useLoading } from './components/LoadingProvider'
 import { AccessKeysView } from './features/access-keys/AccessKeysView'
+import { RolesView } from './features/roles/RolesView'
 import { IdentitiesView } from './features/identities/IdentitiesView'
 import { OIDCSettingsView } from './features/settings/OIDCSettingsView'
+import { EventDestinationsView } from './features/events/EventDestinationsView'
 import { PoliciesView } from './features/policies/PoliciesView'
 import { LoginView } from './features/auth/LoginView'
 import { BucketDetailView } from './features/buckets/BucketDetailView'
@@ -71,18 +76,20 @@ const navigation: Array<{ label: string; items: NavItem[] }> = [
     { view: 'users', get label() { return t('navigation.users') }, icon: ContactRound },
     { view: 'user-groups', get label() { return t('navigation.userGroups') }, icon: UsersRound },
     { view: 'access-keys', get label() { return t('navigation.accessKeys') }, icon: KeyRound },
+    { view: 'roles', get label() { return t('roles.roles') }, icon: UserRoundCog },
     { view: 'policies', get label() { return t('navigation.policies') }, icon: ShieldCheck },
   ] },
   {
     get label() { return t('navigation.serviceStatus') },
     items: [
       { view: 'storage', get label() { return t('navigation.storage') }, icon: HardDrive },
-      { view: 'logs', get label() { return t('navigation.logs') }, icon: FileText },
-      { view: 'system-logs', get label() { return t('navigation.systemLogs') }, icon: FileText },
-      { view: 'system', get label() { return t('navigation.monitoring') }, icon: Activity },
+      { view: 'logs', get label() { return t('navigation.logs') }, icon: ScrollText },
+      { view: 'system-logs', get label() { return t('navigation.systemLogs') }, icon: Terminal },
+      { view: 'system', get label() { return t('navigation.monitoring') }, icon: ChartNoAxesCombined },
     ],
   },
   { get label() { return t('navigation.configuration') }, items: [
+    { view: 'event-destinations', get label() { return t('eventDestinations.title') }, icon: RadioTower },
     { view: 'oidc-settings', label: 'OpenID', icon: Fingerprint },
     // Keep System Setting as the final item in the navigation list.
     { view: 'settings', get label() { return t('navigation.systemSetting') }, icon: Settings },
@@ -98,12 +105,14 @@ const viewMeta: Record<View, { section: string; label: string }> = {
   users: { get section() { return t('common.accessControl') }, get label() { return t('navigation.users') } },
   'user-groups': { get section() { return t('common.accessControl') }, get label() { return t('navigation.userGroups') } },
   'access-keys': { get section() { return t('common.accessControl') }, get label() { return t('navigation.accessKeys') } },
+  roles: { get section() { return t('common.accessControl') }, get label() { return t('roles.roles') } },
   policies: { get section() { return t('common.accessControl') }, get label() { return t('navigation.policies') } },
   storage: { get section() { return t('common.system') }, get label() { return t('navigation.storage') } },
   'system-logs': { get section() { return t('common.system') }, get label() { return t('navigation.systemLogs') } },
   logs: { get section() { return t('common.system') }, get label() { return t('navigation.logs') } },
   system: { get section() { return t('common.monitoring') }, get label() { return t('navigation.runningStatus') } },
   settings: { get section() { return t('common.configuration') }, get label() { return t('navigation.systemSetting') } },
+  'event-destinations': { get section() { return t('common.configuration') }, get label() { return t('eventDestinations.title') } },
   'oidc-settings': { get section() { return t('common.configuration') }, label: 'OpenID' },
 }
 
@@ -150,6 +159,7 @@ export default function App() {
           if (reason instanceof ApiError && reason.status === 401) {
             try { setSession(await api.refreshOIDC()) } catch { setSession(null) }
           }
+          else if (reason instanceof ApiError && reason.body.code === 'ConsoleAccessDenied') setSession(null)
           else throw reason
         }
       } catch (reason) {
@@ -197,6 +207,26 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!session || session.federated) return
+    let active = true
+    let pending = false
+    const refreshPermissions = async () => {
+      if (pending || document.hidden) return
+      pending = true
+      try {
+        const next = await api.session()
+        if (active) setSession(next)
+      } catch (error) {
+        if (active && error instanceof ApiError && (error.status === 401 || error.body.code === 'ConsoleAccessDenied')) setSession(null)
+      } finally { pending = false }
+    }
+    const timer = window.setInterval(() => void refreshPermissions(), 30_000)
+    const onFocus = () => void refreshPermissions()
+    window.addEventListener('focus', onFocus)
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener('focus', onFocus) }
+  }, [api, session?.subject_id, session?.federated])
+
+  useEffect(() => {
     if (!session?.federated || !session.refreshable) return
     let active = true
     let pending = false
@@ -209,7 +239,7 @@ export default function App() {
       } catch (error) {
         if (active) {
           notifyError(error instanceof Error ? error.message : t('navigation.operationFailedPleaseTryAgain'))
-          if (error instanceof ApiError && error.status === 401) setSession(null)
+          if (error instanceof ApiError && (error.status === 401 || error.body.code === 'ConsoleAccessDenied')) setSession(null)
         }
       } finally { pending = false }
     }
@@ -224,9 +254,11 @@ export default function App() {
     const capabilities = session.capabilities ?? { admin: false, kms: false, s3: false, sts: false }
     const canAdmin = session.is_root || capabilities.admin
     const canKms = session.is_root || capabilities.kms
-    const canS3 = session.is_root || capabilities.s3
-    const allowed = (view: View) => view === 'buckets' ? canS3
-      : ['users', 'user-groups', 'access-keys', 'policies', 'storage', 'logs', 'system-logs', 'system', 'oidc-settings'].includes(view) ? canAdmin
+    const canS3 = session.is_root || !!capabilities.s3_console
+    const allowed = (view: View) => view === 'system' ? session.is_root || !!capabilities.server_info
+      : view === 'system-logs' ? session.is_root || !!capabilities.console_log
+      : view === 'buckets' ? canS3
+      : ['users', 'user-groups', 'access-keys', 'policies', 'roles', 'storage', 'logs', 'event-destinations', 'oidc-settings'].includes(view) ? canAdmin
         : view === 'settings' ? canAdmin || canKms : true
     if (allowed(route.view)) return
     const first = navigation.flatMap(group => group.items).find(item => allowed(item.view))
@@ -282,14 +314,16 @@ export default function App() {
   const capabilities = session.capabilities ?? { admin: false, kms: false, s3: false, sts: false }
   const canAdmin = session.is_root || capabilities.admin
   const canKms = session.is_root || capabilities.kms
-  const canS3 = session.is_root || capabilities.s3
+  const canS3 = session.is_root || !!capabilities.s3_console
   const visibleNavigation = navigation.map(group => ({ ...group, items: group.items.filter(item => {
+    if (item.view === 'system') return session.is_root || !!capabilities.server_info
+    if (item.view === 'system-logs') return session.is_root || !!capabilities.console_log
     if (item.view === 'buckets') return canS3
-    if (['users', 'user-groups', 'access-keys', 'policies', 'storage', 'logs', 'system-logs', 'system', 'oidc-settings'].includes(item.view)) return canAdmin
+    if (['users', 'user-groups', 'access-keys', 'policies', 'roles', 'storage', 'logs', 'event-destinations', 'oidc-settings'].includes(item.view)) return canAdmin
     if (item.view === 'settings') return canAdmin || canKms
     return true
   }) })).filter(group => group.items.length > 0)
-  const restrictedView = (view === 'buckets' && !canS3) || (['users', 'user-groups', 'access-keys', 'policies', 'storage', 'logs', 'system-logs', 'system', 'oidc-settings'].includes(view) && !canAdmin) || (view === 'settings' && !canAdmin && !canKms)
+  const restrictedView = (view === 'system' && !session.is_root && !capabilities.server_info) || (view === 'system-logs' && !session.is_root && !capabilities.console_log) || (view === 'buckets' && !canS3) || (['users', 'user-groups', 'access-keys', 'policies', 'roles', 'storage', 'logs', 'event-destinations', 'oidc-settings'].includes(view) && !canAdmin) || (view === 'settings' && !canAdmin && !canKms)
 
   return (
     <div className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}${mobileSidebarOpen ? ' sidebar-open' : ''}${darkTheme ? ' theme-dark' : ''}`}>
@@ -376,26 +410,28 @@ export default function App() {
 
         <main className={`content${view === 'bucket-detail' ? ' content-bucket-detail' : view === 'oidc-settings' ? ' content-oidc' : view === 'settings' ? ' content-system-settings' : ''}`}>
           {(view === 'profile' || view === 'account-security') && <AccountView session={session} security={view === 'account-security'} api={api} onSession={setSession} onNavigate={next => navigate(next)} />}
-          {view === 'buckets' && <BucketsView api={api} onOpenObjects={(name) => navigate('objects', name)} onOpenBucket={(name) => {
+          {!restrictedView && view === 'buckets' && <BucketsView api={api} onOpenObjects={(name) => navigate('objects', name)} onOpenBucket={(name) => {
             navigate('bucket-detail', name)
           }} />}
-          {view === 'bucket-detail' && <BucketDetailView
+          {!restrictedView && view === 'bucket-detail' && <BucketDetailView
             api={api}
             bucketName={selectedBucket}
             onBack={() => navigate('buckets')}
           />}
-          {view === 'objects' && <ObjectsView api={api} initialBucket={selectedBucket} initialPrefix={selectedPrefix} onNavigatePath={(prefix) => navigate('objects', selectedBucket, prefix)} />}
-          {view === 'access-keys' && <AccessKeysView api={api} />}
-          {view === 'users' && <IdentitiesView key="users" kind="users" api={api} />}
-          {view === 'user-groups' && <IdentitiesView key="groups" kind="groups" api={api} />}
-          {view === 'policies' && <PoliciesView api={api} />}
+          {!restrictedView && view === 'objects' && <ObjectsView api={api} initialBucket={selectedBucket} initialPrefix={selectedPrefix} onNavigatePath={(prefix) => navigate('objects', selectedBucket, prefix)} />}
+          {!restrictedView && view === 'access-keys' && <AccessKeysView api={api} />}
+          {!restrictedView && view === 'roles' && <RolesView api={api} />}
+          {!restrictedView && view === 'users' && <IdentitiesView key="users" kind="users" api={api} />}
+          {!restrictedView && view === 'user-groups' && <IdentitiesView key="groups" kind="groups" api={api} />}
+          {!restrictedView && view === 'policies' && <PoliciesView api={api} />}
+          {!restrictedView && view === 'event-destinations' && <EventDestinationsView api={api} />}
           {!restrictedView && view === 'oidc-settings' && <OIDCSettingsView api={api} />}
           {restrictedView && <AccessDeniedView />}
           {!restrictedView && view === 'logs' && <LogsView api={api} />}
           {!restrictedView && view === 'system-logs' && <SystemLogsView api={api} />}
           {!restrictedView && view === 'storage' && <StorageView api={api} />}
-          {!restrictedView && view === 'system' && <SystemView api={api} />}
-          {!restrictedView && view === 'settings' && <SettingsView api={api} />}
+          {!restrictedView && view === 'system' && <SystemView api={api} diagnosticsOnly={!canAdmin} />}
+          {!restrictedView && view === 'settings' && <SettingsView api={api} session={session} />}
         </main>
       </div>
     </div>
@@ -413,7 +449,7 @@ function ServiceUnavailable({ state, retry }: { state: 'offline' | 'not-ready'; 
       <span className={`service-state-dot ${state}`} />
       <h1>{state === 'offline' ? t('navigation.zigfsOffline') : t('navigation.zigfsNotReady')}</h1>
       <p>{state === 'offline' ? t('navigation.unableToConnectToZigfs') : t('navigation.zigfsIsRecoveringStorageAndMetadata')}</p>
-      <button className="primary-button" type="button" onClick={retry}>{t('navigation.retry')}</button>
+      <Button type="button" onClick={retry}>{t('navigation.retry')}</Button>
     </main>
   )
 }

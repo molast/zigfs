@@ -204,3 +204,23 @@
 新增审计日志配置操作：`GetAuditLogSettings`、`UpdateAuditLogSettings`、
 `QueryAuditLogs`、`DownloadAuditLogs`，均归类为 `system_management`。
 审计级别与保留策略见 [audit-log-configuration.md](audit-log-configuration.md)。
+
+### Bucket 事件订阅配置
+
+| 操作 | 接口 | 分类 |
+| --- | --- | --- |
+| GetBucketEventSubscriptions | GET /_admin/v1/buckets/:bucket/event-subscriptions | bucket_management（只读） |
+| UpdateBucketEventSubscriptions | PUT /_admin/v1/buckets/:bucket/event-subscriptions | bucket_management（写入，包含新增和删除） |
+
+这里只管理订阅配置，不代表已投递通知。审计记录不保存完整订阅请求体。
+
+### Event Destinations 配置
+
+| 操作 | 接口 | 分类 |
+| --- | --- | --- |
+| ListEventDestinations | GET /_admin/v1/event-destinations | system_management（只读） |
+| CreateEventDestination | POST /_admin/v1/event-destinations | system_management（写入） |
+| UpdateEventDestination | PUT /_admin/v1/event-destinations/:name | system_management（写入） |
+| DeleteEventDestination | DELETE /_admin/v1/event-destinations/:name | system_management（写入） |
+
+审计记录不包含配置请求体或 Auth Token。

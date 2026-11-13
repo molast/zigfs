@@ -61,6 +61,7 @@ pub const routes = [_]Route{
     .{ .method = .post, .path = "/_admin/v1/sts/assume-role" },
     .{ .method = .get, .path = "/_admin/v1/role-sessions" },
     .{ .method = .post, .path = "/_admin/v1/role-sessions/:access_key/revoke" },
+    .{ .method = .delete, .path = "/_admin/v1/role-sessions/:access_key" },
 
     .{ .method = .get, .path = "/_admin/v1/policies" },
     .{ .method = .post, .path = "/_admin/v1/policies" },
@@ -77,6 +78,8 @@ pub const routes = [_]Route{
     .{ .method = .patch, .path = "/_admin/v1/buckets/:name/configuration" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/usage" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/events" },
+    .{ .method = .get, .path = "/_admin/v1/buckets/:name/event-subscriptions" },
+    .{ .method = .put, .path = "/_admin/v1/buckets/:name/event-subscriptions" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/versions" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/objects" },
     .{ .method = .post, .path = "/_admin/v1/buckets/:name/directories" },
@@ -100,6 +103,10 @@ pub const routes = [_]Route{
     .{ .method = .get, .path = "/_admin/v1/settings" },
     .{ .method = .get, .path = "/_admin/v1/settings/authentication" },
     .{ .method = .put, .path = "/_admin/v1/settings/authentication" },
+    .{ .method = .get, .path = "/_admin/v1/event-destinations" },
+    .{ .method = .post, .path = "/_admin/v1/event-destinations" },
+    .{ .method = .put, .path = "/_admin/v1/event-destinations/:name" },
+    .{ .method = .delete, .path = "/_admin/v1/event-destinations/:name" },
     .{ .method = .get, .path = "/_admin/v1/settings/display" },
     .{ .method = .put, .path = "/_admin/v1/settings/display" },
     .{ .method = .get, .path = "/_admin/v1/settings/region" },
@@ -132,6 +139,7 @@ pub fn serveRequest(
     request_id: []const u8,
     caller: management_auth.Principal,
     audit_context: *AuditContext,
+    caller_context: @import("../auth/iam_policy.zig").Context,
 ) !std.http.Status {
     // Body reads can refill the HTTP reader and invalidate head.target. Keep
     // route parameters (including multipart upload IDs) alive for the handler.
@@ -141,7 +149,7 @@ pub fn serveRequest(
 
     if (std.mem.eql(u8, path, api_prefix ++ "/oidc/providers") or std.mem.startsWith(u8, path, api_prefix ++ "/oidc/providers/")) return serveOidc(request, application, request_id, path, caller);
     if (std.mem.eql(u8, path, api_prefix ++ "/oidc/validate")) return validateOidcProvider(request, application, request_id, caller);
-    if (std.mem.eql(u8, path, api_prefix ++ "/sts/assume-role")) return serveAssumeRole(request, application, request_id, caller);
+    if (std.mem.eql(u8, path, api_prefix ++ "/sts/assume-role")) return serveAssumeRole(request, application, request_id, caller, caller_context);
     if (std.mem.eql(u8, path, api_prefix ++ "/role-sessions") or std.mem.startsWith(u8, path, api_prefix ++ "/role-sessions/")) return serveRoleSessions(request, application, request_id, path);
 
     if (std.mem.startsWith(u8, path, api_prefix ++ "/users/") and std.mem.indexOf(u8, path, "/access-keys") != null) return serveUserAccessKeys(request, application, request_id, path);
@@ -182,6 +190,11 @@ pub fn serveRequest(
             const raw_name = resource[0 .. resource.len - "/usage".len];
             if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '/') != null) return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
             return serveGetBucketUsage(request, application, request_id, raw_name);
+        }
+        if (std.mem.endsWith(u8, resource, "/event-subscriptions")) {
+            const raw_name = resource[0 .. resource.len - "/event-subscriptions".len];
+            if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '/') != null) return respondError(request, request_id, .bad_request, "InvalidBucketName", "bucket name is invalid");
+            return serveBucketSubscriptions(request, application, request_id, raw_name);
         }
         if (std.mem.endsWith(u8, resource, "/events")) {
             if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
@@ -326,8 +339,8 @@ pub fn serveRequest(
     }
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/stop")) return serveKmsControl(request, application, request_id, true);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/clear-cache")) return serveKmsControl(request, application, request_id, false);
-    if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/keys")) return serveKmsKeys(request, application, request_id, false, audit_context);
-    if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/keys/action")) return serveKmsKeys(request, application, request_id, true, audit_context);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/keys")) return serveKmsKeys(request, application, request_id, false, audit_context, caller, caller_context);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/keys/action")) return serveKmsKeys(request, application, request_id, true, audit_context, caller, caller_context);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms/start")) return serveKmsStart(request, application, request_id);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/kms")) return serveKmsSettings(request, application, request_id);
     if (std.mem.eql(u8, path, api_prefix ++ "/audit-events/options")) {
@@ -347,6 +360,7 @@ pub fn serveRequest(
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/audit-logs/download")) return serveLogSettings(request, application, request_id, true, true);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/listener")) return serveListenerSettings(request, application, request_id);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/authentication")) return serveAuthenticationSettings(request, application, request_id);
+    if (std.mem.eql(u8, path, api_prefix ++ "/event-destinations") or std.mem.startsWith(u8, path, api_prefix ++ "/event-destinations/")) return serveEventDestinations(request, application, request_id, path);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/display")) return serveDisplaySettings(request, application, request_id);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/region")) return serveRegionSettings(request, application, request_id);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/instance")) return serveInstanceSettings(request, application, request_id);
@@ -653,7 +667,7 @@ fn serveSetLegalHold(request: *std.http.Server.Request, application: *Applicatio
         };
     };
     defer object.deinit(application.allocator);
-    return respondJson(request, request_id, .ok, .{ .key = object.key, .version_id = object.version_id, .legal_hold = object.legal_hold });
+    return respondJson(request, request_id, .ok, .{ .key = object.key, .version_id = parsed.value.version_id, .legal_hold = object.legal_hold });
 }
 
 fn serveGetBucketUsage(request: *std.http.Server.Request, application: *Application, request_id: []const u8, raw_name: []const u8) !std.http.Status {
@@ -1312,14 +1326,16 @@ fn servePresignObject(
     else
         null;
     if ((!std.mem.eql(u8, value.method, "GET") and
+        !std.mem.eql(u8, value.method, "HEAD") and
         !std.mem.eql(u8, value.method, "PUT") and
         !std.mem.eql(u8, value.method, "DELETE")) or
         value.expires_seconds == 0 or value.expires_seconds > sigv4.max_presigned_expiry_seconds or
+        (value.tagging and (std.mem.eql(u8, value.method, "HEAD") or multipart_part or copy_source_requested)) or
         (value.download and (!std.mem.eql(u8, value.method, "GET") or value.tagging)) or
         (multipart_part and (value.upload_id == null or value.part_number == null or
             !std.mem.eql(u8, value.method, "PUT") or value.part_number.? == 0 or
             value.part_number.? > multipart_domain.max_parts)) or
-        (requested_version != null and (multipart_part or std.mem.eql(u8, value.method, "PUT"))) or
+        (requested_version != null and (multipart_part or (std.mem.eql(u8, value.method, "PUT") and !value.tagging))) or
         (copy_source_requested and (!copy_source_complete or multipart_part or requested_version != null or
             !std.mem.eql(u8, value.method, "PUT"))))
     {
@@ -1346,7 +1362,7 @@ fn servePresignObject(
         return respondCredentialError(request, request_id, err);
     };
     defer material.deinit(application.allocator);
-    const required_action: credential_domain.Action = if (std.mem.eql(u8, value.method, "GET"))
+    const required_action: credential_domain.Action = if (std.mem.eql(u8, value.method, "GET") or std.mem.eql(u8, value.method, "HEAD"))
         .get_object
     else if (std.mem.eql(u8, value.method, "PUT"))
         .put_object
@@ -1422,11 +1438,22 @@ fn servePresignObject(
     else
         base_target;
     defer if (multipart_part or value.version_id != null or value.tagging) application.allocator.free(operation_target);
-    const unsigned_target = if (value.download)
+    const download_target = if (value.download)
         try std.fmt.allocPrint(application.allocator, "{s}{s}response-content-disposition=attachment", .{ operation_target, if (value.version_id != null) "&" else "?" })
     else
         operation_target;
-    defer if (value.download) application.allocator.free(unsigned_target);
+    defer if (value.download) application.allocator.free(download_target);
+    // Match SDK GetObject presigned URLs. Include every query parameter before
+    // signing so it cannot be changed or appended by the browser afterwards.
+    const object_get = std.mem.eql(u8, value.method, "GET") and !value.tagging;
+    const unsigned_target = if (object_get)
+        try std.fmt.allocPrint(application.allocator, "{s}{s}X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&x-amz-checksum-mode=ENABLED&x-id=GetObject", .{
+            download_target,
+            if (std.mem.indexOfScalar(u8, download_target, '?') != null) "&" else "?",
+        })
+    else
+        download_target;
+    defer if (object_get) application.allocator.free(unsigned_target);
     const encoded_source_key = if (value.copy_source_key) |source_key|
         try encodePath(application.allocator, source_key)
     else
@@ -1491,7 +1518,7 @@ fn servePresignObject(
         );
     defer application.allocator.free(url);
     var expiry_buffer: [20]u8 = undefined;
-    const expires_at = time.formatIso8601(now + @as(i64, @intCast(value.expires_seconds)), &expiry_buffer) catch {
+    const expires_at = time.formatIso8601(if (session_token != null) @min(caller.expires_at, now + @as(i64, @intCast(value.expires_seconds))) else now + @as(i64, @intCast(value.expires_seconds)), &expiry_buffer) catch {
         return respondError(request, request_id, .internal_server_error, "InternalError", "could not create presigned URL");
     };
     var output: std.Io.Writer.Allocating = .init(application.allocator);
@@ -1529,7 +1556,7 @@ fn serveListAccessKeys(
     try json.objectField("items");
     try json.beginArray();
     for (result.credentials) |details| {
-        if (std.mem.startsWith(u8, details.credential.owner, "user:")) continue;
+        if (details.credential.kind == .temporary or std.mem.startsWith(u8, details.credential.owner, "user:")) continue;
         try writeCredential(
             &json,
             details.credential,
@@ -2599,6 +2626,11 @@ fn serveRoles(comptime organization: bool, request: *std.http.Server.Request, ap
             var items: std.ArrayList(role_store.Role) = .empty;
             for (snapshot.roles) |item| if (!std.mem.eql(u8, item.name, raw_name.?)) try items.append(a, item);
             snapshot.roles = items.items;
+            // Active sessions were rejected above. Remove expired/revoked sessions
+            // together with their role to preserve the store's reference invariant.
+            var sessions: std.ArrayList(role_store.Session) = .empty;
+            for (snapshot.sessions) |session| if (!std.mem.eql(u8, session.role_id, role.id)) try sessions.append(a, session);
+            snapshot.sessions = sessions.items;
         }
         try role_store.save(root, io, a, snapshot);
         return respondNoContent(request, request_id);
@@ -2642,7 +2674,7 @@ const AssumeRoleInput = struct {
     session_policy: ?[]const u8 = null,
 };
 
-fn serveAssumeRole(request: *std.http.Server.Request, app: *Application, request_id: []const u8, caller: management_auth.Principal) !std.http.Status {
+fn serveAssumeRole(request: *std.http.Server.Request, app: *Application, request_id: []const u8, caller: management_auth.Principal, caller_context: @import("../auth/iam_policy.zig").Context) !std.http.Status {
     if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
     const root = app.data_root orelse return respondNotReady(request, request_id);
     const io = app.io orelse return respondNotReady(request, request_id);
@@ -2661,6 +2693,10 @@ fn serveAssumeRole(request: *std.http.Server.Request, app: *Application, request
     if (input.duration_seconds < 900 or input.duration_seconds > 43200 or input.duration_seconds > role.max_session_seconds) return respondError(request, request_id, .bad_request, "InvalidDuration", "duration exceeds role limits");
     if (!caller.is_root) {
         var entries = std.ArrayList(@import("../auth/iam_policy.zig").Entry).empty;
+        for (caller_context.entries) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key, "aws:userid") or std.ascii.eqlIgnoreCase(entry.key, "aws:username") or std.ascii.eqlIgnoreCase(entry.key, "aws:PrincipalArn") or std.ascii.eqlIgnoreCase(entry.key, "aws:PrincipalAccount")) continue;
+            try entries.append(a, entry);
+        }
         try entries.append(a, .{ .key = "aws:userid", .value = caller.id });
         try entries.append(a, .{ .key = "aws:username", .value = caller.username });
         try entries.append(a, .{ .key = "aws:PrincipalArn", .value = try std.fmt.allocPrint(a, "arn:aws:iam::{s}:user/{s}", .{ @import("../application/resource_policy_store.zig").account_id, caller.username }) });
@@ -2706,21 +2742,26 @@ fn serveRoleSessions(request: *std.http.Server.Request, app: *Application, reque
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
     const loaded = role_store.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot read roles");
     if (std.mem.eql(u8, route_path, api_prefix ++ "/role-sessions")) {
         if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
         return respondJson(request, request_id, .ok, .{ .items = loaded.value.sessions });
     }
     const prefix = api_prefix ++ "/role-sessions/";
-    if (!std.mem.endsWith(u8, route_path, "/revoke") or request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
-    const access_key = route_path[prefix.len .. route_path.len - "/revoke".len];
+    const deleting = request.head.method == .DELETE;
+    if (!deleting and (!std.mem.endsWith(u8, route_path, "/revoke") or request.head.method != .POST)) return respondMethodNotAllowed(request, request_id, "POST");
+    const access_key = route_path[prefix.len .. route_path.len - (if (deleting) @as(usize, 0) else "/revoke".len)];
     var sessions: std.ArrayList(role_store.Session) = .empty;
     var found = false;
     for (loaded.value.sessions) |session| {
         var copy = session;
         if (std.mem.eql(u8, session.access_key, access_key)) {
+            if (deleting and !session.revoked) return respondError(request, request_id, .conflict, "RoleSessionNotRevoked", "revoke the role session before deleting it");
             copy.revoked = true;
             found = true;
+            if (deleting) continue;
         }
         try sessions.append(a, copy);
     }
@@ -3159,7 +3200,7 @@ fn serveKmsControl(request: *std.http.Server.Request, application: *Application,
     return respondJson(request, request_id, .ok, try service.status(arena.allocator()));
 }
 
-fn serveKmsKeys(request: *std.http.Server.Request, application: *Application, request_id: []const u8, action: bool, audit_context: *AuditContext) !std.http.Status {
+fn serveKmsKeys(request: *std.http.Server.Request, application: *Application, request_id: []const u8, action: bool, audit_context: *AuditContext, caller: management_auth.Principal, caller_context: @import("../auth/iam_policy.zig").Context) !std.http.Status {
     const service = if (application.kms) |*kms| kms else return respondError(request, request_id, .service_unavailable, "KmsUnavailable", "KMS is not ready");
     var arena = std.heap.ArenaAllocator.init(application.allocator);
     defer arena.deinit();
@@ -3167,22 +3208,44 @@ fn serveKmsKeys(request: *std.http.Server.Request, application: *Application, re
     if (action) {
         if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
         const input = try parseJsonBody(struct { id: []const u8, action: []const u8 }, request, a, request_id) orelse return .bad_request;
+        const operation = if (std.mem.eql(u8, input.value.action, "describe")) "kms:DescribeKey" else if (std.mem.eql(u8, input.value.action, "rotate")) "kms:RotateKey" else if (std.mem.eql(u8, input.value.action, "delete") or std.mem.eql(u8, input.value.action, "schedule-deletion") or std.mem.eql(u8, input.value.action, "cancel-deletion")) "kms:DeleteKey" else return respondError(request, request_id, .bad_request, "InvalidKmsKeyRequest", "unknown key operation");
+        const resource = try std.fmt.allocPrint(a, "arn:aws:kms:::key/{s}", .{input.value.id});
+        if (!caller.allows(a, operation, resource, caller_context)) return respondError(request, request_id, .forbidden, "AccessDenied", "key operation is not permitted");
+        if (std.mem.eql(u8, input.value.action, "describe")) {
+            const key = service.describeKey(a, input.value.id) catch |err| return kmsKeyError(request, request_id, err);
+            return respondJson(request, request_id, .ok, key);
+        }
         try audit_context.operation(try std.fmt.allocPrint(a, "kms:{s}", .{input.value.action}), input.value.id);
         service.keyAction(a, input.value.id, input.value.action) catch |err| return kmsKeyError(request, request_id, err);
         return respondJson(request, request_id, .ok, .{ .ok = true });
     }
     if (request.head.method == .GET) {
-        const keys = service.listKeys(a) catch |err| return kmsKeyError(request, request_id, err);
+        if (!caller.allows(a, "kms:ListKeys", "arn:aws:kms:::*", caller_context)) return respondError(request, request_id, .forbidden, "AccessDenied", "listing keys is not permitted");
+        var keys = service.listKeys(a) catch |err| return kmsKeyError(request, request_id, err);
+        keys.canCreate = keys.canCreate and caller.allows(a, "kms:CreateKey", "arn:aws:kms:::*", caller_context);
+        const items = try a.dupe(@import("../application/kms_keys.zig").KeyInfo, keys.items);
+        for (items) |*key| {
+            const resource = try std.fmt.allocPrint(a, "arn:aws:kms:::key/{s}", .{key.id});
+            key.permissions = .{
+                .describe = caller.allows(a, "kms:DescribeKey", resource, caller_context),
+                .rotate = caller.allows(a, "kms:RotateKey", resource, caller_context),
+                .delete = caller.allows(a, "kms:DeleteKey", resource, caller_context),
+            };
+        }
+        keys.items = items;
         return respondJson(request, request_id, .ok, keys);
     }
     if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "GET, POST");
+    if (!caller.allows(a, "kms:CreateKey", "arn:aws:kms:::*", caller_context)) return respondError(request, request_id, .forbidden, "AccessDenied", "creating keys is not permitted");
     const input = try parseJsonBody(@import("../application/kms_keys.zig").CreateKey, request, a, request_id) orelse return .bad_request;
+    if (input.value.setAsDefault and !caller.allows(a, "admin:*", management_auth.management_resource, caller_context)) return respondError(request, request_id, .forbidden, "AccessDenied", "changing the default key requires administration");
     try audit_context.setResource(.{ .type = "kms_key", .name = input.value.name });
     const key = service.createKey(a, input.value) catch |err| return kmsKeyError(request, request_id, err);
     return respondJson(request, request_id, .created, key);
 }
 fn kmsKeyError(request: *std.http.Server.Request, request_id: []const u8, err: anyerror) !std.http.Status {
     return respondError(request, request_id, switch (err) {
+        error.FileNotFound, error.KmsVaultKeyNotFound => .not_found,
         error.InvalidKmsKeyRequest, error.InvalidKmsConfig => .bad_request,
         error.KmsNotRunning, error.KmsKeyPendingDeletion, error.KmsKeyDeletionNotScheduled, error.KmsKeyOperationUnsupported, error.KmsLastKeyDeletionForbidden => .conflict,
         else => .service_unavailable,
@@ -3396,4 +3459,129 @@ fn serveDisplaySettings(request: *std.http.Server.Request, app: *Application, re
     var iterator = std.mem.tokenizeScalar(u8, store.timezones, '\n');
     while (iterator.next()) |zone| try zones.append(a, zone);
     return respondJson(request, request_id, .ok, .{ .timezone = value.timezone, .date_format = value.date_format, .supported_timezones = zones.items });
+}
+
+fn serveBucketSubscriptions(request: *std.http.Server.Request, app: *Application, request_id: []const u8, raw_name: []const u8) !std.http.Status {
+    const store = @import("../application/bucket_subscriptions.zig");
+    if (request.head.method != .GET and request.head.method != .PUT) return respondMethodNotAllowed(request, request_id, "GET, PUT");
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const name = decodeComponent(a, raw_name, false) catch return respondError(request, request_id, .bad_request, "InvalidBucketName", "invalid bucket name");
+    const service = app.bucketService() orelse return respondNotReady(request, request_id);
+    const bucket = service.head(name) catch |err| return respondBucketError(request, request_id, err);
+    defer bucket.deinit(app.allocator);
+    const io = app.io orelse return respondNotReady(request, request_id);
+    const root = app.data_root orelse return respondNotReady(request, request_id);
+    if (request.head.method == .PUT) {
+        const input = try parseJsonBody(store.Settings, request, a, request_id) orelse return .bad_request;
+        store.validate(input.value) catch return respondError(request, request_id, .bad_request, "InvalidEventSubscription", "invalid event subscription");
+        app.policy_mutex.lockUncancelable(io);
+        defer app.policy_mutex.unlock(io);
+        const configured = @import("../application/event_destinations.zig").load(root, io, a, (app.master_key orelse return respondNotReady(request, request_id)).bytes) catch return respondError(request, request_id, .service_unavailable, "DestinationStorageUnavailable", "cannot read destinations");
+        defer configured.deinit();
+        const previous = store.load(a, root, io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot read subscriptions");
+        for (input.value.items) |rule| {
+            var found = false;
+            if (rule.destination.len == 0) {
+                // Preserve earlier configuration-only rules until the user binds them.
+                for (previous.items) |old| if (old.destination.len == 0 and std.mem.eql(u8, old.id, rule.id)) {
+                    found = true;
+                    break;
+                };
+            } else {
+                for (configured.value.items) |target| if (std.mem.eql(u8, rule.destination, target.name)) {
+                    found = true;
+                    break;
+                };
+            }
+            if (!found) return respondError(request, request_id, .bad_request, "InvalidEventDestination", "select an existing event destination");
+        }
+        store.save(a, root, io, bucket.id, input.value) catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot persist subscriptions");
+        audit(app, request_id, "update_bucket_event_subscriptions", name, "updated");
+        return respondJson(request, request_id, .ok, input.value);
+    }
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
+    const value = store.load(a, root, io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot load subscriptions");
+    return respondJson(request, request_id, .ok, value);
+}
+
+fn serveEventDestinations(request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8) !std.http.Status {
+    const store = @import("../application/event_destinations.zig");
+    const prefix = api_prefix ++ "/event-destinations";
+    const collection = std.mem.eql(u8, route_path, prefix);
+    const name = if (collection) "" else route_path[prefix.len + 1 ..];
+    const method = request.head.method;
+    if ((collection and method != .GET and method != .POST) or (!collection and method != .PUT and method != .DELETE)) return respondMethodNotAllowed(request, request_id, if (collection) "GET, POST" else "PUT, DELETE");
+    if (!collection and !store.validName(name)) return respondError(request, request_id, .bad_request, "InvalidDestinationName", "invalid destination name");
+    const root = app.data_root orelse return respondNotReady(request, request_id);
+    const io = app.io orelse return respondNotReady(request, request_id);
+    const key = if (app.master_key) |k| k.bytes else return respondNotReady(request, request_id);
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Read and validate the request before locking shared configuration state.
+    var input: ?store.Destination = if (method == .POST or method == .PUT) (try parseJsonBody(store.Destination, request, a, request_id) orelse return .bad_request).value else null;
+    if (input) |value| {
+        store.validate(value) catch |err| return respondError(request, request_id, .bad_request, @errorName(err), "invalid event destination configuration");
+        if (method == .PUT and !std.mem.eql(u8, value.name, name)) return respondError(request, request_id, .bad_request, "InvalidDestinationName", "destination name cannot be changed");
+    }
+    app.policy_mutex.lockUncancelable(io);
+    defer app.policy_mutex.unlock(io);
+    const loaded = store.load(root, io, a, key) catch return respondError(request, request_id, .service_unavailable, "DestinationStorageUnavailable", "cannot read event destinations");
+    defer loaded.deinit();
+    if (method == .GET) {
+        var redacted: std.ArrayList(store.Destination) = .empty;
+        for (loaded.value.items) |item| try redacted.append(a, item.redacted());
+        return respondJson(request, request_id, .ok, .{ .items = redacted.items });
+    }
+    const lookup = if (method == .POST) input.?.name else name;
+    var found = false;
+    var items: std.ArrayList(store.Destination) = .empty;
+    for (loaded.value.items) |item| {
+        if (!std.mem.eql(u8, item.name, lookup)) {
+            try items.append(a, item);
+            continue;
+        }
+        found = true;
+        if (method == .POST) return respondError(request, request_id, .conflict, "DestinationExists", "destination already exists");
+        if (method == .PUT) {
+            input.?.generation_id = item.generation_id;
+            if (!std.mem.eql(u8, input.?.queue_directory, item.queue_directory)) {
+                app.event_mutex.lockUncancelable(io);
+                defer app.event_mutex.unlock(io);
+                const queue = @import("../application/bucket_event_runtime.zig");
+                const pending = queue.count(root, io, try queue.queueDirectory(a, item)) catch return respondError(request, request_id, .service_unavailable, "DestinationStorageUnavailable", "cannot check queue");
+                if (pending > 0) return respondError(request, request_id, .conflict, "EventQueueNotEmpty", "queue directory cannot change while events remain");
+            }
+            if (!std.mem.eql(u8, input.?.type, item.type)) return respondError(request, request_id, .bad_request, "InvalidDestinationType", "destination type cannot be changed");
+            if (input.?.has_password and input.?.password.len == 0) input.?.password = item.password;
+            input.?.has_password = false;
+            if (input.?.has_auth_token and input.?.auth_token.len == 0) input.?.auth_token = item.auth_token;
+            input.?.has_auth_token = false;
+            try items.append(a, input.?);
+        }
+    }
+    if (method != .POST and !found) return respondError(request, request_id, .not_found, "DestinationNotFound", "destination not found");
+    if (method == .DELETE) {
+        const buckets = (app.bucketService() orelse return respondNotReady(request, request_id)).list() catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot check subscriptions");
+        defer buckets.deinit(app.allocator);
+        for (buckets.buckets) |bucket| {
+            const rules = @import("../application/bucket_subscriptions.zig").load(a, root, io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot check subscriptions");
+            for (rules.items) |rule| if (std.mem.eql(u8, rule.destination, name)) return respondError(request, request_id, .conflict, "EventDestinationInUse", "remove bucket subscriptions before deleting destination");
+        }
+    }
+
+    if (method == .POST) {
+        if (items.items.len >= 100) return respondError(request, request_id, .bad_request, "DestinationLimit", "too many destinations");
+        const generation = try @import("../common/id.zig").randomV4(io);
+        input.?.generation_id = try a.dupe(u8, &std.fmt.bytesToHex(generation, .lower));
+        input.?.has_auth_token = false;
+        input.?.has_password = false;
+        try items.append(a, input.?);
+    }
+    store.save(root, io, a, key, .{ .items = items.items }) catch return respondError(request, request_id, .service_unavailable, "DestinationStorageUnavailable", "cannot persist event destinations");
+    if (method == .DELETE) return respondJson(request, request_id, .ok, .{ .deleted = true });
+    return respondJson(request, request_id, if (method == .POST) .created else .ok, input.?.redacted());
 }

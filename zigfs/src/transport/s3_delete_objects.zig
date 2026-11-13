@@ -3,13 +3,18 @@ const std = @import("std");
 pub const max_objects: usize = 1000;
 pub const max_payload_size: usize = 2 * 1024 * 1024;
 
+pub const Object = struct { key: []u8, version_id: ?[]u8 = null };
+
 pub const Request = struct {
-    keys: [][]u8,
+    objects: []Object,
     quiet: bool,
 
     pub fn deinit(self: Request, allocator: std.mem.Allocator) void {
-        for (self.keys) |key| allocator.free(key);
-        allocator.free(self.keys);
+        for (self.objects) |object| {
+            allocator.free(object.key);
+            if (object.version_id) |version| allocator.free(version);
+        }
+        allocator.free(self.objects);
     }
 };
 
@@ -33,9 +38,12 @@ const Parser = struct {
     index: usize = 0,
 
     fn parse(self: *Parser) ParseError!Request {
-        var keys: std.ArrayList([]u8) = .empty;
+        var keys: std.ArrayList(Object) = .empty;
         errdefer {
-            for (keys.items) |key| self.allocator.free(key);
+            for (keys.items) |object| {
+                self.allocator.free(object.key);
+                if (object.version_id) |version| self.allocator.free(version);
+            }
             keys.deinit(self.allocator);
         }
 
@@ -61,8 +69,15 @@ const Parser = struct {
                 const key = try self.parseText("</Key>");
                 errdefer self.allocator.free(key);
                 self.skipWhitespace();
+                var version: ?[]u8 = null;
+                errdefer if (version) |value| self.allocator.free(value);
+                if (self.startsWith("<VersionId>")) {
+                    self.index += "<VersionId>".len;
+                    version = try self.parseText("</VersionId>");
+                    self.skipWhitespace();
+                }
                 try self.expect("</Object>");
-                keys.append(self.allocator, key) catch return error.OutOfMemory;
+                keys.append(self.allocator, .{ .key = key, .version_id = version }) catch return error.OutOfMemory;
             } else if (self.startsWith("<Quiet>") and !quiet_seen) {
                 quiet_seen = true;
                 self.index += "<Quiet>".len;
@@ -83,7 +98,7 @@ const Parser = struct {
         self.skipWhitespace();
         if (self.index != self.source.len) return error.MalformedXml;
         return .{
-            .keys = keys.toOwnedSlice(self.allocator) catch return error.OutOfMemory,
+            .objects = keys.toOwnedSlice(self.allocator) catch return error.OutOfMemory,
             .quiet = quiet,
         };
     }
@@ -235,9 +250,9 @@ test "DeleteObjects XML parses mc quiet requests and escaped keys" {
     );
     defer request.deinit(std.testing.allocator);
     try std.testing.expect(request.quiet);
-    try std.testing.expectEqual(@as(usize, 2), request.keys.len);
-    try std.testing.expectEqualStrings("a&b.txt", request.keys[0]);
-    try std.testing.expectEqualStrings("folder/\xe4\xb8\xad.txt", request.keys[1]);
+    try std.testing.expectEqual(@as(usize, 2), request.objects.len);
+    try std.testing.expectEqualStrings("a&b.txt", request.objects[0].key);
+    try std.testing.expectEqualStrings("folder/\xe4\xb8\xad.txt", request.objects[1].key);
 }
 
 test "DeleteObjects XML accepts the mc Quiet-before-Object encoding" {
@@ -247,7 +262,7 @@ test "DeleteObjects XML accepts the mc Quiet-before-Object encoding" {
     );
     defer request.deinit(std.testing.allocator);
     try std.testing.expect(!request.quiet);
-    try std.testing.expectEqualStrings("payload.txt", request.keys[0]);
+    try std.testing.expectEqualStrings("payload.txt", request.objects[0].key);
 }
 
 test "DeleteObjects XML rejects unknown structure and empty requests" {
@@ -257,6 +272,13 @@ test "DeleteObjects XML rejects unknown structure and empty requests" {
     ));
     try std.testing.expectError(error.MalformedXml, parse(
         std.testing.allocator,
-        "<Delete><Object><Key>a</Key><VersionId>1</VersionId></Object></Delete>",
+        "<Delete><Object><Key>a</Key><VersionId>1</VersionId><VersionId>2</VersionId></Object></Delete>",
     ));
+}
+
+test "DeleteObjects accepts explicit versions without dropping them" {
+    const request = try parse(std.testing.allocator, "<Delete><Object><Key>file</Key><VersionId>null</VersionId></Object><Object><Key>plain</Key></Object></Delete>");
+    defer request.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("null", request.objects[0].version_id.?);
+    try std.testing.expect(request.objects[1].version_id == null);
 }

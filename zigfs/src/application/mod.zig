@@ -1,3 +1,6 @@
+pub const bucket_event_runtime = @import("bucket_event_runtime.zig");
+pub const event_destinations = @import("event_destinations.zig");
+pub const event_dispatcher = @import("event_dispatcher.zig");
 pub const region_settings = @import("region_settings.zig");
 pub const listener_settings = @import("listener_settings.zig");
 const std = @import("std");
@@ -119,6 +122,7 @@ pub const Application = struct {
     scanner_duration_ms: ?u64 = null,
     scanner_last_success: ?bool = null,
     policy_mutex: std.Io.Mutex = .init,
+    event_mutex: std.Io.Mutex = .init,
     audit_mutex: std.Io.Mutex = .init,
     audit_events: std.ArrayListUnmanaged(AuditEvent) = .empty,
 
@@ -497,6 +501,7 @@ pub const Application = struct {
             now,
             self.config.s3_multipart_expiry_seconds,
         ) catch |err| return mapScannerMultipartError(err);
+        bucket_event_runtime.scanAlerts(self) catch |err| std.log.warn("Bucket scanner events failed error={s}", .{@errorName(err)});
         const report = StorageScanReport{
             .partition = partition,
             .partitions = object_gc.partition_count,
@@ -532,6 +537,7 @@ pub const Application = struct {
             self.config.s3_multipart_expiry_seconds,
         ) catch |err| return mapScannerMultipartError(err);
         const gc_report = (self.objectGc() orelse return error.Unavailable).collect() catch |err| return err;
+        bucket_event_runtime.scanAlerts(self) catch |err| std.log.warn("Bucket scanner events failed error={s}", .{@errorName(err)});
         const report = StorageScanReport{
             .partition = null,
             .partitions = 1,
@@ -690,6 +696,7 @@ pub const Application = struct {
             directories,
         );
         service.kms = if (self.kms) |*kms| kms else null;
+        service.event_sink = .{ .context = self, .emit_fn = @import("bucket_event_runtime.zig").capture };
         return service;
     }
 
@@ -714,10 +721,13 @@ pub const Application = struct {
     }
 
     pub fn lifecycleService(self: *Application) ?lifecycle_service.LifecycleService {
+        var objects = self.objectService() orelse return null;
+        objects.deletion_category = .ILM;
         return .{
             .allocator = self.allocator,
             .buckets = self.bucketService() orelse return null,
-            .objects = self.objectService() orelse return null,
+            .objects = objects,
+            .data_root = self.data_root,
         };
     }
 

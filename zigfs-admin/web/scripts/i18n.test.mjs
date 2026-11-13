@@ -17,7 +17,7 @@ function compile(filename, require, globals = {}) {
   const source = fs.readFileSync(path.join(root, filename), 'utf8')
   const result = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } })
   const exports = {}
-  vm.runInNewContext(result.outputText, { exports, require, ...globals }, { filename })
+  vm.runInNewContext(result.outputText, { exports, require, TextEncoder, ...globals }, { filename })
   return exports
 }
 function runtime(stored, storageBlocked = false) {
@@ -134,4 +134,80 @@ test('Changing language does not translate lifecycle protocol values', () => {
   assert.match(chinese, /<Prefix>a&amp;b\/<\/Prefix>/)
   assert.match(chinese, /<ID>keep-user-input<\/ID>/)
   assert.equal(api.displayValue('reports/'), 'reports/')
+})
+
+
+test('Lifecycle tag filters serialize AND, escape values and validate first invalid tag', () => {
+  const { api } = runtime()
+  const lifecycle = compile('features/buckets/lifecycle.ts', () => api)
+  const rule = { ...lifecycle.createLifecycleRule('tags'), prefix: 'logs/', tags: [{ key: 'team', value: 'a&b' }, { key: 'empty', value: '' }] }
+  const xml = lifecycle.serializeLifecycleConfiguration([rule])
+  assert.match(xml, /<Filter><And><Prefix>logs\/<\/Prefix><Tag><Key>team<\/Key><Value>a&amp;b<\/Value><\/Tag><Tag><Key>empty<\/Key><Value><\/Value><\/Tag><\/And><\/Filter>/)
+  const single = lifecycle.serializeLifecycleConfiguration([{ ...rule, prefix: '', tags: [rule.tags[0]] }])
+  assert.ok(!single.includes('<And>'))
+  assert.equal(lifecycle.lifecycleTagError({ ...rule, tags: [{key:'',value:''},{key:'',value:''}] }).index, 0)
+  assert.equal(lifecycle.lifecycleTagError({ ...rule, tags: [{key:'a',value:''},{key:'a',value:'b'}] }).index, 1)
+  assert.equal(lifecycle.lifecycleTagError({ ...rule, tags: [{key:'a',value:'x'.repeat(257)}] }).field, 'value')
+  assert.ok(lifecycle.lifecycleTagError({ ...rule, action: 'delete-marker' }))
+  assert.equal(lifecycle.lifecycleTagError({ ...rule, tags: [{key:'a',value:''}] }), null)
+})
+
+
+test('anonymous rules scope resources and listing, preserve unrelated policy statements', () => {
+  const api = compile('features/buckets/anonymousRules.ts', () => { throw new Error('Unexpected import') })
+  const deny = { Effect: 'Deny', Principal: '*', Action: 's3:GetObject', Resource: 'arn:aws:s3:::test/private/*' }
+  const original = { Version: '2012-10-17', Statement: [deny] }
+  for (const access of ['readonly', 'writeonly', 'readwrite']) {
+    const rule = { id: 'abc123', prefix: 'public/', access }
+    const saved = api.updateRule(original, 'test', rule.id, rule)
+    assert.equal(JSON.stringify(api.accessRules(saved, 'test')), JSON.stringify([rule]))
+    assert.equal(saved.Statement[0], deny)
+    const object = saved.Statement[1]
+    assert.equal(object.Resource, 'arn:aws:s3:::test/public/*')
+    assert.equal(object.Action.includes('s3:PutObject'), access !== 'readonly')
+    assert.equal(object.Action.includes('s3:GetObject'), access !== 'writeonly')
+    if (access !== 'writeonly') assert.equal(saved.Statement[2].Condition.StringLike['s3:prefix'][0], 'public/*')
+    const removed = api.updateRule(saved, 'test', rule.id)
+    assert.equal(JSON.stringify(removed), JSON.stringify(original))
+    // A manually edited managed statement must not be silently rewritten.
+    saved.Statement[1].Condition = { Bool: { 'aws:SecureTransport': 'true' } }
+    assert.equal(api.accessRules(saved, 'test').length, 0)
+    assert.equal(api.updateRule(saved, 'test', rule.id).Statement.length, saved.Statement.length)
+  }
+})
+
+
+test('adding an existing anonymous prefix replaces grants instead of accumulating permissions', () => {
+  const api = compile('features/buckets/anonymousRules.ts', () => { throw new Error('Unexpected import') })
+  for (const prefix of ['', 'public/']) {
+    const original = { Version: '2012-10-17', Statement: [] }
+    const first = api.updateRule(original, 'test', 'aaa', { id: 'aaa', prefix, access: 'readwrite' })
+    const other = api.updateRule(first, 'test', 'bbb', { id: 'bbb', prefix: 'other/', access: 'readonly' })
+    const replaced = api.updateRule(other, 'test', 'ccc', { id: 'ccc', prefix, access: 'writeonly' })
+    const rules = api.accessRules(replaced, 'test')
+    assert.equal(rules.length, 2)
+    assert.equal(rules.find(rule => rule.prefix === prefix).access, 'writeonly')
+    assert.equal(rules.find(rule => rule.prefix === prefix).id, 'aaa')
+    assert.equal(rules.find(rule => rule.prefix === 'other/').access, 'readonly')
+    assert.ok(!replaced.Statement.some(statement => statement.Sid === 'ZigFSAnonymousaaaList'))
+    const object = replaced.Statement.find(statement => statement.Sid === 'ZigFSAnonymousaaaObjects')
+    assert.ok(!object.Action.includes('s3:GetObject'))
+    assert.ok(object.Action.includes('s3:PutObject'))
+  }
+})
+
+
+test('legacy anonymous write rules can be upgraded without losing other statements', () => {
+  const api = compile('features/buckets/anonymousRules.ts', () => { throw new Error('Unexpected import') })
+  const rule = { id: 'aaa', prefix: 'public/', access: 'writeonly' }
+  const original = { Version: '2012-10-17', Statement: api.statements('test', rule, true) }
+  assert.equal(api.accessRules(original, 'test')[0].access, 'writeonly')
+  const saved = api.updateRule(original, 'test', 'aaa', rule)
+  const object = saved.Statement.find(s => s.Sid === 'ZigFSAnonymousaaaObjects')
+  for (const action of ['s3:PutObject', 's3:DeleteObjectVersion', 's3:AbortMultipartUpload', 's3:ListMultipartUploadParts']) assert.ok(object.Action.includes(action))
+  const listing = saved.Statement.find(s => s.Sid === 'ZigFSAnonymousaaaUploads')
+  assert.equal(listing.Condition.StringLike['s3:prefix'][0], 'public/*')
+  const narrowed = api.updateRule(saved, 'test', 'bbb', { ...rule, access: 'readonly' })
+  assert.ok(!narrowed.Statement.some(s => s.Sid.endsWith('Uploads')))
+  assert.ok(!narrowed.Statement[0].Action.includes('s3:PutObject'))
 })

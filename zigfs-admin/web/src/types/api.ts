@@ -20,7 +20,8 @@ export interface AdminSession {
   authenticated: boolean
   username: string
   expires_at: number
-  capabilities?: { admin: boolean; kms: boolean; s3: boolean; sts: boolean }
+  policies?: string[]
+  capabilities?: { admin: boolean; kms: boolean; s3: boolean; sts: boolean; s3_console?: boolean; kms_list?: boolean; kms_describe?: boolean; server_info?: boolean; console_log?: boolean }
 }
 
 export interface SystemInfo {
@@ -277,4 +278,41 @@ export interface AccessKeyUpdate {
   expires_at?: string
   clear_expiry?: boolean
   policy_document?: string
+}
+
+export interface BucketEventSubscription {
+  destination: string
+  id: string
+  prefix: string
+  suffix: string
+  events: string[]
+}
+
+export interface EventDestination {
+  name: string
+  type: 'webhook' | 'mqtt'
+  endpoint: string
+  auth_token: string
+  has_auth_token: boolean
+  queue_limit: number
+  queue_directory: string
+  client_certificate: string
+  client_key: string
+  client_ca: string
+  skip_tls_verify: boolean
+  broker: string
+  topic: string
+  qos: number
+  username: string
+  password: string
+  has_password: boolean
+  reconnect_interval: string
+  keep_alive_interval: string
+  tls_policy: string
+  tls_ca: string
+  tls_client_certificate: string
+  tls_client_key: string
+  trust_leaf_as_ca: boolean
+  websocket_path_allowlist: string
+  comment: string
 }

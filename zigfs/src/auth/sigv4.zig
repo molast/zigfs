@@ -487,6 +487,7 @@ pub fn presignTarget(
     request: PresignRequest,
 ) Error![]u8 {
     if ((!std.mem.eql(u8, request.method, "GET") and
+        !std.mem.eql(u8, request.method, "HEAD") and
         !std.mem.eql(u8, request.method, "PUT") and
         !std.mem.eql(u8, request.method, "DELETE")) or
         hasPresignedParameters(request.target))
@@ -1320,4 +1321,26 @@ test "Signature V4 requires x-amz extension headers to be signed" {
         auth,
         "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
     ));
+}
+
+test "presigned HEAD authenticates metadata requests and cannot fetch object bodies" {
+    const headers = [_]Header{.{ .name = "host", .value = "localhost:9000" }};
+    const secret = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+    const target = try presignTarget(std.testing.allocator, .{
+        .method = "HEAD",
+        .target = "/photos/image.png?versionId=null",
+        .headers = &headers,
+        .access_key = "ZF0123456789ABCDEF",
+        .secret_key = secret,
+        .amz_date = "20130524T000000Z",
+        .region = "us-east-1",
+        .expires_seconds = 600,
+    });
+    defer std.testing.allocator.free(target);
+    var auth = try parsePresignedAuthorization(std.testing.allocator, target);
+    defer auth.deinit();
+    var request: Request = .{ .method = "HEAD", .target = target, .headers = &headers, .now_unix_seconds = 1_369_353_900, .expected_region = "us-east-1" };
+    try verifyPresigned(std.testing.allocator, request, auth, secret);
+    request.method = "GET";
+    try std.testing.expectError(error.SignatureDoesNotMatch, verifyPresigned(std.testing.allocator, request, auth, secret));
 }

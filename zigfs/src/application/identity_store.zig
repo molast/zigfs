@@ -113,18 +113,14 @@ pub fn newId(a: std.mem.Allocator, io: std.Io) ![]const u8 {
 // Caller holds policy_mutex; return owned documents for an immutable request snapshot.
 pub fn documentsForUser(a: std.mem.Allocator, user: User, snapshot: Snapshot, policies: []const policy_store.Policy) ![][]u8 {
     if (!user.enabled) return error.UserDisabled;
-    var names: std.ArrayList([]const u8) = .empty;
-    defer names.deinit(a);
-    try names.appendSlice(a, user.policies);
-    for (snapshot.groups) |group| if (group.enabled and contains(group.members, user.name)) {
-        for (group.policies) |name| if (!contains(names.items, name)) try names.append(a, name);
-    };
+    const names = try policyNamesForUser(a, user, snapshot);
+    defer a.free(names);
     var docs: std.ArrayList([]u8) = .empty;
     errdefer {
         for (docs.items) |doc| a.free(doc);
         docs.deinit(a);
     }
-    for (names.items) |name| {
+    for (names) |name| {
         const index = find(policies, name) orelse return error.PolicyNotFound;
         const doc = try a.dupe(u8, policies[index].document);
         errdefer a.free(doc);
@@ -297,4 +293,14 @@ test "user passwords stay hashed and user groups commit together" {
     try std.testing.expectEqualStrings("alice", snapshot.groups[0].members[0]);
     try assignGroups(a, &snapshot, "alice", &.{}, 789);
     try std.testing.expectEqual(@as(usize, 0), snapshot.groups[0].members.len);
+}
+
+pub fn policyNamesForUser(a: std.mem.Allocator, user: User, snapshot: Snapshot) ![]const []const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    errdefer names.deinit(a);
+    try names.appendSlice(a, user.policies);
+    for (snapshot.groups) |group| if (group.enabled and contains(group.members, user.name)) {
+        for (group.policies) |name| if (!contains(names.items, name)) try names.append(a, name);
+    };
+    return names.toOwnedSlice(a);
 }

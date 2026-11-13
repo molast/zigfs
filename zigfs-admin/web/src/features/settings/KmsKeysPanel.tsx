@@ -23,7 +23,7 @@ function dateLabel(value: string | null) {
   const date = new Date(value)
   return Number.isNaN(date.valueOf()) ? value : formatDateTime(date)
 }
-export function KmsKeysPanel({ api, onDefaultChanged }: { api: ApiClient; onDefaultChanged: () => Promise<void> }) {
+export function KmsKeysPanel({ api, onDefaultChanged, allowDefaultChange = true }: { api: ApiClient; onDefaultChanged: () => Promise<void>; allowDefaultChange?: boolean }) {
   const [data, setData] = useState<KmsKeyList | null>(null)
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -106,16 +106,16 @@ export function KmsKeysPanel({ api, onDefaultChanged }: { api: ApiClient; onDefa
               <TableCell>{key.algorithm}</TableCell><TableCell>{key.usage}</TableCell><TableCell>{dateLabel(key.createdAt)}</TableCell>
               <TableCell><DropdownMenu><DropdownMenuTrigger asChild><Button type="button" variant="outline" size="sm" disabled={busy}>{t('settings.kmsKeyActions')}</Button></DropdownMenuTrigger>
                 <DropdownMenuContent align="end"><DropdownMenuGroup>
-                  <DropdownMenuItem onSelect={() => setDetails(key)}>{t('settings.kmsKeyDetails')}</DropdownMenuItem>
+                  <DropdownMenuItem disabled={key.permissions?.describe === false} onSelect={() => setDetails(key)}>{t('settings.kmsKeyDetails')}</DropdownMenuItem>
                   {key.manageable && (key.status === 'PendingDeletion' ? <>
-                    <DropdownMenuItem onSelect={() => void act(key, 'cancel-deletion')}>{t('settings.kmsKeyCancelDeletion')}</DropdownMenuItem>
+                    <DropdownMenuItem disabled={key.permissions?.delete === false} onSelect={() => void act(key, 'cancel-deletion')}>{t('settings.kmsKeyCancelDeletion')}</DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem variant="destructive" disabled={lastKey || loading} onSelect={() => void act(key, 'delete')}>{t('settings.kmsKeyDeleteNow')}</DropdownMenuItem>
+                    <DropdownMenuItem variant="destructive" disabled={lastKey || loading || key.permissions?.delete === false} onSelect={() => void act(key, 'delete')}>{t('settings.kmsKeyDeleteNow')}</DropdownMenuItem>
                   </> : <>
-                    <DropdownMenuItem onSelect={() => void act(key, 'rotate')}>{t('settings.kmsKeyRotate')}</DropdownMenuItem>
+                    <DropdownMenuItem disabled={key.permissions?.rotate === false} onSelect={() => void act(key, 'rotate')}>{t('settings.kmsKeyRotate')}</DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem variant="destructive" disabled={lastKey || loading} onSelect={() => void act(key, 'schedule-deletion')}>{t('settings.kmsKeyScheduleDeletion')}</DropdownMenuItem>
-                    <DropdownMenuItem variant="destructive" disabled={lastKey || loading} onSelect={() => void act(key, 'delete')}>{t('settings.kmsKeyDeleteNow')}</DropdownMenuItem>
+                    <DropdownMenuItem variant="destructive" disabled={lastKey || loading || key.permissions?.delete === false} onSelect={() => void act(key, 'schedule-deletion')}>{t('settings.kmsKeyScheduleDeletion')}</DropdownMenuItem>
+                    <DropdownMenuItem variant="destructive" disabled={lastKey || loading || key.permissions?.delete === false} onSelect={() => void act(key, 'delete')}>{t('settings.kmsKeyDeleteNow')}</DropdownMenuItem>
                   </>)}
                 </DropdownMenuGroup></DropdownMenuContent>
               </DropdownMenu></TableCell>
@@ -138,7 +138,7 @@ export function KmsKeysPanel({ api, onDefaultChanged }: { api: ApiClient; onDefa
           <FieldGroup>
             <Field><FieldLabel htmlFor="kms-key-name">{t('settings.kmsKeyName')}</FieldLabel><Input id="kms-key-name" value={name} maxLength={256} disabled={busy} placeholder={t('settings.kmsKeyNamePlaceholder')} onChange={event => setName(event.target.value)} /></Field>
             <Field><FieldLabel htmlFor="kms-key-description">{t('settings.kmsKeyDescription')}</FieldLabel><Input id="kms-key-description" value={description} maxLength={4096} disabled={busy} placeholder={t('settings.kmsKeyDescriptionPlaceholder')} onChange={event => setDescription(event.target.value)} /></Field>
-            <Field orientation="horizontal" className="rounded-md border border-border p-4"><Checkbox id="kms-key-default" checked={setAsDefault} disabled={busy} onCheckedChange={checked => setSetAsDefault(checked === true)} /><div><FieldLabel htmlFor="kms-key-default">{t('settings.kmsKeySetDefault')}</FieldLabel><FieldDescription>{t('settings.kmsKeySetDefaultHelp')}</FieldDescription></div></Field>
+            {allowDefaultChange && <Field orientation="horizontal" className="rounded-md border border-border p-4"><Checkbox id="kms-key-default" checked={setAsDefault} disabled={busy} onCheckedChange={checked => setSetAsDefault(checked === true)} /><div><FieldLabel htmlFor="kms-key-default">{t('settings.kmsKeySetDefault')}</FieldLabel><FieldDescription>{t('settings.kmsKeySetDefaultHelp')}</FieldDescription></div></Field>}
           </FieldGroup>
           <div className="kms-key-buttons kms-key-dialog-actions"><Button type="button" variant="outline" disabled={busy} onClick={() => setCreateOpen(false)}>{t('common.cancel')}</Button><Button type="submit" disabled={busy}>{t('settings.kmsCreateKey')}</Button></div>
         </form>

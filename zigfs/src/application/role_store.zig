@@ -161,7 +161,9 @@ pub fn load(root: std.Io.Dir, io: std.Io, a: std.mem.Allocator) !std.json.Parsed
         for (parsed.value.roles[i + 1 ..]) |right| if (std.mem.eql(u8, left.id, right.id) or std.mem.eql(u8, left.name, right.name)) return error.DuplicateRoleReference;
     }
     for (parsed.value.sessions, 0..) |left, i| {
-        if (findRole(parsed.value, left.role_id) == null or !validName(left.session_name) or left.session_name.len > 64) return error.InvalidRoleReference;
+        // Older role deletion left revoked sessions behind. Keep those records
+        // readable for cleanup; an unrevoked session must still reference a role.
+        if ((findRole(parsed.value, left.role_id) == null and !left.revoked) or !validName(left.session_name) or left.session_name.len > 64) return error.InvalidRoleReference;
         if (left.access_key.len == 0 or left.subject_id.len == 0) return error.InvalidRoleReference;
         for (parsed.value.sessions[i + 1 ..]) |right| if (std.mem.eql(u8, left.access_key, right.access_key)) return error.DuplicateRoleReference;
     }
@@ -218,4 +220,18 @@ test "role store rejects duplicate IDs, orphan sessions, and corrupt JSON" {
     try std.testing.expectError(error.InvalidRoleReference, load(tmp.dir, io, a));
     try tmp.dir.writeFile(io, .{ .sub_path = path, .data = "not json" });
     try std.testing.expectError(error.SyntaxError, load(tmp.dir, io, a));
+}
+
+test "revoked legacy sessions remain readable after their role was deleted" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    try tmp.dir.createDirPath(io, ".zigfs/system");
+    try save(tmp.dir, io, a, .{ .sessions = &.{.{ .access_key = "AKIA1234567890123456", .role_id = "deleted-role", .session_name = "console", .subject_id = "deleted-role:console", .expires_at = 1, .revoked = true }} });
+    const loaded = try load(tmp.dir, io, a);
+    defer loaded.deinit();
+    try std.testing.expectEqual(@as(usize, 1), loaded.value.sessions.len);
+    try std.testing.expect(loaded.value.sessions[0].revoked);
+    try std.testing.expect(findRole(loaded.value, "deleted-role") == null);
 }

@@ -1,3 +1,6 @@
+pub const event_targets = @import("event_targets.zig");
+pub const event_mqtt = @import("event_mqtt.zig");
+pub const event_webhook = @import("event_webhook.zig");
 const std = @import("std");
 
 pub const credential_master_key = @import("credential_master_key.zig");

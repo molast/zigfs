@@ -5,6 +5,7 @@ export interface LifecycleRule {
   id: string
   enabled: boolean
   prefix: string
+  tags?: { key: string; value: string }[]
   action: LifecycleAction
   days: number
   expirationDate: string
@@ -16,8 +17,9 @@ export function createLifecycleRule(id: string): LifecycleRule {
     id,
     enabled: true,
     prefix: '',
+    tags: [],
     action: 'current-days',
-    days: 30,
+    days: 1,
     expirationDate: nextYearDate(),
   }
 }
@@ -32,10 +34,12 @@ export function parseLifecycleConfiguration(xml: string): LifecycleRule[] {
     const baseId = childText(source, 'ID') || `lifecycle-rule-${ruleIndex + 1}`
     const enabled = childText(source, 'Status') === 'Enabled'
     const filter = childElement(source, 'Filter')
-    const prefix = filter ? childText(filter, 'Prefix') : childText(source, 'Prefix')
+    const filterBody = filter ? childElement(filter, 'And') ?? filter : undefined
+    const prefix = (filterBody ? childElement(filterBody, 'Prefix') : childElement(source, 'Prefix'))?.textContent ?? ''
+    const tags = filterBody ? Array.from(filterBody.children).filter(child => child.localName === 'Tag').map(tag => ({ key: childElement(tag, 'Key')?.textContent ?? '', value: childElement(tag, 'Value')?.textContent ?? '' })) : []
     const expiration = childElement(source, 'Expiration')
     const noncurrent = childElement(source, 'NoncurrentVersionExpiration')
-    const actions: Omit<LifecycleRule, 'id' | 'enabled' | 'prefix'>[] = []
+    const actions: Omit<LifecycleRule, 'id' | 'enabled' | 'prefix' | 'tags'>[] = []
 
     if (expiration) {
       const days = childText(expiration, 'Days')
@@ -62,6 +66,7 @@ export function parseLifecycleConfiguration(xml: string): LifecycleRule[] {
         id: uniqueRuleId(proposedId, rules, actionIndex),
         enabled,
         prefix,
+        tags: tags.map(tag => ({ ...tag })),
         ...action,
       })
     })
@@ -76,7 +81,7 @@ export function serializeLifecycleConfiguration(rules: LifecycleRule[]): string 
     return [
       '  <Rule>',
       `    <ID>${escapeXml(rule.id.trim())}</ID>`,
-      `    <Filter><Prefix>${escapeXml(rule.prefix)}</Prefix></Filter>`,
+      `    ${serializeFilter(rule)}`,
       `    <Status>${rule.enabled ? 'Enabled' : 'Disabled'}</Status>`,
       ...action.map((line) => `    ${line}`),
       '  </Rule>',
@@ -94,6 +99,8 @@ export function validateLifecycleRules(rules: LifecycleRule[]) {
     if (id.length > 255) throw new Error(t('buckets.ruleIdValueMustNotExceed255Characters', { '0': id }))
     if (ids.has(id)) throw new Error(t('buckets.duplicateRuleIdValue', { '0': id }))
     ids.add(id)
+    const tagError = lifecycleTagError(rule)
+    if (tagError) throw new Error(tagError.message)
     if (rule.action === 'current-date') {
       const parsedDate = new Date(`${rule.expirationDate}T00:00:00Z`)
       if (!/^\d{4}-\d{2}-\d{2}$/.test(rule.expirationDate) || Number.isNaN(parsedDate.valueOf()) ||
@@ -108,6 +115,27 @@ export function validateLifecycleRules(rules: LifecycleRule[]) {
       throw new Error(t('buckets.retainedNewerVersionsForRuleValueMustBeA', { '0': id }))
     }
   }
+}
+
+export function lifecycleTagError(rule: LifecycleRule): { index: number; field: 'key' | 'value'; message: string } | null {
+  const tags = rule.tags ?? []
+  if (tags.length > 10) return { index: 10, field: 'key', message: t('lifecycle.tagLimit') }
+  if (tags.length && rule.action === 'delete-marker') return { index: 0, field: 'key', message: t('lifecycle.markerTagsConflict') }
+  const keys = new Set<string>()
+  const bytes = new TextEncoder()
+  for (const [index, tag] of tags.entries()) {
+    if (!tag.key.length || bytes.encode(tag.key).length > 128 || /[\u0000-\u001f\u007f]/.test(tag.key)) return { index, field: 'key', message: t('lifecycle.invalidTagKey') }
+    if (keys.has(tag.key)) return { index, field: 'key', message: t('lifecycle.duplicateTagKey') }
+    keys.add(tag.key)
+    if (bytes.encode(tag.value).length > 256 || /[\u0000-\u001f\u007f]/.test(tag.value)) return { index, field: 'value', message: t('lifecycle.invalidTagValue') }
+  }
+  return null
+}
+function serializeFilter(rule: LifecycleRule) {
+  const tags = rule.tags ?? []
+  if (!tags.length) return `<Filter><Prefix>${escapeXml(rule.prefix)}</Prefix></Filter>`
+  const conditions = [...(rule.prefix ? [`<Prefix>${escapeXml(rule.prefix)}</Prefix>`] : []), ...tags.map(tag => `<Tag><Key>${escapeXml(tag.key)}</Key><Value>${escapeXml(tag.value)}</Value></Tag>`)]
+  return `<Filter>${conditions.length > 1 ? `<And>${conditions.join('')}</And>` : conditions[0]}</Filter>`
 }
 
 function serializeAction(rule: LifecycleRule): string[] {

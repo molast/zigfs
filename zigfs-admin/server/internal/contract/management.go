@@ -467,3 +467,26 @@ type KMSStatus struct {
 	TokenConfigured           bool      `json:"tokenConfigured"`
 	StaticSecretKeyConfigured bool      `json:"staticSecretKeyConfigured"`
 }
+
+type BucketEventSubscription struct {
+	Destination string   `json:"destination"`
+	ID          string   `json:"id"`
+	Prefix      string   `json:"prefix"`
+	Suffix      string   `json:"suffix"`
+	Events      []string `json:"events"`
+}
+type BucketEventSubscriptions struct {
+	Items []BucketEventSubscription `json:"items"`
+}
+
+// SetObjectLegalHoldRequest targets one immutable object version, including null.
+type SetObjectLegalHoldRequest struct {
+	Key       string `json:"key" binding:"required"`
+	VersionID string `json:"version_id" binding:"required"`
+	Enabled   bool   `json:"enabled"`
+}
+type ObjectLegalHoldResponse struct {
+	Key       string `json:"key"`
+	VersionID string `json:"version_id"`
+	LegalHold bool   `json:"legal_hold"`
+}

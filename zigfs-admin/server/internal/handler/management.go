@@ -14,7 +14,11 @@ import (
 )
 
 type ManagementService interface {
+	SetObjectLegalHold(context.Context, string, contract.SetObjectLegalHoldRequest) (contract.ObjectLegalHoldResponse, error)
+	GetBucketEventSubscriptions(context.Context, string) (contract.BucketEventSubscriptions, error)
+	PutBucketEventSubscriptions(context.Context, string, contract.BucketEventSubscriptions) (contract.BucketEventSubscriptions, error)
 	OIDCAuth(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
+	EventDestinations(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
 	OIDCProviders(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
 	ListGroups(ctx context.Context) (contract.GroupList, error)
 	GetGroup(ctx context.Context, name string) (contract.ManagedGroup, error)
@@ -33,6 +37,7 @@ type ManagementService interface {
 	AssumeRole(ctx context.Context, request contract.AssumeRoleRequest) (contract.AssumeRoleResponse, error)
 	ListRoleSessions(ctx context.Context) (contract.RoleSessionList, error)
 	RevokeRoleSession(ctx context.Context, accessKey string) error
+	DeleteRoleSession(ctx context.Context, accessKey string) error
 	ListUsers(ctx context.Context) (contract.UserList, error)
 	GetUser(ctx context.Context, name string) (contract.ManagedUser, error)
 	CreateUser(ctx context.Context, value contract.UserWrite) (contract.ManagedUser, error)
@@ -666,6 +671,14 @@ func (handler *Management) RevokeRoleSession(ctx *gin.Context) {
 	ctx.Status(http.StatusNoContent)
 }
 
+func (handler *Management) DeleteRoleSession(ctx *gin.Context) {
+	if err := handler.service.DeleteRoleSession(ctx.Request.Context(), ctx.Param("access_key")); err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.Status(http.StatusNoContent)
+}
+
 func (handler *Management) ListUsers(ctx *gin.Context) {
 	response, err := handler.service.ListUsers(ctx.Request.Context())
 	if err != nil {
@@ -1074,6 +1087,67 @@ func (handler *Management) DisplaySettings(ctx *gin.Context) {
 		}
 	}
 	response, err := handler.service.DisplaySettings(ctx.Request.Context(), ctx.Request.Method, input)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) GetBucketEventSubscriptions(ctx *gin.Context) {
+	response, err := handler.service.GetBucketEventSubscriptions(ctx.Request.Context(), ctx.Param("name"))
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) PutBucketEventSubscriptions(ctx *gin.Context) {
+	var input contract.BucketEventSubscriptions
+	if err := ctx.ShouldBindJSON(&input); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "request body is invalid")
+		return
+	}
+	if input.Items == nil {
+		input.Items = []contract.BucketEventSubscription{}
+	}
+	response, err := handler.service.PutBucketEventSubscriptions(ctx.Request.Context(), ctx.Param("name"), input)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) EventDestinations(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	var input json.RawMessage
+	if ctx.Request.Method == http.MethodPost || ctx.Request.Method == http.MethodPut {
+		if err := ctx.ShouldBindJSON(&input); err != nil {
+			writeError(ctx, 400, "InvalidRequest", "request body is invalid")
+			return
+		}
+	}
+	response, err := handler.service.EventDestinations(ctx.Request.Context(), ctx.Request.Method, ctx.Param("name"), input)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	status := http.StatusOK
+	if ctx.Request.Method == http.MethodPost {
+		status = http.StatusCreated
+	}
+	ctx.JSON(status, response)
+}
+
+func (handler *Management) SetObjectLegalHold(ctx *gin.Context) {
+	var request contract.SetObjectLegalHoldRequest
+	if err := ctx.ShouldBindJSON(&request); err != nil {
+		writeError(ctx, http.StatusBadRequest, "InvalidRequest", "request body is invalid")
+		return
+	}
+	response, err := handler.service.SetObjectLegalHold(ctx.Request.Context(), ctx.Param("name"), request)
 	if err != nil {
 		writeStorageError(ctx, err)
 		return

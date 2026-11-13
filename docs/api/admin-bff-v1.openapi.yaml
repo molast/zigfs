@@ -11,6 +11,166 @@ servers:
 security:
   - zigfsSessionCookie: []
 paths:
+  /api/v1/role-sessions/{access_key}:
+    delete:
+      summary: Delete a revoked role session record
+      description: Requires admin:* authority. Only revoked sessions can be deleted; credentials remain invalid after deletion.
+      parameters:
+        - in: path
+          name: access_key
+          required: true
+          schema: { type: string }
+      responses:
+        '204':
+          description: Session record deleted
+        '401':
+          description: Authentication required
+        '403':
+          description: Administrative authority required
+        '404':
+          description: RoleSessionNotFound
+        '409':
+          description: RoleSessionNotRevoked; revoke the session first
+        '503':
+          description: RoleStorageUnavailable
+  /api/v1/buckets/{name}/legal-hold:
+    patch:
+      summary: Update legal hold for a specific object version
+      description: Requires admin:* authority. The BFF forwards the current login identity; ZigFS persists and audits the change.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, version_id, enabled]
+              properties:
+                key: { type: string }
+                version_id: { type: string, description: 'Actual version ID, including the literal null string.' }
+                enabled: { type: boolean }
+      responses:
+        '200':
+          description: Persisted legal hold state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key: { type: string }
+                  version_id: { type: string }
+                  legal_hold: { type: boolean }
+        '400': { description: Invalid key or version }
+        '403': { description: Access denied or object protected }
+        '404': { description: Object version not found }
+  /api/v1/event-destinations:
+    get:
+      summary: List configured event destinations
+      description: Requires admin:* authority. Auth tokens and MQTT passwords are redacted. Configuration management only; saving does not call the delivery adapters.
+      responses:
+        '200':
+          description: Saved destinations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/EventDestination' }
+        '403': { description: Access denied }
+        '503': { description: DestinationStorageUnavailable }
+    post:
+      summary: Create a Webhook or MQTT destination configuration
+      description: At most 100 destinations. No network connection or certificate file checks are performed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventDestination' }
+      responses:
+        '201':
+          description: Saved destination with redacted token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventDestination' }
+        '400': { description: Invalid configuration or DestinationLimit }
+        '403': { description: Access denied }
+        '409': { description: DestinationExists }
+        '503': { description: DestinationStorageUnavailable }
+  /api/v1/event-destinations/{name}:
+    parameters:
+      - in: path
+        name: name
+        required: true
+        schema: { type: string, pattern: '^[A-Z0-9_]{1,128}$' }
+    put:
+      summary: Replace a Webhook or MQTT destination configuration
+      description: Requires admin:* authority. Name and type cannot change. Empty auth_token with has_auth_token=true preserves the saved token; empty auth_token with has_auth_token=false removes it. MQTT password and has_password follow the same rules.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventDestination' }
+      responses:
+        '200':
+          description: Saved destination with redacted token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventDestination' }
+        '400': { description: Invalid configuration }
+        '403': { description: Access denied }
+        '404': { description: DestinationNotFound }
+        '409': { description: EventQueueNotEmpty }
+        '503': { description: DestinationStorageUnavailable }
+    delete:
+      summary: Delete a Webhook or MQTT destination configuration
+      description: Requires admin:* authority.
+      responses:
+        '200': { description: Deleted successfully }
+        '403': { description: Access denied }
+        '404': { description: DestinationNotFound }
+        '409': { description: EventDestinationInUse }
+        '503': { description: DestinationStorageUnavailable }
+  /api/v1/buckets/{name}/event-subscriptions:
+    parameters:
+      - in: path
+        name: name
+        required: true
+        schema: { type: string }
+    get:
+      summary: List bucket event subscription configuration
+      description: Requires admin:* authority. Bound subscriptions enqueue supported business events for delivery.
+      responses:
+        '200':
+          description: Saved subscriptions, or an empty list
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BucketEventSubscriptions' }
+        '403': { description: Access denied }
+        '404': { description: Bucket not found }
+    put:
+      summary: Replace bucket event subscription configuration
+      description: Requires admin:* authority. An empty items array removes all subscriptions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BucketEventSubscriptions' }
+      responses:
+        '200':
+          description: Persisted subscriptions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BucketEventSubscriptions' }
+        '400': { description: InvalidEventSubscription, InvalidEventDestination or invalid JSON }
+        '403': { description: Access denied }
+        '404': { description: Bucket not found }
+        '503': { description: SubscriptionStorageUnavailable }
   /api/v1/buckets/{name}/directories:
     parameters:
       - in: path
@@ -1651,8 +1811,8 @@ paths:
         '503': { description: Key store or provider unavailable }
   /api/v1/settings/kms/keys/action:
     post:
-      summary: Rotate, schedule deletion, restore, or permanently delete a key
-      description: Requires management authority and running KMS. Immediate deletion supports enabled and pending-deletion keys. Deleting or scheduling deletion of the last key is rejected with HTTP 409 (KmsLastKeyDeletionForbidden). Pending state is enforced by ZigFS; the seven-day date does not trigger automatic deletion.
+      summary: Describe, rotate, schedule deletion, restore, or permanently delete a key
+      description: Requires running KMS and the matching policy action on arn:aws:kms:::key/{id}. Describe uses kms:DescribeKey, rotation uses kms:RotateKey, and deletion lifecycle operations use kms:DeleteKey. Conditions and explicit Deny apply. Immediate deletion supports enabled and pending-deletion keys. Deleting or scheduling deletion of the last key is rejected with HTTP 409 (KmsLastKeyDeletionForbidden). Pending state is enforced by ZigFS; the seven-day date does not trigger automatic deletion.
       requestBody:
         required: true
         content:
@@ -1662,9 +1822,11 @@ paths:
               required: [id, action]
               properties:
                 id: { type: string }
-                action: { type: string, enum: [rotate, schedule-deletion, cancel-deletion, delete] }
+                action: { type: string, enum: [describe, rotate, schedule-deletion, cancel-deletion, delete] }
       responses:
-        '200': { description: Key action completed }
+        '200': { description: 'Describe returns KMSKey metadata without key material; mutations return {ok: true}.' }
+        '403': { description: AccessDenied }
+        '404': { description: Key not found }
         '400': { description: Invalid request }
         '409': { description: Invalid key state, unsupported operation, or KMS is not running }
         '503': { description: Key store or provider unavailable }
@@ -1677,6 +1839,58 @@ components:
       name: zigfs_admin_session
       description: ZigFS 签发、Admin 仅中转的短期 Management Token。
   schemas:
+    EventDestination:
+      type: object
+      required: [name]
+      properties:
+        generation_id: { type: string, readOnly: true, description: Server-managed destination incarnation used to isolate queued records }
+        name: { type: string, pattern: '^[A-Z0-9_]{1,128}$' }
+        type: { type: string, enum: [webhook, mqtt], default: webhook }
+        endpoint: { type: string, format: uri, description: Required for Webhook; HTTP or HTTPS URL up to 4096 bytes; no credentials or fragment }
+        auth_token: { type: string, default: '', description: Up to 4096 bytes; always empty in responses }
+        has_auth_token: { type: boolean, default: false, description: Indicates a saved token; true with an empty token preserves it on update }
+        queue_limit: { type: integer, minimum: 1, maximum: 4294967295, default: 100000 }
+        queue_directory: { type: string, default: '', description: Relative to data; no dot or parent segments; up to 1024 bytes }
+        client_certificate: { type: string, default: '', description: Certificate path relative to data; required with client_key }
+        client_key: { type: string, default: '', description: Private key path relative to data; required with client_certificate }
+        client_ca: { type: string, default: '', description: CA certificate path relative to data }
+        skip_tls_verify: { type: boolean, default: false }
+        comment: { type: string, default: '', description: Up to 1024 UTF-8 bytes without control characters }
+        broker: { type: string, default: '', description: Required for MQTT; tcp/tls/ssl/mqtt/mqtts/ws/wss URI with host and no userinfo or fragment; up to 4096 bytes }
+        topic: { type: string, default: '', description: Required for MQTT; publish topic without + or hash wildcards; up to 1024 bytes }
+        qos: { type: integer, enum: [0, 1, 2], default: 0 }
+        username: { type: string, default: '', description: MQTT username up to 1024 bytes }
+        password: { type: string, default: '', description: MQTT password up to 4096 bytes; always empty in responses }
+        has_password: { type: boolean, default: false, description: True with empty password preserves the saved MQTT password on update }
+        reconnect_interval: { type: string, default: 5s, description: Positive integer up to 4294967295 followed by ms/s/m/h }
+        keep_alive_interval: { type: string, default: 15s, description: Nonnegative integer up to 4294967295 followed by ms/s/m/h }
+        tls_policy: { type: string, default: '', description: MQTT TLS policy text up to 64 bytes; sender supports empty/strict, compat or insecure }
+        tls_ca: { type: string, default: '', description: MQTT CA certificate path relative to data }
+        tls_client_certificate: { type: string, default: '', description: MQTT client certificate path relative to data; paired with tls_client_key }
+        tls_client_key: { type: string, default: '', description: MQTT client key path relative to data; paired with tls_client_certificate }
+        trust_leaf_as_ca: { type: boolean, default: false }
+        websocket_path_allowlist: { type: string, default: '', description: Comma-separated paths starting with /; up to 4096 bytes; no spaces within paths or query strings or fragments }
+    BucketEventSubscriptions:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            required: [id, events]
+            properties:
+              id: { type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9-]+$' }
+              destination: { type: string, default: '', description: Existing destination name required for new rules; legacy unbound rules do not deliver }
+              prefix: { type: string, default: '', description: At most 1024 UTF-8 bytes; no NUL }
+              suffix: { type: string, default: '', description: At most 1024 UTF-8 bytes; no NUL }
+              events:
+                type: array
+                minItems: 1
+                maxItems: 5
+                uniqueItems: true
+                items: { type: string, enum: [PUT, GET, DELETE, ILM, SCANNER] }
     OIDCProvider:
       type: object
       required: [provider_id, configuration_url, client_id, redirect_uri]

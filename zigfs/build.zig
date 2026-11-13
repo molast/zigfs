@@ -16,6 +16,8 @@ pub fn build(b: *std.Build) void {
     mod.addCSourceFile(.{ .file = b.path("src/backend/filesystem_capacity.c"), .flags = &.{"-std=c99"} });
 
     mod.addCSourceFile(.{ .file = b.path("src/backend/kms_http.c"), .flags = &.{"-std=c99"} });
+    mod.addCSourceFile(.{ .file = b.path("src/backend/event_webhook.c"), .flags = &.{"-std=c99"} });
+    mod.addCSourceFile(.{ .file = b.path("src/backend/event_channel.c"), .flags = &.{"-std=c99"} });
     mod.linkSystemLibrary("curl", .{});
 
     const exe = b.addExecutable(.{
@@ -34,8 +36,22 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run zigfs");
     const run_cmd = b.addRunArtifact(exe);
+    run_cmd.addPassthruArgs();
     run_cmd.step.dependOn(b.getInstallStep());
     run_step.dependOn(&run_cmd.step);
+
+    const delivery_probe = b.addExecutable(.{
+        .name = "event-delivery-probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/event_delivery_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "zigfs", .module = mod }},
+        }),
+    });
+    const install_probe = b.addInstallArtifact(delivery_probe, .{});
+    b.step("event-delivery-probe", "Build the isolated event delivery conformance runner").dependOn(&install_probe.step);
 
     const mod_tests = b.addTest(.{ .root_module = mod });
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });

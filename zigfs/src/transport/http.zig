@@ -67,6 +67,7 @@ pub fn serve(
 
     var background: std.Io.Group = .init;
     defer background.cancel(io);
+    try background.concurrent(io, @import("../application/bucket_event_runtime.zig").serve, .{application});
     try background.concurrent(io, serveLogMaintenance, .{application});
     try background.concurrent(io, serveMetadataMaintenance, .{application});
     try background.concurrent(io, serveLifecycleScanner, .{
@@ -462,7 +463,7 @@ fn serveManagementLogin(
         const now = std.Io.Clock.real.now(context.io).toSeconds();
         const token = (management_auth.authenticateUser(a, context.application, parsed.value.username, parsed.value.password, now) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
         const principal = (management_auth.resolve(a, context.application, token.value(), now) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
-        if (!principal.hasConsoleAccess(a)) return respondUnauthorized(request, current_request_id);
+        if (!principal.hasConsoleAccess(a)) return management.respondError(request, current_request_id, .forbidden, "ConsoleAccessDenied", "current identity has no console page permissions");
         const capabilities = principal.capabilities(a);
         try audit_context.identify(principal.username);
         try audit_context.authenticate(if (principal.federated) "oidc" else "internal", principal.id, null);
@@ -524,7 +525,7 @@ fn serveManagementStsLogin(
     var arena = std.heap.ArenaAllocator.init(context.application.allocator);
     defer arena.deinit();
     const principal = (management_auth.resolve(arena.allocator(), context.application, issued.value(), now) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
-    if (!principal.hasConsoleAccess(arena.allocator())) return respondUnauthorized(request, current_request_id);
+    if (!principal.hasConsoleAccess(arena.allocator())) return management.respondError(request, current_request_id, .forbidden, "ConsoleAccessDenied", "current identity has no console page permissions");
     const capabilities = principal.capabilities(arena.allocator());
     const response = try std.json.Stringify.valueAlloc(arena.allocator(), .{ .token = issued.value(), .token_type = "Bearer", .username = parsed.value.username, .subject_id = material.subject_id orelse parsed.value.username, .is_root = false, .expires_at = issued.expires_at_unix_seconds, .capabilities = capabilities }, .{});
     return respond(request, response, .ok, "application/json; charset=utf-8", current_request_id, null);
@@ -548,6 +549,7 @@ fn serveManagementSession(
     try audit_context.identify(principal.username);
     try audit_context.authenticate(if (principal.federated) "oidc" else "internal", principal.id, null);
     if (logout) return respond(request, "", .no_content, "application/json", current_request_id, null);
+    if (!principal.hasConsoleAccess(a)) return management.respondError(request, current_request_id, .forbidden, "ConsoleAccessDenied", "current identity has no console page permissions");
     const display_store = @import("../application/display_settings.zig");
     const display: ?display_store.Settings = display: {
         const root = context.application.data_root orelse break :display null;
@@ -556,7 +558,7 @@ fn serveManagementSession(
         break :display display_store.load(a, root, context.io) catch null;
     };
     const credential_claims = management_session.validateCredential(context.config.admin_session_secret, token, std.Io.Clock.real.now(context.io).toSeconds());
-    const response_body = try std.json.Stringify.valueAlloc(a, .{ .authenticated = true, .auth_source = if (principal.is_root) "deployment" else if (principal.federated) "oidc" else if (credential_claims != null) "sts" else "local", .root_access_key = if (principal.is_root and context.config.root_access_key.len > 0) context.config.root_access_key else null, .session_access_key = if (credential_claims) |claims| claims.access_key else null, .display_preferences = display, .federated = principal.federated, .display_name = principal.display_name, .email = principal.email, .refreshable = principal.refreshable, .username = principal.username, .subject_id = principal.id, .is_root = principal.is_root, .expires_at = principal.expires_at, .capabilities = principal.capabilities(a) }, .{});
+    const response_body = try std.json.Stringify.valueAlloc(a, .{ .authenticated = true, .auth_source = if (principal.is_root) "deployment" else if (principal.federated) "oidc" else if (credential_claims != null) "sts" else "local", .root_access_key = if (principal.is_root and context.config.root_access_key.len > 0) context.config.root_access_key else null, .session_access_key = if (credential_claims) |claims| claims.access_key else null, .display_preferences = display, .federated = principal.federated, .display_name = principal.display_name, .email = principal.email, .refreshable = principal.refreshable, .username = principal.username, .subject_id = principal.id, .is_root = principal.is_root, .expires_at = principal.expires_at, .capabilities = principal.capabilities(a), .policies = principal.policy_names }, .{});
     return respond(request, response_body, .ok, "application/json; charset=utf-8", current_request_id, null);
 }
 
@@ -580,6 +582,7 @@ fn serveAuthorizedManagement(request: *std.http.Server.Request, context: *const 
     const principal = (management_auth.resolve(a, context.application, token, now) catch return respondUnauthorized(request, current_request_id)) orelse return respondUnauthorized(request, current_request_id);
     try audit_context.identify(principal.username);
     try audit_context.authenticate(if (principal.federated) "oidc" else "internal", principal.id, null);
+    var caller_context: @import("../auth/iam_policy.zig").Context = .{};
     // Presigning checks the exact action and resource from its body.
     if (!principal.is_root and !std.mem.eql(u8, requestPath(request.head.target), "/_admin/v1/objects/presign")) {
         var headers: std.ArrayList(sigv4.Header) = .empty;
@@ -589,30 +592,13 @@ fn serveAuthorizedManagement(request: *std.http.Server.Request, context: *const 
         const owner = if (principal.federated) try std.fmt.allocPrint(a, "oidc:{s}", .{principal.id}) else try std.fmt.allocPrint(a, "user:{s}", .{principal.username});
         const conditions = try @import("iam_context.zig").build(a, owner, headers.items, parsed, peer, now, "ManagementSession", null, context.config.s3_region, principal.id, audit_context.secure_transport);
         const action = management_auth.routeAction(request.head.method, requestPath(request.head.target));
-        const resource = managementResource(a, requestPath(request.head.target));
-        if (!principal.allows(a, action, resource, conditions)) return management.respondError(request, current_request_id, .forbidden, "AccessDenied", "current identity is not authorized for this management operation");
+        const resource = try management_auth.routeResource(a, requestPath(request.head.target));
+        caller_context = conditions;
+        const kms_keys = std.mem.eql(u8, requestPath(request.head.target), "/_admin/v1/settings/kms/keys") or std.mem.eql(u8, requestPath(request.head.target), "/_admin/v1/settings/kms/keys/action");
+        const assume_role = std.mem.eql(u8, requestPath(request.head.target), "/_admin/v1/sts/assume-role");
+        if (!kms_keys and !assume_role and !principal.allows(a, action, resource, conditions)) return management.respondError(request, current_request_id, .forbidden, "AccessDenied", "current identity is not authorized for this management operation");
     }
-    return management.serveRequest(request, context.application, current_request_id, principal, audit_context);
-}
-
-fn managementResource(a: std.mem.Allocator, path: []const u8) []const u8 {
-    const prefix = "/_admin/v1/buckets/";
-    if (std.mem.startsWith(u8, path, prefix)) {
-        const rest = path[prefix.len..];
-        const end = std.mem.indexOfScalar(u8, rest, '/') orelse rest.len;
-        return std.fmt.allocPrint(a, "arn:aws:s3:::{s}", .{rest[0..end]}) catch "arn:aws:s3:::*";
-    }
-    if (std.mem.startsWith(u8, path, "/_admin/v1/users/")) {
-        const rest = path["/_admin/v1/users/".len..];
-        const end = std.mem.indexOfScalar(u8, rest, '/') orelse rest.len;
-        return std.fmt.allocPrint(a, "arn:aws:iam::000000000000:user/{s}", .{rest[0..end]}) catch "arn:aws:iam::*:user/*";
-    }
-    if (std.mem.startsWith(u8, path, "/_admin/v1/roles/")) {
-        const rest = path["/_admin/v1/roles/".len..];
-        const end = std.mem.indexOfScalar(u8, rest, '/') orelse rest.len;
-        return std.fmt.allocPrint(a, "arn:aws:iam::000000000000:role/{s}", .{rest[0..end]}) catch "arn:aws:iam::*:role/*";
-    }
-    return "arn:aws:s3:::*";
+    return management.serveRequest(request, context.application, current_request_id, principal, audit_context, caller_context);
 }
 
 fn managementTokenExpiration(

@@ -54,6 +54,7 @@ func (managementService) ListRoleSessions(context.Context) (contract.RoleSession
 	return contract.RoleSessionList{}, nil
 }
 func (managementService) RevokeRoleSession(context.Context, string) error { return nil }
+func (managementService) DeleteRoleSession(context.Context, string) error { return nil }
 
 func (authService) Login(context.Context, contract.LoginRequest) (contract.LoginResponse, error) {
 	return contract.LoginResponse{
@@ -95,6 +96,12 @@ func (managementService) GetBucketUsage(context.Context, string) (contract.Bucke
 
 func (managementService) ListBucketEvents(context.Context, string, string, string, string, string, string, int) (contract.ListBucketEventsResponse, error) {
 	return contract.ListBucketEventsResponse{}, nil
+}
+func (managementService) GetBucketEventSubscriptions(context.Context, string) (contract.BucketEventSubscriptions, error) {
+	return contract.BucketEventSubscriptions{Items: []contract.BucketEventSubscription{}}, nil
+}
+func (managementService) PutBucketEventSubscriptions(_ context.Context, _ string, value contract.BucketEventSubscriptions) (contract.BucketEventSubscriptions, error) {
+	return value, nil
 }
 func (managementService) GetBucketPolicy(context.Context, string) (contract.BucketPolicy, error) {
 	return contract.BucketPolicy{}, nil
@@ -652,4 +659,12 @@ func (managementService) AuthenticationSettings(context.Context, string, json.Ra
 
 func (managementService) DisplaySettings(context.Context, string, json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage("{}"), nil
+}
+
+func (managementService) EventDestinations(context.Context, string, string, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`{"items":[]}`), nil
+}
+
+func (managementService) SetObjectLegalHold(_ context.Context, _ string, request contract.SetObjectLegalHoldRequest) (contract.ObjectLegalHoldResponse, error) {
+	return contract.ObjectLegalHoldResponse{Key: request.Key, VersionID: request.VersionID, LegalHold: request.Enabled}, nil
 }

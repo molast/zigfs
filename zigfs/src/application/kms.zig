@@ -293,6 +293,12 @@ pub const Service = struct {
         if (!(self.health orelse false)) return error.KmsNotRunning;
         return @import("kms_keys.zig").list(self, a);
     }
+    pub fn describeKey(self: *Service, a: std.mem.Allocator, name: []const u8) !@import("kms_keys.zig").KeyInfo {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (!(self.health orelse false)) return error.KmsNotRunning;
+        return @import("kms_keys.zig").describe(self, a, name);
+    }
     pub fn createKey(self: *Service, a: std.mem.Allocator, input: @import("kms_keys.zig").CreateKey) !@import("kms_keys.zig").KeyInfo {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);

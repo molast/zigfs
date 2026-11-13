@@ -1,3 +1,4 @@
+import { ObjectDetailsSheet } from './ObjectDetailsSheet'
 import { formatDate, formatDateTime } from '@/lib/dateTime'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/Tabs'
 import { Progress } from '../../components/ui/progress'
@@ -19,7 +20,6 @@ import {
   CloudUpload,
   Copy,
   Download,
-  ExternalLink,
   File,
   Folder,
   FolderInput,
@@ -43,7 +43,7 @@ import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
 import { useErrorToast, useToast } from '../../components/ToastProvider'
 import { ToolbarSearch } from '../../components/ui/ToolbarControls'
-import type { Bucket, MultipartUpload, MultipartUploadSummary, ObjectSummary, ObjectVersion, PresignObjectResponse } from '../../types/api'
+import type { Bucket, MultipartUpload, MultipartUploadSummary, ObjectSummary, ObjectVersion } from '../../types/api'
 import {
   choosePartSize,
   chooseUploadConcurrency,
@@ -155,9 +155,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   const [transferring, setTransferring] = useState(false)
   const [detail, setDetail] = useState<ObjectSummary | null>(null)
   const [detailVersionId, setDetailVersionId] = useState<string | null>(null)
-  const [detailUrl, setDetailUrl] = useState<PresignObjectResponse | null>(null)
-  const [detailTags, setDetailTags] = useState('')
-  const [detailTagsSaving, setDetailTagsSaving] = useState(false)
   const [directorySizeSummaries, setDirectorySizeSummaries] = useState<Map<string, FolderSizeSummary>>(new Map())
   const [directorySizeLoading, setDirectorySizeLoading] = useState<Set<string>>(new Set())
   const [uploadSpeed, setUploadSpeed] = useState(0)
@@ -1225,76 +1222,19 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     }
   }
 
-  async function openDetail(object: ObjectSummary) {
+  function openDetail(object: ObjectSummary) {
     setDetail(object)
     setDetailVersionId(null)
-    setDetailUrl(null)
-    setDetailTags('')
-    if (!bucket) return
-    const stopLoading = startLoading(t('objects.generatingPreviewLink'))
-    try {
-      setDetailUrl(await api.presignObject('', bucket, object.key, 'GET', 900))
-      const tagUrl = await api.presignObject('', bucket, object.key, 'GET', 900, { tagging: true })
-      const tagResponse = await fetch(tagUrl.url)
-      if (!tagResponse.ok) throw new Error(t('objects.failedToReadObjectTagsValue', { '0': tagResponse.status }))
-      const xml = new DOMParser().parseFromString(await tagResponse.text(), 'application/xml')
-      const tags = [...xml.querySelectorAll('Tag')].map((tag) => ({ key: tag.querySelector('Key')?.textContent ?? '', value: tag.querySelector('Value')?.textContent ?? '' }))
-      setDetailTags(JSON.stringify(Object.fromEntries(tags.map((tag) => [tag.key, tag.value])), null, 2))
-    } catch (reason) {
-      notifyError((reason as Error).message)
-    } finally {
-      stopLoading()
-    }
   }
 
-  async function openVersionTagDetail(version: ObjectVersion) {
-    setDetail({ key: version.key, size: version.size, etag: '', last_modified: version.last_modified })
+  function openVersionTagDetail(version: ObjectVersion) {
+    setDetail({ ...version, etag: '' })
     setDetailVersionId(version.version_id)
-    setDetailUrl(null)
-    setDetailTags('')
-    if (!bucket) return
-    try {
-      setDetailUrl(await api.presignObject('', bucket, version.key, 'GET', 900, { versionId: version.version_id }))
-      const tagUrl = await api.presignObject('', bucket, version.key, 'GET', 900, { versionId: version.version_id, tagging: true })
-      const response = await fetch(tagUrl.url)
-      if (!response.ok) throw new Error(t('objects.failedToReadVersionTagsValue', { '0': response.status }))
-      const xml = new DOMParser().parseFromString(await response.text(), 'application/xml')
-      setDetailTags(JSON.stringify(Object.fromEntries([...xml.querySelectorAll('Tag')].map((tag) => [tag.querySelector('Key')?.textContent ?? '', tag.querySelector('Value')?.textContent ?? ''])), null, 2))
-    } catch (reason) {
-      notifyError((reason as Error).message)
-    }
-  }
-
-  async function saveDetailTags() {
-    if (!detail || !bucket) return
-    setDetailTagsSaving(true)
-    try {
-      const parsed = JSON.parse(detailTags || '{}') as Record<string, string>
-      const tagEntries = Object.entries(parsed)
-      if (tagEntries.some(([key, value]) => !key || typeof value !== 'string')) throw new Error(t('objects.objectTagsMustBeAJsonObjectOfString'))
-      const signed = await api.presignObject('', bucket, detail.key, tagEntries.length === 0 ? 'DELETE' : 'PUT', 900, { tagging: true, ...(detailVersionId ? { versionId: detailVersionId } : {}) })
-      if (tagEntries.length === 0) {
-        const response = await fetch(signed.url, { method: 'DELETE', headers: signed.required_headers })
-        if (!response.ok) throw new Error(t('objects.failedToDeleteObjectTagsValue', { '0': response.status }))
-        showToast(t('objects.objectTagsDeleted'))
-        return
-      }
-      const body = `<Tagging xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><TagSet>${tagEntries.map(([key, value]) => `<Tag><Key>${escapeXml(key)}</Key><Value>${escapeXml(value)}</Value></Tag>`).join('')}</TagSet></Tagging>`
-      const response = await fetch(signed.url, { method: 'PUT', headers: { ...signed.required_headers, 'content-type': 'application/xml' }, body })
-      if (!response.ok) throw new Error(t('objects.failedToSaveObjectTagsValue', { '0': response.status }))
-      showToast(t('objects.objectTagsSaved'))
-    } catch (reason) {
-      notifyError((reason as Error).message)
-    } finally {
-      setDetailTagsSaving(false)
-    }
   }
 
   function closeDetail() {
     setDetail(null)
     setDetailVersionId(null)
-    setDetailUrl(null)
-    setDetailTags('')
   }
 
   async function forceCleanupFolder(object: ObjectSummary) {
@@ -1481,12 +1421,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       setRestoringVersion('')
       stopLoading()
     }
-  }
-
-  async function copyDetailUrl() {
-    if (!detailUrl) return
-    await navigator.clipboard.writeText(detailUrl.url)
-    showToast(t('objects.previewLinkCopied'))
   }
 
   const visibleObjectCount = viewMode === 'current' ? (showDeleted ? filteredDeletedObjects.length + (onlyDeleted ? 0 : filteredObjects.length) : filteredObjects.length) : filteredVersions.length
@@ -1875,32 +1809,12 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         </div>
       )}
 
-      {detail && (
-        <div className="drawer-backdrop" role="presentation" onClick={closeDetail}>
-          <aside className="detail-drawer" role="dialog" aria-modal="true" aria-label={t('objects.objectDetails')} onClick={(event) => event.stopPropagation()}>
-            <header className="drawer-header">
-              <div><p className="eyebrow">{t('objects.objectDetails')}</p><h3>{detail.key}</h3></div>
-              <button className="icon-button" type="button" aria-label={t('objects.closeDetails')} onClick={closeDetail}><X aria-hidden="true" /></button>
-            </header>
-            <div className="preview-frame">
-              {isImageKey(detail.key) && detailUrl ? <img src={detailUrl.url} alt={detail.key} /> : <div className="format-icon" aria-label={t('objects.valueFile', { '0': fileExtension(detail.key) })}>{fileExtension(detail.key)}</div>}
-              {!isImageKey(detail.key) && <span>{t('objects.previewIsNotAvailableForThisFormat')}</span>}
-            </div>
-            <dl className="detail-list">
-              <div><dt>{t('objects.objectKey')}</dt><dd>{detail.key}</dd></div>
-              <div><dt>{t('objects.format')}</dt><dd>{fileExtension(detail.key)}</dd></div>
-              <div><dt>{t('objects.size')}</dt><dd>{formatBytes(detail.size)}</dd></div>
-              <div><dt>ETag</dt><dd><code>{detail.etag}</code></dd></div>
-              <div><dt>{t('objects.modified')}</dt><dd>{formatDateTime(detail.last_modified)}</dd></div>
-              {detailUrl && <div><dt>{t('objects.linkExpires')}</dt><dd>{formatDateTime(detailUrl.expires_at)}</dd></div>}
-            </dl>
-            <label className="detail-tags-editor">{t('objects.objectTagsJson')}<textarea value={detailTags} onChange={(event) => setDetailTags(event.target.value)} rows={5} placeholder={'{\n  "team": "blue"\n}'} />
-              <button className="primary-button" type="button" onClick={() => void saveDetailTags()} disabled={detailTagsSaving}>{detailTagsSaving ? t('objects.saving') : t('objects.saveTags')}</button>
-            </label>
-            {detailUrl && <div className="drawer-actions"><a className="secondary-button" href={detailUrl.url} target="_blank" rel="noreferrer"><ExternalLink className="button-icon" aria-hidden="true" />{t('objects.openPreviewLink')}</a><button className="secondary-button" type="button" onClick={() => void copyDetailUrl()}><Copy className="button-icon" aria-hidden="true" />{t('objects.copyLink')}</button></div>}
-          </aside>
-        </div>
-      )}
+      {detail && bucket && <ObjectDetailsSheet
+        key={`${bucket}/${detail.key}/${detailVersionId ?? ''}`}
+        api={api} bucket={bucket} object={detail} versionId={detailVersionId} initialTagsOpen={detailVersionId !== null}
+        onClose={closeDetail} onChanged={() => load(true)}
+      />}
+
     </section>
   )
 }
@@ -2001,18 +1915,8 @@ function ObjectTreeIndent({ depth }: { depth: number }) {
   return <span className="object-tree-guides" style={{ width: `${depth * 20}px` }} aria-hidden="true" />
 }
 
-function fileExtension(key: string) {
-  const name = key.split('/').pop() || key
-  const dot = name.lastIndexOf('.')
-  return dot > 0 ? name.slice(dot + 1).toUpperCase().slice(0, 8) : 'FILE'
-}
-
 function shortVersionId(versionId: string) {
   return versionId === 'null' ? 'null' : `${versionId.slice(0, 8)}...${versionId.slice(-6)}`
-}
-
-function escapeXml(value: string) {
-  return value.replace(/[<>&'\"]/g, (character) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[character] ?? character))
 }
 
 function latestObjectSizes(versions: ObjectVersion[]) {
@@ -2025,8 +1929,4 @@ function latestObjectSizes(versions: ObjectVersion[]) {
 
 function versionIdentity(version: ObjectVersion) {
   return `${version.key}\u0000${version.version_id}`
-}
-
-function isImageKey(key: string) {
-  return /\.(avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(key)
 }

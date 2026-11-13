@@ -27,10 +27,15 @@ type LoginResponse struct {
 }
 
 type Capabilities struct {
-	Admin bool `json:"admin"`
-	KMS   bool `json:"kms"`
-	S3    bool `json:"s3"`
-	STS   bool `json:"sts"`
+	S3Console   bool `json:"s3_console"`
+	KMSList     bool `json:"kms_list"`
+	KMSDescribe bool `json:"kms_describe"`
+	ServerInfo  bool `json:"server_info"`
+	ConsoleLog  bool `json:"console_log"`
+	Admin       bool `json:"admin"`
+	KMS         bool `json:"kms"`
+	S3          bool `json:"s3"`
+	STS         bool `json:"sts"`
 }
 
 type DisplayPreferences struct {
@@ -39,6 +44,7 @@ type DisplayPreferences struct {
 }
 
 type SessionResponse struct {
+	Policies           []string            `json:"policies"`
 	AuthSource         string              `json:"auth_source"`
 	RootAccessKey      *string             `json:"root_access_key"`
 	SessionAccessKey   *string             `json:"session_access_key"`

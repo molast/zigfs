@@ -48,7 +48,7 @@ pub fn build(a: std.mem.Allocator, owner: []const u8, headers: []const sigv4.Hea
             try add(a, &entries, name, parameter.value);
         }
     }
-    if (parsed.operation == .list_objects_v2) {
+    if (parsed.operation == .list_objects_v2 or parsed.operation == .list_multipart_uploads) {
         if ((parsed.query("prefix") catch null) == null) try add(a, &entries, "s3:prefix", "");
         if ((parsed.query("max-keys") catch null) == null) try add(a, &entries, "s3:max-keys", "1000");
     }

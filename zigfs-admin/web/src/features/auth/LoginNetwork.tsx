@@ -29,6 +29,17 @@ export function LoginNetwork() {
     let width = 0
     let height = 0
     let frame = 0
+    let palette = { line: '', node: '', accent: '' }
+    function updatePalette() {
+      if (!container) return
+      const style = getComputedStyle(container)
+      palette = {
+        line: style.getPropertyValue('--login-network-line').trim(),
+        node: style.getPropertyValue('--login-network-node').trim(),
+        accent: style.getPropertyValue('--login-network-accent').trim(),
+      }
+      draw(performance.now())
+    }
 
     function draw(time: number) {
       if (!context) return
@@ -57,7 +68,7 @@ export function LoginNetwork() {
           const distance = Math.hypot(first.x - second.x, first.y - second.y)
           if (distance > 145) continue
           const proximity = Math.max(0, 1 - Math.hypot((first.x + second.x) / 2 - pointer.x, (first.y + second.y) / 2 - pointer.y) / 270)
-          context.strokeStyle = `rgba(111, 207, 207, ${(1 - distance / 145) * (0.14 + proximity * pointer.strength * 0.24)})`
+          context.strokeStyle = `rgba(${palette.line}, ${(1 - distance / 145) * (0.14 + proximity * pointer.strength * 0.24)})`
           context.beginPath()
           context.moveTo(first.x, first.y)
           context.lineTo(second.x, second.y)
@@ -68,8 +79,8 @@ export function LoginNetwork() {
       for (const node of nodes) {
         const nearPointer = Math.max(0, 1 - Math.hypot(node.x - pointer.x, node.y - pointer.y) / 240) * pointer.strength
         context.fillStyle = node.accent
-          ? `rgba(246, 185, 91, ${0.45 + nearPointer * 0.35})`
-          : `rgba(135, 216, 213, ${0.38 + nearPointer * 0.42})`
+          ? `rgba(${palette.accent}, ${0.45 + nearPointer * 0.35})`
+          : `rgba(${palette.node}, ${0.38 + nearPointer * 0.42})`
         context.beginPath()
         context.arc(node.x, node.y, node.accent ? 2.2 : 1.6 + nearPointer * 0.7, 0, Math.PI * 2)
         context.fill()
@@ -128,6 +139,9 @@ export function LoginNetwork() {
       start()
     }
 
+    const themeObserver = new MutationObserver(updatePalette)
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    updatePalette()
     const observer = new ResizeObserver(resize)
     observer.observe(container)
     container.addEventListener('pointermove', movePointer)
@@ -140,6 +154,7 @@ export function LoginNetwork() {
     return () => {
       if (frame) window.cancelAnimationFrame(frame)
       observer.disconnect()
+      themeObserver.disconnect()
       container.removeEventListener('pointermove', movePointer)
       container.removeEventListener('pointerleave', leavePointer)
       motionPreference.removeEventListener('change', updateMotion)

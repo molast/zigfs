@@ -1,3 +1,4 @@
+import { ApiError } from '@/api/client'
 import { LanguageSwitcher } from '../../components/LanguageSwitcher'
 import { t } from '@/locales'
 import { useErrorToast } from '../../components/ToastProvider'
@@ -41,7 +42,7 @@ export function LoginView({ onLogin, onStsLogin, darkTheme, onToggleTheme }: Log
       if (!stsUsername.trim() || !stsSecret || !stsToken) return
       setSubmitting(true)
       try { await withLoading(t('auth.signingIn'), () => onStsLogin(stsUsername.trim(), stsSecret, stsToken)) }
-      catch { notifyError(t('auth.invalidStsCredentials')) }
+      catch (error) { notifyError(t(error instanceof ApiError && error.body.code === 'ConsoleAccessDenied' ? 'auth.consoleAccessDenied' : 'auth.invalidStsCredentials')) }
       finally { setSubmitting(false) }
       return
     }
@@ -50,8 +51,8 @@ export function LoginView({ onLogin, onStsLogin, darkTheme, onToggleTheme }: Log
     setSubmitting(true)
     try {
       await withLoading(t('auth.signingIn'), () => onLogin(username.trim(), password))
-    } catch {
-      notifyError(t('auth.invalidUsernameOrPasswordOrZigfsIsUnavailable'))
+    } catch (error) {
+      notifyError(t(error instanceof ApiError && error.body.code === 'ConsoleAccessDenied' ? 'auth.consoleAccessDenied' : 'auth.invalidUsernameOrPasswordOrZigfsIsUnavailable'))
     } finally {
       setSubmitting(false)
     }
@@ -75,7 +76,7 @@ export function LoginView({ onLogin, onStsLogin, darkTheme, onToggleTheme }: Log
             <button type="button" role="tab" aria-selected={mode === 'password'} className={mode === 'password' ? 'active' : ''} onClick={() => setMode('password')}>{t('auth.passwordLogin')}</button>
             <button type="button" role="tab" aria-selected={mode === 'sts'} className={mode === 'sts' ? 'active' : ''} onClick={() => setMode('sts')}>{t('auth.stsLogin')}</button>
           </div>
-          <div className="login-card-header"><h2 className="sr-only">{t('auth.signIn')}</h2></div>
+          <div className="login-card-header"><h2 className="sr-only">{t('auth.signIn')}</h2>{mode === 'sts' && <p>{t('auth.stsCredentialsHelp')}</p>}</div>
           <div className="login-card-content">
           <form onSubmit={submit}>
           <FieldGroup>

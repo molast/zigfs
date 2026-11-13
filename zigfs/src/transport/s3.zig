@@ -29,7 +29,7 @@ const s3_post_policy = @import("s3_post_policy.zig");
 pub const service_name = "s3";
 
 // Constructed only after authentication and action/resource checks. Anonymous
-// reads retain their explicit public-bucket checks; legacy keys remain owner-scoped.
+// requests retain their explicit public-bucket checks; legacy keys remain owner-scoped.
 const BucketAccess = struct {
     owner: []const u8,
     iam_authorized: bool = false,
@@ -146,7 +146,7 @@ pub fn serveRequest(
     };
     const uses_presigned_auth = sigv4.hasPresignedParameters(raw_target);
     if (authorization_header == null and !uses_presigned_auth) {
-        return serveAnonymousRead(request, application, parsed, headers.items, request_id, peer, audit_context.secure_transport);
+        return serveAnonymousRequest(request, application, parsed, headers.items, request_id, peer, audit_context.secure_transport);
     }
     if (uses_presigned_auth and authorization_header != null) {
         return respondError(request, allocator, .invalid_request, request_id);
@@ -410,6 +410,7 @@ pub fn serveRequest(
             parsed,
             bucket_access,
             headers.items,
+            payload_hash,
             request_id,
         ),
         .delete_object => serveDeleteObject(
@@ -498,7 +499,7 @@ fn appendRoleOrganizationContext(a: std.mem.Allocator, app: *Application, owner:
     context.entries = try entries.toOwnedSlice(a);
 }
 
-fn serveAnonymousRead(
+fn serveAnonymousRequest(
     request: *std.http.Server.Request,
     application: *Application,
     parsed: protocol.ParsedTarget,
@@ -532,6 +533,7 @@ fn serveAnonymousRead(
     const base = try iam_context.build(a, "", headers, parsed, peer, std.Io.Clock.real.now(io).toSeconds(), "Anonymous", null, application.config.s3_region, null, secure_transport);
     var ctx = resourceContext(a, application, parsed.bucket, base) catch return respondError(request, application.allocator, .service_unavailable, request_id);
     ctx.kind = .resource;
+    ctx = try augmentExistingTags(a, application, parsed, ctx);
     const resource = if (parsed.key) |key| try std.fmt.allocPrint(a, "arn:aws:s3:::{s}/{s}", .{ bucket_name, key }) else try std.fmt.allocPrint(a, "arn:aws:s3:::{s}", .{bucket_name});
     const action = inheritedActionFor(operation, (parsed.query("versionId") catch null) != null);
     var legacy_document: ?[]u8 = null;
@@ -544,12 +546,45 @@ fn serveAnonymousRead(
         );
     }
     const decision = if (ctx.resource_document) |doc| iam.decisionWithContext(a, &[_][]const u8{doc}, action, resource, ctx) else if (legacy_document) |doc| iam.decisionWithContext(a, &[_][]const u8{doc}, action, resource, ctx) else iam.Decision.none;
-    if (decision == .deny or (!legacy_allowed and decision != .allow)) return respondError(request, application.allocator, .access_denied, request_id);
-    const access: BucketAccess = .{ .owner = "", .iam_authorized = decision == .allow };
+    // DeleteObjects authorizes each key after parsing the body, not the bucket ARN.
+    if (operation != .delete_objects and decision != .allow) return respondError(request, application.allocator, .access_denied, request_id);
+    if (operation == .put_object or operation == .upload_part) {
+        if (singleHeader(headers, "x-amz-copy-source") catch return respondError(request, application.allocator, .invalid_argument, request_id)) |_| {
+            var source = (parseCopySource(a, headers) catch return respondError(request, application.allocator, .invalid_argument, request_id)) orelse return respondError(request, application.allocator, .invalid_argument, request_id);
+            defer source.deinit();
+            const source_bucket = bucket_service_instance.head(source.bucket) catch return respondError(request, application.allocator, .access_denied, request_id);
+            defer source_bucket.deinit(application.allocator);
+            if (source_bucket.block_public_access) return respondError(request, application.allocator, .access_denied, request_id);
+            var source_ctx = try resourceContext(a, application, source.bucket, base);
+            source_ctx.kind = .resource;
+            source_ctx = try augmentExistingObjectTags(a, application, source.bucket, source.key, source.version_id, source_ctx);
+            if (source.version_id) |version| {
+                var buffer: [32]u8 = undefined;
+                var entries: std.ArrayList(iam.Entry) = .empty;
+                try entries.appendSlice(a, source_ctx.entries);
+                try iam_context.add(a, &entries, "s3:versionId", version.write(&buffer));
+                source_ctx.entries = try entries.toOwnedSlice(a);
+            }
+            const source_resource = try std.fmt.allocPrint(a, "arn:aws:s3:::{s}/{s}", .{ source.bucket, source.key });
+            const source_action = if (source.version_id != null) "s3:GetObjectVersion" else "s3:GetObject";
+            const source_allowed = if (source_ctx.resource_document) |doc| iam.decisionWithContext(a, &[_][]const u8{doc}, source_action, source_resource, source_ctx) == .allow else source_bucket.access_policy == .public or source_bucket.access_policy == .readonly;
+            if (!source_allowed) return respondError(request, application.allocator, .access_denied, request_id);
+        }
+    }
+    const access: BucketAccess = .{ .owner = "", .iam_authorized = true, .context = ctx };
     return switch (operation) {
         .get_object => serveGetObject(request, application, parsed, access, headers, .unsigned, request_id),
-        .head_object => serveHeadObject(request, application, parsed, access, headers, request_id),
+        .head_object => serveHeadObject(request, application, parsed, access, headers, .unsigned, request_id),
         .list_objects_v2 => serveListObjects(request, application, parsed, access, headers, request_id),
+        .put_object => servePutObject(request, application, bucket_name, parsed.key.?, access, headers, null, "", .unsigned, request_id),
+        .delete_object => serveDeleteObject(request, application, parsed, access, headers, false, .unsigned, request_id),
+        .create_multipart_upload => serveCreateMultipartUpload(request, application, parsed, access, headers, request_id),
+        .upload_part => serveUploadPart(request, application, parsed, access, headers, null, "", .unsigned, request_id),
+        .list_parts => serveListParts(request, application, parsed, access, headers, request_id),
+        .list_multipart_uploads => serveListMultipartUploads(request, application, parsed, access, headers, request_id),
+        .complete_multipart_upload => serveCompleteMultipartUpload(request, application, parsed, access, headers, .unsigned, request_id),
+        .abort_multipart_upload => serveAbortMultipartUpload(request, application, parsed, access, headers, request_id),
+        .delete_objects => serveDeleteObjects(request, application, parsed, access, headers, false, null, ctx, request_id),
         else => respondError(request, application.allocator, .access_denied, request_id),
     };
 }
@@ -639,8 +674,11 @@ fn allowsPresigned(operation: protocol.Operation) bool {
 fn augmentExistingTags(a: std.mem.Allocator, app: *Application, parsed: protocol.ParsedTarget, base: iam.Context) !iam.Context {
     const bucket = parsed.bucket orelse return base;
     const object = parsed.key orelse return base;
-    const service = app.objectService() orelse return error.Unavailable;
     const version = parseRequestedVersion(parsed) catch return base;
+    return augmentExistingObjectTags(a, app, bucket, object, version, base);
+}
+fn augmentExistingObjectTags(a: std.mem.Allocator, app: *Application, bucket: []const u8, object: []const u8, version: ?object_domain.VersionId, base: iam.Context) !iam.Context {
+    const service = app.objectService() orelse return error.Unavailable;
     var lease = if (version) |value| service.openVersion(bucket, object, value) catch return base else service.open(bucket, object) catch return base;
     defer lease.deinit();
     const item = lease.metadata();
@@ -730,8 +768,7 @@ fn serveObjectTagging(request: *std.http.Server.Request, app: *Application, pars
         app.state_mutex.lockUncancelable(io);
         defer app.state_mutex.unlock(io);
         object_tags.remove(a, root, io, bucket_name, object_name, version) catch return respondError(request, app.allocator, .service_unavailable, request_id);
-        try request.respond("", .{ .status = .no_content });
-        return .no_content;
+        return respondEmpty(request, .no_content, request_id, &.{});
     }
     var tags: std.ArrayList(object_tags.Tag) = .empty;
     defer tags.deinit(a);
@@ -750,9 +787,8 @@ fn serveObjectTagging(request: *std.http.Server.Request, app: *Application, pars
     }
     app.state_mutex.lockUncancelable(io);
     defer app.state_mutex.unlock(io);
-    object_tags.save(a, root, io, bucket_name, object_name, version, .{ .tags = tags.items }) catch |err| return respondError(request, app.allocator, if (err == error.TooManyTags or err == error.InvalidTag) .invalid_request else .service_unavailable, request_id);
-    try request.respond("", .{ .status = .no_content });
-    return .no_content;
+    object_tags.save(a, root, io, bucket_name, object_name, version, .{ .tags = tags.items }) catch |err| return respondError(request, app.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
+    return respondEmpty(request, .no_content, request_id, &.{});
 }
 
 fn parseTagXml(a: std.mem.Allocator, body: []const u8, tags: *std.ArrayList(object_tags.Tag)) !void {
@@ -762,12 +798,44 @@ fn parseTagXml(a: std.mem.Allocator, body: []const u8, tags: *std.ArrayList(obje
         const key_end = std.mem.indexOfPos(u8, body, key_start + 5, "</Key>") orelse return error.InvalidTagXml;
         const value_start = std.mem.indexOfPos(u8, body, key_end, "<Value>") orelse return error.InvalidTagXml;
         const value_end = std.mem.indexOfPos(u8, body, value_start + 7, "</Value>") orelse return error.InvalidTagXml;
-        const key = std.mem.trim(u8, body[key_start + 5 .. key_end], " \t\r\n");
-        const value = std.mem.trim(u8, body[value_start + 7 .. value_end], " \t\r\n");
-        try tags.append(a, .{ .key = try a.dupe(u8, key), .value = try a.dupe(u8, value) });
+        const tag_end = std.mem.indexOfPos(u8, body, tag_start, "</Tag>") orelse return error.InvalidTagXml;
+        if (value_end > tag_end) return error.InvalidTagXml;
+        const key = try decodeTagXmlText(a, body[key_start + 5 .. key_end]);
+        const value = try decodeTagXmlText(a, body[value_start + 7 .. value_end]);
+        try tags.append(a, .{ .key = key, .value = value });
         cursor = value_end + 8;
     }
     if (tags.items.len == 0 or std.mem.indexOf(u8, body, "<TagSet>") == null) return error.InvalidTagXml;
+}
+
+fn decodeTagXmlText(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
+    var offset: usize = 0;
+    while (offset < value.len) {
+        if (value[offset] == '<' or value[offset] < 0x20 or value[offset] == 0x7f) return error.MalformedXml;
+        if (value[offset] != '&') {
+            output.append(allocator, value[offset]) catch return error.OutOfMemory;
+            offset += 1;
+            continue;
+        }
+        const entities = [_]struct { encoded: []const u8, decoded: u8 }{
+            .{ .encoded = "&amp;", .decoded = '&' },
+            .{ .encoded = "&lt;", .decoded = '<' },
+            .{ .encoded = "&gt;", .decoded = '>' },
+            .{ .encoded = "&quot;", .decoded = '"' },
+            .{ .encoded = "&apos;", .decoded = '\'' },
+        };
+        var matched = false;
+        for (entities) |entity| if (std.mem.startsWith(u8, value[offset..], entity.encoded)) {
+            output.append(allocator, entity.decoded) catch return error.OutOfMemory;
+            offset += entity.encoded.len;
+            matched = true;
+            break;
+        };
+        if (!matched) return error.MalformedXml;
+    }
+    return output.toOwnedSlice(allocator) catch return error.OutOfMemory;
 }
 
 fn parseTagHeader(a: std.mem.Allocator, raw: []const u8, tags: *std.ArrayList(object_tags.Tag)) !void {
@@ -1217,7 +1285,7 @@ fn serveListObjects(
     headers: []const sigv4.Header,
     request_id: []const u8,
 ) !std.http.Status {
-    if (ensureEmptyRequest(request, headers) != null) {
+    if ((if (access.owner.len == 0 and access.iam_authorized) ensureEmptyRequestWithHash(request, .unsigned) else ensureEmptyRequest(request, headers)) != null) {
         return respondError(request, application.allocator, .invalid_request, request_id);
     }
     const bucket = ensureBucketOwner(application, parsed.bucket.?, access) catch |err| {
@@ -1461,7 +1529,7 @@ fn serveListMultipartUploads(
     headers: []const sigv4.Header,
     request_id: []const u8,
 ) !std.http.Status {
-    if (ensureEmptyRequest(request, headers) != null) {
+    if (ensureEmptyRequestForAccess(request, headers, access) != null) {
         return respondError(request, application.allocator, .invalid_request, request_id);
     }
     const uploads_query = parsed.query("uploads") catch {
@@ -1913,6 +1981,7 @@ fn servePostPolicyUpload(
         return respondError(request, application.allocator, .service_unavailable, request_id);
     };
     const object = objects.put(parsed.bucket.?, expanded_key, bounded.interface(), .{
+        .creation_event = .post,
         .encryption = if (encryption_algorithm != null) true else null,
         .kms_selection = kms_selection,
         .content_type = policy_constraints.content_type.?,
@@ -2501,6 +2570,7 @@ fn serveGetObject(
         try lease.stream(sink.interface());
     }
     try body_writer.end();
+    objects.notifyObject(.GET, "ObjectAccessed:Get", object.*);
     return if (range != null) .partial_content else .ok;
 }
 
@@ -2510,11 +2580,12 @@ fn serveHeadObject(
     parsed: protocol.ParsedTarget,
     access: BucketAccess,
     headers: []const sigv4.Header,
+    payload_hash: sigv4.PayloadHash,
     request_id: []const u8,
 ) !std.http.Status {
     const bucket_name = parsed.bucket.?;
     const key = parsed.key.?;
-    if (ensureEmptyRequest(request, headers) != null) {
+    if (ensureEmptyRequestWithHash(request, payload_hash) != null) {
         return respondError(request, application.allocator, .invalid_request, request_id);
     }
     const bucket = ensureBucketOwner(application, bucket_name, access) catch |err| {
@@ -2558,6 +2629,7 @@ fn serveHeadObject(
         .transfer_encoding = .none,
         .extra_headers = header_values,
     });
+    objects.notifyObject(.GET, "ObjectAccessed:Head", object.*);
     return .ok;
 }
 
@@ -2638,7 +2710,7 @@ fn serveCreateMultipartUpload(
     const uploads = parsed.query("uploads") catch {
         return respondError(request, application.allocator, .invalid_argument, request_id);
     } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
-    if (uploads.len != 0 or ensureEmptyRequest(request, headers) != null) {
+    if (uploads.len != 0 or ensureEmptyRequestForAccess(request, headers, access) != null) {
         return respondError(request, application.allocator, .invalid_request, request_id);
     }
     const bucket = ensureBucketOwner(application, parsed.bucket.?, access) catch |err| {
@@ -2827,7 +2899,7 @@ fn serveUploadPartCopy(
     const upload = upload_id orelse return respondError(request, application.allocator, .invalid_argument, request_id);
     const part_number = std.fmt.parseInt(u16, part_number_text orelse return respondError(request, application.allocator, .invalid_argument, request_id), 10) catch return respondError(request, application.allocator, .invalid_argument, request_id);
     if (part_number == 0 or part_number > multipart_domain.max_parts) return respondError(request, application.allocator, .invalid_argument, request_id);
-    if (ensureEmptyRequest(request, headers) != null) return respondError(request, application.allocator, .invalid_request, request_id);
+    if (ensureEmptyRequestForAccess(request, headers, access) != null) return respondError(request, application.allocator, .invalid_request, request_id);
     const target_bucket = ensureBucketOwner(application, parsed.bucket.?, access) catch |err| return respondError(request, application.allocator, mapBucketError(err), request_id);
     target_bucket.deinit(application.allocator);
 
@@ -2876,7 +2948,7 @@ fn serveListParts(
     headers: []const sigv4.Header,
     request_id: []const u8,
 ) !std.http.Status {
-    if (ensureEmptyRequest(request, headers) != null) {
+    if (ensureEmptyRequestForAccess(request, headers, access) != null) {
         return respondError(request, application.allocator, .invalid_request, request_id);
     }
     const upload_id = parsed.query("uploadId") catch {
@@ -3045,7 +3117,7 @@ fn serveAbortMultipartUpload(
     headers: []const sigv4.Header,
     request_id: []const u8,
 ) !std.http.Status {
-    if (ensureEmptyRequest(request, headers) != null) {
+    if (ensureEmptyRequestForAccess(request, headers, access) != null) {
         return respondError(request, application.allocator, .invalid_request, request_id);
     }
     const upload_id = parsed.query("uploadId") catch {
@@ -3071,7 +3143,7 @@ fn serveDeleteObjects(
     access: BucketAccess,
     headers: []const sigv4.Header,
     bypass_governance_retention: bool,
-    material: *const credential_service.AuthMaterial,
+    material: ?*const credential_service.AuthMaterial,
     conditions: iam.Context,
     request_id: []const u8,
 ) !std.http.Status {
@@ -3097,7 +3169,7 @@ fn serveDeleteObjects(
     if (expected_md5 == null and flexible_checksum.header == null) {
         return respondError(request, application.allocator, .invalid_digest, request_id);
     }
-    const payload_hash = sigv4.requestPayloadHash(headers) catch {
+    const payload_hash: sigv4.PayloadHash = if (material == null) .unsigned else sigv4.requestPayloadHash(headers) catch {
         return respondError(request, application.allocator, .invalid_request, request_id);
     };
     if (payload_hash == .streaming) {
@@ -3167,15 +3239,38 @@ fn serveDeleteObjects(
             "<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">",
     ) catch return respondError(request, application.allocator, .internal_error, request_id);
     const bypass_requested = governanceBypassRequestedFromHeaders(headers) and bypass_governance_retention;
-    for (delete_request.keys) |key| {
-        if (!material.allowsWithContext(application.allocator, "s3:DeleteObject", parsed.bucket, key, conditions) or (bypass_requested and !material.allowsWithContext(application.allocator, "s3:BypassGovernanceRetention", parsed.bucket, key, conditions))) {
+    for (delete_request.objects) |item| {
+        const key = item.key;
+        const version: ?object_domain.VersionId = if (item.version_id) |value| object_domain.parseVersionId(value) catch {
+            try writer.writeAll("<Error><Key>");
+            try protocol.writeXmlEscaped(writer, key);
+            try writer.writeAll("</Key><Code>InvalidArgument</Code><Message>Invalid version ID</Message></Error>");
+            continue;
+        } else null;
+        const delete_action = if (version != null) "s3:DeleteObjectVersion" else "s3:DeleteObject";
+        var arena = std.heap.ArenaAllocator.init(application.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var key_ctx = try augmentExistingObjectTags(a, application, parsed.bucket.?, key, version, conditions);
+        if (item.version_id) |value| {
+            var entries: std.ArrayList(iam.Entry) = .empty;
+            try entries.appendSlice(a, key_ctx.entries);
+            try iam_context.add(a, &entries, "s3:versionId", value);
+            key_ctx.entries = try entries.toOwnedSlice(a);
+        }
+        const allowed = if (material) |auth| auth.allowsWithContext(a, delete_action, parsed.bucket, key, key_ctx) and (!bypass_requested or auth.allowsWithContext(a, "s3:BypassGovernanceRetention", parsed.bucket, key, key_ctx)) else blk: {
+            const document = key_ctx.resource_document orelse break :blk false;
+            const resource = try std.fmt.allocPrint(a, "arn:aws:s3:::{s}/{s}", .{ parsed.bucket.?, key });
+            break :blk iam.decisionWithContext(a, &[_][]const u8{document}, delete_action, resource, key_ctx) == .allow;
+        };
+        if (!allowed) {
             try writer.writeAll("<Error><Key>");
             try protocol.writeXmlEscaped(writer, key);
             try writer.writeAll("</Key><Code>AccessDenied</Code><Message>Access Denied</Message></Error>");
             continue;
         }
 
-        _ = objects.deleteWithGovernanceBypass(parsed.bucket.?, key, bypass_requested) catch |err| {
+        _ = (if (version) |value| objects.deleteVersionWithGovernanceBypass(parsed.bucket.?, key, value, bypass_requested) else objects.deleteWithGovernanceBypass(parsed.bucket.?, key, bypass_requested)) catch |err| {
             const descriptor = protocol.describe(mapObjectError(err));
             writer.writeAll("<Error><Key>") catch {
                 return respondError(request, application.allocator, .internal_error, request_id);
@@ -3197,7 +3292,13 @@ fn serveDeleteObjects(
                 return respondError(request, application.allocator, .internal_error, request_id);
             };
             protocol.writeXmlEscaped(writer, key) catch return error.WriteFailed;
-            writer.writeAll("</Key></Deleted>") catch {
+            try writer.writeAll("</Key>");
+            if (item.version_id) |value| {
+                try writer.writeAll("<VersionId>");
+                try protocol.writeXmlEscaped(writer, value);
+                try writer.writeAll("</VersionId>");
+            }
+            writer.writeAll("</Deleted>") catch {
                 return respondError(request, application.allocator, .internal_error, request_id);
             };
         }
@@ -3225,6 +3326,10 @@ fn ensureBucketOwner(
         return error.InvalidOwner;
     }
     return bucket;
+}
+
+fn ensureEmptyRequestForAccess(request: *const std.http.Server.Request, headers: []const sigv4.Header, access: BucketAccess) ?protocol.ErrorKind {
+    return if (access.owner.len == 0 and access.iam_authorized) ensureEmptyRequestWithHash(request, .unsigned) else ensureEmptyRequest(request, headers);
 }
 
 fn ensureEmptyRequest(
@@ -4172,7 +4277,8 @@ const ObjectResponseHeaders = struct {
         index += 1;
         self.headers[index] = .{ .name = "access-control-allow-origin", .value = "*" };
         index += 1;
-        self.headers[index] = .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-version-id, x-amz-delete-marker, x-amz-copy-source-version-id, x-amz-server-side-encryption" };
+        // Presigned browser requests omit credentials; expose custom x-amz-meta-* headers too.
+        self.headers[index] = .{ .name = "access-control-expose-headers", .value = "*" };
         index += 1;
         for (object.user_metadata, 0..) |entry, metadata_index| {
             self.headers[index] = .{
@@ -5007,4 +5113,17 @@ test "download disposition override rejects header injection and duplicate value
         defer parsed.deinit();
         try std.testing.expectError(error.InvalidArgument, parseResponseContentDisposition(parsed));
     }
+}
+
+test "object tag XML preserves whitespace and decodes entities exactly once" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tags: std.ArrayList(object_tags.Tag) = .empty;
+    try parseTagXml(a, "<Tagging><TagSet><Tag><Key> a&amp;b </Key><Value>&lt;&gt;&quot;&apos;&amp;amp;</Value></Tag><Tag><Key>empty</Key><Value></Value></Tag></TagSet></Tagging>", &tags);
+    try std.testing.expectEqualStrings(" a&b ", tags.items[0].key);
+    try std.testing.expectEqualStrings("<>\"'&amp;", tags.items[0].value);
+    try std.testing.expectEqualStrings("", tags.items[1].value);
+    try std.testing.expectError(error.MalformedXml, decodeTagXmlText(a, "&unknown;"));
+    try std.testing.expectError(error.MalformedXml, decodeTagXmlText(a, "<nested>"));
 }

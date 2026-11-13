@@ -33,6 +33,12 @@ func (handler *Auth) STSLogin(ctx *gin.Context) {
 			writeError(ctx, http.StatusUnauthorized, "Unauthorized", "invalid STS credentials")
 			return
 		}
+		var denied *port.StatusError
+		if errors.As(err, &denied) && denied.StatusCode == http.StatusForbidden && denied.Code == "ConsoleAccessDenied" {
+			ctx.SetCookie(middleware.AdminSessionCookie, "", -1, "/api", "", false, true)
+			writeError(ctx, http.StatusForbidden, "ConsoleAccessDenied", "current identity has no console page permissions")
+			return
+		}
 		writeError(ctx, http.StatusServiceUnavailable, "StorageOffline", "ZigFS authentication is unavailable")
 		return
 	}
@@ -67,6 +73,12 @@ func (handler *Auth) Login(ctx *gin.Context) {
 		var statusError *port.StatusError
 		if errors.As(err, &statusError) && statusError.StatusCode == http.StatusUnauthorized {
 			writeError(ctx, http.StatusUnauthorized, "Unauthorized", "invalid username or password")
+			return
+		}
+		var denied *port.StatusError
+		if errors.As(err, &denied) && denied.StatusCode == http.StatusForbidden && denied.Code == "ConsoleAccessDenied" {
+			ctx.SetCookie(middleware.AdminSessionCookie, "", -1, "/api", "", false, true)
+			writeError(ctx, http.StatusForbidden, "ConsoleAccessDenied", "current identity has no console page permissions")
 			return
 		}
 		writeError(ctx, http.StatusServiceUnavailable, "StorageOffline", "ZigFS authentication is unavailable")
@@ -107,6 +119,12 @@ func (handler *Auth) Session(ctx *gin.Context) {
 		var statusError *port.StatusError
 		if errors.As(err, &statusError) && statusError.StatusCode == http.StatusUnauthorized {
 			writeError(ctx, http.StatusUnauthorized, "Unauthorized", "session has expired")
+			return
+		}
+		var denied *port.StatusError
+		if errors.As(err, &denied) && denied.StatusCode == http.StatusForbidden && denied.Code == "ConsoleAccessDenied" {
+			ctx.SetCookie(middleware.AdminSessionCookie, "", -1, "/api", "", false, true)
+			writeError(ctx, http.StatusForbidden, "ConsoleAccessDenied", "current identity has no console page permissions")
 			return
 		}
 		writeError(ctx, http.StatusServiceUnavailable, "StorageOffline", "ZigFS authentication is unavailable")

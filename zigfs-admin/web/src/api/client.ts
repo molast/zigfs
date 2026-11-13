@@ -4,7 +4,7 @@ export interface LogConfig { level: string; format: string; output: string; dire
 export interface LogQuery { content: string; truncated: boolean; range: string }
 import type { KmsDraft } from '@/features/settings/KmsSettingsPanel'
 export interface KmsStatus { state: 'unconfigured' | 'configured' | 'running' | 'error'; errorMessage: string; healthChecked: boolean; healthy: boolean; configured: boolean; config: KmsDraft; tokenConfigured: boolean; staticSecretKeyConfigured: boolean }
-export interface KmsKey { id: string; name: string; description: string; status: string; algorithm: string; usage: string; version: number; createdAt: string | null; rotatedAt: string | null; deletionDate: string | null; manageable: boolean }
+export interface KmsKey { id: string; name: string; description: string; status: string; algorithm: string; usage: string; version: number; createdAt: string | null; rotatedAt: string | null; deletionDate: string | null; manageable: boolean; permissions?: { describe: boolean; rotate: boolean; delete: boolean } }
 export interface KmsKeyList { items: KmsKey[]; canCreate: boolean; canRekey: boolean }
 export interface KmsCreateKey { name: string; description: string; setAsDefault: boolean }
 export type KmsKeyAction = 'rotate' | 'schedule-deletion' | 'cancel-deletion' | 'delete'
@@ -153,6 +153,7 @@ export function createApiClient() {
     assumeRole: (value: AssumeRoleRequest) => request<AssumeRoleResponse>('/api/v1/sts/assume-role', { method: 'POST', body: JSON.stringify(value) }),
     listRoleSessions: async () => (await request<{ items: RoleSession[] }>('/api/v1/role-sessions')).items,
     revokeRoleSession: (accessKey: string) => request<void>(`/api/v1/role-sessions/${encodeURIComponent(accessKey)}/revoke`, { method: 'POST' }),
+    deleteRoleSession: (accessKey: string) => request<void>(`/api/v1/role-sessions/${encodeURIComponent(accessKey)}`, { method: 'DELETE' }),
     listUsers: async () => (await request<{ items: ManagedUser[] }>('/api/v1/users')).items,
     getUser: (name: string) => request<ManagedUser>(`/api/v1/users/${encodeURIComponent(name)}`),
     createUser: (value: UserWrite) => request<ManagedUser>('/api/v1/users', { method: 'POST', body: JSON.stringify(value) }),
@@ -198,6 +199,10 @@ export function createApiClient() {
     saveNetworkSettings: (value: { s3_public_endpoint: string; s3_virtual_hosted_style: boolean; trusted_proxies: string[] }) => request('/api/v1/settings/network', { method: 'PUT', body: JSON.stringify(value) }),
     authenticationSettings: () => request<AuthenticationSettings>('/api/v1/settings/authentication'),
     saveAuthenticationSettings: (value: AuthenticationValues) => request<AuthenticationSettings>('/api/v1/settings/authentication', { method: 'PUT', body: JSON.stringify(value) }),
+    eventDestinations: () => request<{ items: import('../types/api').EventDestination[] }>('/api/v1/event-destinations'),
+    createEventDestination: (value: import('../types/api').EventDestination) => request<import('../types/api').EventDestination>('/api/v1/event-destinations', { method: 'POST', body: JSON.stringify(value) }),
+    updateEventDestination: (value: import('../types/api').EventDestination) => request<import('../types/api').EventDestination>(`/api/v1/event-destinations/${encodeURIComponent(value.name)}`, { method: 'PUT', body: JSON.stringify(value) }),
+    deleteEventDestination: (name: string) => request<{ deleted: boolean }>(`/api/v1/event-destinations/${encodeURIComponent(name)}`, { method: 'DELETE' }),
     displaySettings: () => request<DisplaySettings>('/api/v1/settings/display'),
     saveDisplaySettings: (value: DisplayPreferences) => request<DisplaySettings>('/api/v1/settings/display', { method: 'PUT', body: JSON.stringify(value) }),
     regionSettings: () => request<RegionSettings>('/api/v1/settings/region'),
@@ -209,6 +214,7 @@ export function createApiClient() {
     clearKmsCache: () => request<KmsStatus>('/api/v1/settings/kms/clear-cache', { method: 'POST' }),
     kmsKeys: () => request<KmsKeyList>('/api/v1/settings/kms/keys'),
     createKmsKey: (input: KmsCreateKey) => request<KmsKey>('/api/v1/settings/kms/keys', { method: 'POST', body: JSON.stringify(input) }),
+    describeKmsKey: (id: string) => request<KmsKey>('/api/v1/settings/kms/keys/action', { method: 'POST', body: JSON.stringify({ id, action: 'describe' }) }),
     kmsKeyAction: (id: string, action: KmsKeyAction) => request<{ ok: boolean }>('/api/v1/settings/kms/keys/action', { method: 'POST', body: JSON.stringify({ id, action }) }),
     startKms: () => request<KmsStatus>('/api/v1/settings/kms/start', { method: 'POST' }),
     kmsSettings: () => request<KmsStatus>('/api/v1/settings/kms'),
@@ -234,6 +240,8 @@ export function createApiClient() {
       for (const [key, value] of Object.entries(filters)) if (value !== undefined && value !== '') query.set(key, String(value))
       return request<AuditPage>(`/api/v1/audit-events?${query.toString()}`)
     },
+    getBucketEventSubscriptions: (name: string) => request<{ items: import('../types/api').BucketEventSubscription[] }>(`/api/v1/buckets/${encodeURIComponent(name)}/event-subscriptions`),
+    putBucketEventSubscriptions: (name: string, items: import('../types/api').BucketEventSubscription[]) => request<{ items: import('../types/api').BucketEventSubscription[] }>(`/api/v1/buckets/${encodeURIComponent(name)}/event-subscriptions`, { method: 'PUT', body: JSON.stringify({ items }) }),
     listBucketEvents: (name: string, cursor = '', limit = 50, from = '', to = '', action = '', outcome = '') => {
       const query = new URLSearchParams({ limit: String(limit) })
       if (cursor) query.set('cursor', cursor)
@@ -250,6 +258,10 @@ export function createApiClient() {
       method: 'PATCH',
       body: JSON.stringify(update),
     }),
+    setObjectLegalHold: (bucket: string, key: string, versionId: string, enabled: boolean) =>
+      request<{ key: string; version_id: string; legal_hold: boolean }>(`/api/v1/buckets/${encodeURIComponent(bucket)}/legal-hold`, {
+        method: 'PATCH', body: JSON.stringify({ key, version_id: versionId, enabled }),
+      }),
     listObjectVersions: async (bucket: string, prefix = '') => {
       const query = new URLSearchParams()
       if (prefix) query.set('prefix', prefix)
@@ -288,7 +300,7 @@ export function createApiClient() {
       accessKey: string,
       bucket: string,
       key: string,
-      method: 'GET' | 'PUT' | 'DELETE',
+      method: 'GET' | 'HEAD' | 'PUT' | 'DELETE',
       expiresSeconds: number,
       options?: {
         uploadId?: string

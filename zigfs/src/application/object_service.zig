@@ -39,6 +39,7 @@ pub const Error = error{
 };
 
 pub const PutOptions = struct {
+    creation_event: enum { put, post } = .put,
     encryption: ?bool = null,
     kms_key: ?[]const u8 = null,
     kms_selection: ?@import("kms.zig").Envelope = null,
@@ -82,6 +83,7 @@ pub const Usage = struct {
 };
 
 pub const DeleteResult = struct {
+    bucket_id: ?[16]u8 = null,
     deleted: bool,
     delete_marker: bool = false,
     version_id: ?object_domain.VersionId = null,
@@ -241,6 +243,8 @@ pub const ReadLease = struct {
 };
 
 pub const ObjectService = struct {
+    event_sink: ?@import("../ports/bucket_events.zig").Sink = null,
+    deletion_category: @import("../ports/bucket_events.zig").Category = .DELETE,
     allocator: std.mem.Allocator,
     io: std.Io,
     bucket_store: bucket_store_port.BucketStore,
@@ -316,6 +320,7 @@ pub const ObjectService = struct {
         defer if (staged_pending) self.data_store.discard(staged.token);
         const object = self.commitStaged(bucket_name, key, initial_bucket, staged, options, false) catch |err| return err;
         staged_pending = false;
+        self.notifyObject(.PUT, if (options.creation_event == .post) "ObjectCreated:Post" else "ObjectCreated:Put", object);
         return object;
     }
 
@@ -388,6 +393,7 @@ pub const ObjectService = struct {
         staged_pending = false;
         // MultipartService first persists the terminal upload state, then
         // reclaims its parts. Failures before that leave resumable upload data.
+        self.notifyObject(.PUT, "ObjectCreated:CompleteMultipartUpload", object);
         return object;
     }
 
@@ -464,6 +470,7 @@ pub const ObjectService = struct {
 
         const object = self.commitStaged(target_bucket_name, target_key, initial_bucket, staged, copy_options, false) catch |err| return err;
         staged_pending = false;
+        self.notifyObject(.PUT, "ObjectCreated:Copy", object);
         return object;
     }
 
@@ -749,11 +756,37 @@ pub const ObjectService = struct {
         return result;
     }
 
+    pub fn notifyObject(self: ObjectService, category: @import("../ports/bucket_events.zig").Category, name: []const u8, object: anytype) void {
+        const sink = self.event_sink orelse return;
+        var version: [32]u8 = undefined;
+        const hex = std.fmt.bytesToHex(object.etag_md5, .lower);
+        var etag_buffer: [40]u8 = undefined;
+        const etag: []const u8 = if (object.etag_part_count == 0) &hex else std.fmt.bufPrint(&etag_buffer, "{s}-{d}", .{ hex, object.etag_part_count }) catch unreachable;
+        sink.emit(.{ .category = category, .name = name, .bucket_id = object.bucket_id, .bucket = object.bucket_name, .key = object.key, .size = object.size, .etag = etag, .version_id = object.version_id.write(&version), .generation = object.metadata_generation });
+    }
+    fn notifyDelete(self: ObjectService, bucket: []const u8, key: []const u8, result: DeleteResult, explicit_version: bool) void {
+        if (!result.deleted) return;
+        const sink = self.event_sink orelse return;
+        var version: [32]u8 = undefined;
+        const name = if (self.deletion_category == .ILM) (if (result.delete_marker) (if (explicit_version) "LifecycleDelMarkerExpiration:Delete" else "LifecycleExpiration:DeleteMarkerCreated") else "LifecycleExpiration:Delete") else if (result.delete_marker and !explicit_version) "ObjectRemoved:DeleteMarkerCreated" else "ObjectRemoved:Delete";
+        sink.emit(.{ .category = self.deletion_category, .name = name, .bucket_id = result.bucket_id orelse return, .bucket = bucket, .key = key, .version_id = if (result.version_id) |v| v.write(&version) else "" });
+    }
+    pub fn deleteWithGovernanceBypass(self: ObjectService, bucket: []const u8, key: []const u8, bypass: bool) Error!DeleteResult {
+        const result = try self.deleteWithGovernanceBypassImpl(bucket, key, bypass);
+        self.notifyDelete(bucket, key, result, false);
+        return result;
+    }
+    pub fn deleteVersionWithGovernanceBypass(self: ObjectService, bucket: []const u8, key: []const u8, version: object_domain.VersionId, bypass: bool) Error!DeleteResult {
+        const result = try self.deleteVersionWithGovernanceBypassImpl(bucket, key, version, bypass);
+        self.notifyDelete(bucket, key, result, true);
+        return result;
+    }
+
     pub fn delete(self: ObjectService, bucket_name: []const u8, key: []const u8) Error!DeleteResult {
         return self.deleteWithGovernanceBypass(bucket_name, key, false);
     }
 
-    pub fn deleteWithGovernanceBypass(
+    fn deleteWithGovernanceBypassImpl(
         self: ObjectService,
         bucket_name: []const u8,
         key: []const u8,
@@ -788,7 +821,7 @@ pub const ObjectService = struct {
                 generation,
             ) catch |err| return mapObjectStoreError(err);
             if (!self.index.removeObject(bucket_name, key)) return error.CorruptMetadata;
-            return .{ .deleted = true };
+            return .{ .bucket_id = bucket.id, .deleted = true };
         }
 
         if (bucket.versioning == .unversioned) {
@@ -814,7 +847,7 @@ pub const ObjectService = struct {
                 generation,
             ) catch |err| return mapObjectStoreError(err);
             if (!self.index.removeObject(bucket_name, key)) return error.CorruptMetadata;
-            return .{ .deleted = true };
+            return .{ .bucket_id = bucket.id, .deleted = true };
         }
 
         const version_id: object_domain.VersionId = if (bucket.versioning == .enabled)
@@ -850,7 +883,7 @@ pub const ObjectService = struct {
         defer prepared.deinit(self.index.allocator);
         const generation = self.object_store.putHistory(self.allocator, &history, expected_generation) catch |err| return mapObjectStoreError(err);
         self.index.publishObject(&prepared, generation);
-        return .{ .deleted = true, .delete_marker = true, .version_id = version_id };
+        return .{ .bucket_id = bucket.id, .deleted = true, .delete_marker = true, .version_id = version_id };
     }
 
     pub fn deleteVersion(
@@ -862,7 +895,7 @@ pub const ObjectService = struct {
         return self.deleteVersionWithGovernanceBypass(bucket_name, key, version_id, false);
     }
 
-    pub fn deleteVersionWithGovernanceBypass(
+    fn deleteVersionWithGovernanceBypassImpl(
         self: ObjectService,
         bucket_name: []const u8,
         key: []const u8,
@@ -897,7 +930,7 @@ pub const ObjectService = struct {
                 generation,
             ) catch |err| return mapObjectStoreError(err);
             if (!self.index.removeObject(bucket_name, key)) return error.CorruptMetadata;
-            return .{ .deleted = true, .version_id = version_id };
+            return .{ .bucket_id = bucket.id, .deleted = true, .version_id = version_id };
         }
 
         const existing = switch (current) {
@@ -934,7 +967,7 @@ pub const ObjectService = struct {
             defer prepared.deinit(self.index.allocator);
             self.index.publishObject(&prepared, generation);
         }
-        return .{ .deleted = true, .delete_marker = was_delete_marker, .version_id = version_id };
+        return .{ .bucket_id = bucket.id, .deleted = true, .delete_marker = was_delete_marker, .version_id = version_id };
     }
 
     pub fn setLegalHold(self: ObjectService, bucket_name: []const u8, key: []const u8, version_id: object_domain.VersionId, enabled: bool) Error!object_domain.Object {

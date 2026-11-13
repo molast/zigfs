@@ -22,7 +22,7 @@ interface Snapshot {
   refreshedAt: Date
 }
 
-export function SystemView({ api }: { api: ApiClient }) {
+export function SystemView({ api, diagnosticsOnly = false }: { api: ApiClient; diagnosticsOnly?: boolean }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [busy, setBusy] = useState(false)
   const [now, setNow] = useState(() => Date.now())
@@ -37,7 +37,7 @@ export function SystemView({ api }: { api: ApiClient }) {
     pending.current = true
     setBusy(true)
     try {
-      const results = await Promise.allSettled([api.system(), api.managementHealth(), api.storage(), api.storageScanner(), api.settings()])
+      const results = await Promise.allSettled([api.system(), api.managementHealth(), diagnosticsOnly ? Promise.resolve(null) : api.storage(), diagnosticsOnly ? Promise.resolve(null) : api.storageScanner(), diagnosticsOnly ? Promise.resolve(null) : api.settings()])
       if (!active.current) return
       const [system, health, storage, scanner, settings] = results
       const labels = [t('common.system'), t('common.health'), t('common.storage'), t('common.scanner'), t('common.settings')]
@@ -55,7 +55,7 @@ export function SystemView({ api }: { api: ApiClient }) {
       pending.current = false
       if (active.current) setBusy(false)
     }
-  }, [api, notifyError])
+  }, [api, notifyError, diagnosticsOnly])
 
   useEffect(() => {
     active.current = true
@@ -104,14 +104,14 @@ export function SystemView({ api }: { api: ApiClient }) {
         <CardHeader><div className="monitoring-card-heading"><CardTitle>{t('system.serviceHealth')}</CardTitle><Badge>{status}</Badge></div><CardDescription>{t('system.readinessAndRecoveryStatusOfThisZigfsInstance')}</CardDescription></CardHeader>
         <CardContent><div className="monitoring-grid monitoring-health-counts"><div><h4>{t('system.servers')}</h4><div className="monitoring-metrics"><Metric label={t('system.reported')} value={system ? '1' : '—'} /><Metric label={t('system.ready')} value={health ? health.status === 'ready' ? '1' : '0' : '—'} /></div></div><div><h4>{t('system.disks')}</h4><div className="monitoring-metrics"><Metric label={t('system.online')} value={t('common.notReported')} /><Metric label={t('system.offline')} value={t('common.notReported')} /></div></div></div><Separator /><div className="monitoring-metrics"><Metric label={t('system.recovery')} value={health?.recovery ?? t('common.unknown')} /><Metric label={t('system.version')} value={system?.version ?? '—'} /></div></CardContent>
       </Card>
-      <Card>
+      {!diagnosticsOnly && <Card>
         <CardHeader><CardTitle>{t('system.storageUsageAndScanner')}</CardTitle><CardDescription>{t('system.reviewCapacityPressureAndScannerActivityInOnePlace')}</CardDescription></CardHeader>
         <CardContent><div className="monitoring-primary-metric"><Database aria-hidden="true" /><div><span>{t('system.usableCapacityUsed')}</span><strong>{physicalUsed !== null ? formatBytes(physicalUsed) : t('system.notReported')}</strong></div></div>
           {capacityPercent !== null ? <div className="monitoring-capacity"><Progress value={capacityPercent} aria-label={t('system.filesystemCapacityUsed')} /><span>{capacityPercent.toFixed(1)}{t('system.filesystemCapacityUsedPercentLabel')}</span></div> : <p className="monitoring-muted">{t('system.filesystemUtilizationIsNotReported')}</p>}
           <Separator /><div className="monitoring-metrics monitoring-three"><Metric label={t('system.used')} value={physicalUsed !== null ? formatBytes(physicalUsed) : t('common.notReported')} /><Metric label={t('system.available')} value={storage?.available != null ? formatBytes(storage.available) : t('common.notReported')} /><Metric label={t('system.totalCapacity')} value={storage?.total != null ? formatBytes(storage.total) : t('common.notReported')} /></div>
           <Separator /><div className="monitoring-metrics monitoring-three"><Metric label={t('system.lastCompletedScan')} value={scanner?.last_completed_at ? relativeTime(scanner.last_completed_at, now) : t('common.noCompletedScan')} /><Metric label={t('system.scannerStatus')} value={scanState} /><Metric label={t('system.scanDuration')} value={scanner?.last_duration_ms != null ? formatScanDuration(scanner.last_duration_ms) : t('common.notReported')} /></div>
         </CardContent>
-      </Card>
+      </Card>}
     </div>
 
     <Card>
@@ -127,7 +127,7 @@ export function SystemView({ api }: { api: ApiClient }) {
       <Card><CardHeader><div className="monitoring-card-heading"><CardDescription>{t('system.objects')}</CardDescription><Layers aria-hidden="true" /></div></CardHeader><CardContent><strong className="monitoring-count">{system?.objects.toLocaleString(getFormatLocale()) ?? '—'}</strong></CardContent></Card>
     </div></section>
 
-    <Card><CardHeader><CardTitle>{t('system.storageConfiguration')}</CardTitle><CardDescription>{t('system.localStorageAndLifecycleConfigurationForThisInstance')}</CardDescription></CardHeader><CardContent><Separator /><div className="monitoring-metrics monitoring-three"><Metric label={t('system.backendType')} value="Local filesystem" /><Metric label={t('system.streamBuffer')} value={settings ? formatBytes(settings.stream_buffer_size) : '—'} /><Metric label={t('system.lifecycleScanInterval')} value={settings ? formatDuration(settings.lifecycle_scan_interval_seconds) : '—'} /></div><Separator /><div className="monitoring-metrics monitoring-three"><Metric label={t('system.incompleteUploadExpiry')} value={settings ? formatDuration(settings.multipart_expiry_seconds) : '—'} /><Metric label={t('system.standardStorageParity')} value="Not applicable" /><Metric label={t('system.reducedRedundancyParity')} value="Not applicable" /></div></CardContent></Card>
+    {!diagnosticsOnly && <Card><CardHeader><CardTitle>{t('system.storageConfiguration')}</CardTitle><CardDescription>{t('system.localStorageAndLifecycleConfigurationForThisInstance')}</CardDescription></CardHeader><CardContent><Separator /><div className="monitoring-metrics monitoring-three"><Metric label={t('system.backendType')} value="Local filesystem" /><Metric label={t('system.streamBuffer')} value={settings ? formatBytes(settings.stream_buffer_size) : '—'} /><Metric label={t('system.lifecycleScanInterval')} value={settings ? formatDuration(settings.lifecycle_scan_interval_seconds) : '—'} /></div><Separator /><div className="monitoring-metrics monitoring-three"><Metric label={t('system.incompleteUploadExpiry')} value={settings ? formatDuration(settings.multipart_expiry_seconds) : '—'} /><Metric label={t('system.standardStorageParity')} value="Not applicable" /><Metric label={t('system.reducedRedundancyParity')} value="Not applicable" /></div></CardContent></Card>}
 
     <Card><Collapsible open={diagnosticsOpen} onOpenChange={setDiagnosticsOpen}>
       <CardHeader><div className="monitoring-card-heading"><div><CardTitle>{t('system.diagnosticDetails')}</CardTitle><CardDescription>{t('system.reportedDiagnosticsAndTheirDataSourcesUnsupportedChecksAre')}</CardDescription></div><CollapsibleTrigger asChild><Button variant="ghost" size="sm">{diagnosticsOpen ? t('system.collapse') : t('system.expand')}<ChevronDown data-icon="inline-end" /></Button></CollapsibleTrigger></div></CardHeader>

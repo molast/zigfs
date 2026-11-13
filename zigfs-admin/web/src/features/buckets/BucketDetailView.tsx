@@ -1,3 +1,4 @@
+import { AnonymousAccess } from './AnonymousAccess'
 import { formatDateTime } from '@/lib/dateTime'
 import { Textarea } from '../../components/ui/Textarea'
 import { Alert, AlertTitle, AlertDescription } from '../../components/ui/alert'
@@ -5,10 +6,8 @@ import { OptionSelect } from '../../components/ui/OptionSelect'
 import { t, getFormatLocale, displayValue } from '@/locales'
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import {
-  Activity,
   Archive,
   ArrowLeft,
-  CircleAlert,
   Gauge,
   KeyRound,
   LockKeyhole,
@@ -23,16 +22,15 @@ import { type ApiClient, type KmsKey } from '../../api/client'
 import { useConfirm } from '../../components/ConfirmProvider'
 import { useLoading } from '../../components/LoadingProvider'
 import { useErrorToast, useToast } from '../../components/ToastProvider'
-import type { AuditEvent, Bucket, BucketConfiguration } from '../../types/api'
-import { BucketPolicyEditor } from './BucketPolicyEditor'
+import type { Bucket, BucketConfiguration } from '../../types/api'
 import { Button } from '../../components/ui/Button'
-import { Tooltip, TooltipContent, TooltipTrigger } from '../../components/ui/tooltip'
 import { Badge } from '../../components/ui/Badge'
 import { Switch } from '../../components/ui/switch'
 import { RadioGroup, RadioGroupItem } from '../../components/ui/radio-group'
 import { Input } from '../../components/ui/Input'
 import { Field, FieldGroup, FieldLabel, FieldDescription } from '../../components/ui/field'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/Dialog'
+import { BucketEvents } from './BucketEvents'
 import { LifecycleRulesEditor } from './LifecycleRulesEditor'
 import { parseLifecycleConfiguration, serializeLifecycleConfiguration, type LifecycleRule } from './lifecycle'
 
@@ -47,7 +45,7 @@ interface BucketUsage {
   objects: number
 }
 
-const sections = ['Summary', 'Events', 'Replication', 'Lifecycle', 'Access', 'Anonymous']
+const sections = ['Summary', 'Events', 'Lifecycle', 'Anonymous'] as const
 
 export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewProps) {
   const confirm = useConfirm()
@@ -55,7 +53,7 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
   const showToast = useToast()
   const [bucket, setBucket] = useState<Bucket | null>(null)
   const [configuration, setConfiguration] = useState<BucketConfiguration | null>(null)
-  const [activeSection, setActiveSection] = useState<'Summary' | 'Events' | 'Lifecycle' | 'Access' | 'Anonymous'>('Summary')
+  const [activeSection, setActiveSection] = useState<(typeof sections)[number]>('Summary')
   const [lifecycleRules, setLifecycleRules] = useState<LifecycleRule[]>([])
   const [tags, setTags] = useState<Record<string, string>>({})
   const [tagKey, setTagKey] = useState('')
@@ -182,22 +180,6 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
     } catch (reason) {
       notifyError(changed ? t('buckets.policyPartiallySaved', { error: (reason as Error).message }) : (reason as Error).message)
     } finally { setLoading(false) }
-  }
-
-  async function updateAccessPolicy(access_policy: 'Private' | 'Readonly' | 'Public') {
-    const stopLoading = startLoading(t('buckets.updatingAccessPolicy'))
-    try {
-      setLoading(true)
-      const updated = await api.updateBucketConfiguration(bucketName, { access_policy })
-      setConfiguration(updated)
-      setAccessPolicyDialogOpen(false)
-      showToast(t('buckets.accessPolicyUpdatedToValue', { '0': access_policy }))
-    } catch (reason) {
-      notifyError((reason as Error).message)
-    } finally {
-      setLoading(false)
-      stopLoading()
-    }
   }
 
   useEffect(() => {
@@ -444,32 +426,31 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
 
       <section className="panel bucket-settings-panel">
         <nav className="bucket-settings-nav" aria-label={t('buckets.bucketConfiguration')}>
-          {sections.map((section) => {
-            const available = section === 'Summary' || section === 'Events' || section === 'Lifecycle' || section === 'Access' || section === 'Anonymous'
-            return <button key={section} className={activeSection === section ? 'active' : ''} type="button" disabled={!available} title={available ? undefined : t('buckets.availableInAFutureRelease')} onClick={() => available && setActiveSection(section as 'Summary' | 'Events' | 'Lifecycle' | 'Access' | 'Anonymous')}>
+          {sections.map((section) => (
+            <button key={section} className={activeSection === section ? 'active' : ''} type="button" onClick={() => setActiveSection(section)}>
               {displayValue(section)}
             </button>
-          })}
+          ))}
         </nav>
 
         <div className="bucket-settings-content">
-          <div className="bucket-settings-title">
+          {activeSection === 'Summary' && <div className="bucket-settings-title">
             <div><p className="eyebrow">{t('buckets.bucketConfiguration')}</p>{activeSection !== 'Summary' && <h3>{displayValue(activeSection)}</h3>}</div>
             <span>{t('buckets.createdOn')} {bucket ? formatDateTime(bucket.created_at) : '-'}</span>
-          </div>
+          </div>}
 
           {activeSection === 'Summary' ? <>
           <SettingsSection>
             <div className="bucket-setting-item bucket-access-policy-setting">
-              <div className="bucket-setting-label"><Shield aria-hidden="true" /><span>{t('buckets.accessPolicy')}</span><Badge>{!policyReady ? '—' : configuration?.access_policy === 'Custom' || policyDocument ? t('buckets.customPolicy') : configuration?.access_policy === 'Public' ? t('buckets.public') : configuration?.access_policy === 'Readonly' ? t('buckets.readonly') : t('buckets.private')}</Badge><SettingInfo label={t('buckets.accessPolicy')}>{t('buckets.controlsAnonymousReadAndListPermissions')}</SettingInfo></div>
+              <div className="bucket-setting-copy"><div className="bucket-setting-label"><Shield aria-hidden="true" /><span>{t('buckets.accessPolicy')}</span><Badge>{!policyReady ? '—' : configuration?.access_policy === 'Custom' || policyDocument ? t('buckets.customPolicy') : configuration?.access_policy === 'Public' ? t('buckets.public') : configuration?.access_policy === 'Readonly' ? t('buckets.readonly') : t('buckets.private')}</Badge></div><p className="bucket-setting-description">{t('buckets.accessPolicyDescription')}</p></div>
               <Button variant="outline" size="sm" disabled={loading || !configuration} onClick={() => void openAccessPolicyDialog()}><Pencil aria-hidden="true" />{t('buckets.editQuota')}</Button>
             </div>
             <div className="bucket-setting-item bucket-encryption-setting">
-              <div className="bucket-setting-label"><LockKeyhole aria-hidden="true" /><span>{t('buckets.encryption')}</span><Badge>{configuration?.encryption === 'KMS' ? 'aws:kms' : configuration?.encryption === 'Enabled' ? t('buckets.encryptionAlgorithmAes256') : t('buckets.notConfigured')}</Badge><SettingInfo label={t('buckets.encryption')}>{t('buckets.newObjectsUseServerSideAes256GcmEncryption')}</SettingInfo></div>
+              <div className="bucket-setting-copy"><div className="bucket-setting-label"><LockKeyhole aria-hidden="true" /><span>{t('buckets.encryption')}</span><Badge>{configuration?.encryption === 'KMS' ? 'aws:kms' : configuration?.encryption === 'Enabled' ? t('buckets.encryptionAlgorithmAes256') : t('buckets.notConfigured')}</Badge></div><p className="bucket-setting-description">{t('buckets.encryptionDescription')}</p></div>
               <Button variant="outline" size="sm" disabled={loading || !configuration} onClick={() => { setEncryptionDraft(configuration?.encryption ?? 'Disabled'); setKmsKeyDraft(configuration?.kms_key_id ?? ''); setKmsKeysReady(false); setEncryptionDialogOpen(true) }}><Pencil aria-hidden="true" />{t('buckets.editQuota')}</Button>
             </div>
             <div className="bucket-setting-item bucket-versioning-control">
-              <div className="bucket-setting-label"><Archive aria-hidden="true" /><span>{t('buckets.versioning')}</span><Badge>{configuration?.versioning === 'Enabled' ? t('buckets.enabled') : configuration?.versioning === 'Suspended' ? t('buckets.suspended') : t('buckets.disabled')}</Badge><SettingInfo label={t('buckets.versioning')}> {configuration?.object_locking ? t('buckets.versioningLockedByObjectLock') : configuration?.versioning === 'Unversioned' ? t('buckets.newWritesReceiveVersionIdsWhenEnabled') : t('buckets.versionHistoryIsPersistedByZigfs')} </SettingInfo></div>
+              <div className="bucket-setting-copy"><div className="bucket-setting-label"><Archive aria-hidden="true" /><span>{t('buckets.versioning')}</span><Badge>{configuration?.versioning === 'Enabled' ? t('buckets.enabled') : configuration?.versioning === 'Suspended' ? t('buckets.suspended') : t('buckets.disabled')}</Badge></div><p className="bucket-setting-description">{t('buckets.versioningDescription')}</p></div>
               <Switch
                 aria-label={t('buckets.bucketVersioning')}
                 checked={configuration?.versioning === 'Enabled'}
@@ -478,12 +459,12 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
               />
             </div>
             <div className="bucket-setting-item bucket-object-locking-setting">
-              <div className="bucket-setting-label"><LockKeyhole aria-hidden="true" /><span>{t('buckets.objectLocking')}</span><Badge>{configuration?.object_locking ? t('buckets.enabled') : t('buckets.disabled')}</Badge><SettingInfo label={t('buckets.objectLocking')}>{t('buckets.objectLockCreationOnly')}</SettingInfo></div>
+              <div className="bucket-setting-copy"><div className="bucket-setting-label"><LockKeyhole aria-hidden="true" /><span>{t('buckets.objectLocking')}</span><Badge>{configuration?.object_locking ? t('buckets.enabled') : t('buckets.disabled')}</Badge></div><p className="bucket-setting-description">{t('buckets.objectLockingDescription')}</p></div>
             </div>
           </SettingsSection>
           <SettingsSection>
             <div className="bucket-setting-item bucket-retention-setting">
-              <div className="bucket-setting-label"><KeyRound aria-hidden="true" /><span>{t('buckets.retention')}</span><Badge>{configuration?.retention_enabled ? t('buckets.enabled') : t('buckets.notConfigured')}</Badge><SettingInfo label={t('buckets.retention')}> {configuration?.retention_enabled ? t('buckets.newObjectsInheritTheDefaultRetentionPeriod') : t('buckets.newObjectsInheritRetentionWhenEnabled')} </SettingInfo></div>
+              <div className="bucket-setting-copy"><div className="bucket-setting-label"><KeyRound aria-hidden="true" /><span>{t('buckets.retention')}</span><Badge>{configuration?.retention_enabled ? t('buckets.enabled') : t('buckets.notConfigured')}</Badge></div><p className="bucket-setting-description">{t('buckets.retentionDescription')}</p></div>
               <Button className="bucket-retention-edit" variant="outline" size="sm" onClick={openRetentionDialog} disabled={loading || !configuration?.object_locking}><Pencil aria-hidden="true" />{t('buckets.editQuota')}</Button>
               {configuration?.retention_enabled && <dl className="bucket-retention-details">
                 <div><dt>{t('buckets.mode')}</dt><dd>{configuration.retention_mode}</dd></div>
@@ -492,7 +473,7 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
               </dl>}
             </div>
             <div className="bucket-setting-item bucket-quota-setting">
-              <div className="bucket-setting-label"><Gauge aria-hidden="true" /><span>{t('buckets.quota')}</span><Badge>{configuration?.max_bytes || configuration?.max_objects ? t('buckets.enabled') : t('buckets.disabled')}</Badge><SettingInfo label={t('buckets.quota')}> {t('buckets.leaveBlankForUnlimitedCurrentUsage')} {formatBytes(usage.bytes)} / {usage.objects.toLocaleString(getFormatLocale())} {t('buckets.objects')} </SettingInfo></div>
+              <div className="bucket-setting-copy"><div className="bucket-setting-label"><Gauge aria-hidden="true" /><span>{t('buckets.quota')}</span><Badge>{configuration?.max_bytes || configuration?.max_objects ? t('buckets.enabled') : t('buckets.disabled')}</Badge></div><p className="bucket-setting-description">{t('buckets.quotaDescription')}</p></div>
               {(Boolean(configuration?.max_bytes) || Boolean(configuration?.max_objects)) && <dl className="bucket-quota-details">
                 {Boolean(configuration?.max_bytes) && <>
                   <div><dt>{t('buckets.quotaSize')}</dt><dd>{formatQuotaBytes(configuration!.max_bytes!)}</dd></div>
@@ -507,7 +488,7 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
 
             </div>
             <div className="bucket-setting-item bucket-tags-setting">
-              <div className="bucket-setting-label"><Tags aria-hidden="true" /><span>{t('buckets.tags')}</span><Badge>{Object.keys(tags).length ? t('buckets.configured') : t('buckets.notConfigured')}</Badge><SettingInfo label={t('buckets.tags')}>{t('buckets.tagsDescription')}</SettingInfo></div>
+              <div className="bucket-setting-copy"><div className="bucket-setting-label"><Tags aria-hidden="true" /><span>{t('buckets.tags')}</span><Badge>{Object.keys(tags).length ? t('buckets.configured') : t('buckets.notConfigured')}</Badge></div><p className="bucket-setting-description">{t('buckets.bucketTagsDescription')}</p></div>
               <Button className="bucket-tags-add-action" variant="outline" size="sm" type="button" onClick={() => setTagDialogOpen(true)} disabled={loading}><Plus aria-hidden="true" />{t('buckets.addTag')}</Button>
               <div className="bucket-tags-list">
                 {Object.entries(tags).map(([key, value]) => <Badge className="bucket-tag-chip" key={key}>
@@ -526,19 +507,21 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
               </div>
             </div>
           </SettingsSection>
-          </> : activeSection === 'Events' ? <EventsOverview api={api} bucket={bucket} configuration={configuration} /> : activeSection === 'Lifecycle' ? <LifecycleRulesEditor
+          </> : activeSection === 'Events' ? <BucketEvents key={bucketName} api={api} bucketName={bucketName} /> : activeSection === 'Lifecycle' ? <LifecycleRulesEditor
             rules={lifecycleRules}
-            configured={Boolean(configuration?.lifecycle_configuration)}
+            bucketName={bucketName}
+            versioned={configuration?.versioning === 'Enabled' || configuration?.versioning === 'Suspended'}
+            onRefresh={refresh}
             loading={loading}
             onSave={saveLifecycle}
-          /> : activeSection === 'Access' ? <><BucketPolicyEditor api={api} bucketName={bucketName} /><AccessOverview api={api} bucketName={bucketName} bucket={bucket} configuration={configuration} loading={loading} onPolicyChange={updateAccessPolicy} /></> : <AnonymousOverview configuration={configuration} />}
+          /> : <AnonymousAccess key={bucketName} api={api} bucketName={bucketName} />}
         </div>
         <Dialog open={accessPolicyDialogOpen} onOpenChange={(open) => { if (!loading) setAccessPolicyDialogOpen(open) }}>
           <DialogContent className="bucket-access-policy-dialog" onInteractOutside={(event) => event.preventDefault()}>
             <DialogHeader><DialogTitle>{t('buckets.setAccessPolicy')}</DialogTitle></DialogHeader>
             <form onSubmit={(event) => { event.preventDefault(); void saveAccessPolicyDialog() }}>
               <label htmlFor="bucket-access-policy-draft">{t('buckets.accessPolicy')}</label>
-              <OptionSelect id="bucket-access-policy-draft" aria-label={t('buckets.bucketAccessPolicy')} aria-describedby="access-policy-help" value={accessPolicyDraft} onValueChange={(value) => setAccessPolicyDraft(value as 'Private' | 'Readonly' | 'Public' | 'Custom')} disabled={loading} options={[{ value: 'Private', label: t('buckets.private') }, { value: 'Readonly', label: t('buckets.readonly') }, { value: 'Public', label: t('buckets.public') }, { value: 'Custom', label: t('buckets.customPolicy') }]} />
+              <OptionSelect id="bucket-access-policy-draft" aria-label={t('buckets.bucketAccessPolicy')} aria-describedby="access-policy-help" value={accessPolicyDraft === 'Readonly' ? '' : accessPolicyDraft} placeholder={accessPolicyDraft === 'Readonly' ? t('buckets.readonly') : undefined} onValueChange={(value) => setAccessPolicyDraft(value as 'Private' | 'Readonly' | 'Public' | 'Custom')} disabled={loading} options={[{ value: 'Private', label: t('buckets.private') }, { value: 'Public', label: t('buckets.public') }, { value: 'Custom', label: t('buckets.customPolicy') }]} />
               <p id="access-policy-help" className="access-policy-help">{accessPolicyDraft === 'Custom' ? t('buckets.customPolicyHelp') : accessPolicyDraft === 'Public' ? t('buckets.publicPolicyHelp') : accessPolicyDraft === 'Readonly' ? t('buckets.readonlyPolicyHelp') : t('buckets.privatePolicyHelp')}</p>
               {accessPolicyDraft === 'Public' && <Alert variant="destructive"><AlertTitle>{t('buckets.public')}</AlertTitle><AlertDescription>{t('buckets.publicPolicyHelp')}</AlertDescription></Alert>}
               {accessPolicyDraft === 'Custom' && <div className="access-policy-json"><label htmlFor="access-policy-document">{t('buckets.bucketPolicy')}</label><Textarea id="access-policy-document" value={policyDraft} onChange={event => setPolicyDraft(event.target.value)} rows={10} spellCheck={false} disabled={loading} /></div>}
@@ -650,143 +633,6 @@ function SettingsSection({ title, children }: { title?: string; children: ReactN
       {title && <h3>{title}</h3>}
       <div className="bucket-settings-section-grid">{children}</div>
     </section>
-  )
-}
-
-function AccessOverview({ api, bucketName, bucket, configuration, loading, onPolicyChange }: {
-  api: ApiClient
-  bucketName: string
-  bucket: Bucket | null
-  configuration: BucketConfiguration | null
-  loading: boolean
-  onPolicyChange: (policy: 'Private' | 'Readonly' | 'Public') => void
-}) {
-  const policy = configuration?.access_policy ?? 'Private'
-  const anonymousRead = policy === 'Readonly' || policy === 'Public'
-  const anonymousList = policy === 'Public'
-  const blockPublic = configuration?.block_public_access ?? true
-  return (
-    <div className="bucket-access-overview">
-      <div className="bucket-access-hero">
-        <Shield aria-hidden="true" />
-        <div><h4>{t('buckets.bucketAccess')}</h4><p>{t('buckets.accessIsControlledByConfigurationPersistedInZigfs')}</p></div>
-      </div>
-      <dl className="bucket-access-list">
-        <div><dt>{t('buckets.owner')}</dt><dd>{bucket?.owner ?? '-'}</dd></div>
-        <div><dt>{t('buckets.accessPolicy')}</dt><dd><OptionSelect aria-label={t('buckets.accessPagePolicy')} value={policy} onValueChange={(value) => onPolicyChange(value as 'Private' | 'Readonly' | 'Public')} disabled={loading || !configuration} options={[{ value: 'Private', label: t('buckets.private') }, { value: 'Readonly', label: t('buckets.readonly') }, { value: 'Public', label: t('buckets.public') }, ...(policy === 'Custom' ? [{ value: 'Custom', label: t('buckets.customPolicy'), disabled: true }] : [])]} /></dd></div>
-        <div><dt>{t('buckets.anonymousObjectRead')}</dt><dd className={anonymousRead ? 'allowed' : 'denied'}>{anonymousRead ? t('buckets.allowed') : t('buckets.denied')}</dd></div>
-        <div><dt>{t('buckets.anonymousBucketListing')}</dt><dd className={anonymousList ? 'allowed' : 'denied'}>{anonymousList ? t('buckets.allowed') : t('buckets.denied')}</dd></div>
-        <div><dt>{t('buckets.anonymousWriteDelete')}</dt><dd className="denied">{t('buckets.denied')}</dd></div>
-        <div><dt>{t('buckets.blockPublicAccess')}</dt><dd><Button size="sm" variant="outline" disabled={loading || !configuration} onClick={() => void api.updateBucketConfiguration(bucketName, { block_public_access: !blockPublic }).then(() => window.location.reload())}>{blockPublic ? t('buckets.blocked') : t('buckets.allowed')}</Button></dd></div>
-        <div><dt>{t('buckets.objectOwnership')}</dt><dd>{t('buckets.bucketOwnerEnforced')}</dd></div>
-      </dl>
-      <p className="bucket-access-note">{t('buckets.theseAreLegacyAccessPolicyDefaultsRequestsAlsoEvaluate')}</p>
-    </div>
-  )
-}
-
-function AnonymousOverview({ configuration }: { configuration: BucketConfiguration | null }) {
-  const policy = configuration?.access_policy ?? 'Private'
-  const readObject = policy === 'Readonly' || policy === 'Public'
-  const listBucket = policy === 'Public'
-  const permissions = [
-    ['GetObject / HeadObject', readObject],
-    ['ListBucket', listBucket],
-    ['GetObjectVersion', readObject],
-    ['PutObject / CopyObject', false],
-    ['DeleteObject / DeleteBucket', false],
-  ] as const
-  return (
-    <div className="bucket-anonymous-overview">
-      <div className="bucket-access-hero">
-        <Shield aria-hidden="true" />
-        <div><h4>{t('buckets.anonymousAccess')}</h4><p>{t('buckets.anonymousRequestsHaveNoAccessKeyLegacyAccessPolicy')}</p></div>
-      </div>
-      <div className="bucket-anonymous-policy"><span>{t('buckets.currentPolicy')}</span><strong>{policy}</strong></div>
-      <div className="bucket-anonymous-list">
-        {permissions.map(([action, allowed]) => <div key={action}><span>{action}</span><b className={allowed ? 'allowed' : 'denied'}>{allowed ? t('buckets.allowed') : t('buckets.denied')}</b></div>)}
-      </div>
-      <p className="bucket-access-note">{t('buckets.changeAnonymousPermissionsUnderAccessOrSummaryAccessPolicy')}</p>
-    </div>
-  )
-}
-
-function EventsOverview({ api, bucket, configuration }: { api: ApiClient; bucket: Bucket | null; configuration: BucketConfiguration | null }) {
-  const showToast = useToast()
-  const [events, setEvents] = useState<AuditEvent[]>([])
-  const [nextCursor, setNextCursor] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [loaded, setLoaded] = useState(false)
-  const [from, setFrom] = useState('')
-  const [to, setTo] = useState('')
-  const [action, setAction] = useState('')
-  const [outcome, setOutcome] = useState('')
-  const toUnix = (value: string) => value ? String(Math.floor(new Date(value).getTime() / 1000)) : ''
-  const loadEvents = useCallback(async (cursor = '', append = false) => {
-    if (!bucket) return
-    setLoading(true)
-    try {
-      const page = await api.listBucketEvents(bucket.name, cursor, 50, toUnix(from), toUnix(to), action, outcome)
-      setEvents((current) => append ? [...current, ...page.items] : page.items)
-      setNextCursor(page.next_cursor ?? '')
-      setLoaded(true)
-    } catch (reason) {
-      showToast(reason instanceof Error ? reason.message : t('buckets.failedToLoadAuditEvents'), 'error')
-    } finally {
-      setLoading(false)
-    }
-  }, [action, api, bucket, from, outcome, showToast, to])
-  useEffect(() => { void loadEvents() }, [loadEvents])
-  const configurationEvents = [
-    [t('common.bucketLoaded'), bucket ? t('buckets.ownerValue', { '0': bucket.owner }) : t('buckets.loading')],
-    [t('common.accessPolicy'), configuration?.access_policy ?? t('buckets.unknown')],
-    [t('common.encryption'), configuration?.encryption ?? t('buckets.unknown')],
-    [t('common.retention'), configuration?.retention_enabled ? t('buckets.valuesValue', { '0': configuration.retention_duration_seconds ?? 0, '1': configuration.retention_mode ?? 'GOVERNANCE' }) : t('buckets.disabled')],
-    [t('common.objectLocking'), configuration?.object_locking ? t('buckets.enabled') : t('buckets.disabled')],
-    [t('common.replication'), configuration?.replication_status ?? t('buckets.unknown')],
-  ] as const
-  return (
-    <div className="bucket-events-overview">
-      <div className="bucket-access-hero">
-        <Activity aria-hidden="true" />
-        <div><h4>{t('buckets.configurationEvents')}</h4><p>{t('buckets.configurationComesFromZigfsPersistedAuditEventsSupportTime')}</p></div>
-      </div>
-      <div className="bucket-events-list">
-        {configurationEvents.map(([event, value]) => <div key={event}><span>{event}</span><b>{value}</b></div>)}
-      </div>
-      <h4>{t('buckets.auditTimeline')}</h4>
-      <div className="bucket-events-filters">
-        <label>{t('buckets.from')} <input type="datetime-local" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
-        <label>{t('buckets.to')} <input type="datetime-local" value={to} onChange={(event) => setTo(event.target.value)} /></label>
-        <label>{t('buckets.action')} <input value={action} placeholder="update_retention" onChange={(event) => setAction(event.target.value)} /></label>
-        <label>{t('buckets.outcome')} <input value={outcome} placeholder="updated" onChange={(event) => setOutcome(event.target.value)} /></label>
-        <button type="button" className="secondary-button" onClick={() => void loadEvents()} disabled={loading}>{t('buckets.apply')}</button>
-      </div>
-      <div className="bucket-events-list">
-        {events.map((event) => <div key={`${event.request_id}-${event.timestamp_unix_seconds}`}><span>{formatDateTime(event.timestamp_unix_seconds * 1000)}</span><b>{event.action} · {event.outcome}</b></div>)}
-      </div>
-      {loaded && events.length === 0 && <p className="bucket-access-note">{t('buckets.noAuditEventsMatchTheCurrentFilters')}</p>}
-      <div className="bucket-events-actions">
-        <button type="button" className="secondary-button" onClick={() => void loadEvents()} disabled={loading}>{loading ? t('buckets.loadingProgress') : t('buckets.refreshEvents')}</button>
-        {nextCursor && <button type="button" className="secondary-button" onClick={() => void loadEvents(nextCursor, true)} disabled={loading}>{t('buckets.loadMore')}</button>}
-      </div>
-      <p className="bucket-access-note">{t('buckets.theConfigurationSnapshotIsSeparateFromTheAuditTimeline')}</p>
-    </div>
-  )
-}
-
-function SettingInfo({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button type="button" variant="ghost" size="icon-xs" aria-label={label}>
-          <CircleAlert aria-hidden="true" />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="top" sideOffset={6} className="max-w-72">
-        {children}
-      </TooltipContent>
-    </Tooltip>
   )
 }
 

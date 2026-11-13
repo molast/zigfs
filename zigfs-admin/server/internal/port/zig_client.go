@@ -20,8 +20,12 @@ func (err *StatusError) Error() string {
 }
 
 type ZigClient interface {
+	SetObjectLegalHold(context.Context, string, contract.SetObjectLegalHoldRequest) (contract.ObjectLegalHoldResponse, error)
+	GetBucketEventSubscriptions(context.Context, string) (contract.BucketEventSubscriptions, error)
+	PutBucketEventSubscriptions(context.Context, string, contract.BucketEventSubscriptions) (contract.BucketEventSubscriptions, error)
 	Logout(context.Context) error
 	OIDCAuth(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
+	EventDestinations(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
 	OIDCProviders(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
 	ListGroups(ctx context.Context) (contract.GroupList, error)
 	GetGroup(ctx context.Context, name string) (contract.ManagedGroup, error)
@@ -40,6 +44,7 @@ type ZigClient interface {
 	AssumeRole(ctx context.Context, request contract.AssumeRoleRequest) (contract.AssumeRoleResponse, error)
 	ListRoleSessions(ctx context.Context) (contract.RoleSessionList, error)
 	RevokeRoleSession(ctx context.Context, accessKey string) error
+	DeleteRoleSession(ctx context.Context, accessKey string) error
 	ListUsers(ctx context.Context) (contract.UserList, error)
 	GetUser(ctx context.Context, name string) (contract.ManagedUser, error)
 	CreateUser(ctx context.Context, value contract.UserWrite) (contract.ManagedUser, error)

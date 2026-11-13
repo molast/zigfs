@@ -1,3 +1,5 @@
+import { KmsAccessPanel } from './KmsAccessPanel'
+import type { AdminSession } from '../../types/api'
 import { DisplaySettingsPanel } from './DisplaySettingsPanel'
 import { formatTime } from '@/lib/dateTime'
 import { AuthenticationSettingsPanel } from './AuthenticationSettingsPanel'
@@ -27,7 +29,12 @@ const categories = [
 
 type Category = typeof categories[number]['id']
 
-export function SettingsView({ api }: { api: ApiClient }) {
+export function SettingsView({ api, session }: { api: ApiClient; session: AdminSession }) {
+  if (!session.is_root && !session.capabilities?.admin) return <KmsAccessPanel api={api} capabilities={session.capabilities} />
+  return <AdminSettingsView api={api} />
+}
+
+function AdminSettingsView({ api }: { api: ApiClient }) {
   const [category, setCategory] = useState<Category>('general')
   const [kmsDraft, setKmsDraft] = useState(createKmsDraft)
   const [kmsStatus, setKmsStatus] = useState<KmsStatus | null>(null)

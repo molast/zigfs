@@ -1,231 +1,123 @@
-import { OptionSelect } from '../../components/ui/OptionSelect'
-import { t } from '@/locales'
-import { useErrorToast } from '../../components/ToastProvider'
 import { useState } from 'react'
-import { Clock3, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react'
-import {
-  createLifecycleRule,
-  validateLifecycleRules,
-  type LifecycleAction,
-  type LifecycleRule,
-} from './lifecycle'
-import { useConfirm } from '../../components/ConfirmProvider'
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronRight, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { t } from '@/locales'
+import { useErrorToast } from '@/components/ToastProvider'
+import { useConfirm } from '@/components/ConfirmProvider'
+import { OptionSelect } from '@/components/ui/OptionSelect'
+import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Switch } from '@/components/ui/switch'
+import { Table, TableHeader, TableHead, TableRow, TableBody, TableCell } from '@/components/ui/table'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
+import { Field, FieldGroup, FieldLabel, FieldDescription } from '@/components/ui/field'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/Tabs'
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible'
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
+import { Empty, EmptyHeader, EmptyTitle, EmptyDescription } from '@/components/ui/empty'
+import { createLifecycleRule, validateLifecycleRules, lifecycleTagError, type LifecycleRule } from './lifecycle'
 
-interface LifecycleRulesEditorProps {
+interface Props {
   rules: LifecycleRule[]
-  configured: boolean
+  bucketName: string
+  versioned: boolean
   loading: boolean
+  onRefresh: () => Promise<void>
   onSave: (rules: LifecycleRule[]) => Promise<void>
 }
-
-export function LifecycleRulesEditor({ rules, configured, loading, onSave }: LifecycleRulesEditorProps) {
+const columns = ['type', 'version', 'marker', 'storage', 'prefix', 'period', 'status'] as const
+type Column = typeof columns[number]
+export function LifecycleRulesEditor({ rules, bucketName, versioned, loading, onRefresh, onSave }: Props) {
   const confirm = useConfirm()
-  const [draft, setDraft] = useState<LifecycleRule | null>(null)
-  const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const notifyError = useErrorToast()
-
-  function addRule() {
-    setEditingIndex(null)
-    setDraft(createLifecycleRule(nextRuleId(rules)))
+  const [draft, setDraft] = useState<LifecycleRule | null>(null)
+  const [editing, setEditing] = useState<number | null>(null)
+  const [more, setMore] = useState(false)
+  const [advanced, setAdvanced] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [invalid, setInvalid] = useState('')
+  const [sort, setSort] = useState<{ column: Column; descending: boolean } | null>(null)
+  const disabled = loading || busy
+  function begin(index: number | null) {
+    setEditing(index)
+    let id = rules.length + 1
+    while (rules.some(rule => rule.id === `expiry-rule-${id}`)) id++
+    const rule = index === null ? createLifecycleRule(`expiry-rule-${id}`) : rules[index]
+    setDraft({ ...rule, tags: rule.tags?.length ? rule.tags.map(tag => ({ ...tag })) : [{ key: '', value: '' }] })
+    setMore(false); setAdvanced(false); setInvalid('')
   }
-
-  function editRule(index: number) {
-    setEditingIndex(index)
-    setDraft({ ...rules[index] })
+  async function persist(next: LifecycleRule[], close = false) {
+    setBusy(true)
+    try { await onSave(next); if (close) setDraft(null) } catch { /* Parent reports API failures. */ }
+    finally { setBusy(false) }
   }
-
-  function closeEditor() {
-    setDraft(null)
-    setEditingIndex(null)
-  }
-
-  async function submitRule() {
+  async function submit(event: React.FormEvent) {
+    event.preventDefault()
     if (!draft) return
-    const next = editingIndex === null
-      ? [...rules, { ...draft, id: draft.id.trim() }]
-      : rules.map((rule, index) => index === editingIndex ? { ...draft, id: draft.id.trim() } : rule)
-    try {
-      validateLifecycleRules(next)
-      await onSave(next)
-      closeEditor()
-    } catch (reason) {
-      notifyError((reason as Error).message)
+    const normalized = { ...draft, tags: draft.tags?.length === 1 && draft.tags[0].key === '' && draft.tags[0].value === '' ? [] : draft.tags }
+    const tagError = lifecycleTagError(normalized)
+    if (tagError) { setMore(true); setInvalid(`tag-${tagError.index}-${tagError.field}`); notifyError(tagError.message); return }
+    const next = editing === null ? [...rules, normalized] : rules.map((rule, index) => index === editing ? normalized : rule)
+    try { validateLifecycleRules(next) } catch (reason) {
+      setInvalid(draft.action === 'current-date' ? 'date' : !Number.isInteger(draft.days) || draft.days < 1 ? 'days' : 'newer')
+      notifyError((reason as Error).message); return
     }
+    await persist(next, true)
   }
-
-  async function toggleRule(index: number) {
-    try {
-      await onSave(rules.map((rule, ruleIndex) => ruleIndex === index ? { ...rule, enabled: !rule.enabled } : rule))
-    } catch {
-      // BucketDetailView reports the ZigFS error through a toast.
-    }
+  async function remove(index: number) {
+    if (await confirm({ title: t('buckets.deleteLifecycleRule'), message: t('buckets.deleteLifecycleRuleValueThisCannotBeUndone', { '0': rules[index].id }), confirmLabel: t('buckets.delete'), danger: true })) await persist(rules.filter((_, i) => i !== index))
   }
-
-  async function removeRule(index: number) {
-    if (!await confirm({
-      title: t('buckets.deleteLifecycleRule'),
-      message: t('buckets.deleteLifecycleRuleValueThisCannotBeUndone', { '0': rules[index].id }),
-      confirmLabel: t('buckets.delete'),
-      danger: true,
-    })) return
-    try {
-      await onSave(rules.filter((_, ruleIndex) => ruleIndex !== index))
-    } catch {
-      // BucketDetailView reports the ZigFS error through a toast.
-    }
-  }
-
-  return (
-    <section className="lifecycle-rules">
-      <div className="lifecycle-rules-header">
-        <div>
-          <h3>{t('buckets.lifecycleRules')}</h3>
-          <p>{t('buckets.objectExpirationRulesRunThroughTheZigfsBackgroundScanner')}</p>
-        </div>
-        <div className="lifecycle-rules-actions">
-          <span className={`status-badge ${configured ? 'enabled' : ''}`}>{configured ? t('buckets.configured') : t('buckets.notConfigured')}</span>
-          <button className="primary-button" type="button" onClick={addRule} disabled={loading || rules.length >= 1000}>
-            <Plus className="button-icon" aria-hidden="true" />{t('buckets.addRule')}</button>
-        </div>
-      </div>
-
-      {rules.length > 0 ? (
-        <div className="table-wrap lifecycle-table-wrap">
-          <table className="lifecycle-table">
-            <thead><tr><th>{t('buckets.rule')}</th><th>{t('buckets.filter')}</th><th>{t('buckets.expiry')}</th><th>{t('buckets.status')}</th><th>{t('buckets.actions')}</th></tr></thead>
-            <tbody>{rules.map((rule, index) => (
-              <tr key={rule.id}>
-                <td><strong>{rule.id}</strong><small>{objectVersionLabel(rule.action)}</small></td>
-                <td><code>{rule.prefix || t('buckets.allObjects')}</code></td>
-                <td>{expiryLabel(rule)}</td>
-                <td>
-                  <button
-                    className={`lifecycle-status-toggle${rule.enabled ? ' enabled' : ''}`}
-                    type="button"
-                    role="switch"
-                    aria-checked={rule.enabled}
-                    aria-label={`${rule.id} ${rule.enabled ? t('buckets.enabled') : t('buckets.disabled')}`}
-                    onClick={() => void toggleRule(index)}
-                    disabled={loading}
-                  ><span aria-hidden="true" />{rule.enabled ? t('buckets.enabled') : t('buckets.disabled')}</button>
-                </td>
-                <td className="table-actions">
-                  <button className="icon-button" type="button" title={t('buckets.editRule')} aria-label={t('buckets.editValue', { '0': rule.id })} onClick={() => editRule(index)} disabled={loading}><Pencil aria-hidden="true" /></button>
-                  <button className="icon-button danger-icon-button" type="button" title={t('buckets.deleteRule')} aria-label={t('buckets.deleteValue', { '0': rule.id })} onClick={() => void removeRule(index)} disabled={loading}><Trash2 aria-hidden="true" /></button>
-                </td>
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="empty-state empty-panel lifecycle-empty">
-          <Clock3 aria-hidden="true" />
-          <strong>{t('buckets.noLifecycleRulesConfigured')}</strong>
-          <span>{t('buckets.addYourFirstObjectExpirationRule')}</span>
-        </div>
-      )}
-
-      {draft && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={closeEditor}>
-          <section className="lifecycle-modal" role="dialog" aria-modal="true" aria-labelledby="lifecycle-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
-            <header className="lifecycle-modal-header">
-              <div className="lifecycle-modal-title"><RefreshCw aria-hidden="true" /><h3 id="lifecycle-dialog-title">{editingIndex === null ? t('buckets.addLifecycleRule') : t('buckets.editLifecycleRule')}</h3></div>
-              <button className="icon-button" type="button" aria-label={t('buckets.close')} onClick={closeEditor}><X aria-hidden="true" /></button>
-            </header>
-
-            <div className="lifecycle-form">
-              <label className="lifecycle-field lifecycle-field-wide">
-                <span>{t('buckets.ruleId')}</span>
-                <input value={draft.id} maxLength={255} onChange={(event) => setDraft({ ...draft, id: event.target.value })} autoFocus />
-              </label>
-
-              <div className="lifecycle-field lifecycle-field-wide lifecycle-status-field">
-                <span>{t('buckets.status')}</span>
-                <button
-                  className={`lifecycle-status-toggle${draft.enabled ? ' enabled' : ''}`}
-                  type="button"
-                  role="switch"
-                  aria-checked={draft.enabled}
-                  onClick={() => setDraft({ ...draft, enabled: !draft.enabled })}
-                ><span aria-hidden="true" />{draft.enabled ? t('buckets.enabled') : t('buckets.disabled')}</button>
-              </div>
-
-              <fieldset className="lifecycle-rule-type lifecycle-field-wide">
-                <legend>{t('buckets.ruleType')}</legend>
-                <label><input type="radio" name="lifecycle-type" checked readOnly />{t('buckets.expiry')}</label>
-                <label className="disabled-option" title={t('buckets.transitionsAreNotSupportedYet')}><input type="radio" name="lifecycle-type" disabled />{t('buckets.transition')}</label>
-              </fieldset>
-
-              <label className="lifecycle-field lifecycle-field-wide">
-                <span>{t('buckets.objectVersion')}</span>
-                <OptionSelect value={draft.action} onValueChange={(value) => setDraft({ ...draft, action: value as LifecycleAction })} aria-label={t('buckets.objectVersion')} options={[{ value: 'current-days', label: t('buckets.currentVersionAfterDays') }, { value: 'current-date', label: t('buckets.currentVersionOnDate') }, { value: 'noncurrent-days', label: t('buckets.nonCurrentVersion') }, { value: 'delete-marker', label: t('buckets.expiredDeleteMarker') }]} />
-              </label>
-
-              {draft.action === 'current-date' ? (
-                <label className="lifecycle-field lifecycle-field-wide">
-                  <span>{t('buckets.expireOn')}</span>
-                  <input type="date" value={draft.expirationDate} onChange={(event) => setDraft({ ...draft, expirationDate: event.target.value })} />
-                </label>
-              ) : draft.action !== 'delete-marker' ? (
-                <label className="lifecycle-field lifecycle-field-wide">
-                  <span>{draft.action === 'noncurrent-days' ? t('buckets.nonCurrentExpiration') : t('buckets.expireAfter')}</span>
-                  <div className="input-with-suffix"><input type="number" min={1} step={1} value={draft.days} onChange={(event) => setDraft({ ...draft, days: Number(event.target.value) })} /><span>{t('buckets.days')}</span></div>
-                </label>
-              ) : null}
-
-              <label className="lifecycle-field lifecycle-field-wide">
-                <span>{t('buckets.prefixFilter')}</span>
-                <input value={draft.prefix} placeholder={t('buckets.allObjects')} onChange={(event) => setDraft({ ...draft, prefix: event.target.value })} />
-              </label>
-
-              {draft.action === 'noncurrent-days' && (
-                <label className="lifecycle-field lifecycle-field-wide">
-                  <span>{t('buckets.keepNewestNonCurrentVersionsOptional')}</span>
-                  <input
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={draft.newerNoncurrentVersions ?? ''}
-                    placeholder={t('buckets.notSet')}
-                    onChange={(event) => setDraft({
-                      ...draft,
-                      newerNoncurrentVersions: event.target.value ? Number(event.target.value) : undefined,
-                    })}
-                  />
-                </label>
-              )}
-            </div>
-            <footer className="lifecycle-modal-actions">
-              <button className="secondary-button" type="button" onClick={closeEditor} disabled={loading}>{t('buckets.cancel')}</button>
-              <button className="primary-button" type="button" onClick={() => void submitRule()} disabled={loading}>{t('buckets.save')}</button>
-            </footer>
-          </section>
-        </div>
-      )}
-    </section>
-  )
+  const rows = rules.map((rule, index) => ({ rule, index }))
+  if (sort) rows.sort((a, b) => {
+    const value = (rule: LifecycleRule) => sort.column === 'period' ? rule.action === 'current-date' ? Date.parse(rule.expirationDate) : rule.action === 'delete-marker' ? 0 : rule.days : sort.column === 'status' ? Number(rule.enabled) : sort.column === 'prefix' ? rule.prefix : sort.column === 'version' ? versionLabel(rule) : sort.column === 'marker' ? Number(rule.action === 'delete-marker') : ''
+    const av = value(a.rule), bv = value(b.rule)
+    const result = typeof av === 'number' && typeof bv === 'number' ? av - bv : String(av).localeCompare(String(bv))
+    return sort.descending ? -result : result
+  })
+  return <section className="flex flex-col gap-6">
+    <header className="flex flex-wrap items-start justify-between gap-4">
+      <div><h3>{t('lifecycle.title')}</h3><p className="text-sm text-muted-foreground">{t('bucketEvents.bucket', { name: bucketName })}</p></div>
+      <div className="flex gap-2"><Button size="sm" disabled={disabled || rules.length >= 1000} onClick={() => begin(null)}><Plus data-icon="inline-start" />{t('buckets.addLifecycleRule')}</Button><Button size="sm" variant="outline" disabled={disabled} onClick={() => void onRefresh()}><RefreshCw data-icon="inline-start" />{t('bucketEvents.refresh')}</Button></div>
+    </header>
+    <div className="rounded-lg border"><Table>
+      <TableHeader><TableRow>{columns.map(column => <TableHead key={column} aria-sort={sort?.column === column ? sort.descending ? 'descending' : 'ascending' : 'none'}><Button size="sm" variant="ghost" onClick={() => setSort({ column, descending: sort?.column === column && !sort.descending })}>{t(`lifecycle.${column}`)}{sort?.column === column ? sort.descending ? <ArrowDown data-icon="inline-end" /> : <ArrowUp data-icon="inline-end" /> : <ArrowUpDown data-icon="inline-end" />}</Button></TableHead>)}<TableHead className="text-right">{t('buckets.actions')}</TableHead></TableRow></TableHeader>
+      <TableBody>{rows.map(({ rule, index }) => <TableRow key={rule.id}>
+        <TableCell>{t('lifecycle.expiration')}</TableCell><TableCell>{versionLabel(rule)}</TableCell><TableCell>{rule.action === 'delete-marker' ? t('buckets.enabled') : '—'}</TableCell><TableCell>—</TableCell><TableCell className="max-w-48 break-all whitespace-normal">{rule.prefix || '—'}</TableCell><TableCell>{expiryLabel(rule)}</TableCell>
+        <TableCell><div className="flex items-center gap-2"><Switch size="sm" checked={rule.enabled} disabled={disabled} aria-label={`${rule.id} ${t('buckets.status')}`} onCheckedChange={enabled => void persist(rules.map((item, i) => i === index ? { ...item, enabled } : item))} /><span>{t(rule.enabled ? 'buckets.enabled' : 'buckets.disabled')}</span></div></TableCell>
+        <TableCell className="text-right"><Button variant="ghost" size="icon-sm" disabled={disabled} aria-label={t('buckets.editValue', { '0': rule.id })} onClick={() => begin(index)}><Pencil /></Button><Button variant="ghost" size="icon-sm" disabled={disabled} aria-label={t('buckets.deleteValue', { '0': rule.id })} onClick={() => void remove(index)}><Trash2 /></Button></TableCell>
+      </TableRow>)}{!rules.length && <TableRow><TableCell colSpan={8}><Empty className="min-h-64"><EmptyHeader><EmptyTitle>{t('buckets.noLifecycleRulesConfigured')}</EmptyTitle><EmptyDescription>{t('lifecycle.emptyHelp')}</EmptyDescription></EmptyHeader></Empty></TableCell></TableRow>}</TableBody>
+    </Table></div>
+    <Dialog open={draft !== null} onOpenChange={open => { if (!open && !disabled) setDraft(null) }}>
+      <DialogContent layout="form" className="bucket-lifecycle-dialog" aria-describedby={undefined} onInteractOutside={event => event.preventDefault()}>
+        <DialogHeader><DialogTitle className="flex min-w-0 max-w-full items-center gap-2"><span className="shrink-0">{t(editing === null ? 'buckets.addLifecycleRule' : 'buckets.editLifecycleRule')}</span><span className="truncate">（{t('bucketEvents.bucket', { name: bucketName })}）</span></DialogTitle></DialogHeader>
+        {draft && <form onSubmit={event => void submit(event)} className="flex min-h-0 flex-col">
+          <div className="overflow-y-auto pb-4"><FieldGroup density="compact" className="gap-4">
+            <Tabs value="expiration"><TabsList aria-label={t('buckets.ruleType')}><TabsTrigger value="expiration" disabled={disabled}>{t('lifecycle.expiration')}</TabsTrigger></TabsList></Tabs>
+            <Field><FieldLabel htmlFor="lifecycle-version">{t('buckets.objectVersion')}</FieldLabel><OptionSelect id="lifecycle-version" value={draft.action === 'noncurrent-days' ? 'noncurrent' : 'current'} disabled={disabled} onValueChange={value => { setInvalid(''); setDraft({ ...draft, action: value === 'noncurrent' ? 'noncurrent-days' : 'current-days' }) }} options={[{ value: 'current', label: t('buckets.currentVersion') }, { value: 'noncurrent', label: t('buckets.nonCurrentVersion') }]} /></Field>
+            <Field data-invalid={invalid === 'days' || invalid === 'date' || undefined}><FieldLabel htmlFor="lifecycle-period">{t('lifecycle.period')}</FieldLabel><FieldDescription>{t('lifecycle.periodHelp')}</FieldDescription>{draft.action === 'current-date' ? <Input id="lifecycle-period" type="date" value={draft.expirationDate} disabled={disabled} aria-invalid={invalid === 'date'} onChange={event => { setInvalid(''); setDraft({ ...draft, expirationDate: event.target.value }) }} /> : <div className="flex items-center gap-3"><Input className="max-w-32" id="lifecycle-period" type="number" min={1} step={1} value={Number.isNaN(draft.days) ? '' : draft.days} disabled={disabled || draft.action === 'delete-marker'} aria-invalid={invalid === 'days'} onChange={event => { setInvalid(''); setDraft({ ...draft, days: event.target.value === '' ? NaN : Number(event.target.value) }) }} /><span className="text-muted-foreground">{t('lifecycle.daysAfter')}</span></div>}</Field>
+            <Collapsible open={more} onOpenChange={setMore}><CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="lifecycle-section-trigger">{more ? <ChevronDown data-icon="inline-start" /> : <ChevronRight data-icon="inline-start" />}{t('lifecycle.more')}</Button></CollapsibleTrigger><CollapsibleContent className="pt-3"><FieldGroup density="compact" className="gap-4">
+              <Field><FieldLabel htmlFor="lifecycle-prefix">{t('lifecycle.prefix')}</FieldLabel><Input id="lifecycle-prefix" value={draft.prefix} placeholder={t('bucketEvents.prefixPlaceholder')} disabled={disabled} onChange={event => setDraft({ ...draft, prefix: event.target.value })} /></Field>
+              <Field><div className="flex items-center justify-between gap-2"><FieldLabel>{t('buckets.tags')}</FieldLabel><Button type="button" size="sm" variant="outline" disabled={disabled || (draft.tags?.length ?? 0) >= 10 || draft.action === 'delete-marker'} onClick={() => { setInvalid(''); setDraft({ ...draft, tags: [...(draft.tags ?? []), { key: '', value: '' }] }) }}><Plus data-icon="inline-start" />{t('buckets.addTag')}</Button></div>
+                {(draft.tags ?? []).map((tag, index) => <div className="flex items-start gap-3" key={index}>
+                  <Field data-invalid={invalid === `tag-${index}-key` || undefined}><Input aria-label={t('lifecycle.tagName')} placeholder={t('lifecycle.tagName')} value={tag.key} disabled={disabled} aria-invalid={invalid === `tag-${index}-key`} onChange={event => { setInvalid(''); setDraft({ ...draft, tags: draft.tags!.map((item, i) => i === index ? { ...item, key: event.target.value } : item) }) }} /></Field>
+                  <Field data-invalid={invalid === `tag-${index}-value` || undefined}><Input aria-label={t('lifecycle.tagValue')} placeholder={t('lifecycle.tagValue')} value={tag.value} disabled={disabled} aria-invalid={invalid === `tag-${index}-value`} onChange={event => { setInvalid(''); setDraft({ ...draft, tags: draft.tags!.map((item, i) => i === index ? { ...item, value: event.target.value } : item) }) }} /></Field>
+                  <Button type="button" size="icon-sm" variant="ghost" className="danger-icon-button" disabled={disabled || (draft.tags?.length ?? 0) <= 1} aria-label={t('buckets.deleteTag')} onClick={() => { setInvalid(''); setDraft({ ...draft, tags: draft.tags!.filter((_, i) => i !== index) }) }}><Trash2 /></Button>
+                </div>)}<FieldDescription>{t(draft.action === 'delete-marker' ? 'lifecycle.markerTagsConflict' : 'lifecycle.tagsHelp')}</FieldDescription></Field>
+            </FieldGroup></CollapsibleContent></Collapsible>
+            <Collapsible open={advanced} onOpenChange={setAdvanced}><CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="lifecycle-section-trigger">{advanced ? <ChevronDown data-icon="inline-start" /> : <ChevronRight data-icon="inline-start" />}{t('lifecycle.advanced')}</Button></CollapsibleTrigger><CollapsibleContent className="pt-3"><FieldGroup density="compact" className="gap-4">
+              {draft.action === 'noncurrent-days' ? <Field data-invalid={invalid === 'newer' || undefined}><FieldLabel htmlFor="lifecycle-newer">{t('buckets.keepNewestNonCurrentVersionsOptional')}</FieldLabel><Input id="lifecycle-newer" type="number" min={1} step={1} disabled={disabled} value={draft.newerNoncurrentVersions ?? ''} aria-invalid={invalid === 'newer'} onChange={event => { setInvalid(''); setDraft({ ...draft, newerNoncurrentVersions: event.target.value ? Number(event.target.value) : undefined }) }} /></Field> : <Field orientation="horizontal"><Checkbox id="lifecycle-marker" checked={draft.action === 'delete-marker'} disabled={disabled || Boolean(draft.tags?.some(tag => tag.key !== '' || tag.value !== ''))} onCheckedChange={checked => setDraft({ ...draft, action: checked ? 'delete-marker' : 'current-days' })} /><div><FieldLabel htmlFor="lifecycle-marker">{t('lifecycle.markerHandling')}</FieldLabel><FieldDescription>{t('lifecycle.markerHelp')}</FieldDescription></div></Field>}
+              {versioned && draft.action !== 'noncurrent-days' && draft.action !== 'delete-marker' && <Alert><AlertTitle>{t('common.warning')}</AlertTitle><AlertDescription>{t('lifecycle.versionWarning')}</AlertDescription></Alert>}
+            </FieldGroup></CollapsibleContent></Collapsible>
+          </FieldGroup></div>
+          <div className="ui-dialog-footer"><Button type="button" variant="outline" disabled={disabled} onClick={() => setDraft(null)}>{t('common.cancel')}</Button><Button type="submit" disabled={disabled}>{t('buckets.save')}</Button></div>
+        </form>}
+      </DialogContent>
+    </Dialog>
+  </section>
 }
-
-function nextRuleId(rules: LifecycleRule[]) {
-  let index = rules.length + 1
-  while (rules.some((rule) => rule.id === `expiry-rule-${index}`)) index += 1
-  return `expiry-rule-${index}`
-}
-
-function objectVersionLabel(action: LifecycleAction) {
-  switch (action) {
-    case 'current-days':
-    case 'current-date': return t('buckets.currentVersion')
-    case 'noncurrent-days': return t('buckets.nonCurrentVersion')
-    case 'delete-marker': return t('buckets.deletemarker')
-  }
-}
-
+function versionLabel(rule: LifecycleRule) { return t(rule.action === 'noncurrent-days' ? 'buckets.nonCurrentVersion' : 'buckets.currentVersion') }
 function expiryLabel(rule: LifecycleRule) {
-  switch (rule.action) {
-    case 'current-days': return t('buckets.afterValueDays', { '0': rule.days })
-    case 'current-date': return t('buckets.onValue', { '0': rule.expirationDate })
-    case 'noncurrent-days': return t('buckets.afterValueNonCurrentDaysvalue', { '0': rule.days, '1': rule.newerNoncurrentVersions ? ` · keep ${rule.newerNoncurrentVersions}` : '' })
-    case 'delete-marker': return t('buckets.whenExpired')
-  }
+  if (rule.action === 'delete-marker') return t('buckets.whenExpired')
+  if (rule.action === 'current-date') return t('buckets.onValue', { '0': rule.expirationDate })
+  return t('buckets.afterValueDays', { '0': rule.days })
 }

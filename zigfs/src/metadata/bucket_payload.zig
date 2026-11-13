@@ -4,7 +4,7 @@ const id = @import("../common/id.zig");
 
 pub const magic = [4]u8{ 'Z', 'F', 'B', 'K' };
 pub const major_version: u16 = 1;
-pub const minor_version: u16 = 7;
+pub const minor_version: u16 = 8;
 pub const legacy_header_length: usize = 40;
 pub const header_length: usize = 88;
 
@@ -32,6 +32,7 @@ pub const Value = struct {
     status: bucket_domain.Status,
     versioning: bucket_domain.Versioning = .unversioned,
     access_policy: bucket_domain.AccessPolicy = .private,
+    block_public_access: bool = true,
     tags_json: ?[]const u8 = null,
     kms_key_id: bucket_domain.KmsKeyId = .{},
     encryption: bucket_domain.Encryption = .disabled,
@@ -110,6 +111,7 @@ pub fn encode(
     std.mem.writeInt(u64, bytes[retention_duration_offset .. retention_duration_offset + 8], value.retention.default_duration_seconds orelse 0, .little);
     bytes[retention_mode_offset] = if (!value.retention.enabled) 0 else @backingInt(value.retention.mode orelse return error.PayloadTooLarge);
     bytes[object_locking_offset] = @intFromBool(value.object_locking);
+    bytes[84] = @intFromBool(value.block_public_access);
     std.mem.writeInt(u16, bytes[82..84], value.kms_key_id.len, .little);
     var offset = header_length;
     @memcpy(bytes[offset .. offset + value.name.len], value.name);
@@ -210,6 +212,11 @@ pub fn decode(bytes: []const u8) DecodeError!Value {
             else => return error.UnsupportedFlags,
         },
     };
+    const block_public_access = if (encoded_minor_version < 8) true else switch (bytes[84]) {
+        0 => false,
+        1 => true,
+        else => return error.UnsupportedFlags,
+    };
     const object_locking = encoded_minor_version >= 6 and bytes[object_locking_offset] != 0;
     const names_length = std.math.add(usize, name_length, owner_length) catch {
         return error.InvalidLength;
@@ -240,6 +247,7 @@ pub fn decode(bytes: []const u8) DecodeError!Value {
         .status = status,
         .versioning = versioning,
         .access_policy = access_policy,
+        .block_public_access = block_public_access,
         .tags_json = if (tags.len == 0) null else tags,
         .encryption = encryption,
         .kms_key_id = key,
@@ -378,4 +386,25 @@ test "bucket KMS key persists alongside tags and old metadata has no key" {
     std.mem.writeInt(u16, old[6..8], 6, .little);
     const legacy = try decode(old);
     try std.testing.expectEqual(@as(u16, 0), legacy.kms_key_id.len);
+}
+
+test "public access block persists and legacy payloads remain blocked" {
+    const value: Value = .{
+        .id = .{ 0, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15 },
+        .name = "public-test",
+        .owner = "owner",
+        .status = .active,
+        .created_at_unix_seconds = 1,
+        .block_public_access = false,
+    };
+    const bytes = try encode(std.testing.allocator, value);
+    defer std.testing.allocator.free(bytes);
+    try std.testing.expect(!(try decode(bytes)).block_public_access);
+    bytes[84] = 1;
+    try std.testing.expect((try decode(bytes)).block_public_access);
+    bytes[84] = 2;
+    try std.testing.expectError(error.UnsupportedFlags, decode(bytes));
+    bytes[84] = 0;
+    std.mem.writeInt(u16, bytes[6..8], 7, .little);
+    try std.testing.expect((try decode(bytes)).block_public_access);
 }

@@ -210,6 +210,10 @@ func (service *Management) RevokeRoleSession(ctx context.Context, accessKey stri
 	return service.zig.RevokeRoleSession(ctx, accessKey)
 }
 
+func (service *Management) DeleteRoleSession(ctx context.Context, accessKey string) error {
+	return service.zig.DeleteRoleSession(ctx, accessKey)
+}
+
 func (service *Management) ListUsers(ctx context.Context) (contract.UserList, error) {
 	return service.zig.ListUsers(ctx)
 }
@@ -317,4 +321,20 @@ func (service *Management) AuthenticationSettings(ctx context.Context, method st
 
 func (service *Management) DisplaySettings(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error) {
 	return service.zig.DisplaySettings(ctx, method, input)
+}
+
+func (service *Management) GetBucketEventSubscriptions(ctx context.Context, name string) (contract.BucketEventSubscriptions, error) {
+	return service.zig.GetBucketEventSubscriptions(ctx, name)
+}
+
+func (service *Management) PutBucketEventSubscriptions(ctx context.Context, name string, input contract.BucketEventSubscriptions) (contract.BucketEventSubscriptions, error) {
+	return service.zig.PutBucketEventSubscriptions(ctx, name, input)
+}
+
+func (service *Management) EventDestinations(ctx context.Context, method, name string, input json.RawMessage) (json.RawMessage, error) {
+	return service.zig.EventDestinations(ctx, method, name, input)
+}
+
+func (service *Management) SetObjectLegalHold(ctx context.Context, bucket string, request contract.SetObjectLegalHoldRequest) (contract.ObjectLegalHoldResponse, error) {
+	return service.zig.SetObjectLegalHold(ctx, bucket, request)
 }
