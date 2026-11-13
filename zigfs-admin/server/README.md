@@ -2,6 +2,18 @@
 
 Go + Gin web forwarding server for ZigFS Admin.
 
+## Docker builds
+
+The Web and Go builder stages run on `BUILDPLATFORM`. Web assets are architecture
+independent; the Go stage uses `CGO_ENABLED=0`, `GOOS=linux` and `GOARCH=TARGETARCH`
+to produce the requested AMD64 or ARM64 binary without emulating compilation.
+Both module download and compilation mount the same Go module cache. Locally
+built Web assets and vendored Go modules remain supported by the Dockerfile.
+
+The publishing workflow uses separate native runners for AMD64 and ARM64, then
+combines the image digests into the version and `latest` tags. A failed platform
+build prevents publication of a partial multi-platform tag.
+
 ## Environment
 
 Reads literal uppercase assignments from `.env` in the working directory, or the file selected by `ZIGFS_ENV_FILE`. Process variables override the file; persisted listener settings override both. `./start.sh` selects the repository root `.env` automatically. See [configuration](../../docs/configuration.md) and the root `.env.example`.

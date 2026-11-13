@@ -1,0 +1,77 @@
+name: zigfs
+
+services:
+  zigfs:
+    image: ${ZIGFS_IMAGE:-molast/zigfs:latest}
+    # Pull published images when needed; docker compose pull refreshes local images.
+    pull_policy: missing
+    restart: unless-stopped
+    container_name: zigfs
+    ports:
+      - "${ZIGFS_API_PORT:-9000}:9000"
+      - "${ZIGFS_METRICS_PORT:-9090}:9090"
+    volumes:
+      - zigfs-data:/var/lib/zigfs
+
+    environment:
+      # Container paths and ports match the volume, health check and port mappings.
+      ZIGFS_API_ADDRESS: "0.0.0.0:9000"
+      ZIGFS_METRICS_ENABLED: "${ZIGFS_METRICS_ENABLED-true}"
+      ZIGFS_METRICS_ADDRESS: "0.0.0.0:9090"
+      ZIGFS_DATA_ROOT: "/var/lib/zigfs"
+      # Storage I/O
+      ZIGFS_STREAM_BUFFER_SIZE: "${ZIGFS_STREAM_BUFFER_SIZE-65536}"
+      # Public address must be reachable by browsers and S3 clients.
+      ZIGFS_S3_PUBLIC_ENDPOINT: "${ZIGFS_S3_PUBLIC_ENDPOINT-http://127.0.0.1:9000}"
+      ZIGFS_S3_VIRTUAL_HOSTED_STYLE: "${ZIGFS_S3_VIRTUAL_HOSTED_STYLE-false}"
+      ZIGFS_S3_REGION: "${ZIGFS_S3_REGION-us-east-1}"
+      ZIGFS_S3_REQUEST_TIME_SKEW_SECONDS: "${ZIGFS_S3_REQUEST_TIME_SKEW_SECONDS-900}"
+      ZIGFS_S3_MULTIPART_EXPIRY_SECONDS: "${ZIGFS_S3_MULTIPART_EXPIRY_SECONDS-604800}"
+      ZIGFS_S3_LIFECYCLE_SCAN_INTERVAL_SECONDS: "${ZIGFS_S3_LIFECYCLE_SCAN_INTERVAL_SECONDS-300}"
+      # Root identity and session credentials belong only to ZigFS.
+      ZIGFS_ROOT_USER: "${ZIGFS_ROOT_USER-admin}"
+      ZIGFS_ROOT_PASSWORD: "${ZIGFS_ROOT_PASSWORD:?Set ZIGFS_ROOT_PASSWORD in .env}"
+      ZIGFS_ADMIN_SESSION_SECRET: "${ZIGFS_ADMIN_SESSION_SECRET:?Set ZIGFS_ADMIN_SESSION_SECRET in .env}"
+      ZIGFS_ADMIN_SESSION_TTL_SECONDS: "${ZIGFS_ADMIN_SESSION_TTL_SECONDS-28800}"
+      ZIGFS_ACCESS_KEY: "${ZIGFS_ACCESS_KEY-}"
+      ZIGFS_SECRET_KEY: "${ZIGFS_SECRET_KEY-}"
+      # Background maintenance
+      ZIGFS_METADATA_MAINTENANCE_INTERVAL_SECONDS: "${ZIGFS_METADATA_MAINTENANCE_INTERVAL_SECONDS-60}"
+      ZIGFS_METADATA_MAINTENANCE_BATCH_SIZE: "${ZIGFS_METADATA_MAINTENANCE_BATCH_SIZE-1000}"
+      # KMS and OpenID Connect
+      ZIGFS_KMS_ALLOW_INSECURE_DEV_DEFAULTS: "${ZIGFS_KMS_ALLOW_INSECURE_DEV_DEFAULTS-false}"
+      ZIGFS_OIDC_PROVIDERS: "${ZIGFS_OIDC_PROVIDERS-[]}"
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://127.0.0.1:9000/health/ready
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  admin:
+    image: ${ZIGFS_ADMIN_IMAGE:-molast/zigfs-admin:latest}
+    # Pull published images when needed; docker compose pull refreshes local images.
+    pull_policy: missing
+    restart: unless-stopped
+    depends_on:
+      zigfs:
+        condition: service_healthy
+    ports:
+      - "${ZIGFS_ADMIN_PORT:-9001}:9001"
+    environment:
+      # Use Docker DNS; localhost would refer to the Admin container itself.
+      ZIGFS_ADMIN_LISTEN: ":9001"
+      ZIGFS_ENDPOINT: http://zigfs:9000
+      ZIGFS_WEB_ROOT: /app/web
+      ZIGFS_UPSTREAM_TIMEOUT: "${ZIGFS_UPSTREAM_TIMEOUT:-15m}"
+      # Writable by image UID 10001; survives restart, not container recreation.
+      ZIGFS_ADMIN_CONFIG: /app/config/listener.json
+
+volumes:
+  zigfs-data:

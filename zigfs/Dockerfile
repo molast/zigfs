@@ -10,7 +10,8 @@ ARG ZIG_TOOLCHAIN_SHA256=
 RUN apk add --no-cache curl-dev pkgconf
 
 WORKDIR /src
-RUN --mount=type=bind,source=.,target=/build-context,ro \
+RUN --mount=type=cache,id=zigfs-toolchains,target=/var/cache/zig-toolchains,sharing=locked \
+    --mount=type=bind,source=.,target=/build-context,ro \
     target_arch="${TARGETARCH}" \
     && if [ -z "${target_arch}" ]; then target_arch="$(uname -m)"; fi \
     && case "${target_arch}" in \
@@ -38,7 +39,12 @@ RUN --mount=type=bind,source=.,target=/build-context,ro \
        else \
          zig_url="${ZIG_DOWNLOAD_BASE_URL%/}/${ZIG_VERSION}/zig-${zig_arch}-linux-${ZIG_VERSION}.tar.xz"; \
          echo "Downloading Zig toolchain: ${zig_url}"; \
-         wget --tries=3 --timeout=30 -O /tmp/zig.tar.xz "${zig_url}"; \
+         cached_archive="/var/cache/zig-toolchains/zig-${zig_arch}-${ZIG_VERSION}.tar.xz"; \
+         if [ ! -f "${cached_archive}" ]; then \
+           wget --tries=3 --timeout=30 -O "${cached_archive}.tmp" "${zig_url}" \
+           && mv "${cached_archive}.tmp" "${cached_archive}" || exit 1; \
+         fi; \
+         cp "${cached_archive}" /tmp/zig.tar.xz; \
          echo "${zig_sha256}  /tmp/zig.tar.xz" | sha256sum -c -; \
        fi \
     && unxz /tmp/zig.tar.xz \
@@ -49,7 +55,10 @@ RUN --mount=type=bind,source=.,target=/build-context,ro \
     && rm -f /tmp/zig.tar
 COPY build.zig build.zig.zon ./
 COPY src ./src
-RUN zig build -Doptimize=ReleaseSafe --prefix /out
+# Published images must not inherit the builder/QEMU CPU extensions (e.g. ARM SVE).
+RUN --mount=type=cache,id=zigfs-global-${TARGETARCH}-${ZIG_VERSION},target=/root/.cache/zig,sharing=locked \
+    --mount=type=cache,id=zigfs-local-${TARGETARCH}-${ZIG_VERSION},target=/src/.zig-cache,sharing=locked \
+    zig build -Doptimize=ReleaseSafe -Dcpu=baseline --prefix /out
 
 FROM alpine:latest AS runtime
 

@@ -104,6 +104,11 @@ pnpm install
 
 ### Docker Compose 启动
 
+使用 Docker Hub 已发布镜像部署，请使用根目录的 `docker-compose.yml`，默认镜像为
+`molast/zigfs:latest` 和 `molast/zigfs-admin:latest`。配置 `.env` 后执行
+`docker compose -f docker-compose.yml pull` 和 `docker compose -f docker-compose.yml up -d`。
+环境变量、数据卷和升级步骤见 [Docker 镜像部署](docs/deployment/docker.md)。
+
 Docker 操作已经拆分到独立脚本：
 
 ```bash

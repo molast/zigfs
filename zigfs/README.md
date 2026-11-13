@@ -7,6 +7,22 @@ transaction journal, indexes, recovery, and storage backends.
 
 ## Docker build
 
+Published Linux images compile with `-Dcpu=baseline` for both AMD64 and ARM64.
+Do not use the build host's native CPU features for portable images: QEMU may
+advertise ARM SVE instructions unavailable on Apple Silicon, causing startup
+to fail with `Illegal instruction` (exit code 132) before health checks respond.
+
+The publishing workflow builds AMD64 on `ubuntu-24.04` and ARM64 on
+`ubuntu-24.04-arm`, avoiding QEMU for compilation. Each platform is uploaded by
+digest; a separate job combines both digests before updating version tags and
+`latest`. Digest references are not additional `sha-*` tags.
+
+BuildKit caches downloaded Zig archives and compiler state for repeated local
+builds, with compiler caches separated by architecture and Zig version. CI layer
+caches are scoped by image and architecture. Cache mounts are local to a builder
+and are not exported by the GitHub Actions layer cache, so a fresh runner may
+still download dependencies. These caches do not fix a blocked Alpine mirror.
+
 The image uses Alpine for both the build and runtime stages. The builder downloads
 the pinned Zig `0.17.0` toolchain and verifies its SHA-256 checksum. If network
 access to `ziglang.org` is unavailable, place a Linux archive matching the

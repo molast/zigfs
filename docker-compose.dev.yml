@@ -2,15 +2,10 @@ name: zigfs-dev
 
 services:
   zigfs:
-    image: ${ZIGFS_IMAGE:-zigfs:0.1.0}
+    image: ${ZIGFS_IMAGE:-molast/zigfs:latest}
+    # Use the images already pulled locally.
     pull_policy: never
-    build:
-      context: ./zigfs
-      dockerfile: Dockerfile
-      args:
-        ZIG_VERSION: ${ZIG_VERSION:-0.17.0}
-        ZIG_DOWNLOAD_BASE_URL: ${ZIG_DOWNLOAD_BASE_URL:-https://ziglang.org/download}
-        ZIG_TOOLCHAIN_SHA256: ${ZIG_TOOLCHAIN_SHA256:-}
+    restart: unless-stopped
     container_name: zigfs-dev
     ports:
       - "${ZIGFS_API_PORT:-9000}:9000"
@@ -19,25 +14,31 @@ services:
       - zigfs-dev-data:/var/lib/zigfs
 
     environment:
+      # Container paths and ports match the volume, health check and port mappings.
       ZIGFS_API_ADDRESS: "0.0.0.0:9000"
       ZIGFS_METRICS_ENABLED: "${ZIGFS_METRICS_ENABLED-true}"
       ZIGFS_METRICS_ADDRESS: "0.0.0.0:9090"
       ZIGFS_DATA_ROOT: "/var/lib/zigfs"
+      # Storage I/O
       ZIGFS_STREAM_BUFFER_SIZE: "${ZIGFS_STREAM_BUFFER_SIZE-65536}"
+      # Public address must be reachable by browsers and S3 clients.
       ZIGFS_S3_PUBLIC_ENDPOINT: "${ZIGFS_S3_PUBLIC_ENDPOINT-http://127.0.0.1:9000}"
       ZIGFS_S3_VIRTUAL_HOSTED_STYLE: "${ZIGFS_S3_VIRTUAL_HOSTED_STYLE-false}"
       ZIGFS_S3_REGION: "${ZIGFS_S3_REGION-us-east-1}"
       ZIGFS_S3_REQUEST_TIME_SKEW_SECONDS: "${ZIGFS_S3_REQUEST_TIME_SKEW_SECONDS-900}"
       ZIGFS_S3_MULTIPART_EXPIRY_SECONDS: "${ZIGFS_S3_MULTIPART_EXPIRY_SECONDS-604800}"
       ZIGFS_S3_LIFECYCLE_SCAN_INTERVAL_SECONDS: "${ZIGFS_S3_LIFECYCLE_SCAN_INTERVAL_SECONDS-300}"
+      # Root identity and session credentials belong only to ZigFS.
       ZIGFS_ROOT_USER: "${ZIGFS_ROOT_USER-admin}"
       ZIGFS_ROOT_PASSWORD: "${ZIGFS_ROOT_PASSWORD-zigfs-admin}"
       ZIGFS_ADMIN_SESSION_SECRET: "${ZIGFS_ADMIN_SESSION_SECRET-zigfs-local-session-secret-change-before-production}"
       ZIGFS_ADMIN_SESSION_TTL_SECONDS: "${ZIGFS_ADMIN_SESSION_TTL_SECONDS-28800}"
       ZIGFS_ACCESS_KEY: "${ZIGFS_ACCESS_KEY-}"
       ZIGFS_SECRET_KEY: "${ZIGFS_SECRET_KEY-}"
+      # Background maintenance
       ZIGFS_METADATA_MAINTENANCE_INTERVAL_SECONDS: "${ZIGFS_METADATA_MAINTENANCE_INTERVAL_SECONDS-60}"
       ZIGFS_METADATA_MAINTENANCE_BATCH_SIZE: "${ZIGFS_METADATA_MAINTENANCE_BATCH_SIZE-1000}"
+      # KMS and OpenID Connect
       ZIGFS_KMS_ALLOW_INSECURE_DEV_DEFAULTS: "${ZIGFS_KMS_ALLOW_INSECURE_DEV_DEFAULTS-false}"
       ZIGFS_OIDC_PROVIDERS: "${ZIGFS_OIDC_PROVIDERS-[]}"
     healthcheck:
@@ -54,15 +55,10 @@ services:
       start_period: 5s
 
   admin:
-    image: ${ZIGFS_ADMIN_IMAGE:-zigfs-admin:0.1.0}
+    image: ${ZIGFS_ADMIN_IMAGE:-molast/zigfs-admin:latest}
+    # Use the images already pulled locally.
     pull_policy: never
-    build:
-      context: ./zigfs-admin
-      dockerfile: Dockerfile
-      args:
-        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
-        PNPM_VERSION: ${PNPM_VERSION:-11.10.0}
-        PNPM_REGISTRY: ${PNPM_REGISTRY:-https://registry.npmjs.org}
+    restart: unless-stopped
     container_name: zigfs-admin-dev
     depends_on:
       zigfs:
@@ -70,10 +66,13 @@ services:
     ports:
       - "${ZIGFS_ADMIN_PORT:-9001}:9001"
     environment:
+      # Use Docker DNS; localhost would refer to the Admin container itself.
       ZIGFS_ADMIN_LISTEN: ":9001"
       ZIGFS_ENDPOINT: http://zigfs:9000
       ZIGFS_WEB_ROOT: /app/web
-      ZIGFS_UPSTREAM_TIMEOUT: ${ZIGFS_UPSTREAM_TIMEOUT:-15m}
+      ZIGFS_UPSTREAM_TIMEOUT: "${ZIGFS_UPSTREAM_TIMEOUT:-15m}"
+      # Writable by image UID 10001; survives restart, not container recreation.
+      ZIGFS_ADMIN_CONFIG: /app/config/listener.json
 
 volumes:
   zigfs-dev-data:

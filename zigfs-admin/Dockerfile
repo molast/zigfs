@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:24-bookworm-slim AS web-builder
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS web-builder
 
 ARG PNPM_VERSION=11.10.0
 ARG PNPM_REGISTRY=https://registry.npmjs.org
@@ -25,8 +25,9 @@ RUN --mount=type=cache,id=zigfs-admin-pnpm,target=/pnpm/store \
     && mkdir -p /out \
     && cp -R dist/. /out/
 
-FROM golang:1.27-bookworm AS server-builder
+FROM --platform=$BUILDPLATFORM golang:1.27-bookworm AS server-builder
 
+ARG TARGETARCH
 ARG GOPROXY=https://goproxy.cn,direct
 ENV GOPROXY=${GOPROXY}
 
@@ -38,11 +39,12 @@ RUN --mount=type=cache,id=zigfs-admin-go-mod,target=/go/pkg/mod \
     else \
       go mod download; \
     fi
-RUN --mount=type=cache,id=zigfs-admin-go-build,target=/root/.cache/go-build \
+RUN --mount=type=cache,id=zigfs-admin-go-mod,target=/go/pkg/mod \
+    --mount=type=cache,id=zigfs-admin-go-build,target=/root/.cache/go-build \
     if [ -f vendor/modules.txt ]; then \
       export GOFLAGS="-mod=vendor"; \
     fi \
-    && CGO_ENABLED=0 GOOS=linux go build \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     -trimpath \
     -ldflags="-s -w" \
     -o /out/zigfs-admin \
