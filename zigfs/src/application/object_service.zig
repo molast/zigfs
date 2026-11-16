@@ -68,6 +68,7 @@ pub const MultipartEtag = struct {
 };
 
 pub const MultipartCommitOptions = struct {
+    expected_current: ?ExpectedCurrent = null,
     encryption: ?bool = null,
     kms_key: ?[]const u8 = null,
     kms_selection: ?@import("kms.zig").Envelope = null,
@@ -139,6 +140,26 @@ pub const ReadLease = struct {
     }
     pub fn metadata(self: *const ReadLease) *const object_domain.Object {
         return &(self.object orelse unreachable);
+    }
+
+    /// The segmented metadata checksum authenticates a manifest, not object bytes.
+    /// Compute the full plaintext digest only when requested, under this read lease.
+    pub fn fullChecksumSha256(self: *ReadLease) Error![32]u8 {
+        const object = self.metadata();
+        if (object.data_layout == .contiguous and object.multipart_manifest == null) return object.checksum_sha256;
+        const HashSink = struct {
+            hash: std.crypto.hash.sha2.Sha256 = .init(.{}),
+            fn write(context: *anyopaque, bytes: []const u8) byte_stream.Sink.Error!void {
+                const sink: *@This() = @ptrCast(@alignCast(context));
+                sink.hash.update(bytes);
+            }
+        };
+        var sink: HashSink = .{};
+        try self.prepareKms();
+        try self.stream(.{ .context = &sink, .vtable = &.{ .write_all = HashSink.write } });
+        var digest: [32]u8 = undefined;
+        sink.hash.final(&digest);
+        return digest;
     }
 
     pub fn stream(self: *ReadLease, sink: byte_stream.Sink) Error!void {
@@ -389,6 +410,7 @@ pub const ObjectService = struct {
             .user_metadata = options.user_metadata,
             .multipart_etag = options.etag,
             .multipart_completion = .{ .upload_id = manifest.upload_id, .parts_digest = options.parts_digest },
+            .expected_current = options.expected_current,
         }, true);
         staged_pending = false;
         // MultipartService first persists the terminal upload state, then

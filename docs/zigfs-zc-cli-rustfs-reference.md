@@ -946,11 +946,12 @@ KMS 的 describe/rotate/schedule-deletion/cancel-deletion/delete 应映射到契
 | 01 | 已完成 | parser、全局参数、help、`--version`、错误与输出框架；定义 bucket/object 分组及别名注册 | 无 | 消除 `zc version` 冲突；帮助不联网；参数前后置、`--`、错误退出码及 JSON 可解析 |
 | 02 | 已完成 | `alias set/list/info/remove/export/import`；配置路径、原子写、安全凭据输入、region、TLS | 01 | alias 往返导入导出；默认脱敏；冲突不部分写入；AK/SK/token 不混源 |
 | 03 | 已完成 | HTTP/SigV4、流式请求、XML/JSON 编解码、错误映射；`s3api` 分派、input JSON、skeleton | 02 | 签名与 Session Token 正确；特殊 Key 编码；超时/重试有界；未知字段拒绝；仅注册已接入操作 |
-| 04 | 待执行 | `bucket list/create/stat/location/remove`、`object list --list-api v2`；`ls/mb/rb` 基础别名 | 03 | 创建→列举→Head/Location→空桶删除；完整分页；非空桶拒绝；尚不开放强制清理 |
-| 05 | 待执行 | `object put/get/stat/show/head`、`put/get/cat/head/stat`、本地↔远端单对象 `cp` | 04 | 二进制与零字节往返一致；Range、条件读取、metadata/checksum；正文与诊断分离；流式有界内存 |
-| 06 | 待执行 | 同实例 `object copy`、`mv`、单对象 `rm`、`object remove-batch`；覆盖与 dry-run | 05 | Copy 条件/metadata 生效；目标确认成功才删除源；批量 200 响应内逐项 Error 判失败；先限定无版本场景 |
-| 07 | 待执行 | `multipart create/upload-part/parts/list/complete/abort`；自动分片、`--resume`、`pipe` | 05–06 | 大文件完整往返；中断恢复核对源与 parts；Complete 体内 Error/未知结果处理；stdin 不假装可恢复 |
-| 08 | 待执行 | 递归/多源 `cp/mv/rm`、筛选、并发/限速/重试、summary、普通空桶清理与 `rb --dangerous` | 06–07 | 路径冲突与越界拒绝；分页中途失败报告部分完成；删除有界；版本化桶暂拒绝强制清理，待 10 补齐 |
+| 04 | 已完成 | `bucket list/create/stat/location/remove`、`object list --list-api v2`；`ls/mb/rb` 基础别名 | 03 | 创建→列举→Head/Location→空桶删除；完整分页；非空桶拒绝；尚不开放强制清理 |
+| 05 | 已完成 | `object put/get/stat/show/head`、`put/get/cat/head/stat`、本地↔远端单对象 `cp` | 04 | 二进制与零字节往返一致；Range、条件读取、metadata/checksum；正文与诊断分离；流式有界内存 |
+| 06 | 已完成 | 同实例 `object copy`、`mv`、单对象 `rm`、`object remove-batch`；覆盖与 dry-run | 05 | Copy 条件/metadata 生效；目标确认成功才删除源；批量 200 响应内逐项 Error 判失败；先限定无版本场景 |
+
+| 07 | 已完成 | `multipart create/upload-part/parts/list/complete/abort`；自动分片、`--resume`、`pipe` | 05–06 | 大文件完整往返；中断恢复核对源与 parts；Complete 体内 Error/未知结果处理；stdin 不假装可恢复 |
+| 08 | 已完成 | 递归/多源 `cp/mv/rm`、筛选、并发/限速/重试、summary、普通空桶清理与 `rb --dangerous` | 06–07 | 路径冲突与越界拒绝；规划分页失败零写入，执行失败汇总部分完成；删除有界；版本化桶暂拒绝强制清理，待 10 补齐 |
 
 **P0 里程碑**：一个全新 alias 能完成创建 Bucket、单对象/大文件上传下载、同实例复制移动和受控清理；核心操作已同时接入高层命令和 s3api。跨端点迁移不属于本次验收。
 
@@ -1032,8 +1033,39 @@ KMS 的 describe/rotate/schedule-deletion/cancel-deletion/delete 应映射到契
 | 01 | 已完成 | help、--version、全局参数、bucket/object 和传统别名注册、JSON/退出码 | 无服务端依赖；业务命令仅帮助可用，执行返回 7 | `zigfs-cli/src/cli.zig` 单元测试；在 `zigfs-cli/` 执行 `zig build test`、`zig build`、`python3 tests/cli_smoke.py` 均通过（Zig 0.17.0）；离线子进程验证，无需实例 | 2026-11-16 |
 | 02 | 已完成 | alias set/list/info/remove/export/import；配置选择、原子写、凭据输入、连接参数与优先级解析 | 本地操作，无网络请求；TLS 握手、CA 信任和远端凭据有效性待步骤 03；TOML 子集及 POSIX 提示范围见 CLI README | `zigfs-cli/src/alias.zig` 单元测试；`zig build test`、`zig build`、`python3 tests/cli_smoke.py`、`python3 tests/alias_smoke.py` 通过（Zig 0.17.0，隔离配置与 PTY 验证） | 2026-11-16 |
 | 03 | 已完成 | HTTP/libcurl、SigV4、流式传输、XML/JSON、错误映射与 s3api；CreateBucket/ListBuckets/HeadBucket/GetBucketLocation/ListObjectsV2/HeadObject/GetObject/PutObject 的声明子集 | 高层入口、完整分页和高级字段待后续步骤；仅注册已验证入口；没有 AWS 实测，支持字段见 CLI README | `zig build test`、`zig build`；`tests/cli_smoke.py`、`tests/alias_smoke.py`；`tests/s3api_integration.py`：真实隔离 ZigFS 12 MiB 往返/临时凭据，独立 HTTP 签名/异常测试及本地 TLS 证书测试均通过；`./build.sh` 生成的 ReleaseSafe `zc` 通过同组回归（Zig 0.17.0，libcurl 8.7.1） | 2026-11-16 |
+| 04 | 已完成 | bucket list/create/stat/location/remove、object list v2、ls/mb/rb；共享请求层补齐 DeleteBucket | 默认全量分页、逐页释放内存、匿名磁盘暂存后输出单份 JSON；最多 100000 页、token 最多 64 KiB，超限/重复/失败明确报错；仅空桶删除，需 --yes 或 --dry-run；force、ignore-existing、创建时 versioning/lock 暂拒绝；无 AWS 实测 | Zig 单元测试、CLI/alias 子进程测试通过；真实隔离 ZigFS：创建/列举/Head/Location/删除、对象两页与前缀列表、权限和非空保护；独立 HTTP：Bucket 两页、第二页失败、重复 token、DELETE 不重试；Debug/ReleaseSafe 均通过现有 HTTP/TLS 全量回归 | 2026-11-16 |
+| 05 | 已完成 | object put/get/stat/show/head；put/get/cat/head/stat、本地↔远端单对象 cp；共享请求层补齐 SHA256 上传字段、metadata/读取响应头；下载原子落盘及显式覆盖 | Get/Head 的 ChecksumMode=ENABLED 返回完整内容 SHA256；自动校验与 --checksum-sha256 HEX 均已真实联调；分段对象按需流式计算摘要，增加一次完整读取。head 行模式有界扫描整个响应；远端复制、stdin、递归、版本及其余校验算法留后续步骤 | Zig 单元/别名注册测试、CLI/alias 子进程测试通过；真实 ZigFS：12 MiB/零字节/长行/特殊 Key、SHA256 上传及错误摘要拒绝、显式摘要下载、metadata、Range、ETag/日期条件、权限、覆盖保护；HTTP fixture：自动校验成功/缺失/不匹配、断流重试后校验和原文件保护；ReleaseSafe 全量及 HTTP/TLS 回归通过 | 2026-11-16 |
+| 06 | 已完成 | 同 alias 的 object copy/move、cp/mv，object remove/rm、object remove-batch --file；CopyObject/DeleteObject/DeleteObjects/GetBucketVersioning 接入 s3api | 限未版本化桶；Enabled/Suspended/版本状态读取失败拒绝；文件 1 MiB、最多 1000 个唯一 Key、Quiet=false，无 VersionId；不同 alias 拒绝。mv 非事务，服务端缺少条件 DeleteObject，最终源检查与删除存在并发竞态，使用时须避免并发写入；大批次分块待 08 | Zig 单元与 CLI/alias 测试通过；真实 ZigFS：复制/移动/删除、特殊 Key、metadata REPLACE、源/目标条件、dry-run、权限、1000 项批量及 Enabled/Suspended 拒绝；独立签名 fixture：复制 200 内嵌 Error/缺 ETag 不删除源、对象变化检测、删除源失败明确未完成、批量逐项 Error/缺回执及写请求不重试；ReleaseSafe 全量及 TLS 回归通过 | 2026-11-16 |
+| 07 | 已完成 | multipart create/upload-part/parts/list/complete/abort；put/cp 自动分片、--resume、pipe；对应 6 个 S3 operation 共用请求层 | Complete 支持 If-Match/If-None-Match 并在最终发布锁内校验代次，自动分片/pipe 默认防覆盖；仅文件可恢复，stdin 不可恢复；保留 creating/uploading/completing/completed 状态，未知完成结果不自动重试；高级 checksum/tagging/加密/copy-part 留相应后续步骤 | Zig 单元、CLI/alias 子进程、Debug 与本地 ReleaseSafe 全量回归通过；真实 ZigFS：分页分片生命周期、12 MiB/零字节自动上传、空/二进制 pipe；转发真实服务的故障代理：分片响应丢失后恢复、源/布局/远端分片变化拒绝、损坏记录与并发锁、Complete 已生效但响应丢失时拒绝重试；独立签名 fixture：Complete 200 内嵌 Error/缺 ETag、UploadPart 缺 ETag及写请求不重试；TLS 回归通过 | 2026-11-16 |
+| 08 | 已完成 | 递归/多源 cp/mv/rm、筛选、并发/限速/共享重试预算、summary；remove-batch 分块；rb --force/--dangerous | mv 限同 alias 远端；下载路径限安全 ASCII；不支持版本化清桶、批量恢复；继承步骤 06/07 的服务端限制；规划最多 100000 项/64 MiB 计量数据 | Zig 单元、CLI/alias 子进程、Debug/ReleaseSafe 集成回归通过；真实 ZigFS：递归往返、分页筛选、冲突/越界/符号链接、移动删除、1001 项分块、强制清桶及待完成上传/版本保护；独立 HTTP：规划失败零写入、并发、共享重试、限速、SIGINT、逐 Key 删除结果汇总 | 2026-11-16 |
 
-后续执行从 **步骤 04（Bucket 基础命令与对象列表）** 开始；每次任务应指定步骤编号或命令范围，避免把整份规划一次性标记为完成。
+步骤 04 使用说明与输出 schema 见 `zigfs-cli/README.md`。列表失败时不输出不完整结果；磁盘暂存空间随结果量增长，内存按单页与有界 token 摘要集合控制。超时按每页请求（含重试）计算。非列表 Bucket 操作暂复用 s3api 输出 envelope；dry-run 只预览，不检查远端存在性/权限。真实对象分页与独立 Bucket 分页 fixture 均已验证，不将 fixture 当作真实服务联调的替代。
+
+步骤 05：上传默认使用 `If-None-Match: *` 拒绝覆盖；覆盖须 `--overwrite --yes`。文件下载仅在传输及所选校验成功后原子发布，失败保留已有目标；cat/head/get 到 stdout 保持原始字节，失败时可能已输出部分正文，错误只写 stderr。上传支持重复 `--metadata KEY=VALUE`、Content-Type 等字段；下载支持 Range/offset/length、ETag 和日期条件。详情与示例见 `zigfs-cli/README.md`。
+
+**步骤 05 服务端回补已完成**：GetObject/HeadObject 的 `ChecksumMode=ENABLED` 返回 Base64 `x-amz-checksum-sha256` 与 `x-amz-checksum-type: FULL_OBJECT`；CLI `get --checksum SHA256` 自动校验通过后才原子发布本地文件，`stat --checksum SHA256` 可读取摘要。普通对象复用已存储的完整明文摘要；分段对象的元数据摘要属于清单，不能冒充内容摘要，因此按需在同一读租约内流式计算完整内容 SHA256，不改存储格式。分段对象的校验 GET 多一次完整读取，校验 HEAD 也需完整读取；未请求校验及 Range 响应不返回该摘要。真实 ZigFS 验证 12 MiB/零字节、未显式上传校验字段的对象、分片及空分片自动下载校验；服务端测试覆盖加密分段对象与指定版本在重启后的摘要。独立故障测试继续覆盖缺失/错误校验头及断流后恢复，失败保留原文件。
+
+步骤 06 用法：`cp/mv ALIAS/BUCKET/KEY ALIAS/BUCKET/KEY`；`rm OBJECT --yes`；`object remove-batch ALIAS/BUCKET --file FILE --yes`。批量文件为 `{"Objects":[{"Key":"a"}],"Quiet":false}`；可用 `--keys-file` 传 JSON 字符串数组。删除/移动须 `--yes`，或 `--dry-run` 只预览。复制默认拒绝覆盖；`--overwrite --yes` 才允许替换。源条件使用 `--source-if-*`，目标条件使用 `--if-match/--if-none-match`；metadata/content 修改须指定 `--metadata-directive REPLACE`。
+
+步骤 06 不将 HTTP 200 等同于业务成功：CopyObject 必须有正确结果根和 ETag；DeleteObjects 必须逐项完整回执，Error 返回非零并保留脱敏逐项结果，缺失/重复回执报告结果不确定。高层输出中批量失败详情位于 `error.cause.error.result`；直接 s3api 位于 `error.result`。写请求不自动重试。移动在复制后验证目标和源，再执行删除；复制完成后的失败报告 `MOVE_INCOMPLETE` 和阶段信息，保留目标，删除请求失败时不能承诺源仍存在。GetBucketVersioning 检查需要相应读取权限，并非原子锁；条件删除/事务性移动仍需服务端能力。CLI 当前范围与限制详见 `zigfs-cli/README.md` 的步骤 06。
+
+步骤 07：`multipart complete --file` 接受 `{"Parts":[{"PartNumber":1,"ETag":"..."}]}`，严格递增、最多 10000 项。`multipart list/parts` 默认完整分页；累积编码页结果最多 16 MiB/10000 页，超限或异常明确失败且不输出不完整列表。原始 s3api 列表仍为单页。UploadPart/Create/Complete/Abort 均不自动重试；完成必须验证结果根和 ETag，不能将 HTTP 200 直接算作成功。
+
+自动上传默认阈值 64 MiB、分片 16 MiB，支持字节/KiB/MiB/GiB、5 MiB–5 GiB 分片、最多 10000 片与 5 TiB 对象；`--part-size/--max-parts/--state-file/--resume` 显式选择分片流程。上传按文件区间流式传输，初始单次扫描绑定完整源 SHA256 和各片摘要，每片发送前核对摘要、Complete 前再次核对完整源。恢复记录默认 `SOURCE.zc-upload.json`，原子写、0600 权限和进程锁，记录源/目标/连接身份/布局/已确认 ETag；恢复须先 ListParts 比对。未确认分片重新上传，已确认分片被改写则拒绝恢复，不把 ETag 当作 MD5。只有 uploading 可恢复；creating/completing/completed 不会自动重新提交。成功保留 completed 记录；源变化、参数变化、未知服务端结果的处理细节见 CLI README。
+
+`pipe` 始终使用分片，以 64 KiB 缓冲读取 stdin，仅临时落盘当前一片，支持空输入；拒绝 `--resume/--state-file/--multipart-threshold`，不会把不可重放的输入伪装成可恢复。失败保留远端待完成上传，报告已知 UploadId；可用 `multipart abort OBJECT --upload-id ID --yes` 显式清理。完整用例、边界和恢复操作见 `zigfs-cli/README.md` 的步骤 07。
+
+**步骤 07 服务端回补已完成**：CompleteMultipartUpload 已接受 If-Match/If-None-Match；先判断请求条件，再把预期对象代次或不存在状态传入最终发布，在对象写锁与元数据锁内校验，避免检查后并发覆盖。条件不满足或观察后目标变化返回 412 PreconditionFailed，不发布新对象，保留待完成分片；条件请求不能通过历史完成回执绕过检查。自动分片/pipe 默认发送 `If-None-Match: *`，显式覆盖仍需 `--overwrite --yes`，可附加 `--if-match` 限定目标 ETag。手动 complete 可显式指定两种条件，不指定时保持 S3 无条件语义；不支持条件的旧服务端明确失败，不退化。恢复指纹包含发布条件，旧格式或覆盖策略变化拒绝恢复；完成结果未知仍不自动重试。服务端应用测试覆盖观察后代次变化与分片保留；真实 ZigFS 回归覆盖缺失/已存在目标、陈旧/匹配 ETag、并发创建/条件替换均仅一个成功、恢复策略变化拒绝、pipe 防覆盖及批量自动分片。
+
+步骤 08：完整用法及输出见 `zigfs-cli/README.md` 的步骤 08。递归源尾部 `/` 表示复制内容，否则嵌套源 basename；多源目标必须是远端 prefix 或已存在的本地目录。include/exclude 支持跨 `/` 的字节通配符 `*`、`?`，exclude 优先；本地下载拒绝非 ASCII、不安全路径、符号链接和大小写冲突。规划完整消费分页并校验后才写入；规划失败 completed=0，dry-run 可读取远端但不修改。最多扫描/执行 100000 项，路径/任务/token 计量数据最多 64 MiB（不含分配器与 JSON/map 开销），深度最多 128。
+
+并发 1–32，默认 1；分波调度，默认失败停止后续波次，已启动任务可完成。`--continue-on-error` 不改变最终失败状态。`--retry-attempts N` 的 N−1 次重试由整个批量命令共享（含规划），仅 GET/HEAD 重试。限速按配置 worker 数及收发两方向均分，空闲额度不重分配，不限制服务端内部复制流量。Ctrl+C 返回 130，停止调度并取消 HTTP，但已提交写操作结果可能不确定。
+
+批量输出单份 summary；planned/completed/failed/not_started 以任务计数，一个最多 1000 Key 的删除分块是一个任务；delete_confirmed/delete_failed/delete_outcome_unknown 按 Key 计数。known_object_bytes 不是网络流量。错误保留最多 1000 项/8 MiB，单项详情超过 1 MiB 明确截断。remove-batch 现支持最多 100000 Key/64 MiB 输入；不超过 1000 项且无显式批量控制时仍保留步骤 06 的 1 MiB 限制和输出格式。
+
+`rb --force --yes` 仅清理未版本化桶；存在待完成分片时必须额外指定 `--dangerous`（隐含 force），规划时即检查，任一中止/删除失败均不删桶。拒绝 Enabled/Suspended/未知/不可读版本状态。批量移动仍非事务，自动分片默认条件防覆盖，显式替换要求 `--overwrite --yes`；批量恢复、版本化清理未开放。本地目录、远端对象及桶版本状态在操作期间应保持稳定，预检查不提供锁或快照。所有上述验证由自动化完成，无需用户逐条手测。
+
+后续执行从 **步骤 09（预签名分享与 POST Policy 上传）** 开始；每次任务应指定步骤编号或命令范围，避免把整份规划一次性标记为完成。
 
 ### 4.9 自动化自测责任与环境边界
 

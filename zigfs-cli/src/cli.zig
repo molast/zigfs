@@ -1,5 +1,9 @@
 const std = @import("std");
 const aliases = @import("alias.zig");
+const bulk = @import("bulk.zig");
+const multipart = @import("multipart.zig");
+const objects = @import("objects.zig");
+const browse = @import("browse.zig");
 const s3api = @import("s3api.zig");
 
 pub const version = "0.1.0";
@@ -11,7 +15,7 @@ pub const Options = struct {
     quiet: bool = false,
     debug: bool = false,
 };
-pub const Command = enum { help, version, alias, s3api, unavailable };
+pub const Command = enum { help, version, alias, s3api, browse, objects, multipart, unavailable };
 pub const ParseError = error{ UnknownOption, UnknownCommand, MissingValue, InvalidFormat, ConflictingOptions, UnexpectedArgument, TooManyArguments };
 
 const Entry = struct {
@@ -24,7 +28,26 @@ const Entry = struct {
 
 // Reserved entries provide help only. Add real handlers when their implementation lands.
 const registry = [_]Entry{
+    .{ .path = "multipart", .description = "Manage multipart uploads", .group = true, .implemented = true },
+    .{ .path = "pipe", .description = "Upload stdin using bounded multipart buffering", .implemented = true },
+    .{ .path = "multipart create", .description = "create multipart upload", .implemented = true },
+    .{ .path = "multipart upload-part", .description = "upload-part multipart upload", .implemented = true },
+    .{ .path = "multipart parts", .description = "parts multipart upload", .implemented = true },
+    .{ .path = "multipart list", .description = "list multipart upload", .implemented = true },
+    .{ .path = "multipart complete", .description = "complete multipart upload", .implemented = true },
+    .{ .path = "multipart abort", .description = "abort multipart upload", .implemented = true },
     .{ .path = "s3api", .description = "S3 protocol operations", .group = true, .implemented = true },
+    .{ .path = "s3api create-multipart-upload", .description = "create-multipart-upload", .implemented = true },
+    .{ .path = "s3api upload-part", .description = "upload-part", .implemented = true },
+    .{ .path = "s3api list-parts", .description = "list-parts", .implemented = true },
+    .{ .path = "s3api list-multipart-uploads", .description = "list-multipart-uploads", .implemented = true },
+    .{ .path = "s3api complete-multipart-upload", .description = "complete-multipart-upload", .implemented = true },
+    .{ .path = "s3api abort-multipart-upload", .description = "abort-multipart-upload", .implemented = true },
+    .{ .path = "s3api copy-object", .description = "copy-object", .implemented = true },
+    .{ .path = "s3api delete-object", .description = "delete-object", .implemented = true },
+    .{ .path = "s3api delete-objects", .description = "delete-objects", .implemented = true },
+    .{ .path = "s3api get-bucket-versioning", .description = "get-bucket-versioning", .implemented = true },
+    .{ .path = "s3api delete-bucket", .description = "Delete an empty bucket (--yes required)", .implemented = true },
     .{ .path = "s3api create-bucket", .description = "Create a bucket with an optional XML location constraint", .implemented = true },
     .{ .path = "s3api list-buckets", .description = "List one page of buckets", .implemented = true },
     .{ .path = "s3api head-bucket", .description = "Check bucket metadata", .implemented = true },
@@ -41,20 +64,25 @@ const registry = [_]Entry{
     .{ .path = "alias remove", .description = "Remove a saved alias", .implemented = true },
     .{ .path = "alias export", .description = "Export portable alias JSON", .implemented = true },
     .{ .path = "alias import", .description = "Validate and import alias JSON", .implemented = true },
-    .{ .path = "bucket", .description = "Bucket command group", .group = true },
-    .{ .path = "object", .description = "Object command group", .group = true },
-    .{ .path = "bucket list", .description = "List buckets" },
-    .{ .path = "bucket create", .alias = "mb", .description = "Create a bucket" },
-    .{ .path = "bucket remove", .alias = "rb", .description = "Remove a bucket" },
+    .{ .path = "bucket", .description = "Bucket command group", .group = true, .implemented = true },
+    .{ .path = "object", .description = "Object command group", .group = true, .implemented = true },
+    .{ .path = "bucket list", .description = "List buckets", .implemented = true },
+    .{ .path = "bucket create", .alias = "mb", .description = "Create a bucket", .implemented = true },
+    .{ .path = "bucket remove", .alias = "rb", .description = "Remove a bucket", .implemented = true },
+    .{ .path = "bucket stat", .description = "Check bucket access", .implemented = true },
+    .{ .path = "bucket location", .description = "Read bucket region", .implemented = true },
     .{ .path = "bucket version", .alias = "version", .description = "Manage bucket versioning; use --version for the CLI version" },
-    .{ .path = "object list", .description = "List objects" },
-    .{ .path = "object copy", .alias = "cp", .description = "Copy, upload or download objects" },
-    .{ .path = "object move", .alias = "mv", .description = "Move objects" },
-    .{ .path = "object remove", .alias = "rm", .description = "Remove objects" },
-    .{ .path = "object stat", .alias = "stat", .description = "Inspect object metadata" },
-    .{ .path = "object show", .alias = "cat", .description = "Print object content" },
-    .{ .path = "object head", .alias = "head", .description = "Print the beginning of an object" },
-    .{ .path = "ls", .description = "List buckets or objects according to the remote path" },
+    .{ .path = "object put", .alias = "put", .description = "Upload one object", .implemented = true },
+    .{ .path = "object get", .alias = "get", .description = "Download one object", .implemented = true },
+    .{ .path = "object list", .description = "List objects", .implemented = true },
+    .{ .path = "object copy", .alias = "cp", .description = "Copy, upload or download objects", .implemented = true },
+    .{ .path = "object move", .alias = "mv", .description = "Move objects", .implemented = true },
+    .{ .path = "object remove-batch", .description = "Delete up to 1000 explicit keys", .implemented = true },
+    .{ .path = "object remove", .alias = "rm", .description = "Remove objects", .implemented = true },
+    .{ .path = "object stat", .alias = "stat", .description = "Inspect object metadata", .implemented = true },
+    .{ .path = "object show", .alias = "cat", .description = "Print object content", .implemented = true },
+    .{ .path = "object head", .alias = "head", .description = "Print the beginning of an object", .implemented = true },
+    .{ .path = "ls", .description = "List buckets or objects according to the remote path", .implemented = true },
 };
 
 pub const Invocation = struct {
@@ -115,7 +143,7 @@ pub fn parse(args: []const []const u8) ParseError!Invocation {
             end_options = true;
             continue;
         }
-        if (!end_options and std.mem.startsWith(u8, arg, "-")) {
+        if (!end_options and arg.len > 1 and std.mem.startsWith(u8, arg, "-")) {
             if (equal(arg, "-H") or equal(arg, "--header") or std.mem.startsWith(u8, arg, "--header=")) {
                 try result.append(arg);
                 if (std.mem.indexOfScalar(u8, arg, '=') == null) {
@@ -158,8 +186,11 @@ pub fn parse(args: []const []const u8) ParseError!Invocation {
                 const split = std.mem.indexOfScalar(u8, arg, '=');
                 const name = if (split) |at| arg[0..at] else arg;
                 const protocol = std.mem.startsWith(u8, registry[result.entry.?].path, "s3api ");
-                const flag = if (protocol) s3api.isFlag(name) else aliases.isFlag(name);
-                const value_option = if (protocol) s3api.isValueOption(name) else aliases.isValueOption(name);
+                const multi = std.mem.startsWith(u8, registry[result.entry.?].path, "multipart ") or equal(registry[result.entry.?].path, "pipe");
+                const transfer = std.mem.startsWith(u8, registry[result.entry.?].path, "object ") and !equal(registry[result.entry.?].path, "object list");
+                const high = !std.mem.startsWith(u8, registry[result.entry.?].path, "alias ");
+                const flag = if (bulk.isFlag(name)) true else if (multi) multipart.isFlag(name) else if (transfer) objects.isFlag(name) else if (high and !protocol) browse.isFlag(name) else if (protocol) s3api.isFlag(name) else aliases.isFlag(name);
+                const value_option = if (bulk.isValueOption(name)) true else if (multi) multipart.isValueOption(name) else if (transfer) objects.isValueOption(name) else if (high and !protocol) browse.isValueOption(name) else if (protocol) s3api.isValueOption(name) else aliases.isValueOption(name);
                 if (!flag and !value_option) return error.UnknownOption;
                 try result.append(arg);
                 if (value_option and split == null) {
@@ -192,7 +223,7 @@ pub fn parse(args: []const []const u8) ParseError!Invocation {
         if (operands != 0) return error.UnexpectedArgument;
         result.command = .help;
     } else if (result.entry) |entry| {
-        result.command = if (registry[entry].group) .help else if (registry[entry].implemented) if (std.mem.startsWith(u8, registry[entry].path, "s3api ")) .s3api else .alias else .unavailable;
+        result.command = if (registry[entry].group) .help else if (registry[entry].implemented) if (std.mem.startsWith(u8, registry[entry].path, "s3api ")) .s3api else if (std.mem.startsWith(u8, registry[entry].path, "alias ")) .alias else if (std.mem.startsWith(u8, registry[entry].path, "multipart ") or equal(registry[entry].path, "pipe")) .multipart else if (std.mem.startsWith(u8, registry[entry].path, "object ") and !equal(registry[entry].path, "object list")) .objects else .browse else .unavailable;
     }
     return result;
 }
@@ -204,7 +235,7 @@ const global_help =
     \\  --format auto|human|json   Output format; default: auto (human in step 01)
     \\  --json                     Equivalent to --format json
     \\  --config FILE              Override ZC_CONFIG_FILE / XDG / HOME config path
-    \\  -H, --header NAME:VALUE     Add a signed x-amz-* header (s3api only)
+    \\  -H, --header NAME:VALUE     Add a signed x-amz-* header (S3 commands)
     \\  --no-color                 Disable colors (currently no color output)
     \\  --no-progress              Disable progress (currently no transfers)
     \\  -q, --quiet                Suppress human success output; keep JSON/errors
@@ -226,18 +257,19 @@ fn helpText(allocator: std.mem.Allocator, entry_id: ?usize) ![]u8 {
         try w.print("ZigFS CLI (zc)\nUsage: zc {s} [OPTIONS]\n{s}\n", .{ entry.path, entry.description });
         if (entry.alias) |alias| try w.print("Alias: {s}\n", .{alias});
         if (entry.implemented) {
-            try w.writeAll(if (std.mem.startsWith(u8, entry.path, "s3api")) s3api.help else aliases.help);
+            try w.writeAll(if (std.mem.startsWith(u8, entry.path, "s3api")) s3api.help else if (std.mem.startsWith(u8, entry.path, "alias")) aliases.help else if (std.mem.startsWith(u8, entry.path, "object ") and !equal(entry.path, "object list")) objects.help else if (std.mem.startsWith(u8, entry.path, "multipart") or equal(entry.path, "pipe")) multipart.help else browse.help);
         } else try w.writeAll("Status: reserved, not implemented. Help is available; business execution exits 7.\n");
+        if (entry.implemented and (std.mem.startsWith(u8, entry.path, "object") or equal(entry.path, "bucket remove"))) try w.writeAll(bulk.help);
         if (entry.group) {
             try w.writeAll(if (entry.implemented) "Subcommands:\n" else "Reserved subcommands (help only):\n");
             for (registry) |child| {
                 if (std.mem.startsWith(u8, child.path, entry.path) and child.path.len > entry.path.len and child.path[entry.path.len] == ' ')
-                    try w.print("  {s}\n", .{child.path[entry.path.len + 1 ..]});
+                    try w.print("  {s}{s}\n", .{ child.path[entry.path.len + 1 ..], if (child.implemented) "" else " (reserved)" });
             }
         }
         try w.print("Example: zc {s} --help\n\n", .{entry.path});
     } else {
-        try w.writeAll("ZigFS CLI (zc)\nUsage: zc [OPTIONS] [COMMAND]\n       zc help [COMMAND [SUBCOMMAND]]\n\nAvailable: help, --version, alias set/list/info/remove/export/import, s3api\nReserved groups: bucket, object (help only)\nReserved legacy names (help only): mb, rb, version, cp, mv, rm, stat, cat, head, ls\nHigh-level S3 commands remain reserved. s3api performs signed HTTP requests; alias commands only manage local settings.\nUse --version for the CLI version; 'version' is reserved for bucket versioning.\nExamples: zc --version; zc bucket --help; zc help object copy\n\n");
+        try w.writeAll("ZigFS CLI (zc)\nUsage: zc [OPTIONS] [COMMAND]\n       zc help [COMMAND [SUBCOMMAND]]\n\nAvailable: help, --version, alias set/list/info/remove/export/import, s3api\nAvailable: bucket list/create/stat/location/remove, object list/put/get/stat/show/head/copy, ls/mb/rb/put/get/cat/head/stat/cp\nAvailable: mv/rm, object remove-batch, multipart create/upload-part/parts/list/complete/abort, pipe\nReserved legacy name (help only): version\nUnlisted high-level S3 commands remain reserved. s3api performs signed HTTP requests; alias commands only manage local settings.\nUse --version for the CLI version; 'version' is reserved for bucket versioning.\nExamples: zc --version; zc bucket --help; zc help object copy\n\n");
     }
     try w.writeAll(global_help);
     return try allocator.dupe(u8, text.written());
@@ -289,20 +321,25 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8) !Response
 fn executeWithContext(allocator: std.mem.Allocator, args: []const []const u8, context: ?aliases.Context) !Response {
     const invocation = parse(args) catch |err| return failure(allocator, wantsJson(args), "USAGE_ERROR", errorMessage(err), 2);
     const json = invocation.options.format == .json;
-    if (invocation.command == .s3api) {
+    if (invocation.command == .s3api or invocation.command == .browse or invocation.command == .objects or invocation.command == .multipart) {
         const ctx = context orelse return failure(allocator, json, "GENERAL_ERROR", "network context unavailable", 1);
-        const output = s3api.execute(allocator, ctx, registry[invocation.entry.?].path[6..], invocation.args[0..invocation.arg_count], invocation.config_path, json, invocation.options.quiet) catch |err| {
+        const bulk_command = bulk.wanted(registry[invocation.entry.?].path, invocation.args[0..invocation.arg_count]);
+        const handler: *const @TypeOf(s3api.execute) = if (bulk_command) &bulk.execute else if (invocation.command == .multipart) &multipart.execute else if (invocation.command == .objects) &objects.execute else if (invocation.command == .browse) &browse.execute else &s3api.execute;
+        const path = registry[invocation.entry.?].path;
+        const output = handler(allocator, ctx, if (invocation.command != .s3api) path else path[6..], invocation.args[0..invocation.arg_count], invocation.config_path, json, invocation.options.quiet) catch |err| {
             const code: u8 = switch (err) {
                 error.AliasNotFound, error.FileNotFound => 5,
-                error.PathAlreadyExists => 6,
+                error.PathAlreadyExists, error.ResumeMismatch, error.WouldBlock => 6,
                 error.AccessDenied, error.InsecurePermissions => 4,
                 error.UnsupportedOperation, error.UnsupportedSignature => 7,
                 error.InvalidInput, error.UnknownInputField, error.ConfirmationRequired, error.RawOutputConflict, error.InvalidHeader, error.DuplicateHeader, error.InvalidAliasInput, error.InvalidEndpoint, error.InvalidConfiguration, error.DuplicateAlias, error.IncompleteCredentials, error.CredentialsRequired, error.MissingHome => 2,
                 else => 1,
             };
             const message = switch (err) {
+                error.ResumeMismatch => "resume source, layout, identity or remote parts differ; upload was not completed",
+                error.InvalidResponse => "invalid server response, pagination, resume data or safety limit exceeded",
                 error.UnknownInputField => "unknown or not-yet-supported operation input field",
-                error.ConfirmationRequired => "put-object requires --yes because it may replace an object",
+                error.ConfirmationRequired => "write/delete operation requires --yes",
                 error.RawOutputConflict => "JSON downloads require --output FILE; raw stdout cannot contain JSON metadata",
                 error.PathAlreadyExists => "output file already exists; choose a new path",
                 error.AliasNotFound => "alias not found",
@@ -371,7 +408,7 @@ fn executeWithContext(allocator: std.mem.Allocator, args: []const []const u8, co
     const body = switch (invocation.command) {
         .help => try helpText(allocator, invocation.entry),
         .version => try std.fmt.allocPrint(allocator, "zc {s}\n", .{version}),
-        .unavailable, .alias, .s3api => unreachable,
+        .unavailable, .alias, .s3api, .browse, .objects, .multipart => unreachable,
     };
     if (!json) return .{ .exit_code = 0, .stdout = body };
     defer allocator.free(body);
@@ -397,17 +434,17 @@ test "help and version dispatch with strict option validation" {
     try std.testing.expectEqual(Command.unavailable, (try parse(&.{"version"})).command);
     try std.testing.expectError(error.UnknownOption, parse(&.{ "--help", "--typo" }));
     try std.testing.expectError(error.ConflictingOptions, parse(&.{ "bucket", "--version" }));
-    try std.testing.expectError(error.UnexpectedArgument, parse(&.{ "help", "cp", "extra" }));
+    try std.testing.expectError(error.UnexpectedArgument, parse(&.{ "help", "mv", "extra" }));
     try std.testing.expectError(error.UnknownCommand, parse(&.{ "bucket", "missing" }));
 }
 
 test "global options work before and after canonical commands and aliases" {
-    const canonical = try parse(&.{ "--json", "object", "--debug", "copy", "--help", "-q", "--no-color", "--no-progress" });
-    const alias = try parse(&.{ "cp", "--help", "--format=json" });
+    const canonical = try parse(&.{ "--json", "bucket", "--debug", "version", "--help", "-q", "--no-color", "--no-progress" });
+    const alias = try parse(&.{ "version", "--help", "--format=json" });
     try std.testing.expectEqual(canonical.entry, alias.entry);
     try std.testing.expectEqual(Format.json, canonical.options.format);
     try std.testing.expect(canonical.options.debug and canonical.options.quiet and canonical.options.no_color and canonical.options.no_progress);
-    try std.testing.expectEqual(Command.help, (try parse(&.{ "help", "object", "copy" })).command);
+    try std.testing.expectEqual(Command.help, (try parse(&.{ "help", "object", "move" })).command);
     try std.testing.expectEqual(Command.help, (try parse(&.{"bucket"})).command);
 }
 
@@ -419,7 +456,7 @@ test "format values conflicts and end of options" {
     try std.testing.expectError(error.ConflictingOptions, parse(&.{ "--json", "--format=auto" }));
     try std.testing.expectEqual(Format.json, (try parse(&.{ "--json", "--format=json" })).options.format);
     try std.testing.expectError(error.UnknownCommand, parse(&.{ "--", "--version" }));
-    const literal = try parse(&.{ "cp", "--", "--json" });
+    const literal = try parse(&.{ "version", "--", "--json" });
     try std.testing.expectEqual(Format.auto, literal.options.format);
     try std.testing.expectEqual(Command.unavailable, literal.command);
 }
@@ -442,7 +479,7 @@ test "responses use correct streams codes and JSON without leaking arguments" {
     try std.testing.expectEqualStrings(version, v.value.object.get("data").?.object.get("version").?.string);
     const quiet = try execute(a, &.{ "-q", "--version" });
     try std.testing.expectEqualStrings("", quiet.stdout);
-    const help = try execute(a, &.{ "object", "copy", "--help", "--json" });
+    const help = try execute(a, &.{ "bucket", "version", "--help", "--json" });
     _ = try std.json.parseFromSlice(std.json.Value, a, help.stdout, .{});
     try std.testing.expect(std.mem.indexOf(u8, help.stdout, "not implemented") != null);
 }
@@ -459,4 +496,22 @@ test "end of options before alias group remains literal in alias handler" {
 
 test {
     std.testing.refAllDecls(s3api);
+}
+
+test "single object aliases and literal stdout target" {
+    for ([_][]const u8{ "put", "get", "cat", "head", "stat", "cp" }) |name| {
+        try std.testing.expectEqual(Command.objects, (try parse(&.{name})).command);
+    }
+    const download = try parse(&.{ "get", "local/bucket/key", "-", "--quiet" });
+    try std.testing.expectEqualStrings("-", download.args[1]);
+    try std.testing.expect(download.options.quiet);
+    try std.testing.expectEqual((try parse(&.{ "object", "copy" })).entry, (try parse(&.{"cp"})).entry);
+}
+
+test {
+    std.testing.refAllDecls(multipart);
+}
+
+test {
+    std.testing.refAllDecls(bulk);
 }

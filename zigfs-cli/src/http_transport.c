@@ -1,13 +1,35 @@
+#define _POSIX_C_SOURCE 200809L
 /* Transport only. Signing, validation and output policy stay in Zig. */
 #include <curl/curl.h>
 #include <stdint.h>
 #include <string.h>
 #include <pthread.h>
+#include <signal.h>
 
 static pthread_once_t once = PTHREAD_ONCE_INIT;
 static int init_result;
 static void init_curl(void) { init_result = curl_global_init(CURL_GLOBAL_DEFAULT); }
 
+static volatile sig_atomic_t interrupted = 0;
+static struct sigaction prior_int;
+void zc_bulk_begin(void) {
+    interrupted = 0;
+    sigaction(SIGINT, NULL, &prior_int);
+}
+static void on_interrupt(int signum) { (void)signum; interrupted = 1; }
+void zc_bulk_listen(void) {
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = on_interrupt;
+    sigemptyset(&action.sa_mask);
+    sigaction(SIGINT, &action, NULL);
+}
+void zc_bulk_end(void) { sigaction(SIGINT, &prior_int, NULL); interrupted = 0; }
+int zc_interrupted(void) { return interrupted; }
+static int progress(void *ctx, curl_off_t total_down, curl_off_t down, curl_off_t total_up, curl_off_t up) {
+    (void)ctx; (void)total_down; (void)down; (void)total_up; (void)up;
+    return interrupted ? 1 : 0;
+}
 typedef size_t (*read_fn)(void *, unsigned char *, size_t);
 typedef int (*write_fn)(void *, const unsigned char *, size_t);
 struct response {
@@ -46,9 +68,10 @@ static size_t receive_body(char *p, size_t size, size_t count, void *opaque) {
 }
 int zc_http(const char *url, const char *method, const char **header_values, size_t header_count,
     const char *ca, int insecure, long connect_ms, long total_ms,
-    int has_body, int64_t body_size, read_fn reader, write_fn writer, void *context,
+    int64_t rate_limit, int has_body, int64_t body_size, read_fn reader, write_fn writer, void *context,
     unsigned char *headers, size_t header_cap, size_t *header_len,
     unsigned char *body, size_t body_cap, size_t *body_len, long *status) {
+    if (interrupted) return 42;
     pthread_once(&once, init_curl);
     if (init_result != CURLE_OK) return -1;
     CURL *c = curl_easy_init(); if (!c) return -1;
@@ -63,6 +86,12 @@ int zc_http(const char *url, const char *method, const char **header_values, siz
     }
 #define SET(option, value) do { CURLcode e = curl_easy_setopt(c, option, value); if (e != CURLE_OK) { result = e; goto cleanup; } } while (0)
     SET(CURLOPT_URL, url);
+    SET(CURLOPT_NOPROGRESS, 0L);
+    SET(CURLOPT_XFERINFOFUNCTION, progress);
+    if (rate_limit > 0) {
+        SET(CURLOPT_MAX_SEND_SPEED_LARGE, (curl_off_t)rate_limit);
+        SET(CURLOPT_MAX_RECV_SPEED_LARGE, (curl_off_t)rate_limit);
+    }
     SET(CURLOPT_PROTOCOLS_STR, "http,https");
     SET(CURLOPT_PROXY, ""); /* Do not silently route credentials through ambient proxies. */
     SET(CURLOPT_FOLLOWLOCATION, 0L);

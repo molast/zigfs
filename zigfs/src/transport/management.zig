@@ -2256,6 +2256,7 @@ fn respondMultipartError(
         error.InvalidContentType => respondError(request, request_id, .bad_request, "InvalidContentType", "content type is invalid"),
         error.InvalidUserMetadata => respondError(request, request_id, .bad_request, "InvalidUserMetadata", "user metadata is invalid"),
         error.InvalidUploadId => respondError(request, request_id, .bad_request, "InvalidUploadId", "upload id is invalid"),
+        error.ConditionNotMet => respondError(request, request_id, .precondition_failed, "PreconditionFailed", "object condition was not met"),
         error.InvalidPartNumber, error.InvalidPart, error.InvalidPartOrder, error.EntityTooSmall => respondError(request, request_id, .bad_request, "InvalidPart", "multipart parts are invalid"),
         error.InvalidListOptions => respondError(request, request_id, .bad_request, "InvalidQuery", "multipart list query is invalid"),
         error.BucketNotFound => respondError(request, request_id, .not_found, "BucketNotFound", "bucket does not exist"),

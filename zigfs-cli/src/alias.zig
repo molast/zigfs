@@ -21,7 +21,13 @@ pub const Alias = struct {
     management_endpoint: []const u8 = "",
 };
 pub const Config = struct { schema_version: u32 = 1, aliases: []const Alias = &.{} };
-pub const Context = struct { io: Io, env: *const std.process.Environ.Map };
+pub const RequestPolicy = struct {
+    retries_left: std.atomic.Value(u32),
+    rate_limit: u64 = 0,
+    initial_backoff: u32 = 100,
+    max_backoff: u32 = 1600,
+};
+pub const Context = struct { io: Io, env: *const std.process.Environ.Map, policy: ?*RequestPolicy = null };
 pub const Output = struct { json: []const u8, human: []const u8, raw: bool = false };
 
 pub fn isFlag(name: []const u8) bool {

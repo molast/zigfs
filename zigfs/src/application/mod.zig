@@ -2887,6 +2887,14 @@ test "segmented completion is zero-copy and idempotent across restart" {
         const versions = try app.objectService().?.listVersions("compose-test", "file");
         defer versions.deinit(std.testing.allocator);
         try std.testing.expectEqual(@as(usize, 1), versions.entries.len);
+        {
+            var lease = try app.objectService().?.openVersion("compose-test", "file", version);
+            defer lease.deinit();
+            var expected: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash("segmented immutable payload", &expected, .{});
+            try std.testing.expectEqualSlices(u8, &expected, &try lease.fullChecksumSha256());
+            try std.testing.expect(!std.mem.eql(u8, &expected, &lease.metadata().checksum_sha256));
+        }
         var sink = streams.CollectingSink.init(std.testing.allocator);
         defer sink.deinit();
         (try app.objectService().?.get("compose-test", "file", sink.interface())).deinit(std.testing.allocator);
@@ -2940,3 +2948,44 @@ test "legacy parts without sidecars compose and pending cleanup survives restart
 pub const auth_settings = @import("auth_settings.zig");
 
 pub const display_settings = @import("display_settings.zig");
+
+test "multipart conditional publication rejects stale generations and preserves pending parts" {
+    const streams = @import("../testing/streams.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(root);
+    var app = Application.initWithAllocator(.{ .data_root = root, .metrics_enabled = false }, std.testing.allocator);
+    defer app.deinit(std.testing.io);
+    try app.initialize(std.testing.io);
+    (try app.bucketService().?.create("conditional-parts", "owner")).deinit(std.testing.allocator);
+    const multi = app.multipartService().?;
+    const objects = app.objectService().?;
+    const upload = try multi.create("conditional-parts", "body", .{});
+    defer upload.deinit(std.testing.allocator);
+    var id_buffer: [32]u8 = undefined;
+    const upload_id = multipart_domain.formatUploadId(upload.id, &id_buffer);
+    var source = streams.SliceSource.init("multipart");
+    const part = try multi.uploadPart("conditional-parts", "body", upload_id, 1, source.interface(), .{});
+    const parts = &[_]@import("multipart_service.zig").CompletePart{.{ .number = 1, .etag_md5 = part.etag_md5 }};
+    // Simulate a writer after the transport observed an absent target.
+    var first_source = streams.SliceSource.init("first");
+    const first = try objects.put("conditional-parts", "body", first_source.interface(), .{});
+    defer first.deinit(std.testing.allocator);
+    try std.testing.expectError(error.ConditionNotMet, multi.completeConditional("conditional-parts", "body", upload_id, parts, .missing));
+    // Simulate another writer after a matching ETag/generation was observed.
+    var second_source = streams.SliceSource.init("second");
+    const second = try objects.put("conditional-parts", "body", second_source.interface(), .{});
+    defer second.deinit(std.testing.allocator);
+    try std.testing.expectError(error.ConditionNotMet, multi.completeConditional("conditional-parts", "body", upload_id, parts, .{ .generation = first.metadata_generation }));
+    const pending = try multi.listParts("conditional-parts", "body", upload_id);
+    defer pending.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), pending.parts.len);
+    const current = try objects.head("conditional-parts", "body");
+    defer current.deinit(std.testing.allocator);
+    try std.testing.expectEqual(second.metadata_generation, current.metadata_generation);
+    const completed = try multi.completeConditional("conditional-parts", "body", upload_id, parts, .{ .generation = second.metadata_generation });
+    defer completed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u64, 9), completed.size);
+    try std.testing.expectError(error.ConditionNotMet, multi.completeConditional("conditional-parts", "body", upload_id, parts, .missing));
+}

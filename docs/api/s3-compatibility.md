@@ -135,7 +135,7 @@ ListObjectsV2 已支持：
 | UploadPart | `PUT /{bucket}/{key}?partNumber=N&uploadId=ID` | Implemented | `200` + quoted MD5 `ETag` | Object Write |
 | ListParts | `GET /{bucket}/{key}?uploadId=ID` | Implemented | `200` XML | Object Read |
 | ListMultipartUploads | `GET /{bucket}?uploads=` | Implemented | `200` XML + Upload/CommonPrefixes 分页 | Bucket Read |
-| CompleteMultipartUpload | `POST /{bucket}/{key}?uploadId=ID` | Implemented | `200` XML + composite `ETag` | Object Write |
+| CompleteMultipartUpload | `POST /{bucket}/{key}?uploadId=ID` | Implemented | `200` XML + composite `ETag`；If-Match/If-None-Match 条件失败返回 `412` | Object Write |
 | AbortMultipartUpload | `DELETE /{bucket}/{key}?uploadId=ID` | Implemented | `204` | Object Write |
 
 - Upload ID 是随机 UUID V4 的 32 位小写 Hex 表示，不包含 Bucket、Key 或磁盘路径。
@@ -184,6 +184,7 @@ Conditional Requests：
 - If-Match 优先于 If-Unmodified-Since，If-None-Match 优先于 If-Modified-Since；日期使用 RFC 7231 IMF-fixdate（GMT，秒精度）。
 - 条件 PUT 在读取请求 Body 前先检查当前对象，并把观察到的 Metadata Generation 绑定到最终提交 CAS；并发覆盖会返回 `412`，不会发布新 Object。
 - 缺失对象上的 `If-None-Match: *` 可创建对象；缺失对象上的 If-Match 不满足条件。
+- CompleteMultipartUpload 支持 If-Match/If-None-Match（不支持日期条件），最终发布锁内校验观察到的对象代次/缺失状态；条件不符或检查后目标变化返回 412，保留原对象与待完成分片。条件重放不通过历史完成回执绕过检查；无条件完成仍保留原有幂等回执。当前实现不将此类代次冲突区分为 AWS 的 409 ConditionalRequestConflict，客户端不能依赖 409；应检查目标与上传状态后显式处理，不盲目重试。
 
 CopyObject：
 
@@ -265,3 +266,16 @@ Request ID Header，不返回 XML Body。
 
 AK/SK 的创建、禁用、删除和 Policy 配置不属于 S3/Data API；它们是 ZigFS
 Management API。文件 SDK 只建立在本文声明的 S3 操作之上，不包含管理操作。
+
+
+### GetObject / HeadObject SHA256 响应
+
+`x-amz-checksum-mode: ENABLED` 请求返回 Base64 编码的完整明文
+`x-amz-checksum-sha256`，并标记 `x-amz-checksum-type: FULL_OBJECT`。
+不要求上传时显式选择 SHA256。无 ChecksumMode、Range、304 和错误响应不附带该完整摘要；
+Range 字节不能用完整对象摘要验证。原有身份、对象/版本和 KMS 权限检查仍适用。
+
+连续布局使用存储的内容摘要；分段布局的存储摘要验证清单，因此在同一读租约内
+流式读取明文重新计算完整内容摘要，不能直接返回清单摘要或把 ETag 当 SHA256。
+分段校验 GET 额外读取完整对象一次，校验 HEAD 同样需要完整读取，内存按流式缓冲控制；
+不修改持久化格式。本次输出为完整内容 SHA256，不输出 AWS multipart COMPOSITE 摘要。

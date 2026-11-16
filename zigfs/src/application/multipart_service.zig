@@ -24,6 +24,7 @@ pub const Error = error{
     InvalidPartOrder,
     InvalidListOptions,
     EntityTooSmall,
+    ConditionNotMet,
     BucketNotFound,
     UploadNotFound,
     ChecksumMismatch,
@@ -436,6 +437,17 @@ pub const MultipartService = struct {
         upload_id: []const u8,
         requested_parts: []const CompletePart,
     ) Error!object_domain.Object {
+        return self.completeConditional(bucket_name, key, upload_id, requested_parts, null);
+    }
+
+    pub fn completeConditional(
+        self: MultipartService,
+        bucket_name: []const u8,
+        key: []const u8,
+        upload_id: []const u8,
+        requested_parts: []const CompletePart,
+        expected_current: ?object_service.ExpectedCurrent,
+    ) Error!object_domain.Object {
         try validateMultipartAddress(bucket_name, key, upload_id);
         if (requested_parts.len == 0 or requested_parts.len > multipart_domain.max_parts) return error.InvalidPart;
         var request_hash = std.crypto.hash.sha2.Sha256.init(.{});
@@ -458,6 +470,8 @@ pub const MultipartService = struct {
         defer upload_lock.unlock(self.io);
         if (try self.completedObject(bucket_name, key, upload_id, parts_digest)) |completed| {
             errdefer completed.deinit(self.allocator);
+            // Conditional retries must not bypass the destination precondition.
+            if (expected_current != null) return error.ConditionNotMet;
             self.state_mutex.lockUncancelable(self.io);
             const residual = self.loadMatchingUploadLocked(bucket_name, key, upload_id) catch |err| {
                 self.state_mutex.unlock(self.io);
@@ -511,6 +525,7 @@ pub const MultipartService = struct {
             .kms_selection = upload.kms,
             .user_metadata = @ptrCast(upload.user_metadata),
             .parts_digest = parts_digest,
+            .expected_current = expected_current,
             .etag = .{
                 .digest = composite_etag,
                 .part_count = @intCast(parts.len),
@@ -851,6 +866,7 @@ fn mapObjectError(err: object_service.Error) Error {
         error.ChecksumMismatch => error.ChecksumMismatch,
         error.InputReadFailed => error.CorruptData,
         error.Conflict => error.Conflict,
+        error.ConditionNotMet => error.ConditionNotMet,
         error.CorruptMetadata => error.CorruptMetadata,
         error.CorruptData => error.CorruptData,
         else => error.Unavailable,

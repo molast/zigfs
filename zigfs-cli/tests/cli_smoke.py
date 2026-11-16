@@ -23,28 +23,28 @@ def run(args, code=0, json_stream=None):
 
 
 for args in ([], ["help"], ["--help"], ["-h"], ["bucket"], ["object", "--help"],
-             ["help", "object", "copy"], ["cp", "--help"]):
+             ["help", "object", "move"], ["mv", "--help"]):
     assert "Usage:" in run(args).stdout
 assert run(["--version"]).stdout == "zc 0.1.0\n"
 assert run(["-V"]).stdout == "zc 0.1.0\n"
 for args in (["--json", "--version"], ["--version", "--json"],
-             ["--quiet", "--json", "--version"], ["object", "--json", "copy", "--help"],
+             ["--quiet", "--json", "--version"], ["object", "--json", "move", "--help"],
              ["--format=json", "help"]):
     run(args, json_stream="stdout")
 assert run(["--quiet", "--version"]).stdout == ""
 run(["--no-color", "--no-progress", "--debug", "--help"])
 for args in (["--format"], ["--format="], ["--format", "xml"], ["--bad"],
-             ["help", "cp", "extra"], ["bucket", "typo"], ["--help", "--bad"],
+             ["help", "mv", "extra"], ["bucket", "typo"], ["--help", "--bad"],
              ["--", "--version"], ["bucket", "--version"]):
     run(args, 2)
 for args in (["--json", "--format=human"], ["--bad", "--json"],
              ["--json", "--format"], ["--format=human", "--json"]):
     run(args, 2, "stderr")
-for args in (["version"], ["bucket", "version"], ["cp", "source", "target"],
-             ["cp", "--", "--json"]):
+for args in (["version"], ["bucket", "version"], ["version", "source", "target"],
+             ["version", "--", "--json"]):
     run(args, 7)
 run(["version", "--json"], 7, "stderr")
 secret = run(["--json", "--secret=DO_NOT_ECHO"], 2, "stderr")
 assert "DO_NOT_ECHO" not in secret.stderr
-assert run(["cp", "--help"]).stdout == run(["object", "copy", "--help"]).stdout
+assert run(["mv", "--help"]).stdout == run(["object", "move", "--help"]).stdout
 print("CLI subprocess checks passed (help, aliases, formats, streams, exit codes, redaction).")

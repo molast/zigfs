@@ -23,6 +23,14 @@ docker compose -f docker-compose.yml up -d
 docker compose -f docker-compose.yml ps
 ```
 
+也可在仓库根目录运行 `./docker.sh` 使用交互菜单：
+
+- `4`：根据 `docker-compose.dev.yml` 启动完整 dev 环境；`5` 停止 dev 环境。
+- `6`：根据 `docker-compose.yml` 启动完整正式环境；`7` 停止正式环境。
+- `1`～`3`：构建本地镜像。启动时使用对应 Compose 文件配置的镜像，不自动构建；使用本地构建结果时需配置 `ZIGFS_IMAGE` 和 `ZIGFS_ADMIN_IMAGE` 为对应本地镜像标签。
+
+两个环境默认使用相同的主机端口，切换环境前先停止当前环境，或配置不同端口。停止操作保留数据卷。
+
 控制台默认端口为 `9001`，S3 为 `9000`，Metrics 为 `9090`。主机端口可通过 `ZIGFS_ADMIN_PORT`、`ZIGFS_API_PORT`、`ZIGFS_METRICS_PORT` 修改；更改 S3 主机端口时同步调整公开地址。
 
 容器内部路径、监听端口及 Admin 上游地址按容器网络固定设置。Admin 通过 `http://zigfs:9000` 连接 ZigFS，不使用本机开发环境的 `ZIGFS_ENDPOINT`。完整变量说明见 [配置文档](../configuration.md)。

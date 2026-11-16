@@ -116,7 +116,7 @@ ZigFS 0.1 已纳入 Versioning 和 Lifecycle 的核心子集。其余操作不�
 | `UploadPart` | `PUT /{bucket}/{key}?partNumber&uploadId` | `Implemented` | 支持并发 Part、覆盖、MD5、SHA-256、五种 Flexible Checksum 和 signed trailer。 |
 | `UploadPartCopy` | `PUT /{bucket}/{key}?partNumber&uploadId` + `x-amz-copy-source` | `Not Implemented` | 不提供服务端 Multipart Part Copy。 |
 | `ListParts` | `GET /{bucket}/{key}?uploadId` | `Implemented` | 支持 Part Number Marker、分页和升序结果。 |
-| `CompleteMultipartUpload` | `POST /{bucket}/{key}?uploadId` | `Implemented` | 校验 Part 顺序/ETag，以 Metadata CAS 发布有序 Part Manifest 和复合 ETag，不复制完整对象。 |
+| `CompleteMultipartUpload` | `POST /{bucket}/{key}?uploadId` | `Implemented` | 校验 Part 顺序/ETag，以 Metadata CAS 发布有序 Part Manifest 和复合 ETag，不复制完整对象；支持 If-Match/If-None-Match，最终发布锁内校验预期代次，失败返回 412 并保留待完成分片。 |
 | `AbortMultipartUpload` | `DELETE /{bucket}/{key}?uploadId` | `Implemented` | Tombstone Upload Metadata 并清理 Part 数据。 |
 | `ListMultipartUploads` | `GET /{bucket}?uploads` | `Implemented` | 支持 Prefix、Delimiter、Key/UploadId Marker、分页和 URL Encoding。 |
 
@@ -161,3 +161,9 @@ Part，再上传缺失 Part。单次 PutObject 或单个 UploadPart 中断后必
 5. Select、Object Lock、Inventory、Analytics、Intelligent-Tiering 和云厂商集成类能力。
 
 每个新增操作必须同时提交：HTTP/XML/错误契约、鉴权与权限规则、Metadata/Journal 设计、正常/异常/恢复测试、至少一个真实客户端验证，以及对应语言 SDK 映射。服务版本仍按 `0.1.x` 演进，不能因新增 S3 操作直接改成 `1.0.0`。
+
+
+GetObject/HeadObject 校验响应补充：`ChecksumMode=ENABLED` 返回完整内容 SHA256
+（Base64）和 `ChecksumType=FULL_OBJECT`；Range/未请求校验不附带该摘要。
+分段对象按需流式计算，GET 额外完整读取一次，HEAD 也需完整读取；不使用清单摘要冒充内容摘要。
+实现与自动化证据见 `zigfs-cli/tests/s3api_integration.py` 及服务端分段存储应用测试。

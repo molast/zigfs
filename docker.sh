@@ -5,10 +5,9 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 FS_DIR="${ROOT_DIR}/zigfs"
 ADMIN_WEB_DIR="${ROOT_DIR}/zigfs-admin/web"
-COMPOSE_FILE="${ROOT_DIR}/docker-compose.dev.yml"
+DEV_COMPOSE_FILE="${ROOT_DIR}/docker-compose.dev.yml"
+PROD_COMPOSE_FILE="${ROOT_DIR}/docker-compose.yml"
 LOCAL_IMAGE_TAG="${ZIGFS_DOCKER_TAG:-0.1.0}"
-DOCKERHUB_TAG="${DOCKERHUB_TAG:-${LOCAL_IMAGE_TAG}}"
-DOCKERHUB_NAMESPACE="${DOCKERHUB_NAMESPACE:-}"
 
 fail() {
   printf '错误: %s\n' "$1" >&2
@@ -25,9 +24,11 @@ require_docker() {
 }
 
 require_compose() {
+  local compose_file="$1"
+
   require_docker
   docker compose version >/dev/null 2>&1 || fail "未找到 Docker Compose，请确认 Docker Compose 插件已安装。"
-  [[ -f "${COMPOSE_FILE}" ]] || fail "未找到 Compose 文件: ${COMPOSE_FILE}"
+  [[ -f "${compose_file}" ]] || fail "未找到 Compose 文件: ${compose_file}"
 }
 
 build_admin_web_assets() {
@@ -87,74 +88,31 @@ build_admin_image() {
   docker build --tag "zigfs-admin:${LOCAL_IMAGE_TAG}" "${ROOT_DIR}/zigfs-admin"
 }
 
+
 compose() {
-  docker compose -f "${COMPOSE_FILE}" "$@"
+  local compose_file="$1"
+  shift
+  docker compose -f "${compose_file}" "$@"
 }
 
-start_compose_service() {
-  local service="$1"
+start_compose_environment() {
+  local compose_file="$1"
+  local environment="$2"
 
-  require_compose
-  case "${service}" in
-    zigfs)
-      printf '正在通过 Compose 启动 ZigFS...\n'
-      compose up -d --no-build zigfs
-      printf 'ZigFS 已启动。\n'
-      ;;
-    admin)
-      printf '正在通过 Compose 启动 Admin（自动带起 ZigFS）...\n'
-      compose up -d --no-build admin
-      printf 'Admin 已启动。\n'
-      ;;
-    *)
-      fail "无效的 Compose 服务: ${service}"
-      ;;
-  esac
+  require_compose "${compose_file}"
+  printf '正在通过 %s 启动%s环境（ZigFS + Admin）...\n' "${compose_file##*/}" "${environment}"
+  compose "${compose_file}" up -d --no-build
+  printf '%s环境已启动。\n' "${environment}"
 }
 
 stop_compose_services() {
-  require_compose
-  printf '正在停止开发服务...\n'
-  compose down
-  printf '开发服务已停止。\n'
-}
+  local compose_file="$1"
+  local environment="$2"
 
-resolve_dockerhub_namespace() {
-  if [[ -z "${DOCKERHUB_NAMESPACE}" ]]; then
-    read -r -p '请输入 Docker Hub 用户名或组织名: ' DOCKERHUB_NAMESPACE
-  fi
-  [[ "${DOCKERHUB_NAMESPACE}" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || \
-    fail "Docker Hub 用户名或组织名无效: ${DOCKERHUB_NAMESPACE}"
-}
-
-push_image() {
-  local local_repository="$1"
-  local hub_repository="$2"
-  local local_image="${local_repository}:${LOCAL_IMAGE_TAG}"
-  local remote_image
-  local latest_image
-
-  resolve_dockerhub_namespace
-  remote_image="${DOCKERHUB_NAMESPACE}/${hub_repository}:${DOCKERHUB_TAG}"
-  latest_image="${DOCKERHUB_NAMESPACE}/${hub_repository}:latest"
-  docker image inspect "${local_image}" >/dev/null 2>&1 || \
-    fail "本地镜像 ${local_image} 不存在，请先构建该镜像。"
-
-  printf '正在标记 %s 为 %s...\n' "${local_image}" "${remote_image}"
-  docker tag "${local_image}" "${remote_image}"
-  printf '正在推送 %s...\n' "${remote_image}"
-  docker push "${remote_image}"
-  printf '镜像已推送: %s\n' "${remote_image}"
-
-  # 发布版本时同步更新 latest，避免 Docker Hub 的 latest 仍指向旧镜像。
-  # DOCKERHUB_TAG=latest 时上面已经完成推送，不需要重复推送。
-  if [[ "${DOCKERHUB_TAG}" != "latest" ]]; then
-    printf '正在标记 %s 为 %s...\n' "${local_image}" "${latest_image}"
-    docker tag "${local_image}" "${latest_image}"
-    printf '正在推送 %s...\n' "${latest_image}"
-    docker push "${latest_image}"
-    printf '镜像已推送: %s\n' "${latest_image}"
-  fi
+  require_compose "${compose_file}"
+  printf '正在停止%s环境...\n' "${environment}"
+  compose "${compose_file}" down
+  printf '%s环境已停止。\n' "${environment}"
 }
 
 docker_menu() {
@@ -167,15 +125,12 @@ docker_menu() {
       '  1) 构建 ZigFS 镜像' \
       '  2) 构建 Admin 镜像' \
       '  3) 构建全部镜像' \
-      '  4) 启动 ZigFS' \
-      '  5) 启动 Admin（自动带起 FS）' \
-      '  6) 停止开发服务' \
-      '  7) 登录 Docker Hub' \
-      '  8) 推送 ZigFS 镜像' \
-      '  9) 推送 Admin 镜像' \
-      ' 10) 推送全部镜像' \
+      '  4) 启动 dev 环境（docker-compose.dev.yml，ZigFS + Admin）' \
+      '  5) 停止 dev 环境' \
+      '  6) 启动正式环境（docker-compose.yml，ZigFS + Admin）' \
+      '  7) 停止正式环境' \
       '  0) 退出'
-    read -r -p '请输入选项 [0-10]: ' choice
+    read -r -p '请输入选项 [0-7]: ' choice
 
     case "${choice}" in
       1 | build-fs)
@@ -191,35 +146,27 @@ docker_menu() {
         build_admin_image
         printf '全部 Docker 镜像构建完成。\n'
         ;;
-      4 | start-fs)
-        start_compose_service zigfs
+      4 | start-admin | start-dev)
+        start_compose_environment "${DEV_COMPOSE_FILE}" ' dev '
         ;;
-      5 | start-admin)
-        start_compose_service admin
+      5 | stop | down | stop-dev)
+        stop_compose_services "${DEV_COMPOSE_FILE}" ' dev '
         ;;
-      6 | stop | down)
-        stop_compose_services
+      6 | start-prod)
+        start_compose_environment "${PROD_COMPOSE_FILE}" '正式'
         ;;
-      7 | login)
-        docker login
-        ;;
-      8 | push-fs)
-        push_image zigfs zigfs
-        ;;
-      9 | push-admin)
-        push_image zigfs-admin zigfs-admin
-        ;;
-      10 | push-all)
-        push_image zigfs zigfs
-        push_image zigfs-admin zigfs-admin
+      7 | stop-prod)
+        stop_compose_services "${PROD_COMPOSE_FILE}" '正式'
         ;;
       0 | q | Q)
         exit 0
         ;;
       *)
         printf '无效的 Docker 操作选项: %s\n' "${choice}" >&2
+        continue
         ;;
     esac
+    return 0
   done
 }
 

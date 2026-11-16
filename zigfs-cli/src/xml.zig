@@ -135,7 +135,7 @@ pub fn toJson(a: A, node: Node) anyerror!std.json.Value {
                 entry.value_ptr.* = .{ .array = arr };
             }
             try entry.value_ptr.array.append(value);
-        } else if (std.mem.eql(u8, n.name, "Bucket") or std.mem.eql(u8, n.name, "Contents") or std.mem.eql(u8, n.name, "CommonPrefixes")) {
+        } else if (std.mem.eql(u8, n.name, "Bucket") or std.mem.eql(u8, n.name, "Contents") or std.mem.eql(u8, n.name, "CommonPrefixes") or std.mem.eql(u8, n.name, "Part") or std.mem.eql(u8, n.name, "Upload") or std.mem.eql(u8, n.name, "Deleted") or std.mem.eql(u8, n.name, "Error")) {
             var arr: std.array_list.Managed(std.json.Value) = .init(a);
             try arr.append(value);
             entry.value_ptr.* = .{ .array = arr };

@@ -2501,6 +2501,7 @@ fn serveGetObject(
     payload_hash: sigv4.PayloadHash,
     request_id: []const u8,
 ) !std.http.Status {
+    const checksum_mode = singleHeader(headers, "x-amz-checksum-mode") catch return respondError(request, application.allocator, .invalid_argument, request_id);
     const bucket_name = parsed.bucket.?;
     const key = parsed.key.?;
     if (ensureEmptyRequestWithHash(request, payload_hash) != null) {
@@ -2560,6 +2561,11 @@ fn serveGetObject(
     response_headers.content_disposition = parseResponseContentDisposition(parsed) catch {
         return respondError(request, application.allocator, .invalid_argument, request_id);
     };
+    // A range body is not the full object; do not label it with a full checksum.
+    if (checksum_mode != null and range == null) {
+        const digest = lease.fullChecksumSha256() catch |err| return respondError(request, application.allocator, mapObjectError(err), request_id);
+        response_headers.setChecksum(digest);
+    }
     const header_values = response_headers.populate(object, request_id);
     var response_buffer: [16 * 1024]u8 = undefined;
     var body_writer = try request.respondStreaming(&response_buffer, .{
@@ -2591,6 +2597,7 @@ fn serveHeadObject(
     payload_hash: sigv4.PayloadHash,
     request_id: []const u8,
 ) !std.http.Status {
+    const checksum_mode = singleHeader(headers, "x-amz-checksum-mode") catch return respondError(request, application.allocator, .invalid_argument, request_id);
     const bucket_name = parsed.bucket.?;
     const key = parsed.key.?;
     if (ensureEmptyRequestWithHash(request, payload_hash) != null) {
@@ -2631,6 +2638,10 @@ fn serveHeadObject(
     }
     var response_headers = try ObjectResponseHeaders.init(application.allocator, object, true, null, include_version_id);
     defer response_headers.deinit(application.allocator);
+    if (checksum_mode != null) {
+        const digest = lease.fullChecksumSha256() catch |err| return respondError(request, application.allocator, mapObjectError(err), request_id);
+        response_headers.setChecksum(digest);
+    }
     const header_values = response_headers.populate(object, request_id);
     try request.respond("", .{
         .status = .ok,
@@ -3089,7 +3100,23 @@ fn serveCompleteMultipartUpload(
         defer completed.deinit(application.allocator);
         if (!kmsReadAllowed(application.allocator, access, &completed)) return respondError(request, application.allocator, .access_denied, request_id);
     }
-    const object = multiparts.complete(parsed.bucket.?, parsed.key.?, upload_id, completion.parts) catch |err| {
+    // Capture the condition and bind it to the generation checked again under
+    // the final publication lock; never rely on a HEAD check alone.
+    const conditions = parseConditionalHeaders(headers) catch return respondError(request, application.allocator, .invalid_argument, request_id);
+    var observed: ?object_domain.Object = null;
+    defer if (observed) |value| value.deinit(application.allocator);
+    if (!conditions.isEmpty()) {
+        const objects = application.objectService() orelse return respondError(request, application.allocator, .service_unavailable, request_id);
+        observed = objects.head(parsed.bucket.?, parsed.key.?) catch |err| switch (err) {
+            error.ObjectNotFound => null,
+            else => return respondError(request, application.allocator, mapObjectError(err), request_id),
+        };
+        const view: ?*const object_domain.Object = if (observed) |*value| value else null;
+        const outcome = evaluateConditional(conditions, view, .PUT) catch return respondError(request, application.allocator, .invalid_argument, request_id);
+        if (outcome == .precondition_failed) return respondError(request, application.allocator, .precondition_failed, request_id);
+    }
+    const expected: ?object_service.ExpectedCurrent = if (conditions.isEmpty()) null else if (observed) |value| .{ .generation = value.metadata_generation } else .missing;
+    const object = multiparts.completeConditional(parsed.bucket.?, parsed.key.?, upload_id, completion.parts, expected) catch |err| {
         return respondError(request, application.allocator, mapMultipartError(err), request_id);
     };
     defer object.deinit(application.allocator);
@@ -3800,6 +3827,8 @@ fn hasUnsupportedHeaders(
             std.ascii.eqlIgnoreCase(header.name, "if-modified-since") or
             std.ascii.eqlIgnoreCase(header.name, "if-unmodified-since"))
         {
+            if (operation == .complete_multipart_upload and
+                (std.ascii.eqlIgnoreCase(header.name, "if-match") or std.ascii.eqlIgnoreCase(header.name, "if-none-match"))) continue;
             if (operation == .get_object or operation == .head_object or operation == .put_object) {
                 continue;
             }
@@ -4158,6 +4187,8 @@ fn parseResponseContentDisposition(parsed: protocol.ParsedTarget) error{InvalidA
 }
 
 const ObjectResponseHeaders = struct {
+    checksum_sha256: ?[44]u8 = null,
+
     content_disposition: ?[]const u8 = null,
     headers: []std.http.Header,
     owned_names: [][]u8,
@@ -4172,6 +4203,12 @@ const ObjectResponseHeaders = struct {
     include_version_id: bool,
     version_id: [object_domain.VersionId.encoded_length]u8,
     version_id_length: usize,
+
+    fn setChecksum(self: *ObjectResponseHeaders, digest: [32]u8) void {
+        var encoded: [44]u8 = undefined;
+        _ = std.base64.standard.Encoder.encode(&encoded, &digest);
+        self.checksum_sha256 = encoded;
+    }
 
     fn init(
         allocator: std.mem.Allocator,
@@ -4221,7 +4258,7 @@ const ObjectResponseHeaders = struct {
             @as(usize, @intFromBool(include_content_length)) +
             @as(usize, @intFromBool(range != null)) +
             @as(usize, @intFromBool(include_version_id));
-        result.headers = try allocator.alloc(std.http.Header, fixed_count + object.user_metadata.len + 1);
+        result.headers = try allocator.alloc(std.http.Header, fixed_count + object.user_metadata.len + 3);
         errdefer allocator.free(result.headers);
         result.owned_names = try allocator.alloc([]u8, object.user_metadata.len);
         var initialized_names: usize = 0;
@@ -4243,6 +4280,12 @@ const ObjectResponseHeaders = struct {
         request_id: []const u8,
     ) []const std.http.Header {
         var index: usize = 0;
+        if (self.checksum_sha256) |*value| {
+            self.headers[index] = .{ .name = "x-amz-checksum-sha256", .value = value };
+            index += 1;
+            self.headers[index] = .{ .name = "x-amz-checksum-type", .value = "FULL_OBJECT" };
+            index += 1;
+        }
         if (self.content_disposition) |value| {
             self.headers[index] = .{ .name = "content-disposition", .value = value };
             index += 1;
@@ -4521,7 +4564,7 @@ fn respondCorsPreflight(
         .{ .name = "x-request-id", .value = request_id },
         .{ .name = "access-control-allow-origin", .value = "*" },
         .{ .name = "access-control-allow-methods", .value = "GET, PUT, DELETE, HEAD, OPTIONS" },
-        .{ .name = "access-control-allow-headers", .value = "content-type, content-md5, if-match, if-none-match, if-modified-since, if-unmodified-since, x-amz-content-sha256, x-amz-date, x-amz-security-token, x-amz-server-side-encryption, x-amz-server-side-encryption-aws-kms-key-id, x-amz-copy-source, x-amz-copy-source-if-match, x-amz-copy-source-if-none-match, x-amz-copy-source-if-modified-since, x-amz-copy-source-if-unmodified-since, x-amz-metadata-directive, authorization, x-amz-sdk-checksum-algorithm, x-amz-trailer, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" },
+        .{ .name = "access-control-allow-headers", .value = "content-type, content-md5, x-amz-checksum-mode, if-match, if-none-match, if-modified-since, if-unmodified-since, x-amz-content-sha256, x-amz-date, x-amz-security-token, x-amz-server-side-encryption, x-amz-server-side-encryption-aws-kms-key-id, x-amz-copy-source, x-amz-copy-source-if-match, x-amz-copy-source-if-none-match, x-amz-copy-source-if-modified-since, x-amz-copy-source-if-unmodified-since, x-amz-metadata-directive, authorization, x-amz-sdk-checksum-algorithm, x-amz-trailer, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" },
         .{ .name = "access-control-expose-headers", .value = "etag, content-length, content-range, last-modified, x-amz-request-id, x-request-id, x-amz-version-id, x-amz-delete-marker, x-amz-copy-source-version-id, x-amz-server-side-encryption, x-amz-server-side-encryption-aws-kms-key-id, x-amz-checksum-crc32, x-amz-checksum-crc32c, x-amz-checksum-crc64nvme, x-amz-checksum-sha1, x-amz-checksum-sha256" },
         .{ .name = "access-control-max-age", .value = "600" },
     };
@@ -4692,6 +4735,7 @@ fn mapMultipartError(err: multipart_service.Error) protocol.ErrorKind {
         error.InvalidPart => .invalid_part,
         error.InvalidPartOrder => .invalid_part_order,
         error.EntityTooSmall => .entity_too_small,
+        error.ConditionNotMet => .precondition_failed,
         error.InvalidPartNumber,
         error.InvalidListOptions,
         error.InvalidObjectKey,
