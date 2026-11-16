@@ -61,6 +61,8 @@ type ZigClient interface {
 	Login(ctx context.Context, request contract.LoginRequest) (contract.LoginResponse, error)
 	STSLogin(ctx context.Context, request contract.STSLoginRequest) (contract.LoginResponse, error)
 	Session(ctx context.Context) (contract.SessionResponse, error)
+	MonitoringDiagnostics(context.Context, string, json.RawMessage) (json.RawMessage, error)
+	Monitoring(context.Context, string) (json.RawMessage, error)
 	System(ctx context.Context) (contract.SystemResponse, error)
 	Storage(ctx context.Context) (contract.StorageResponse, error)
 	StorageScanner(ctx context.Context) (contract.StorageScannerStatus, error)

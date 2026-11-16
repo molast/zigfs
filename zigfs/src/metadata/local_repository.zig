@@ -35,7 +35,7 @@ pub const LocalMetadataRepository = struct {
     recovered: bool = false,
     // Same lock used by business services for their read/conditional-write
     // sequences. Lock order: business state -> repository, never the reverse.
-    reclamation_guard: ?*std.Io.Mutex = null,
+    reclamation_guard: ?*@import("../application/observed_mutex.zig").Mutex = null,
     journal_cursor: Cursor = .{},
     record_cursors: [reclaim_types.len]Cursor = @splat(.{}),
     next_namespace: usize = 0,

@@ -418,7 +418,7 @@ test "lifecycle scanner expires noncurrent versions and sole delete markers" {
     var index = MetadataIndex.init(std.testing.allocator);
     defer index.deinit();
     try index.rebuild(memory.interface());
-    var state_mutex: std.Io.Mutex = .init;
+    var state_mutex: @import("observed_mutex.zig").Mutex = .init;
     var object_locks: ObjectLockPool = .{};
     const buckets = BucketService.init(std.testing.allocator, std.testing.io, bucket_store.interface(), &index, &state_mutex);
     const created = try buckets.create("lifecycle-data", "owner-a");

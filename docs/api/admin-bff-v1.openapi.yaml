@@ -851,6 +851,59 @@ paths:
             application/json:
               schema:
                 $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/SessionResponse"
+  /api/v1/monitoring:
+    get:
+      operationId: getMonitoring
+      summary: Read runtime monitoring and bounded history
+      description: Requires admin:ServerInfo. ZigFS samples its own host/process; BFF only forwards. History checkpoints survive restart; the most recent unsaved minute may be lost. See zigfs-monitor-plan.md section 20 for metric scopes.
+      parameters:
+        - in: query
+          name: seconds
+          schema: { type: integer, minimum: 60, maximum: 86400, default: 3600 }
+          description: History window; upstream clamps numeric values and defaults malformed values to 3600.
+      responses:
+        "200":
+          description: Nullable real observations and cumulative request statistics.
+          content:
+            application/json:
+              schema:
+                $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/Monitoring"
+        "401":
+          description: Missing or expired session
+        "403":
+          description: Missing ServerInfo permission
+  /api/v1/monitoring/diagnostics:
+    get:
+      operationId: getMonitoringDiagnostics
+      summary: Read opt-in allocation call sites
+      description: Requires admin:*; addresses are never exposed to the read-only diagnostics role. Counters are approximate, bounded and process-local.
+      responses:
+        "200":
+          description: Allocation collection state and up to 64 call sites
+          content:
+            application/json:
+              schema: { $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/MonitorDiagnosticDetails" }
+        "401": { description: Missing or expired session }
+        "403": { description: Missing admin permission }
+    put:
+      operationId: updateMonitoringDiagnostics
+      summary: Configure rules, acknowledge a firing alert or toggle allocation collection
+      description: Requires admin:*. Rules persist atomically; acknowledgements and hotspot collection are process-local. Rule changes reset evaluation timers.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/MonitorDiagnosticInput" }
+      responses:
+        "200":
+          description: Updated diagnostic settings
+          content:
+            application/json:
+              schema: { $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/MonitorDiagnosticDetails" }
+        "400": { description: Invalid rule identifiers, thresholds, durations or JSON }
+        "401": { description: Missing or expired session }
+        "403": { description: Missing admin permission }
+        "503": { description: Rules could not be persisted; in-memory rules are unchanged }
   /api/v1/system:
     get:
       operationId: getSystem

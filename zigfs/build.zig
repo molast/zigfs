@@ -3,16 +3,27 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const diagnostic_allocator = b.option(bool, "diagnostic-allocator", "Use SafeAllocator with allocation traces and write-after-free checks (diagnostic builds only)") orelse false;
+    const sanitize_c = b.option(std.zig.SanitizeC, "sanitize-c", "C undefined-behavior checks: off, trap, full; not Zig ASan");
+    const sanitize_thread = b.option(bool, "sanitize-thread", "Enable compiler TSan instrumentation where supported");
+    if (diagnostic_allocator and optimize != .debug and optimize != .safe) {
+        std.debug.panic("diagnostic-allocator requires Debug or ReleaseSafe", .{});
+    }
+    const diagnostic_options = b.addOptions();
+    diagnostic_options.addOption(bool, "allocator_enabled", diagnostic_allocator);
 
     const mod = b.addModule("zigfs", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .sanitize_c = sanitize_c,
+        .sanitize_thread = sanitize_thread,
         .error_tracing = true,
         .strip = false,
         .link_libc = true,
     });
 
+    mod.addCSourceFile(.{ .file = b.path("src/backend/host_metrics.c"), .flags = &.{"-std=c99"} });
     const build_info = b.addOptions();
     build_info.addOption(i64, "built_at", std.Io.Clock.real.now(b.graph.io).toSeconds());
     const commit = b.option([]const u8, "git-commit", "Source commit for builds without Git metadata") orelse switch (b.runFallible(&.{ "git", "-C", b.root.root_dir.path orelse ".", "rev-parse", "HEAD" }, .{ .stderr_behavior = .ignore })) {
@@ -36,13 +47,45 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .sanitize_c = sanitize_c,
+            .sanitize_thread = sanitize_thread,
             .error_tracing = true,
             .strip = false,
             .link_libc = true,
             .imports = &.{.{ .name = "zigfs", .module = mod }},
         }),
     });
+    exe.root_module.addOptions("diagnostic_options", diagnostic_options);
     b.installArtifact(exe);
+
+    // Deliberate faults are separate executables, never unit tests or HTTP routes.
+    const memory_probe = b.addExecutable(.{
+        .name = "memory-diagnostic-probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/memory_diagnostic_probe.zig"),
+            .target = target,
+            .optimize = .debug,
+            .error_tracing = true,
+            .strip = false,
+        }),
+    });
+    const install_memory_probe = b.addInstallArtifact(memory_probe, .{});
+    b.step("memory-diagnostic-probe", "Build isolated SafeAllocator fault probes").dependOn(&install_memory_probe.step);
+
+    const thread_probe = b.addExecutable(.{
+        .name = "thread-sanitizer-probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/thread_sanitizer_probe.zig"),
+            .target = target,
+            .optimize = .debug,
+            .sanitize_thread = true,
+            .error_tracing = true,
+            .strip = false,
+            .link_libc = true,
+        }),
+    });
+    const install_thread_probe = b.addInstallArtifact(thread_probe, .{});
+    b.step("thread-sanitizer-probe", "Build isolated Zig TSan positive and negative controls").dependOn(&install_thread_probe.step);
 
     const run_step = b.step("run", "Run zigfs");
     const run_cmd = b.addRunArtifact(exe);

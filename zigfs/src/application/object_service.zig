@@ -254,7 +254,7 @@ pub const ObjectService = struct {
     master_key: ?*const secret_box.Key,
     kms: ?*@import("kms.zig").Service = null,
     index: *index_module.MetadataIndex,
-    state_mutex: *std.Io.Mutex,
+    state_mutex: *@import("observed_mutex.zig").Mutex,
     object_locks: *ObjectLockPool,
     directories: ?directory_service.DirectoryService,
 
@@ -267,7 +267,7 @@ pub const ObjectService = struct {
         multipart_data_store: ?multipart_data_store_port.MultipartDataStore,
         master_key: ?*const secret_box.Key,
         index: *index_module.MetadataIndex,
-        state_mutex: *std.Io.Mutex,
+        state_mutex: *@import("observed_mutex.zig").Mutex,
         object_locks: *ObjectLockPool,
         directories: ?directory_service.DirectoryService,
     ) ObjectService {
@@ -1508,7 +1508,7 @@ test "object retention blocks deletes and only governance permits bypass" {
     var index = index_module.MetadataIndex.init(std.testing.allocator);
     defer index.deinit();
     try index.rebuild(memory.interface());
-    var state_mutex: std.Io.Mutex = .init;
+    var state_mutex: @import("observed_mutex.zig").Mutex = .init;
     var object_locks: ObjectLockPool = .{};
     const buckets = BucketService.init(std.testing.allocator, std.testing.io, bucket_store.interface(), &index, &state_mutex);
     const bucket = try buckets.create("retention-test", "owner-a");
@@ -1812,7 +1812,7 @@ test "object service puts gets overwrites and tombstones objects" {
     var index = index_module.MetadataIndex.init(std.testing.allocator);
     defer index.deinit();
     try index.rebuild(memory.interface());
-    var state_mutex: std.Io.Mutex = .init;
+    var state_mutex: @import("observed_mutex.zig").Mutex = .init;
     var object_locks: ObjectLockPool = .{};
     const buckets = BucketService.init(
         std.testing.allocator,
@@ -1988,7 +1988,7 @@ test "object service rejects missing buckets bad checksums and failed sources" {
     var index = index_module.MetadataIndex.init(std.testing.allocator);
     defer index.deinit();
     try index.rebuild(memory.interface());
-    var state_mutex: std.Io.Mutex = .init;
+    var state_mutex: @import("observed_mutex.zig").Mutex = .init;
     var object_locks: ObjectLockPool = .{};
     const buckets = BucketService.init(
         std.testing.allocator,
@@ -2064,7 +2064,7 @@ test "object service preserves version history delete markers and suspended null
     var index = index_module.MetadataIndex.init(std.testing.allocator);
     defer index.deinit();
     try index.rebuild(memory.interface());
-    var state_mutex: std.Io.Mutex = .init;
+    var state_mutex: @import("observed_mutex.zig").Mutex = .init;
     var object_locks: ObjectLockPool = .{};
     const buckets = BucketService.init(
         std.testing.allocator,

@@ -348,3 +348,87 @@ export interface EventDestination {
   websocket_path_allowlist: string
   comment: string
 }
+
+export interface MonitorPoint {
+  user_cpu_seconds: number | null
+  kernel_cpu_seconds: number | null
+  allocated_bytes: number | null
+  freed_bytes: number | null
+  reallocations: number | null
+  run_id: number
+  workers: number | null
+  workers_busy: number | null
+  timestamp: number
+  host_cpu: number | null
+  process_cpu: number | null
+  memory_used: number | null
+  memory_total: number | null
+  rss: number | null
+  virtual_bytes: number | null
+  peak_rss: number | null
+  heap: number | null
+  heap_peak: number | null
+  allocations: number | null
+  frees: number | null
+  allocation_failures: number | null
+  cores: number | null
+  threads: number | null
+  descriptors: number | null
+  descriptor_limit: number | null
+  storage_used: number | null
+  storage_total: number | null
+  storage_available: number | null
+  load1: number | null
+  load5: number | null
+  load15: number | null
+  disk_read: number | null
+  disk_write: number | null
+  network_receive: number | null
+  network_transmit: number | null
+  upload: number | null
+  download: number | null
+  qps: number | null
+  error_percent: number | null
+  client_error_percent: number | null
+  p50: number | null
+  p95: number | null
+  p99: number | null
+  active_requests: number
+  active_connections: number
+}
+export interface MonitorOperations extends OperationMetrics {
+  uploaded_bytes: number
+  downloaded_bytes: number
+  peak_active: number
+  client_errors: number
+  duration_ms: number
+  histogram: number[]
+}
+export type MonitorRuleId = 'cpu_high' | 'rss_high' | 'heap_growth' | 'fd_growth' | 'fd_high' | 'storage_low' | 'thread_high' | 'api_errors' | 'api_latency' | 'allocation_failure'
+export type MonitorAlertState = 'disabled' | 'no_data' | 'normal' | 'pending' | 'firing'
+export type MonitorSeverity = 'info' | 'warning' | 'err' | 'critical'
+export interface MonitorRule { id: MonitorRuleId; enabled: boolean; threshold: number; duration_seconds: number; severity: MonitorSeverity }
+export interface MonitorTrend { samples: number; seconds: number; delta: number | null; per_hour: number | null; rising_fraction: number | null; status: 'insufficient' | 'stable' | 'growing' }
+export interface MonitorLock { acquisitions: number; contentions: number; waiters: number; wait_ns: number; max_wait_ns: number }
+export interface MonitorDiagnosticDetails { hotspots_enabled: boolean; hotspots: { address: number; allocations: number; bytes: number }[] | null; untracked_allocations: number; build_commit: string }
+export interface MonitorDiagnosticInput { rules?: MonitorRule[]; acknowledge?: MonitorRuleId; hotspots_enabled?: boolean }
+export interface Monitoring {
+  analysis: Record<'rss' | 'heap' | 'descriptors' | 'allocations', MonitorTrend>
+  alert_rules: MonitorRule[]
+  alerts: { id: MonitorRuleId; state: MonitorAlertState; value: number | null; since: number | null; acknowledged: boolean }[]
+  alert_events: { id: MonitorRuleId; timestamp: number; state: MonitorAlertState; severity: MonitorSeverity }[]
+  locks: { metadata: MonitorLock; identity: MonitorLock }
+  persistence: { state: 'pending' | 'healthy' | 'unavailable'; last_saved_at: number | null }
+  operations: { name: string; metrics: MonitorOperations }[]
+  version: string
+  started_at: number
+  sample_interval_seconds: number
+  history_step_seconds: number
+  history_interval_seconds: number
+  retention_seconds: number
+  latest: MonitorPoint | null
+  history: MonitorPoint[]
+  s3: MonitorOperations
+  management: MonitorOperations
+  listings: MonitorOperations
+}

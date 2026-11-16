@@ -174,20 +174,20 @@ pub const CredentialService = struct {
     io: std.Io,
     store: credential_store_port.CredentialStore,
     index: *index_module.MetadataIndex,
-    mutex: *std.Io.Mutex,
+    mutex: *@import("observed_mutex.zig").Mutex,
     master_key: *const secret_box.Key,
     root_access_key: []const u8 = "",
     root_secret_key: []const u8 = "",
     root_username: []const u8 = "admin",
     identity_root: ?std.Io.Dir = null,
-    identity_mutex: ?*std.Io.Mutex = null,
+    identity_mutex: ?*@import("observed_mutex.zig").Mutex = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
         io: std.Io,
         store: credential_store_port.CredentialStore,
         index: *index_module.MetadataIndex,
-        mutex: *std.Io.Mutex,
+        mutex: *@import("observed_mutex.zig").Mutex,
         master_key: *const secret_box.Key,
     ) CredentialService {
         return .{
@@ -732,7 +732,7 @@ test "credential service encrypts persists disables and deletes access keys" {
     var index = index_module.MetadataIndex.init(std.testing.allocator);
     defer index.deinit();
     try index.rebuild(memory.interface());
-    var mutex: std.Io.Mutex = .init;
+    var mutex: @import("observed_mutex.zig").Mutex = .init;
     const master_key = @as([@sizeOf(secret_box.Key)]u8, @splat(0x42));
     const service = CredentialService.init(
         std.testing.allocator,
@@ -775,7 +775,7 @@ test "credential service persists temporary token lists secrets and rejects expi
     var index = index_module.MetadataIndex.init(std.testing.allocator);
     defer index.deinit();
     try index.rebuild(memory.interface());
-    var mutex: std.Io.Mutex = .init;
+    var mutex: @import("observed_mutex.zig").Mutex = .init;
     const master_key = @as([@sizeOf(secret_box.Key)]u8, @splat(0x24));
     const service = CredentialService.init(
         std.testing.allocator,
@@ -836,8 +836,8 @@ test "managed user credentials require an enabled existing identity and fail clo
     var index = index_module.MetadataIndex.init(a);
     defer index.deinit();
     try index.rebuild(memory.interface());
-    var mutex: std.Io.Mutex = .init;
-    var identity_mutex: std.Io.Mutex = .init;
+    var mutex: @import("observed_mutex.zig").Mutex = .init;
+    var identity_mutex: @import("observed_mutex.zig").Mutex = .init;
     const master_key = @as([@sizeOf(secret_box.Key)]u8, @splat(0x42));
     var service = CredentialService.init(a, io, adapter.interface(), &index, &mutex, &master_key);
     service.identity_root = tmp.dir;
@@ -876,7 +876,7 @@ test "custom access keys persist metadata reject duplicates and validate absolut
     var index = index_module.MetadataIndex.init(a);
     defer index.deinit();
     try index.rebuild(memory.interface());
-    var mutex: std.Io.Mutex = .init;
+    var mutex: @import("observed_mutex.zig").Mutex = .init;
     const master_key = @as([@sizeOf(secret_box.Key)]u8, @splat(0x42));
     const service = CredentialService.init(a, std.testing.io, adapter.interface(), &index, &mutex, &master_key);
     const expiry = std.Io.Clock.real.now(std.testing.io).toSeconds() + 86400 * 30;

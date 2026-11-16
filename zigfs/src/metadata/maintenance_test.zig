@@ -168,7 +168,7 @@ test "reclamation coordinates with business read and conditional write sequences
     var repo = LocalRepository.init(tmp.dir, io, journal.interface());
     defer repo.deinit();
     try recover(tmp.dir, &journal, &repo);
-    var guard: std.Io.Mutex = .init;
+    var guard: @import("../application/observed_mutex.zig").Mutex = .init;
     repo.reclamation_guard = &guard;
     const gen = try repo.interface().put(allocator, .directory, "same-name", .missing, "old");
     const deleted = try repo.interface().tombstone(allocator, .directory, "same-name", .{ .exact = gen });

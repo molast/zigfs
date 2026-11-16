@@ -5,6 +5,7 @@ const schema = @import("../application/audit_schema.zig");
 pub const Context = struct {
     allocator: std.mem.Allocator,
     secure_transport: bool = false,
+    metrics_operation: ?@import("s3_protocol.zig").Operation = null,
     actor: []const u8 = "anonymous",
     action: []const u8,
     target: []const u8,

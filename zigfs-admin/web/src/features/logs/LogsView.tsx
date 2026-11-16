@@ -1,5 +1,5 @@
 import { formatDateTime } from '@/lib/dateTime'
-import { filterAuditLogContent } from './auditLogs'
+import { filterAuditLogContent, inferredMonitoringAction } from './auditLogs'
 import { FilterFields } from '@/components/ui/FilterFields'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ApiClient, LogConfig } from '@/api/client'
@@ -15,6 +15,11 @@ import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/Badge'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet'
+
+function actionLabel(event: StructuredAuditEvent): string {
+  const inferred = inferredMonitoringAction(event)
+  return inferred ? t('audit.inferredMonitoringAction', { action: inferred }) : event.event_action
+}
 
 const typeKeys = {'api_request': 'audit.typeApiRequest', 'admin_action': 'audit.typeAdminAction', 'security_event': 'audit.typeSecurityEvent', 'system_event': 'audit.typeSystemEvent'} as const
 const statusKeys = {'success': 'audit.statusSuccess', 'failure': 'audit.statusFailure', 'denied': 'audit.statusDenied', 'error': 'audit.statusError', 'unknown': 'audit.statusUnknown'} as const
@@ -133,7 +138,7 @@ export function LogsView({ api }: { api: ApiClient }) {
             {ready && page.items.map((event, index) => <TableRow key={`${event.event_id}-${index}`}>
               <TableCell className="whitespace-nowrap">{formatDateTime(eventDate(event))}</TableCell>
               <TableCell className="whitespace-nowrap">{categoryLabel(event.event_category)}</TableCell>
-              <TableCell>{event.event_action}</TableCell><TableCell>{event.identity.principal_name || t('audit.anonymous')}</TableCell>
+              <TableCell>{actionLabel(event)}</TableCell><TableCell>{event.identity.principal_name || t('audit.anonymous')}</TableCell>
               <TableCell className="max-w-64 break-all whitespace-normal">{targetLabel(event)}</TableCell>
               <TableCell><Badge variant={['failure', 'denied', 'error'].includes(event.response.status) ? 'destructive' : 'default'}>{statusLabel(event.response.status)}{event.response.http_status ? ` (${event.response.http_status})` : ''}</Badge></TableCell>
               <TableCell className="whitespace-nowrap">{event.metadata.legacy ? '—' : t('audit.milliseconds', { value: event.response.duration_ms })}</TableCell>
@@ -163,7 +168,7 @@ export function LogsView({ api }: { api: ApiClient }) {
 function AuditDetails({ event, onClose }: { event: StructuredAuditEvent | null; onClose: () => void }) {
   const section = (title: string, rows: [string, string | number | boolean | null | undefined][]) => <Card><CardHeader><CardTitle>{title}</CardTitle></CardHeader><CardContent><dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3">{rows.map(([label, value]) => <div key={label} className="contents"><dt>{label}</dt><dd className="min-w-0 break-all whitespace-pre-wrap">{value == null || value === '' ? '—' : typeof value === 'boolean' ? value ? t('audit.yes') : t('audit.no') : String(value)}</dd></div>)}</dl></CardContent></Card>
   return <Sheet open={!!event} onOpenChange={open => { if (!open) onClose() }}><SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
-    <SheetHeader><SheetTitle>{t('audit.details')}</SheetTitle><SheetDescription>{event?.event_action}</SheetDescription></SheetHeader>
+    <SheetHeader><SheetTitle>{t('audit.details')}</SheetTitle><SheetDescription>{event ? actionLabel(event) : null}</SheetDescription></SheetHeader>
     {event && <div className="flex flex-col gap-4 px-4 pb-4">
       {event.metadata.legacy && <FieldDescription>{t('audit.legacyNotice')}</FieldDescription>}
       {section(t('audit.event'), [[t('audit.eventId'), event.event_id], [t('audit.schemaVersion'), event.schema_version], [t('audit.time'), formatDateTime(eventDate(event))], [t('audit.category'), categoryLabel(event.event_category)], [t('audit.eventType'), event.event_type]])}

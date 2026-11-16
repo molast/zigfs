@@ -338,3 +338,11 @@ func (service *Management) EventDestinations(ctx context.Context, method, name s
 func (service *Management) SetObjectLegalHold(ctx context.Context, bucket string, request contract.SetObjectLegalHoldRequest) (contract.ObjectLegalHoldResponse, error) {
 	return service.zig.SetObjectLegalHold(ctx, bucket, request)
 }
+
+func (service *Management) Monitoring(ctx context.Context, query string) (json.RawMessage, error) {
+	return service.zig.Monitoring(ctx, query)
+}
+
+func (service *Management) MonitoringDiagnostics(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error) {
+	return service.zig.MonitoringDiagnostics(ctx, method, input)
+}

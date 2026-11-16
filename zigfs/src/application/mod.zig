@@ -26,6 +26,8 @@ const local_layout = @import("../metadata/local_layout.zig");
 const multipart_domain = @import("../domain/multipart.zig");
 const MetadataRepository = @import("../ports/metadata_repository.zig").MetadataRepository;
 
+pub const tracking_allocator = @import("tracking_allocator.zig");
+pub const monitoring = @import("monitoring.zig");
 pub const runtime_metrics = @import("runtime_metrics.zig");
 pub const diagnostics = @import("diagnostics.zig");
 pub const logging = @import("logging.zig");
@@ -90,6 +92,8 @@ const audit_archive_dir = ".zigfs/system/audit-archive";
 pub const Application = struct {
     allocator: std.mem.Allocator,
     runtime_metrics: runtime_metrics.Runtime = .{},
+    monitor: monitoring.Registry = .{},
+    allocator_metrics: ?*tracking_allocator.TrackingAllocator = null,
     config: Config,
     local_storage: LocalStorageBackend,
     data_root: ?std.Io.Dir = null,
@@ -109,7 +113,7 @@ pub const Application = struct {
     local_multipart_data: ?LocalMultipartDataStore = null,
     metadata_index: ?index_module.MetadataIndex = null,
     io: ?std.Io = null,
-    state_mutex: std.Io.Mutex = .init,
+    state_mutex: @import("observed_mutex.zig").Mutex = .init,
     object_locks: object_lock_pool.ObjectLockPool = .{},
     multipart_locks: object_lock_pool.ObjectLockPool = .{},
     recovery_state: recovery.State = .{},
@@ -124,7 +128,7 @@ pub const Application = struct {
     scanner_completed_at: ?i64 = null,
     scanner_duration_ms: ?u64 = null,
     scanner_last_success: ?bool = null,
-    policy_mutex: std.Io.Mutex = .init,
+    policy_mutex: @import("observed_mutex.zig").Mutex = .init,
     event_mutex: std.Io.Mutex = .init,
     audit_mutex: std.Io.Mutex = .init,
     audit_events: std.ArrayListUnmanaged(AuditEvent) = .empty,
@@ -584,6 +588,7 @@ pub const Application = struct {
     }
 
     pub fn deinit(self: *Application, io: std.Io) void {
+        self.monitor.history.deinit(self.allocator);
         if (self.logger) |*logger| logger.deinit();
         self.logger = null;
         if (self.audit_logger) |*logger| logger.deinit();

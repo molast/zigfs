@@ -14,3 +14,15 @@ export function filterAuditLogContent(content: string, query: AuditQuery): strin
     } catch { return false }
   }).join('\n')
 }
+
+/** Presentation hint only: keep historical audit records and download filters intact. */
+export function inferredMonitoringAction(event: StructuredAuditEvent): string | null {
+  if (event.event_action !== 'UnknownOperation' || event.operation.service !== 'admin') return null
+  const path = event.request.path.split('?')[0]
+  if (event.request.method === 'GET' && path === '/_admin/v1/monitoring') return 'GetMonitoring'
+  if (path === '/_admin/v1/monitoring/diagnostics') {
+    if (event.request.method === 'GET') return 'GetMonitoringDiagnostics'
+    if (event.request.method === 'PUT') return 'UpdateMonitoringDiagnostics'
+  }
+  return null
+}

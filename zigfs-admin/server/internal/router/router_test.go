@@ -668,3 +668,21 @@ func (managementService) EventDestinations(context.Context, string, string, json
 func (managementService) SetObjectLegalHold(_ context.Context, _ string, request contract.SetObjectLegalHoldRequest) (contract.ObjectLegalHoldResponse, error) {
 	return contract.ObjectLegalHoldResponse{Key: request.Key, VersionID: request.VersionID, LegalHold: request.Enabled}, nil
 }
+
+func (managementService) Monitoring(context.Context, string) (json.RawMessage, error) {
+	return json.RawMessage(`{"latest":null,"history":[]}`), nil
+}
+
+func TestMonitoringRequiresSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := testEngine(true)
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/monitoring?seconds=300", nil))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", recorder.Code)
+	}
+}
+
+func (managementService) MonitoringDiagnostics(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`{}`), nil
+}

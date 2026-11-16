@@ -76,7 +76,7 @@ pub const ObjectListingService = struct {
     bucket_store: bucket_store_port.BucketStore,
     object_store: object_store_port.ObjectStore,
     index: *index_module.MetadataIndex,
-    state_mutex: *std.Io.Mutex,
+    state_mutex: *@import("observed_mutex.zig").Mutex,
     metrics: ?*@import("runtime_metrics.zig").Operations = null,
 
     pub fn init(
@@ -85,7 +85,7 @@ pub const ObjectListingService = struct {
         bucket_store: bucket_store_port.BucketStore,
         object_store: object_store_port.ObjectStore,
         index: *index_module.MetadataIndex,
-        state_mutex: *std.Io.Mutex,
+        state_mutex: *@import("observed_mutex.zig").Mutex,
     ) ObjectListingService {
         return .{
             .allocator = allocator,

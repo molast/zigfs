@@ -127,6 +127,8 @@ pub fn serveRequest(
         return respondError(request, allocator, .invalid_request, request_id);
     };
     defer parsed.deinit();
+    audit_context.metrics_operation = parsed.operation;
+    application.runtime_metrics.operations[@backingInt(parsed.operation)].begin(application.io.?);
     try audit_context.operation(@tagName(parsed.operation), parsed.decoded_path);
     // Request body reads may reuse the HTTP head buffer. Keep Resource stable for errors.
     request.head.target = parsed.decoded_path;
@@ -1782,6 +1784,8 @@ fn servePutObject(
         return respondError(request, application.allocator, kind, request_id);
     };
     defer object.deinit(application.allocator);
+    _ = application.runtime_metrics.uploaded_bytes.fetchAdd(object.size, .monotonic);
+    application.runtime_metrics.operations[@backingInt(protocol.Operation.put_object)].payload(application.io.?, object.size, 0);
     if (singleHeader(headers, "x-amz-tagging") catch null) |raw_tags| {
         var tags: std.ArrayList(object_tags.Tag) = .empty;
         defer tags.deinit(application.allocator);
@@ -1997,6 +2001,8 @@ fn servePostPolicyUpload(
         return respondError(request, application.allocator, kind, request_id);
     };
     defer object.deinit(application.allocator);
+    _ = application.runtime_metrics.uploaded_bytes.fetchAdd(object.size, .monotonic);
+    application.runtime_metrics.operations[@backingInt(parsed.operation)].payload(application.io.?, object.size, 0);
     if (postField(&form, "x-amz-tagging") catch null) |raw_tags| {
         var tags: std.ArrayList(object_tags.Tag) = .empty;
         defer tags.deinit(application.allocator);
@@ -2570,6 +2576,8 @@ fn serveGetObject(
         try lease.stream(sink.interface());
     }
     try body_writer.end();
+    _ = application.runtime_metrics.downloaded_bytes.fetchAdd(if (range) |value| value.length else object.size, .monotonic);
+    application.runtime_metrics.operations[@backingInt(parsed.operation)].payload(application.io.?, 0, if (range) |value| value.length else object.size);
     objects.notifyObject(.GET, "ObjectAccessed:Get", object.*);
     return if (range != null) .partial_content else .ok;
 }
@@ -2868,6 +2876,8 @@ fn serveUploadPart(
         return respondError(request, application.allocator, kind, request_id);
     };
     var etag_buffer: [34]u8 = undefined;
+    _ = application.runtime_metrics.uploaded_bytes.fetchAdd(part.size, .monotonic);
+    application.runtime_metrics.operations[@backingInt(parsed.operation)].payload(application.io.?, part.size, 0);
     const etag = formatEtag(part.etag_md5, &etag_buffer);
     const response_checksum = expected_checksum orelse if (streaming_source_active)
         streaming_source.verified_checksum

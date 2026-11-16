@@ -1291,6 +1291,59 @@ paths:
                 $ref: "#/components/schemas/StorageScanReport"
         default:
           $ref: "#/components/responses/Error"
+  /_admin/v1/monitoring:
+    get:
+      operationId: getMonitoring
+      summary: Read runtime monitoring and bounded history
+      description: Requires admin:ServerInfo. ZigFS samples its own host/process; BFF only forwards. History checkpoints survive restart; the most recent unsaved minute may be lost. See zigfs-monitor-plan.md section 20 for metric scopes.
+      parameters:
+        - in: query
+          name: seconds
+          schema: { type: integer, minimum: 60, maximum: 86400, default: 3600 }
+          description: History window; upstream clamps numeric values and defaults malformed values to 3600.
+      responses:
+        "200":
+          description: Nullable real observations and cumulative request statistics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Monitoring"
+        "401":
+          description: Missing or expired session
+        "403":
+          description: Missing ServerInfo permission
+  /_admin/v1/monitoring/diagnostics:
+    get:
+      operationId: getMonitoringDiagnostics
+      summary: Read opt-in allocation call sites
+      description: Requires admin:*; addresses are never exposed to the read-only diagnostics role. Counters are approximate, bounded and process-local.
+      responses:
+        "200":
+          description: Allocation collection state and up to 64 call sites
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonitorDiagnosticDetails" }
+        "401": { description: Missing or expired session }
+        "403": { description: Missing admin permission }
+    put:
+      operationId: updateMonitoringDiagnostics
+      summary: Configure rules, acknowledge a firing alert or toggle allocation collection
+      description: Requires admin:*. Rules persist atomically; acknowledgements and hotspot collection are process-local. Rule changes reset evaluation timers.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MonitorDiagnosticInput" }
+      responses:
+        "200":
+          description: Updated diagnostic settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonitorDiagnosticDetails" }
+        "400": { description: Invalid rule identifiers, thresholds, durations or JSON }
+        "401": { description: Missing or expired session }
+        "403": { description: Missing admin permission }
+        "503": { description: Rules could not be persisted; in-memory rules are unchanged }
   /_admin/v1/system:
     get:
       operationId: getSystem
@@ -3063,6 +3116,220 @@ components:
           oneOf:
             - $ref: "#/components/schemas/StorageScanReport"
             - type: "null"
+    MonitorRuleId:
+      type: string
+      enum: [cpu_high, rss_high, heap_growth, fd_growth, fd_high, storage_low, thread_high, api_errors, api_latency, allocation_failure]
+    MonitorSeverity:
+      type: string
+      enum: [info, warning, err, critical]
+    MonitorAlertState:
+      type: string
+      enum: [disabled, no_data, normal, pending, firing]
+    MonitorRule:
+      type: object
+      required: [id, threshold]
+      properties:
+        id: { $ref: "#/components/schemas/MonitorRuleId" }
+        enabled: { type: boolean, default: true }
+        severity: { $ref: "#/components/schemas/MonitorSeverity" }
+        threshold: { type: number, minimum: 0, maximum: 1000000000000000, description: Percent rules max 100; RSS/heap bytes, FD/thread count, latency ms, allocation failures per sample. Strictly exceeded except storage_low (strictly below). }
+        duration_seconds: { type: integer, minimum: 0, maximum: 3600, default: 60 }
+    MonitorTrend:
+      type: object
+      required: [samples, seconds, delta, per_hour, rising_fraction, status]
+      properties:
+        samples: { type: integer, minimum: 0 }
+        seconds: { type: integer, minimum: 0 }
+        delta: { type: [number, "null"] }
+        per_hour: { type: [number, "null"], description: Linear regression slope per hour }
+        rising_fraction: { type: [number, "null"], minimum: 0, maximum: 1 }
+        status: { type: string, enum: [insufficient, stable, growing] }
+    MonitorLock:
+      type: object
+      required: [acquisitions, contentions, waiters, wait_ns, max_wait_ns]
+      properties:
+        acquisitions: { type: integer, minimum: 0 }
+        contentions: { type: integer, minimum: 0 }
+        waiters: { type: integer, minimum: 0 }
+        wait_ns: { type: integer, minimum: 0 }
+        max_wait_ns: { type: integer, minimum: 0 }
+    MonitorDiagnosticInput:
+      type: object
+      properties:
+        rules:
+          type: array
+          minItems: 10
+          maxItems: 10
+          description: Complete rules in MonitorRuleId enum order; identifiers must be unique and ordered
+          items: { $ref: "#/components/schemas/MonitorRule" }
+        acknowledge: { $ref: "#/components/schemas/MonitorRuleId" }
+        hotspots_enabled: { type: boolean }
+    MonitorDiagnosticDetails:
+      type: object
+      required: [hotspots_enabled, hotspots, untracked_allocations, build_commit]
+      properties:
+        hotspots_enabled: { type: boolean }
+        untracked_allocations: { type: integer, minimum: 0 }
+        build_commit: { type: string }
+        hotspots:
+          type: [array, "null"]
+          maxItems: 64
+          description: Fixed slots; zero address means unused. Cumulative allocation/growth traffic, not live bytes. Addresses need matching binary symbols and load addresses.
+          items:
+            type: object
+            required: [address, allocations, bytes]
+            properties:
+              address: { type: integer, minimum: 0 }
+              allocations: { type: integer, minimum: 0 }
+              bytes: { type: integer, minimum: 0 }
+    Monitoring:
+      type: object
+      required: [version, started_at, sample_interval_seconds, history_interval_seconds, history_step_seconds, retention_seconds, persistence, latest, history, s3, management, listings, operations, analysis, alert_rules, alerts, alert_events, locks]
+      properties:
+        analysis:
+          type: object
+          required: [rss, heap, descriptors, allocations]
+          properties:
+            rss: { $ref: "#/components/schemas/MonitorTrend" }
+            heap: { $ref: "#/components/schemas/MonitorTrend" }
+            descriptors: { $ref: "#/components/schemas/MonitorTrend" }
+            allocations: { $ref: "#/components/schemas/MonitorTrend" }
+        alert_rules:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items: { $ref: "#/components/schemas/MonitorRule" }
+        alerts:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items:
+            type: object
+            required: [id, state, value, since, acknowledged]
+            properties:
+              id: { $ref: "#/components/schemas/MonitorRuleId" }
+              state: { $ref: "#/components/schemas/MonitorAlertState" }
+              value: { type: [number, "null"] }
+              since: { type: [integer, "null"], description: Unix seconds when threshold was breached }
+              acknowledged: { type: boolean }
+        alert_events:
+          type: array
+          maxItems: 128
+          description: Chronological in-memory transitions into/out of firing; cleared at restart
+          items:
+            type: object
+            required: [id, timestamp, state, severity]
+            properties:
+              id: { $ref: "#/components/schemas/MonitorRuleId" }
+              timestamp: { type: integer }
+              state: { $ref: "#/components/schemas/MonitorAlertState" }
+              severity: { $ref: "#/components/schemas/MonitorSeverity" }
+        locks:
+          type: object
+          required: [metadata, identity]
+          properties:
+            metadata: { $ref: "#/components/schemas/MonitorLock" }
+            identity: { $ref: "#/components/schemas/MonitorLock" }
+        version: { type: string }
+        started_at: { type: integer, description: Process startup Unix seconds }
+        sample_interval_seconds: { type: integer, enum: [1, 2, 5, 10] }
+        history_interval_seconds: { type: integer, const: 10 }
+        history_step_seconds: { type: integer, description: Effective step after history thinning }
+        retention_seconds: { type: integer, const: 86400 }
+        persistence:
+          type: object
+          required: [state, last_saved_at]
+          properties:
+            state: { type: string, enum: [pending, healthy, unavailable] }
+            last_saved_at: { type: [integer, "null"], description: Most recent successful checkpoint in this process, Unix seconds }
+        latest:
+          oneOf:
+            - $ref: "#/components/schemas/MonitorPoint"
+            - type: "null"
+        history:
+          type: array
+          maxItems: 361
+          items: { $ref: "#/components/schemas/MonitorPoint" }
+        s3: { $ref: "#/components/schemas/MonitorOperations" }
+        management: { $ref: "#/components/schemas/MonitorOperations" }
+        listings: { $ref: "#/components/schemas/MonitorOperations" }
+        operations:
+          type: array
+          items:
+            type: object
+            required: [name, metrics]
+            properties:
+              name: { type: string, description: Fixed S3 operation enum, never a user path }
+              metrics: { $ref: "#/components/schemas/MonitorOperations" }
+    MonitorOperations:
+      type: object
+      required: [active, peak_active, completed, failed, client_errors, duration_ms, histogram, last_duration_ms, last_succeeded, uploaded_bytes, downloaded_bytes]
+      properties:
+        uploaded_bytes: { type: integer, minimum: 0, description: Successful object/part payload; populated per S3 operation }
+        downloaded_bytes: { type: integer, minimum: 0, description: Completed GET payload including ranges; populated per S3 operation }
+        active: { type: integer, minimum: 0 }
+        peak_active: { type: integer, minimum: 0 }
+        completed: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0, description: 5xx or transport failure; internal listings count operation failures }
+        client_errors: { type: integer, minimum: 0, description: 4xx requests }
+        duration_ms: { type: integer, minimum: 0, description: Sum of request durations }
+        histogram:
+          type: array
+          minItems: 14
+          maxItems: 14
+          description: Non-cumulative counts; upper bounds 1,5,10,25,50,100,250,500,1000,2500,5000,10000,30000 ms and overflow
+          items: { type: integer, minimum: 0 }
+        last_duration_ms: { type: [integer, "null"] }
+        last_succeeded: { type: [boolean, "null"] }
+    MonitorPoint:
+      type: object
+      description: Memory/capacity in bytes; I/O rates in bytes/s; CPU/errors in percent; percentiles are histogram upper bounds in ms, null for no requests or overflow. CPU and rates use counter deltas; history gauges are end-of-window values.
+      properties:
+        timestamp: { type: integer, description: Unix seconds }
+        run_id: { type: integer, description: Sampler startup Unix milliseconds; charts break across runs }
+        active_requests: { type: integer }
+        active_connections: { type: integer }
+        user_cpu_seconds: { type: [number, "null"] }
+        kernel_cpu_seconds: { type: [number, "null"] }
+        allocated_bytes: { type: [integer, "null"] }
+        freed_bytes: { type: [integer, "null"] }
+        reallocations: { type: [integer, "null"] }
+        host_cpu: { type: [number, "null"] }
+        process_cpu: { type: [number, "null"] }
+        memory_used: { type: [number, "null"] }
+        memory_total: { type: [number, "null"] }
+        rss: { type: [number, "null"] }
+        virtual_bytes: { type: [number, "null"] }
+        peak_rss: { type: [number, "null"] }
+        heap: { type: [number, "null"] }
+        heap_peak: { type: [number, "null"] }
+        allocations: { type: [number, "null"] }
+        frees: { type: [number, "null"] }
+        allocation_failures: { type: [number, "null"] }
+        cores: { type: [number, "null"] }
+        threads: { type: [number, "null"] }
+        workers: { type: [number, "null"] }
+        workers_busy: { type: [number, "null"] }
+        descriptors: { type: [number, "null"] }
+        descriptor_limit: { type: [number, "null"] }
+        storage_used: { type: [number, "null"] }
+        storage_total: { type: [number, "null"] }
+        storage_available: { type: [number, "null"] }
+        load1: { type: [number, "null"] }
+        load5: { type: [number, "null"] }
+        load15: { type: [number, "null"] }
+        disk_read: { type: [number, "null"] }
+        disk_write: { type: [number, "null"] }
+        network_receive: { type: [number, "null"] }
+        network_transmit: { type: [number, "null"] }
+        upload: { type: [number, "null"] }
+        download: { type: [number, "null"] }
+        qps: { type: [number, "null"] }
+        error_percent: { type: [number, "null"] }
+        client_error_percent: { type: [number, "null"] }
+        p50: { type: [number, "null"] }
+        p95: { type: [number, "null"] }
+        p99: { type: [number, "null"] }
     SystemInfo:
       type: object
       required: [version, uptime, storage_used, objects, buckets]

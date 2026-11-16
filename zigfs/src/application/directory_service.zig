@@ -27,7 +27,7 @@ pub const DirectoryService = struct {
     directory_store: directory_store_port.DirectoryStore,
     object_store: object_store_port.ObjectStore,
     index: *index_module.MetadataIndex,
-    state_mutex: *std.Io.Mutex,
+    state_mutex: *@import("observed_mutex.zig").Mutex,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -36,7 +36,7 @@ pub const DirectoryService = struct {
         directory_store: directory_store_port.DirectoryStore,
         object_store: object_store_port.ObjectStore,
         index: *index_module.MetadataIndex,
-        state_mutex: *std.Io.Mutex,
+        state_mutex: *@import("observed_mutex.zig").Mutex,
     ) DirectoryService {
         return .{ .allocator = allocator, .io = io, .bucket_store = bucket_store, .directory_store = directory_store, .object_store = object_store, .index = index, .state_mutex = state_mutex };
     }

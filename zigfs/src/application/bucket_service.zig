@@ -41,14 +41,14 @@ pub const BucketService = struct {
     io: std.Io,
     store: bucket_store_port.BucketStore,
     index: *index_module.MetadataIndex,
-    mutex: *std.Io.Mutex,
+    mutex: *@import("observed_mutex.zig").Mutex,
 
     pub fn init(
         allocator: std.mem.Allocator,
         io: std.Io,
         store: bucket_store_port.BucketStore,
         index: *index_module.MetadataIndex,
-        mutex: *std.Io.Mutex,
+        mutex: *@import("observed_mutex.zig").Mutex,
     ) BucketService {
         return .{
             .allocator = allocator,
@@ -446,7 +446,7 @@ test "bucket service supports idempotent create head list delete and recreate" {
     var index = index_module.MetadataIndex.init(std.testing.allocator);
     defer index.deinit();
     try index.rebuild(memory.interface());
-    var mutex: std.Io.Mutex = .init;
+    var mutex: @import("observed_mutex.zig").Mutex = .init;
     const service = BucketService.init(
         std.testing.allocator,
         std.testing.io,
@@ -500,7 +500,7 @@ test "bucket service rejects invalid names and non-empty delete" {
     var index = index_module.MetadataIndex.init(std.testing.allocator);
     defer index.deinit();
     try index.rebuild(memory.interface());
-    var mutex: std.Io.Mutex = .init;
+    var mutex: @import("observed_mutex.zig").Mutex = .init;
     const service = BucketService.init(
         std.testing.allocator,
         std.testing.io,
@@ -533,7 +533,7 @@ test "bucket service requires versioning and prevents disabling object locking" 
     var index = index_module.MetadataIndex.init(std.testing.allocator);
     defer index.deinit();
     try index.rebuild(memory.interface());
-    var mutex: std.Io.Mutex = .init;
+    var mutex: @import("observed_mutex.zig").Mutex = .init;
     const service = BucketService.init(std.testing.allocator, std.testing.io, bucket_store.interface(), &index, &mutex);
     const created = try service.create("lock-assets", "owner");
     defer created.deinit(std.testing.allocator);

@@ -68,6 +68,7 @@ pub fn serve(
     var background: std.Io.Group = .init;
     defer background.cancel(io);
     try background.concurrent(io, @import("../application/bucket_event_runtime.zig").serve, .{application});
+    try background.concurrent(io, @import("../application/monitoring.zig").serve, .{application});
     try background.concurrent(io, serveLogMaintenance, .{application});
     try background.concurrent(io, serveMetadataMaintenance, .{application});
     try background.concurrent(io, serveLifecycleScanner, .{
@@ -347,7 +348,10 @@ fn serveRequest(
     const started = std.Io.Clock.awake.now(context.io);
     var response_status: std.http.Status = .internal_server_error;
     if (metrics) |value| value.begin(context.io);
-    defer if (metrics) |value| value.finish(context.io, @backingInt(response_status) < 500, @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(context.io)).toMilliseconds())));
+    defer if (metrics) |value| value.finishStatus(context.io, @intCast(@backingInt(response_status)), @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(context.io)).toMilliseconds())));
+    defer if (audit_context.metrics_operation) |operation| {
+        context.application.runtime_metrics.operations[@backingInt(operation)].finishStatus(context.io, @intCast(@backingInt(response_status)), @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(context.io)).toMilliseconds())));
+    };
     response_status = try dispatchRequest(request, context, current_request_id, peer, audit_context, route);
     return response_status;
 }
@@ -362,7 +366,7 @@ fn dispatchRequest(request: *std.http.Server.Request, context: *const ListenerCo
             current_request_id,
         ),
         .ready => serveReadiness(request, context.application.recoveryState().*, current_request_id),
-        .metrics => serveMetrics(request, context.application.recoveryState().*, current_request_id),
+        .metrics => serveMetrics(request, context.application, current_request_id),
         .oidc_auth => management.serveOidcAuth(request, context.application, current_request_id, audit_context),
         .management_login => serveManagementLogin(request, context, current_request_id, audit_context),
         .management_sts_login => serveManagementStsLogin(request, context, current_request_id, audit_context),
@@ -403,19 +407,13 @@ fn serveReadiness(
     );
 }
 
-fn serveMetrics(
-    request: *std.http.Server.Request,
-    state: recovery.State,
-    current_request_id: []const u8,
-) !std.http.Status {
+fn serveMetrics(request: *std.http.Server.Request, app: *Application, current_request_id: []const u8) !std.http.Status {
+    var output: std.Io.Writer.Allocating = .init(app.allocator);
+    defer output.deinit();
     var body_buffer: [512]u8 = undefined;
-    const body = try metricsBody(state, &body_buffer);
-    return respondReadOnly(
-        request,
-        body,
-        "text/plain; version=0.0.4; charset=utf-8",
-        current_request_id,
-    );
+    try output.writer.writeAll(try metricsBody(app.recoveryState().*, &body_buffer));
+    try @import("../application/monitoring.zig").prometheus(app, &output.writer);
+    return respondReadOnly(request, output.written(), "text/plain; version=0.0.4; charset=utf-8", current_request_id);
 }
 
 fn readinessHttpStatus(state: recovery.State) std.http.Status {

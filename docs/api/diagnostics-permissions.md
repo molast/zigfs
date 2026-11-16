@@ -15,7 +15,7 @@
 
 对应只读接口（ZigFS 前缀 `/_admin/v1`，BFF 前缀 `/api/v1`）：
 
-- `GET /system`、`GET /health`：`admin:ServerInfo`。
+- `GET /system`、`GET /health`、`GET /monitoring`：`admin:ServerInfo`。
 - `GET /metrics`：`admin:Prometheus`。
 - `GET /settings/logs`、`GET /settings/logs/query`、`GET /settings/logs/download`：`admin:ConsoleLog`。
 
@@ -30,3 +30,5 @@
 本地及 STS 登录的控制台在窗口获得焦点、或可见状态下每 30 秒重新获取会话能力，更新菜单；接口授权不等待这一 UI 刷新周期。OIDC 保留已有的会话刷新流程。
 
 集成验证覆盖：相同正文配自定义名称、原会话下修改内置 diagnostics 为 S3 策略、添加 ConsoleLog Deny 后立即拒绝访问且 ServerInfo 保持可用。
+
+P1：`GET /monitoring` 的分析、告警及锁统计沿用 `admin:ServerInfo`。`GET/PUT /monitoring/diagnostics` 要求 `admin:*`，包括热点地址读取、采集开关、规则修改与告警确认。诊断只读角色不授予这些操作。

@@ -39,7 +39,7 @@ pub const ObjectGcService = struct {
     multipart_store: multipart_store_port.MultipartStore,
     multipart_data_store: multipart_data_store_port.MultipartDataStore,
     index: *index_module.MetadataIndex,
-    state_mutex: *std.Io.Mutex,
+    state_mutex: *@import("observed_mutex.zig").Mutex,
     object_locks: *ObjectLockPool,
     multipart_locks: *ObjectLockPool,
 
@@ -52,7 +52,7 @@ pub const ObjectGcService = struct {
         multipart_store: multipart_store_port.MultipartStore,
         multipart_data_store: multipart_data_store_port.MultipartDataStore,
         index: *index_module.MetadataIndex,
-        state_mutex: *std.Io.Mutex,
+        state_mutex: *@import("observed_mutex.zig").Mutex,
         object_locks: *ObjectLockPool,
         multipart_locks: *ObjectLockPool,
     ) ObjectGcService {

@@ -758,3 +758,23 @@ func (client *Client) SetObjectLegalHold(ctx context.Context, bucket string, req
 	err := client.requestJSON(ctx, http.MethodPatch, "/_admin/v1/buckets/"+url.PathEscape(bucket)+"/legal-hold", request, &response)
 	return response, err
 }
+
+func (client *Client) Monitoring(ctx context.Context, query string) (json.RawMessage, error) {
+	var response json.RawMessage
+	path := "/_admin/v1/monitoring"
+	if query != "" {
+		path += "?" + query
+	}
+	err := client.requestJSON(ctx, http.MethodGet, path, nil, &response)
+	return response, err
+}
+
+func (client *Client) MonitoringDiagnostics(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error) {
+	var result json.RawMessage
+	var body any
+	if len(input) > 0 {
+		body = input
+	}
+	err := client.requestJSON(ctx, method, "/_admin/v1/monitoring/diagnostics", body, &result)
+	return result, err
+}

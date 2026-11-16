@@ -1,13 +1,34 @@
 const std = @import("std");
 const zigfs = @import("zigfs");
 
+// SafeAllocator captures stacks on every allocation/free. Zig's default debug
+// arena retains DWARF unwinder scratch memory; use a reclaiming, thread-safe
+// allocator independent of the checked Application allocator to avoid recursion.
+pub const debug = struct {
+    pub fn getDebugInfoAllocator() std.mem.Allocator {
+        return std.heap.smp_allocator;
+    }
+};
+
 pub const std_options: std.Options = .{ .log_level = .debug, .logFn = zigfs.application.logging.logFn };
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     var config = try zigfs.config.Config.loadWithEnvironment(init.io, init.arena.allocator(), args, zigfs.config.Config.environmentFromMap(init.environ_map));
 
-    var app = zigfs.application.Application.init(config);
+    const diagnostic_allocator = @import("diagnostic_options").allocator_enabled;
+    var checked_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{
+        .stack_trace_frames = 16,
+        .check_write_after_free = true,
+    });
+    defer if (diagnostic_allocator) {
+        const leaks = checked_allocator.deinit();
+        if (leaks != 0) std.debug.print("ZigFS diagnostic allocator: {d} outstanding allocations on teardown\n", .{leaks});
+    };
+    if (diagnostic_allocator) std.debug.print("ZigFS diagnostic allocator enabled (Application allocations only; elevated memory/CPU overhead)\n", .{});
+    var allocator_metrics: zigfs.application.tracking_allocator.TrackingAllocator = .{ .child = if (diagnostic_allocator) checked_allocator.allocator() else std.heap.smp_allocator };
+    var app = zigfs.application.Application.initWithAllocator(config, allocator_metrics.allocator());
+    app.allocator_metrics = &allocator_metrics;
     defer app.deinit(init.io);
     try app.initialize(init.io);
     if (config.root_access_key.len > 0) {

@@ -15,6 +15,7 @@ pub const Config = struct {
     metadata_maintenance_interval_seconds: u64 = 60,
     metadata_maintenance_batch_size: usize = 1000,
     api_address: []const u8 = "0.0.0.0:9000",
+    monitoring_interval_seconds: u64 = 1,
     metrics_enabled: bool = true,
     metrics_address: []const u8 = "127.0.0.1:9090",
     s3_public_endpoint: []const u8 = "http://127.0.0.1:9000",
@@ -65,6 +66,7 @@ pub const Config = struct {
         metadata_maintenance_interval_seconds: ?[]const u8 = null,
         metadata_maintenance_batch_size: ?[]const u8 = null,
         api_address: ?[]const u8 = null,
+        monitoring_interval_seconds: ?[]const u8 = null,
         metrics_enabled: ?[]const u8 = null,
         metrics_address: ?[]const u8 = null,
         s3_public_endpoint: ?[]const u8 = null,
@@ -90,6 +92,7 @@ pub const Config = struct {
             .metadata_maintenance_interval_seconds = map.get("ZIGFS_METADATA_MAINTENANCE_INTERVAL_SECONDS"),
             .metadata_maintenance_batch_size = map.get("ZIGFS_METADATA_MAINTENANCE_BATCH_SIZE"),
             .api_address = map.get("ZIGFS_API_ADDRESS"),
+            .monitoring_interval_seconds = map.get("ZIGFS_MONITORING_INTERVAL_SECONDS"),
             .metrics_enabled = map.get("ZIGFS_METRICS_ENABLED"),
             .metrics_address = map.get("ZIGFS_METRICS_ADDRESS"),
             .s3_public_endpoint = map.get("ZIGFS_S3_PUBLIC_ENDPOINT"),
@@ -115,6 +118,7 @@ pub const Config = struct {
         if (environment.metadata_maintenance_interval_seconds) |value| try self.applyValue("ZIGFS_METADATA_MAINTENANCE_INTERVAL_SECONDS", value);
         if (environment.metadata_maintenance_batch_size) |value| try self.applyValue("ZIGFS_METADATA_MAINTENANCE_BATCH_SIZE", value);
         if (environment.api_address) |value| try self.applyValue("ZIGFS_API_ADDRESS", value);
+        if (environment.monitoring_interval_seconds) |value| try self.applyValue("ZIGFS_MONITORING_INTERVAL_SECONDS", value);
         if (environment.metrics_enabled) |value| try self.applyValue("ZIGFS_METRICS_ENABLED", value);
         if (environment.metrics_address) |value| try self.applyValue("ZIGFS_METRICS_ADDRESS", value);
         if (environment.s3_public_endpoint) |value| try self.applyValue("ZIGFS_S3_PUBLIC_ENDPOINT", value);
@@ -185,6 +189,15 @@ pub const Config = struct {
         }
         if (std.mem.eql(u8, key, "ZIGFS_API_ADDRESS")) {
             self.api_address = value;
+            return;
+        }
+        if (std.mem.eql(u8, key, "ZIGFS_MONITORING_INTERVAL_SECONDS")) {
+            const interval = std.fmt.parseInt(u64, value, 10) catch return error.InvalidEnv;
+            switch (interval) {
+                1, 2, 5, 10 => {},
+                else => return error.InvalidEnv,
+            }
+            self.monitoring_interval_seconds = interval;
             return;
         }
         if (std.mem.eql(u8, key, "ZIGFS_METRICS_ENABLED")) {
@@ -548,4 +561,12 @@ test "dotenv literals, comments, empty values and process overrides" {
     try std.testing.expectError(error.InvalidEnv, config.applyEnv("ZIGFS_ROOT_PASSWORD='unclosed"));
     try config.applyEnvironment(.{ .root_access_key = "RootAccessKey123456" });
     try std.testing.expectError(error.InvalidRootCredentials, config.validate());
+}
+
+test "monitoring cadence only accepts supported positive intervals" {
+    var config: Config = .{};
+    try config.applyEnvironment(.{ .monitoring_interval_seconds = "5" });
+    try std.testing.expectEqual(@as(u64, 5), config.monitoring_interval_seconds);
+    try std.testing.expectError(error.InvalidEnv, config.applyEnvironment(.{ .monitoring_interval_seconds = "0" }));
+    try std.testing.expectError(error.InvalidEnv, config.applyEnvironment(.{ .monitoring_interval_seconds = "3" }));
 }

@@ -85,6 +85,8 @@ type ManagementService interface {
 	StorageScanner(ctx context.Context) (contract.StorageScannerStatus, error)
 	RunStorageGC(ctx context.Context) (contract.StorageScanReport, error)
 	Health(ctx context.Context) (contract.ManagementHealthResponse, error)
+	MonitoringDiagnostics(context.Context, string, json.RawMessage) (json.RawMessage, error)
+	Monitoring(context.Context, string) (json.RawMessage, error)
 	AuditEvents(context.Context, string, string) (json.RawMessage, error)
 	LogSettings(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
 	AuditLogSettings(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
@@ -1153,4 +1155,31 @@ func (handler *Management) SetObjectLegalHold(ctx *gin.Context) {
 		return
 	}
 	ctx.JSON(http.StatusOK, response)
+}
+
+func (handler *Management) Monitoring(ctx *gin.Context) {
+	result, err := handler.service.Monitoring(ctx.Request.Context(), ctx.Request.URL.RawQuery)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.Header("Cache-Control", "no-store")
+	ctx.Data(http.StatusOK, "application/json", result)
+}
+
+func (handler *Management) MonitoringDiagnostics(ctx *gin.Context) {
+	var input json.RawMessage
+	if ctx.Request.Method == http.MethodPut {
+		if err := ctx.ShouldBindJSON(&input); err != nil {
+			writeError(ctx, http.StatusBadRequest, "InvalidRequest", "Invalid diagnostic settings")
+			return
+		}
+	}
+	result, err := handler.service.MonitoringDiagnostics(ctx.Request.Context(), ctx.Request.Method, input)
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	ctx.Header("Cache-Control", "no-store")
+	ctx.Data(http.StatusOK, "application/json", result)
 }

@@ -482,3 +482,55 @@ func TestEndpointFailoverOnlyOnDialFailure(t *testing.T) {
 		t.Fatal("replayed an already sent write")
 	}
 }
+
+func TestMonitoringForwardsSessionRangeAndNulls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_admin/v1/monitoring" || r.URL.Query().Get("seconds") != "86400" || r.Header.Get("Authorization") != "Bearer monitor-token" {
+			t.Errorf("monitoring request lost path, range or auth: %s", r.URL)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"latest":{"p95":null,"qps":0},"history":[]}`))
+	}))
+	defer server.Close()
+	client := zigclient.New(server.URL, time.Second)
+	body, err := client.Monitoring(managementauth.WithToken(context.Background(), "monitor-token"), "seconds=86400")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	latest := got["latest"].(map[string]any)
+	if latest["p95"] != nil || latest["qps"] != float64(0) {
+		t.Fatalf("zero/null changed: %s", body)
+	}
+}
+
+func TestMonitoringDiagnosticsDoesNotSendNullBodyOnGet(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_admin/v1/monitoring/diagnostics" || r.Header.Get("Authorization") != "Bearer monitor-token" {
+			t.Error("path or auth lost")
+		}
+		if r.Method == http.MethodGet && r.ContentLength != 0 {
+			t.Errorf("GET sent %d bytes", r.ContentLength)
+		}
+		if r.Method == http.MethodPut {
+			var value map[string]bool
+			if err := json.NewDecoder(r.Body).Decode(&value); err != nil || !value["hotspots_enabled"] {
+				t.Errorf("PUT lost body: %v", err)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"hotspots_enabled":true}`))
+	}))
+	defer server.Close()
+	client := zigclient.New(server.URL, time.Second)
+	ctx := managementauth.WithToken(context.Background(), "monitor-token")
+	if _, err := client.MonitoringDiagnostics(ctx, http.MethodGet, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.MonitoringDiagnostics(ctx, http.MethodPut, json.RawMessage(`{"hotspots_enabled":true}`)); err != nil {
+		t.Fatal(err)
+	}
+}

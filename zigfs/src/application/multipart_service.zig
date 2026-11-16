@@ -100,7 +100,7 @@ pub const MultipartService = struct {
     data_store: data_store_port.MultipartDataStore,
     objects: object_service.ObjectService,
     index: *index_module.MetadataIndex,
-    state_mutex: *std.Io.Mutex,
+    state_mutex: *@import("observed_mutex.zig").Mutex,
     upload_locks: *ObjectLockPool,
 
     pub fn init(
@@ -111,7 +111,7 @@ pub const MultipartService = struct {
         data_store: data_store_port.MultipartDataStore,
         objects: object_service.ObjectService,
         index: *index_module.MetadataIndex,
-        state_mutex: *std.Io.Mutex,
+        state_mutex: *@import("observed_mutex.zig").Mutex,
         upload_locks: *ObjectLockPool,
     ) MultipartService {
         return .{

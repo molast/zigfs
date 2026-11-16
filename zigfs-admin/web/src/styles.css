@@ -2069,3 +2069,60 @@ html[data-theme="dark"], .dark {
 .role-console-dialog .ui-dialog-title { font-size: 14px; }
 .role-console-dialog .ui-dialog-footer { margin-top: 20px; padding-top: 16px; }
 .role-console-dialog textarea { font-family: monospace; font-size: 12px; }
+
+.monitor-dashboard { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.monitor-gauges, .monitor-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.monitor-trends { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.monitor-gauges > *, .monitor-stats > *, .monitor-trends > * { min-width: 0; }
+.monitor-gauge { position: relative; width: min(100%, 148px); margin: 0 auto; }
+.monitor-gauge-value { position: absolute; inset: auto 0 0; text-align: center; font-size: 24px; font-weight: 600; line-height: 1.4; font-variant-numeric: tabular-nums; margin-bottom: 8px; }
+.monitor-stat-value { font-size: 19px; font-weight: 600; line-height: 1.3; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+@media (max-width: 1100px) { .monitor-gauges, .monitor-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 720px) { .monitor-trends { grid-template-columns: minmax(0, 1fr); } .monitor-gauge-value { font-size: 22px; } .monitor-stat-value { font-size: 18px; } }
+
+.monitor-module { min-width: 0; }
+.monitor-module > [data-slot="collapsible-trigger"] { background: var(--muted); border-radius: var(--radius); }
+
+[data-slot="select-trigger"][data-size="xs"] { height: 28px; min-height: 28px; padding: 3px 8px; gap: 6px; font-size: 12px; line-height: 20px; }
+.monitor-overview-card [data-slot="card-header"] { padding: 10px 12px 8px; }
+.monitor-overview-card [data-slot="card-content"] { padding: 0 12px 10px; }
+.monitor-overview-card [data-slot="card-title"] { font-size: 12px; }
+.monitor-overview-card [data-slot="card-description"], .monitor-overview-card [data-slot="card-content"] > p { font-size: 11px; }
+.monitor-overview-card [data-slot="card-content"] > p { margin-top: 6px; }
+
+/* Compact horizontal level meters for sampled telemetry, not task completion. */
+.monitor-stat-reading { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.monitor-stat-reading > .monitor-stat-value { flex: 0 1 auto; min-width: 0; }
+.ui-level-meter { position: relative; flex: 1 1 64px; min-width: 28px; height: 16px; border-radius: 2px; outline-offset: 4px; }
+.ui-level-meter:focus-visible { outline: 2px solid var(--ring); }
+.ui-level-meter-track { position: absolute; inset: 2px 0; overflow: hidden; background: var(--muted); mask-image: repeating-linear-gradient(to right, #000 0, #000 3px, transparent 3px, transparent 5px); }
+.ui-level-meter-trail { position: absolute; inset: 0 auto 0 0; width: var(--level-peak); background: color-mix(in srgb, var(--primary) 20%, transparent); transition: width 1000ms ease-out; }
+.ui-level-meter-fill { position: absolute; inset: 0 auto 0 0; height: 100%; background: linear-gradient(to right, var(--chart-2), var(--primary)); transition: width 1100ms cubic-bezier(.2,.7,.2,1); }
+.ui-level-meter[data-rising="true"] .ui-level-meter-fill { transition-duration: 160ms; }
+.ui-level-meter-peak { position: absolute; top: 0; bottom: 0; left: clamp(0px, var(--level-peak), calc(100% - 2px)); width: 2px; border-radius: 1px; background: var(--foreground); opacity: .65; transition: left 1000ms ease-out; }
+.ui-level-meter[data-frozen] { opacity: .5; }
+.ui-level-meter[data-unavailable] .ui-level-meter-fill { visibility: hidden; }
+.ui-level-meter[data-frozen] *, .ui-level-meter[data-unavailable] * { transition: none; }
+@media (max-width: 720px) { .monitor-stat-reading { gap: 8px; } .ui-level-meter { flex-basis: 40px; min-width: 24px; height: 14px; } }
+@media (prefers-reduced-motion: reduce) { .ui-level-meter * { transition: none !important; } }
+
+/* Resource-specific graphics share a compact height across the overview. */
+.monitor-resource-graphic { height: 85px; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 8px; }
+.monitor-resource-reading { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.monitor-resource-value { font-size: 24px; line-height: 1.2; font-weight: 600; font-variant-numeric: tabular-nums; }
+.monitor-resource-caption, .monitor-resource-scale { font-size: 10px; color: var(--muted-foreground); }
+.monitor-resource-memory, .monitor-resource-disk { flex-direction: row; align-items: center; justify-content: flex-start; gap: 12px; }
+.monitor-resource-memory > div, .monitor-resource-disk > div { display: flex; flex-direction: column; gap: 5px; }
+.monitor-memory-ring { width: 80px; height: 80px; flex-shrink: 0; }
+.monitor-cpu-sparkline { height: 40px; width: 100%; aspect-ratio: auto; min-height: 0; }
+.monitor-capacity-chart { display: flex; flex-direction: column; gap: 6px; }
+.monitor-resource-scale { display: flex; justify-content: space-between; gap: 4px; }
+.monitor-capacity-track { height: 14px; background: var(--muted); border-radius: 3px; }
+.monitor-descriptor-track { height: 6px; background: var(--muted); }
+.monitor-capacity-chart [data-slot="progress-indicator"] { background: var(--resource-color); }
+@media (max-width: 720px) {
+  .monitor-resource-value { font-size: 22px; }
+  .monitor-resource-memory, .monitor-resource-disk { gap: 6px; }
+  .monitor-memory-ring { width: 54px; height: 54px; }
+  .monitor-resource-reading { flex-wrap: wrap; gap: 2px 6px; }
+}

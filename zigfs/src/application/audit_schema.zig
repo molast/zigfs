@@ -144,6 +144,9 @@ pub const operations = [_]Spec{
     .{ .name = "GetStorage", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = true, .method = "GET", .path = "/_admin/v1/storage" },
     .{ .name = "GetStorageScanner", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = true, .method = "GET", .path = "/_admin/v1/storage/scanner" },
     .{ .name = "RunGarbageCollection", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false, .method = "POST", .path = "/_admin/v1/storage/gc" },
+    .{ .name = "GetMonitoring", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = true, .method = "GET", .path = "/_admin/v1/monitoring" },
+    .{ .name = "GetMonitoringDiagnostics", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = true, .method = "GET", .path = "/_admin/v1/monitoring/diagnostics" },
+    .{ .name = "UpdateMonitoringDiagnostics", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false, .method = "PUT", .path = "/_admin/v1/monitoring/diagnostics" },
     .{ .name = "GetSystemInfo", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = true, .method = "GET", .path = "/_admin/v1/system" },
     .{ .name = "GetSettings", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = true, .method = "GET", .path = "/_admin/v1/settings" },
     .{ .name = "GetManagementHealth", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = true, .method = "GET", .path = "/_admin/v1/health" },
@@ -381,4 +384,17 @@ test "legacy events migrate deterministically and preserve unavailable context" 
     const third = try clone(std.testing.allocator, first);
     defer free(std.testing.allocator, third);
     try std.testing.expectEqualStrings(first.event_id, third.event_id);
+}
+
+test "monitoring audit routes have explicit operations and preserve read write semantics" {
+    const read = classify("GET /_admin/v1/monitoring", "GET", "/_admin/v1/monitoring");
+    try std.testing.expectEqualStrings("GetMonitoring", read.name);
+    try std.testing.expect(read.is_read_only);
+    const diagnostics = classify("", "GET", "/_admin/v1/monitoring/diagnostics");
+    try std.testing.expectEqualStrings("GetMonitoringDiagnostics", diagnostics.name);
+    try std.testing.expect(diagnostics.is_read_only);
+    const update = classify("", "PUT", "/_admin/v1/monitoring/diagnostics");
+    try std.testing.expectEqualStrings("UpdateMonitoringDiagnostics", update.name);
+    try std.testing.expect(!update.is_read_only);
+    try std.testing.expectEqualStrings("UnknownOperation", classify("", "DELETE", "/_admin/v1/monitoring").name);
 }

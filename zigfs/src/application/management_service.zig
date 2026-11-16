@@ -20,7 +20,7 @@ pub const ManagementService = struct {
     io: std.Io,
     object_store: object_store_port.ObjectStore,
     index: *index_module.MetadataIndex,
-    state_mutex: *std.Io.Mutex,
+    state_mutex: *@import("observed_mutex.zig").Mutex,
     started_at_unix_seconds: i64,
 
     pub fn init(
@@ -28,7 +28,7 @@ pub const ManagementService = struct {
         io: std.Io,
         object_store: object_store_port.ObjectStore,
         index: *index_module.MetadataIndex,
-        state_mutex: *std.Io.Mutex,
+        state_mutex: *@import("observed_mutex.zig").Mutex,
         started_at_unix_seconds: i64,
     ) ManagementService {
         return .{

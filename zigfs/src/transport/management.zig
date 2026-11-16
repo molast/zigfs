@@ -98,6 +98,9 @@ pub const routes = [_]Route{
     .{ .method = .get, .path = "/_admin/v1/storage" },
     .{ .method = .get, .path = "/_admin/v1/storage/scanner" },
     .{ .method = .post, .path = "/_admin/v1/storage/gc" },
+    .{ .method = .get, .path = "/_admin/v1/monitoring/diagnostics" },
+    .{ .method = .put, .path = "/_admin/v1/monitoring/diagnostics" },
+    .{ .method = .get, .path = "/_admin/v1/monitoring" },
     .{ .method = .get, .path = "/_admin/v1/system" },
     .{ .method = .get, .path = "/_admin/v1/health" },
     .{ .method = .get, .path = "/_admin/v1/settings" },
@@ -328,6 +331,11 @@ pub fn serveRequest(
     if (std.mem.eql(u8, path, api_prefix ++ "/storage")) {
         if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
         return serveStorage(request, application, request_id);
+    }
+    if (std.mem.eql(u8, path, api_prefix ++ "/monitoring/diagnostics")) return serveMonitoringDiagnostics(request, application, request_id);
+    if (std.mem.eql(u8, path, api_prefix ++ "/monitoring")) {
+        if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
+        return serveMonitoring(request, application, request_id);
     }
     if (std.mem.eql(u8, path, api_prefix ++ "/system")) {
         if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
@@ -3594,4 +3602,77 @@ fn serveEventDestinations(request: *std.http.Server.Request, app: *Application, 
     store.save(root, io, a, key, .{ .items = items.items }) catch return respondError(request, request_id, .service_unavailable, "DestinationStorageUnavailable", "cannot persist event destinations");
     if (method == .DELETE) return respondJson(request, request_id, .ok, .{ .deleted = true });
     return respondJson(request, request_id, if (method == .POST) .created else .ok, input.?.redacted());
+}
+
+fn serveMonitoring(request: *std.http.Server.Request, app: *Application, request_id: []const u8) !std.http.Status {
+    const io = app.io orelse return respondNotReady(request, request_id);
+    var seconds: i64 = 3600;
+    if (std.mem.indexOfScalar(u8, request.head.target, '?')) |start| {
+        var parts = std.mem.splitScalar(u8, request.head.target[start + 1 ..], '&');
+        while (parts.next()) |part| {
+            if (std.mem.startsWith(u8, part, "seconds=")) seconds = std.math.clamp(std.fmt.parseInt(i64, part[8..], 10) catch 3600, 60, 86400);
+        }
+    }
+    const metrics = @import("../application/runtime_metrics.zig");
+    var operations: [metrics.operation_count]struct { name: []const u8, metrics: metrics.OperationSnapshot } = undefined;
+    for (&operations, 0..) |*entry, i| entry.* = .{
+        .name = @tagName(@as(metrics.ApiOperation, @fromBackingInt(@intCast(i)))),
+        .metrics = app.runtime_metrics.operations[i].snapshot(io),
+    };
+    const snapshot = try app.monitor.read(app.allocator, io, seconds);
+    defer app.allocator.free(snapshot.history);
+    return respondJson(request, request_id, .ok, .{
+        .version = version,
+        .started_at = app.started_at_unix_seconds,
+        .sample_interval_seconds = app.config.monitoring_interval_seconds,
+        .history_interval_seconds = 10,
+        .history_step_seconds = snapshot.step_seconds,
+        .persistence = snapshot.persistence,
+        .analysis = snapshot.diagnosis,
+        .alert_rules = snapshot.alerts.rules,
+        .alerts = snapshot.alerts.alerts,
+        .alert_events = snapshot.alerts.events[0..snapshot.alerts.event_count],
+        .locks = .{ .metadata = app.state_mutex.snapshot(), .identity = app.policy_mutex.snapshot() },
+        .retention_seconds = 86400,
+        .latest = snapshot.latest,
+        .history = snapshot.history,
+        .s3 = app.runtime_metrics.s3.snapshot(io),
+        .management = app.runtime_metrics.management.snapshot(io),
+        .listings = app.runtime_metrics.listings.snapshot(io),
+        .operations = operations,
+    });
+}
+
+fn serveMonitoringDiagnostics(request: *std.http.Server.Request, app: *Application, request_id: []const u8) !std.http.Status {
+    const io = app.io orelse return respondNotReady(request, request_id);
+    const module = @import("../application/monitoring_analysis.zig");
+    if (request.head.method == .PUT) {
+        const Input = struct { rules: ?module.Rules = null, acknowledge: ?module.RuleId = null, hotspots_enabled: ?bool = null };
+        const parsed = try parseJsonBody(Input, request, app.allocator, request_id) orelse return .bad_request;
+        defer parsed.deinit();
+        if (parsed.value.rules) |rules| {
+            module.validate(rules) catch return respondError(request, request_id, .bad_request, "InvalidMonitoringRules", "Invalid thresholds, durations or rule identifiers");
+            app.policy_mutex.lockUncancelable(io);
+            defer app.policy_mutex.unlock(io);
+            module.save(app.allocator, app.data_root orelse return respondNotReady(request, request_id), io, rules) catch return respondError(request, request_id, .service_unavailable, "MonitoringRulesUnavailable", "Could not persist monitoring rules");
+            app.monitor.mutex.lockUncancelable(io);
+            app.monitor.alert_engine.reset(rules);
+            app.monitor.mutex.unlock(io);
+        }
+        if (parsed.value.acknowledge) |id| {
+            app.monitor.mutex.lockUncancelable(io);
+            if (app.monitor.alert_engine.alerts[@backingInt(id)].state == .firing) app.monitor.alert_engine.alerts[@backingInt(id)].acknowledged = true;
+            app.monitor.mutex.unlock(io);
+        }
+        if (parsed.value.hotspots_enabled) |enabled| if (app.allocator_metrics) |a| {
+            a.hotspots_enabled.store(enabled, .monotonic);
+        };
+    } else if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET, PUT");
+    const a = app.allocator_metrics;
+    return respondJson(request, request_id, .ok, .{
+        .hotspots_enabled = if (a) |v| v.hotspots_enabled.load(.monotonic) else false,
+        .hotspots = if (a) |v| v.hotspots() else null,
+        .untracked_allocations = if (a) |v| v.untracked_allocations.load(.monotonic) else 0,
+        .build_commit = @import("build_info").git_commit,
+    });
 }

@@ -170,7 +170,7 @@ pub fn routeAction(method: std.http.Method, path: []const u8) []const u8 {
         return "admin:*";
     }
     if (std.mem.eql(u8, path, "/_admin/v1/settings/logs") or std.mem.eql(u8, path, "/_admin/v1/settings/logs/query") or std.mem.eql(u8, path, "/_admin/v1/settings/logs/download")) return "admin:ConsoleLog";
-    if (std.mem.eql(u8, path, "/_admin/v1/system")) return "admin:ServerInfo";
+    if ((std.mem.eql(u8, path, "/_admin/v1/system") or std.mem.eql(u8, path, "/_admin/v1/monitoring"))) return "admin:ServerInfo";
     if (std.mem.eql(u8, path, "/_admin/v1/metrics")) return "admin:Prometheus";
     if (std.mem.eql(u8, path, "/_admin/v1/health")) return "admin:ServerInfo";
     if (std.mem.eql(u8, path, "/_admin/v1/buckets")) return "s3:ListAllMyBuckets";
@@ -242,7 +242,7 @@ test "diagnostics capabilities match resource and do not grant administration" {
 }
 
 pub fn routeResource(a: std.mem.Allocator, path: []const u8) ![]const u8 {
-    if (std.mem.eql(u8, path, "/_admin/v1/system") or std.mem.eql(u8, path, "/_admin/v1/health") or std.mem.eql(u8, path, "/_admin/v1/metrics") or std.mem.eql(u8, path, "/_admin/v1/settings/logs") or std.mem.eql(u8, path, "/_admin/v1/settings/logs/query") or std.mem.eql(u8, path, "/_admin/v1/settings/logs/download")) return "arn:aws:s3:::*";
+    if ((std.mem.eql(u8, path, "/_admin/v1/system") or std.mem.eql(u8, path, "/_admin/v1/monitoring")) or std.mem.eql(u8, path, "/_admin/v1/health") or std.mem.eql(u8, path, "/_admin/v1/metrics") or std.mem.eql(u8, path, "/_admin/v1/settings/logs") or std.mem.eql(u8, path, "/_admin/v1/settings/logs/query") or std.mem.eql(u8, path, "/_admin/v1/settings/logs/download")) return "arn:aws:s3:::*";
     const prefix = "/_admin/v1/buckets/";
     if (std.mem.startsWith(u8, path, prefix)) {
         const rest = path[prefix.len..];

@@ -41,7 +41,11 @@ fn recordWrite(service: *kms.Service, a: std.mem.Allocator, dir: std.Io.Dir, con
     try atomic.file.setPermissions(service.io, .fromMode(@intCast(try std.fmt.parseInt(u32, config.filePermissions, 10))));
     try atomic.file.writeStreamingAll(service.io, encoded);
     try atomic.file.sync(service.io);
-    try atomic.replace(service.io);
+    if (replace) {
+        try atomic.replace(service.io);
+    } else {
+        try atomic.link(service.io);
+    }
     try durable.syncParent(dir, service.io, path);
 }
 pub fn list(service: *kms.Service, a: std.mem.Allocator) !KeyList {
