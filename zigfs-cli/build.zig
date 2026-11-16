@@ -9,7 +9,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .error_tracing = true,
+        .link_libc = true,
     });
+
+    cli_module.addCSourceFile(.{ .file = b.path("src/http_transport.c"), .flags = &.{"-std=c99"} });
+    cli_module.linkSystemLibrary("curl", .{});
 
     const exe = b.addExecutable(.{
         .name = "zc",
