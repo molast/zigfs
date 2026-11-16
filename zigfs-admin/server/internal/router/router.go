@@ -40,6 +40,7 @@ func New(auth *handler.Auth, system *handler.System, management *handler.Managem
 	private.POST("/auth/logout", auth.Logout)
 	private.GET("/auth/session", auth.Session)
 	private.GET("/system", system.Get)
+	private.GET("/system/updates", system.CheckUpdates)
 	private.GET("/storage", management.Storage)
 	private.GET("/storage/scanner", management.StorageScanner)
 	private.POST("/storage/gc", management.RunStorageGC)

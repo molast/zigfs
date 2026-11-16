@@ -414,6 +414,7 @@ export default function App() {
             navigate('bucket-detail', name)
           }} />}
           {!restrictedView && view === 'bucket-detail' && <BucketDetailView
+            key={selectedBucket}
             api={api}
             bucketName={selectedBucket}
             onBack={() => navigate('buckets')}

@@ -204,10 +204,12 @@ fn serveLoop(listener: *std.Io.net.Server, context: *ListenerContext) !void {
 
     while (true) {
         const stream = try listener.accept(context.io);
+        if (context.kind == .api) _ = context.application.runtime_metrics.accepted_connections.fetchAdd(1, .monotonic);
         // async may run inline when the CPU-based worker budget is exhausted.
         // A keep-alive reader would then block accept indefinitely. Connections
         // require guaranteed concurrency; reject only this socket on exhaustion.
         connections.concurrent(context.io, serveConnection, .{ context, stream }) catch |err| {
+            if (context.kind == .api) _ = context.application.runtime_metrics.rejected_connections.fetchAdd(1, .monotonic);
             stream.close(context.io);
             std.log.scoped(.api).warn("cannot schedule HTTP connection: {t}", .{err});
         };
@@ -217,6 +219,10 @@ fn serveLoop(listener: *std.Io.net.Server, context: *ListenerContext) !void {
 fn serveConnection(context: *ListenerContext, stream: std.Io.net.Stream) void {
     const io = context.io;
     defer stream.close(io);
+    if (context.kind == .api) _ = context.application.runtime_metrics.connections.fetchAdd(1, .monotonic);
+    defer if (context.kind == .api) {
+        _ = context.application.runtime_metrics.connections.fetchSub(1, .monotonic);
+    };
 
     var receive_buffer: [16 * 1024]u8 = undefined;
     var send_buffer: [16 * 1024]u8 = undefined;
@@ -333,7 +339,20 @@ fn serveRequest(
 ) !std.http.Status {
     const path = requestPath(request.head.target);
     const route = classifyRoute(context.kind, path);
+    const metrics: ?*@import("../application/runtime_metrics.zig").Operations = switch (route) {
+        .s3 => &context.application.runtime_metrics.s3,
+        .management, .management_login, .management_sts_login, .management_session, .oidc_auth => &context.application.runtime_metrics.management,
+        else => null,
+    };
+    const started = std.Io.Clock.awake.now(context.io);
+    var response_status: std.http.Status = .internal_server_error;
+    if (metrics) |value| value.begin(context.io);
+    defer if (metrics) |value| value.finish(context.io, @backingInt(response_status) < 500, @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(context.io)).toMilliseconds())));
+    response_status = try dispatchRequest(request, context, current_request_id, peer, audit_context, route);
+    return response_status;
+}
 
+fn dispatchRequest(request: *std.http.Server.Request, context: *const ListenerContext, current_request_id: []const u8, peer: std.Io.net.IpAddress, audit_context: *AuditContext, route: Route) !std.http.Status {
     if (route == .s3 and @import("oidc_sts.zig").matches(request)) return @import("oidc_sts.zig").serve(request, context.application, current_request_id, audit_context);
     return switch (route) {
         .live => respondReadOnly(
@@ -558,7 +577,7 @@ fn serveManagementSession(
         break :display display_store.load(a, root, context.io) catch null;
     };
     const credential_claims = management_session.validateCredential(context.config.admin_session_secret, token, std.Io.Clock.real.now(context.io).toSeconds());
-    const response_body = try std.json.Stringify.valueAlloc(a, .{ .authenticated = true, .auth_source = if (principal.is_root) "deployment" else if (principal.federated) "oidc" else if (credential_claims != null) "sts" else "local", .root_access_key = if (principal.is_root and context.config.root_access_key.len > 0) context.config.root_access_key else null, .session_access_key = if (credential_claims) |claims| claims.access_key else null, .display_preferences = display, .federated = principal.federated, .display_name = principal.display_name, .email = principal.email, .refreshable = principal.refreshable, .username = principal.username, .subject_id = principal.id, .is_root = principal.is_root, .expires_at = principal.expires_at, .capabilities = principal.capabilities(a), .policies = principal.policy_names }, .{});
+    const response_body = try std.json.Stringify.valueAlloc(a, .{ .authenticated = true, .account_enabled = principal.account_enabled, .auth_source = if (principal.is_root) "deployment" else if (principal.federated) "oidc" else if (credential_claims != null) "sts" else "local", .root_access_key = if (principal.is_root and context.config.root_access_key.len > 0) context.config.root_access_key else null, .session_access_key = if (credential_claims) |claims| claims.access_key else null, .display_preferences = display, .federated = principal.federated, .display_name = principal.display_name, .email = principal.email, .refreshable = principal.refreshable, .username = principal.username, .subject_id = principal.id, .is_root = principal.is_root, .expires_at = principal.expires_at, .capabilities = principal.capabilities(a), .policies = principal.policy_names }, .{});
     return respond(request, response_body, .ok, "application/json; charset=utf-8", current_request_id, null);
 }
 

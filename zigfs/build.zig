@@ -13,6 +13,16 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    const build_info = b.addOptions();
+    build_info.addOption(i64, "built_at", std.Io.Clock.real.now(b.graph.io).toSeconds());
+    const commit = b.option([]const u8, "git-commit", "Source commit for builds without Git metadata") orelse switch (b.runFallible(&.{ "git", "-C", b.root.root_dir.path orelse ".", "rev-parse", "HEAD" }, .{ .stderr_behavior = .ignore })) {
+        .success => |output| std.mem.trim(u8, output, " \r\n"),
+        else => "",
+    };
+    build_info.addOption([]const u8, "git_commit", commit);
+    mod.addOptions("build_info", build_info);
+    mod.addCSourceFile(.{ .file = b.path("src/backend/process_metrics.c"), .flags = &.{"-std=c99"} });
+
     mod.addCSourceFile(.{ .file = b.path("src/backend/filesystem_capacity.c"), .flags = &.{"-std=c99"} });
 
     mod.addCSourceFile(.{ .file = b.path("src/backend/kms_http.c"), .flags = &.{"-std=c99"} });

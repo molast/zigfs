@@ -205,3 +205,70 @@ Both access-key creation flows use the same shadcn/ui form and one-time secret
 result dialog, with copy and JSON credential download. The main list includes
 search, sorting, selection, pagination, Edit and Delete. Edits submit changed
 fields only and retain draft data on failure; all feedback uses top-center toast.
+
+## About page telemetry and release checks
+
+The About page reads build metadata and process telemetry through ZigFS's
+`/_admin/v1/system` and the Admin BFF. Build time, Git commit, Zig compiler version,
+target OS/architecture and build mode are embedded in the ZigFS binary. Source
+archives without `.git` can supply `zig build -Dgit-commit=<commit>`; otherwise the
+commit is unavailable rather than fabricated. Rebuild and restart ZigFS to expose
+these new fields, and rebuild/restart the BFF and web client after upgrading.
+
+On Linux and macOS, memory is the ZigFS process's current RSS (not peak usage or
+BFF memory). CPU is the delta of process CPU seconds divided by monotonic elapsed
+seconds between 5-second samples. 100% means one core; multi-core usage may exceed
+100%. The first sample displays “Sampling”; unavailable measurements remain
+unavailable. No direct reads of the ZigFS data directory are performed by Admin.
+
+“Check for updates” queries `https://api.github.com/repos/molast/zigfs/releases/latest`
+from the BFF with a 10-second timeout. It compares the running ZigFS version with
+the latest published stable release and links to its release notes; it does not
+install updates. An SSH Git remote (`git@github.com:molast/zigfs.git`) refers to the
+same repository, but release checks use GitHub's HTTPS API, not SSH credentials.
+For private repositories or API rate limits, set `ZIGFS_RELEASE_TOKEN` in the BFF
+environment to a GitHub token with read access to that repository. The token is
+never returned to the browser. A missing release, inaccessible repository, rate
+limit or network failure is reported as a failed check, not “up to date”.
+
+## Runtime health diagnostics
+
+`/_admin/v1/health` (BFF `/api/v1/management-health`) now includes `diagnostics`.
+It retains the existing `admin:ServerInfo` authorization, including restricted
+monitoring accounts. Admin never probes or reads the ZigFS data directory itself.
+
+- `storage` probes the opened data directory using `fstat` and `fstatvfs` on Linux
+  and macOS, including the mount's read-only flag. Counts describe the configured
+  data filesystem, not all physical disks. An inaccessible/removed directory is
+  offline; unsupported platforms report unknown/null. This is not a SMART,
+  permission or write-integrity test.
+- `metadata` reports initialization/recovery readiness and the live index's bucket,
+  object-entry and directory counts under the index mutex. Listing counters cover
+  the shared object listing service used by Management and S3, including invalid
+  listing requests. No completed listing means null last-result/latency. These
+  counters do not certify every stored object's integrity.
+- `http` measures API connections and actual S3/management request activity.
+  Failed request counts mean 5xx responses or handler/transport errors, not 4xx.
+  Connection rejection counts measure runtime scheduling failures. There is no
+  invented capacity limit, queue utilization or independent metacache. Monitoring
+  requests themselves appear in management activity; health/metrics probes do not.
+
+All counters reset when ZigFS restarts. The UI refreshes every 30 seconds, shows
+unknown when diagnostics are unavailable, and flags offline/read-only storage,
+unready metadata or a failed scanner instead of showing a green healthy summary.
+The existing top-level health fields still report recovery readiness.
+
+## Account and bucket summary status
+
+Session responses now include nullable `account_enabled`, read from the local
+IAM identity snapshot during session authorization. This requires no user-list
+permission. Disabling/deleting a local user invalidates its session; the next
+session check returns 401. Deployment root, OIDC and STS responses return null
+and the account page names the applicable management source instead of claiming
+that an external/local account is enabled. Older servers with no field show
+unknown for local account status.
+
+Bucket details load configuration, inventory and usage independently. Unavailable
+configuration is shown as unknown, never Private or disabled; unavailable usage
+is not shown as zero. Refresh clears previous values, and bucket navigation
+remounts the details view so another bucket's data cannot appear in the summary.

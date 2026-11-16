@@ -14,6 +14,7 @@ pub const Principal = struct {
     username: []const u8,
     expires_at: i64,
     is_root: bool = false,
+    account_enabled: ?bool = null,
     federated: bool = false,
     display_name: []const u8 = "",
     email: []const u8 = "",
@@ -130,7 +131,7 @@ pub fn resolve(a: std.mem.Allocator, app: *Application, token: []const u8, now: 
         if (!std.mem.eql(u8, user.id, &claims.subject)) continue;
         if (!user.enabled or user.auth_version != claims.version) return null;
         const loaded = try policies.load(root, io, a);
-        return .{ .id = user.id, .username = user.name, .expires_at = claims.expires_at, .policy_names = try identities.policyNamesForUser(a, user, snapshot.value), .documents = try identities.documentsForUser(a, user, snapshot.value, loaded.value) };
+        return .{ .id = user.id, .username = user.name, .account_enabled = user.enabled, .expires_at = claims.expires_at, .policy_names = try identities.policyNamesForUser(a, user, snapshot.value), .documents = try identities.documentsForUser(a, user, snapshot.value, loaded.value) };
     }
     return null;
 }

@@ -184,6 +184,7 @@ export function createApiClient() {
     endOIDCSession: () => request<{ logout_url: string }>('/api/v1/auth/oidc/end-session', { method: 'POST' }),
     session: () => request<AdminSession>('/api/v1/auth/session'),
     logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
+    checkUpdates: () => request<import('../types/api').ReleaseCheck>('/api/v1/system/updates'),
     system: () => request<SystemInfo>('/api/v1/system'),
     storage: () => request<StorageInfo>('/api/v1/storage'),
     storageScanner: () => request<StorageScannerStatus>('/api/v1/storage/scanner'),

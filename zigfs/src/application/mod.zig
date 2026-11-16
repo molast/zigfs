@@ -26,6 +26,8 @@ const local_layout = @import("../metadata/local_layout.zig");
 const multipart_domain = @import("../domain/multipart.zig");
 const MetadataRepository = @import("../ports/metadata_repository.zig").MetadataRepository;
 
+pub const runtime_metrics = @import("runtime_metrics.zig");
+pub const diagnostics = @import("diagnostics.zig");
 pub const logging = @import("logging.zig");
 
 pub const bucket_service = @import("bucket_service.zig");
@@ -87,6 +89,7 @@ const audit_archive_dir = ".zigfs/system/audit-archive";
 
 pub const Application = struct {
     allocator: std.mem.Allocator,
+    runtime_metrics: runtime_metrics.Runtime = .{},
     config: Config,
     local_storage: LocalStorageBackend,
     data_root: ?std.Io.Dir = null,
@@ -798,7 +801,7 @@ pub const Application = struct {
             metadata_index
         else
             return null;
-        return object_listing.ObjectListingService.init(
+        var service = object_listing.ObjectListingService.init(
             self.allocator,
             io,
             bucket_store,
@@ -806,6 +809,8 @@ pub const Application = struct {
             index,
             &self.state_mutex,
         );
+        service.metrics = &self.runtime_metrics.listings;
+        return service;
     }
 
     pub fn objectGc(self: *Application) ?object_gc.ObjectGcService {

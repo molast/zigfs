@@ -1749,6 +1749,15 @@ fn serveSystem(
     return respondJson(request, request_id, .ok, .{
         .version = version,
         .uptime = snapshot.uptime_seconds,
+        .build = .{
+            .built_at = @import("build_info").built_at,
+            .git_commit = @import("build_info").git_commit,
+            .zig_version = @import("builtin").zig_version_string,
+            .operating_system = @tagName(@import("builtin").os.tag),
+            .architecture = @tagName(@import("builtin").cpu.arch),
+            .mode = @tagName(@import("builtin").mode),
+        },
+        .process = @import("../backend/process_metrics.zig").read(),
         .storage_used = snapshot.object_bytes,
         .objects = snapshot.objects,
         .buckets = snapshot.buckets,
@@ -1776,6 +1785,7 @@ fn serveHealth(
         .recovery = @tagName(state.status),
         .reason = @tagName(state.failure),
         .actions = actions,
+        .diagnostics = @import("../application/diagnostics.zig").read(application),
     });
 }
 

@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 
 	"github.com/gin-gonic/gin"
 
 	"zigfs-admin/server/internal/contract"
 	"zigfs-admin/server/internal/port"
 	"zigfs-admin/server/internal/requestid"
+	"zigfs-admin/server/internal/service"
 )
 
 type SystemService interface {
@@ -75,4 +77,19 @@ func writeError(ctx *gin.Context, status int, code, message string) {
 		RequestID: requestid.FromContext(ctx.Request.Context()),
 		Details:   map[string]any{},
 	})
+}
+
+// CheckUpdates reuses upstream ServerInfo authorization before querying releases.
+func (handler *System) CheckUpdates(ctx *gin.Context) {
+	current, err := handler.service.Get(ctx.Request.Context())
+	if err != nil {
+		writeStorageError(ctx, err)
+		return
+	}
+	result, err := service.CheckRelease(ctx.Request.Context(), current.Version, nil, "https://api.github.com/repos/molast/zigfs/releases/latest", os.Getenv("ZIGFS_RELEASE_TOKEN"))
+	if err != nil {
+		writeError(ctx, http.StatusBadGateway, "UpdateCheckFailed", "could not check GitHub releases; verify repository access and retry")
+		return
+	}
+	ctx.JSON(http.StatusOK, result)
 }

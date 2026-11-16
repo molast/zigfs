@@ -562,7 +562,8 @@
     "selectKmsKey": "Select a KMS key",
     "noKmsKeys": "No enabled keys available. Start KMS and create a key in Settings → Security.",
     "kmsKeyListUnavailable": "Failed to load key list",
-    "kmsKeyListRetry": "Refresh to try again."
+    "kmsKeyListRetry": "Refresh to try again.",
+    "configurationUnknown": "Unknown"
   },
   "identities": {
     "cannotRemoveCurrentUser": "Cannot remove the current user",
@@ -1560,7 +1561,20 @@
     "kmsLookupDescription": "Enter a key ID to view its metadata. Listing all keys requires separate permission.",
     "kmsLookup": "View key",
     "kmsKeyIdRequired": "Enter a key ID.",
-    "kmsUsageOnly": "Your policies allow KMS operations through authorized requests. They do not grant KMS service configuration access."
+    "kmsUsageOnly": "Your policies allow KMS operations through authorized requests. They do not grant KMS service configuration access.",
+    "processMemory": "ZigFS process memory (RSS)",
+    "processCPU": "ZigFS process CPU",
+    "processSampling": "Sampling…",
+    "processMetricsFailed": "Unable to read ZigFS process metrics. Retrying automatically.",
+    "processMetricsHelp": "Refreshes every 5 seconds. Memory is current resident memory. CPU is measured between samples; 100% equals one CPU core.",
+    "checkUpdates": "Check for updates",
+    "checkingUpdates": "Checking GitHub releases…",
+    "updatesNotChecked": "Checks published stable releases from molast/zigfs on GitHub.",
+    "updateCheckFailed": "Could not check GitHub releases. Verify network access, repository permissions and that a stable release exists, then retry.",
+    "updateAvailable": "New version available: {version}",
+    "noNewerRelease": "No newer stable release. Latest published version: {version}",
+    "viewRelease": "View release",
+    "updatesCheckedAt": "Last checked: {time}"
   },
   "storage": {
     "loadingStorageInformation": "Loading storage information…",
@@ -1684,7 +1698,23 @@
     "refreshesAutomaticallyEvery30SecondsUnreportedMeasurementsAreNot": "Refreshes automatically every 30 seconds. Unreported measurements are not treated as zero.",
     "valuedValuehValuem": "{0}d {1}h {2}m",
     "valueSeconds": "{0} seconds",
-    "valueMinutes": "{0} minutes"
+    "valueMinutes": "{0} minutes",
+    "dataFilesystems": "Data filesystems",
+    "dataFilesystem": "Data filesystem accessibility",
+    "filesystemReadOnly": "Read-only",
+    "filesystemProbeHelp": "Checks the filesystem of the opened data directory. This is not a physical disk inventory, SMART test or write test.",
+    "localIndexAndListings": "Local index and object listings",
+    "indexMetrics": "Indexed buckets: {buckets}; object entries: {objects}; directories: {directories}.",
+    "listingMetrics": "Listing requests: {active} active, {completed} completed, {failed} failed. Last duration: {duration}. Last result: {outcome}.",
+    "noListingRequests": "No completed request yet",
+    "lastListingSucceeded": "Succeeded",
+    "lastListingFailed": "Failed",
+    "httpAdmission": "HTTP admission and workload",
+    "connectionMetrics": "API connections: {active} active, {accepted} accepted, {rejected} rejected by the scheduler.",
+    "requestMetrics": "{active} active, {completed} completed, {failed} server failures",
+    "httpRequestMetrics": "S3: {s3}. Management/authentication: {management}.",
+    "diagnosticsUnavailable": "Runtime diagnostics could not be retrieved.",
+    "runtimeMetricsHelp": "Counters start at process startup and include the current monitoring request. HTTP failures mean 5xx responses or transport errors; listing failures also include invalid requests. Index readiness reports initialization and recovery, not a full integrity scan. ZigFS uses its local metadata index and runtime connection scheduler, without a separate metacache or per-class admission limiter."
   },
   "labels": {
     "Summary": "Summary",
@@ -1881,7 +1911,12 @@
     "oidcHelp": "Your password is managed by your identity provider. Change it through that provider.",
     "stsHelp": "This session uses temporary credentials. Request new credentials from the issuing service to renew access.",
     "localHelp": "This password belongs to a ZigFS user. An administrator can update it from Users; it cannot be changed on this page.",
-    "refreshFailed": "Could not refresh account information. Please try again."
+    "refreshFailed": "Could not refresh account information. Please try again.",
+    "deploymentManagedStatus": "Managed by deployment configuration",
+    "externalManagedStatus": "Managed by identity provider",
+    "credentialManagedStatus": "Managed through temporary credentials",
+    "disabledStatus": "Disabled",
+    "statusUnknown": "Unknown"
   },
   "bucketEvents": {
     "title": "Events",

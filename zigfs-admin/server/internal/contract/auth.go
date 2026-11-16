@@ -44,6 +44,7 @@ type DisplayPreferences struct {
 }
 
 type SessionResponse struct {
+	AccountEnabled     *bool               `json:"account_enabled"`
 	Policies           []string            `json:"policies"`
 	AuthSource         string              `json:"auth_source"`
 	RootAccessKey      *string             `json:"root_access_key"`

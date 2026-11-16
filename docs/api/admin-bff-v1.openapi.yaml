@@ -861,6 +861,26 @@ paths:
             application/json:
               schema:
                 $ref: "./zigfs-management-v1.openapi.yaml#/components/schemas/SystemInfo"
+  /api/v1/system/updates:
+    get:
+      operationId: checkSystemUpdates
+      description: Requires the same ZigFS ServerInfo permission as /system. Queries the latest stable GitHub release of molast/zigfs without installing it.
+      responses:
+        "200":
+          description: Successful release query; compares semantic versions numerically.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [current_version, latest_version, update_available, release_url, checked_at]
+                properties:
+                  current_version: { type: string }
+                  latest_version: { type: string }
+                  update_available: { type: boolean }
+                  release_url: { type: string, format: uri }
+                  checked_at: { type: integer, format: int64 }
+        "502":
+          description: UpdateCheckFailed; network, rate limit, inaccessible repository, missing stable release or invalid response. Never interpreted as up to date.
   /api/v1/storage:
     get:
       operationId: getStorage

@@ -297,11 +297,41 @@ type StorageScannerStatus struct {
 	LastScan             *StorageScanReport `json:"last_scan"`
 }
 
+type OperationMetrics struct {
+	Active         uint64  `json:"active"`
+	Completed      uint64  `json:"completed"`
+	Failed         uint64  `json:"failed"`
+	LastDurationMS *uint64 `json:"last_duration_ms"`
+	LastSucceeded  *bool   `json:"last_succeeded"`
+}
+type RuntimeDiagnostics struct {
+	Storage struct {
+		State    string  `json:"state"`
+		Online   *uint32 `json:"online"`
+		Offline  *uint32 `json:"offline"`
+		ReadOnly *bool   `json:"read_only"`
+	} `json:"storage"`
+	Metadata struct {
+		Ready       bool             `json:"ready"`
+		Buckets     *uint64          `json:"buckets"`
+		Objects     *uint64          `json:"objects"`
+		Directories *uint64          `json:"directories"`
+		Listings    OperationMetrics `json:"listings"`
+	} `json:"metadata"`
+	HTTP struct {
+		ActiveConnections   uint64           `json:"active_connections"`
+		AcceptedConnections uint64           `json:"accepted_connections"`
+		RejectedConnections uint64           `json:"rejected_connections"`
+		S3                  OperationMetrics `json:"s3"`
+		Management          OperationMetrics `json:"management"`
+	} `json:"http"`
+}
 type ManagementHealthResponse struct {
-	Status   string   `json:"status"`
-	Recovery string   `json:"recovery"`
-	Reason   string   `json:"reason"`
-	Actions  []string `json:"actions"`
+	Diagnostics *RuntimeDiagnostics `json:"diagnostics"`
+	Status      string              `json:"status"`
+	Recovery    string              `json:"recovery"`
+	Reason      string              `json:"reason"`
+	Actions     []string            `json:"actions"`
 }
 
 type ListenerSettings struct {

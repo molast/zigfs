@@ -562,7 +562,8 @@
     "selectKmsKey": "请选择 KMS 密钥",
     "noKmsKeys": "暂无可用密钥。请在设置 → Security 中启动 KMS 并创建密钥。",
     "kmsKeyListUnavailable": "无法加载密钥列表",
-    "kmsKeyListRetry": "请刷新重试。"
+    "kmsKeyListRetry": "请刷新重试。",
+    "configurationUnknown": "未知"
   },
   "identities": {
     "cannotRemoveCurrentUser": "不能删除当前登录用户",
@@ -1560,7 +1561,20 @@
     "kmsLookupDescription": "输入密钥 ID 查看元数据。列出全部密钥需要单独授权。",
     "kmsLookup": "查看密钥",
     "kmsKeyIdRequired": "请输入密钥 ID。",
-    "kmsUsageOnly": "当前策略允许在获授权的请求中使用 KMS，不包含 KMS 服务配置权限。"
+    "kmsUsageOnly": "当前策略允许在获授权的请求中使用 KMS，不包含 KMS 服务配置权限。",
+    "processMemory": "ZigFS 进程内存（RSS）",
+    "processCPU": "ZigFS 进程 CPU",
+    "processSampling": "采样中…",
+    "processMetricsFailed": "无法读取 ZigFS 进程指标，将自动重试。",
+    "processMetricsHelp": "每 5 秒刷新。内存为当前常驻内存；CPU 根据两次采样计算，100% 表示占满一个 CPU 核心。",
+    "checkUpdates": "检查更新",
+    "checkingUpdates": "正在检查 GitHub 发布版本…",
+    "updatesNotChecked": "查询 GitHub 上 molast/zigfs 的正式发布版本。",
+    "updateCheckFailed": "无法查询 GitHub 发布版本，请检查网络、仓库访问权限及是否已发布正式版本后重试。",
+    "updateAvailable": "发现新版本：{version}",
+    "noNewerRelease": "没有更新的正式版本，最新已发布版本：{version}",
+    "viewRelease": "查看发布说明",
+    "updatesCheckedAt": "上次检查：{time}"
   },
   "storage": {
     "loadingStorageInformation": "正在加载存储信息...",
@@ -1684,7 +1698,23 @@
     "refreshesAutomaticallyEvery30SecondsUnreportedMeasurementsAreNot": "每 30 秒自动刷新，未上报指标不按零处理。",
     "valuedValuehValuem": "{0} 天 {1} 小时 {2} 分钟",
     "valueSeconds": "{0} 秒",
-    "valueMinutes": "{0} 分钟"
+    "valueMinutes": "{0} 分钟",
+    "dataFilesystems": "数据文件系统",
+    "dataFilesystem": "数据文件系统可访问性",
+    "filesystemReadOnly": "只读",
+    "filesystemProbeHelp": "检测已打开的数据目录所在文件系统；此项不是物理磁盘清单、SMART 检测或写入测试。",
+    "localIndexAndListings": "本地索引与对象列表",
+    "indexMetrics": "索引中的存储桶：{buckets}；对象条目：{objects}；目录：{directories}。",
+    "listingMetrics": "列表请求：处理中 {active}，已完成 {completed}，失败 {failed}。最近耗时：{duration}；最近结果：{outcome}。",
+    "noListingRequests": "尚无已完成请求",
+    "lastListingSucceeded": "成功",
+    "lastListingFailed": "失败",
+    "httpAdmission": "HTTP 接入与运行负载",
+    "connectionMetrics": "API 连接：当前 {active}，累计接收 {accepted}，调度失败 {rejected}。",
+    "requestMetrics": "处理中 {active}，已完成 {completed}，服务端失败 {failed}",
+    "httpRequestMetrics": "S3：{s3}。管理/认证：{management}。",
+    "diagnosticsUnavailable": "未能取得运行时诊断数据。",
+    "runtimeMetricsHelp": "计数从进程启动开始，包含当前监控请求。HTTP 失败指 5xx 或传输错误；列表失败也包含无效请求。索引就绪反映初始化与恢复状态，并非完整一致性扫描。ZigFS 使用本地元数据索引和运行时连接调度，没有独立元缓存或按类别准入限流器。"
   },
   "labels": {
     "Summary": "概况",
@@ -1881,7 +1911,12 @@
     "oidcHelp": "密码由身份提供方管理，请在对应的身份服务中修改。",
     "stsHelp": "当前会话使用临时凭证。如需续期，请向凭证签发服务重新申请。",
     "localHelp": "这是 ZigFS 用户的密码，管理员可在用户管理中更新，本页面暂不提供修改。",
-    "refreshFailed": "无法刷新账户信息，请重试。"
+    "refreshFailed": "无法刷新账户信息，请重试。",
+    "deploymentManagedStatus": "由部署配置管理",
+    "externalManagedStatus": "由身份提供商管理",
+    "credentialManagedStatus": "通过临时凭证管理",
+    "disabledStatus": "已禁用",
+    "statusUnknown": "未知"
   },
   "bucketEvents": {
     "title": "事件",

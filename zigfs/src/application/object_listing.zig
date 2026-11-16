@@ -77,6 +77,7 @@ pub const ObjectListingService = struct {
     object_store: object_store_port.ObjectStore,
     index: *index_module.MetadataIndex,
     state_mutex: *std.Io.Mutex,
+    metrics: ?*@import("runtime_metrics.zig").Operations = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -101,6 +102,11 @@ pub const ObjectListingService = struct {
         bucket_name: []const u8,
         options: Options,
     ) Error!Result {
+        const started = std.Io.Clock.awake.now(self.io);
+        var succeeded = true;
+        if (self.metrics) |metrics| metrics.begin(self.io);
+        defer if (self.metrics) |metrics| metrics.finish(self.io, succeeded, @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(self.io)).toMilliseconds())));
+        errdefer succeeded = false;
         bucket_domain.validateName(bucket_name) catch return error.InvalidBucketName;
         const delimiter = normalizedDelimiter(options.delimiter);
         try validateOptions(options, delimiter);

@@ -2390,6 +2390,9 @@ components:
             server_info: { type: boolean }
             console_log: { type: boolean }
             sts: { type: boolean }
+        account_enabled:
+          type: [boolean, "null"]
+          description: Current local IAM user's enabled flag read during session validation. Null for deployment root, OIDC and STS identities, which do not expose a local account toggle. Disabled/deleted local users receive 401 instead of a valid session.
         auth_source:
           type: string
           enum: [deployment, local, oidc, sts]
@@ -3078,6 +3081,23 @@ components:
         buckets:
           type: integer
           format: int64
+        build:
+          description: Metadata embedded when the ZigFS binary was built; null for older servers.
+          type: [object, "null"]
+          properties:
+            built_at: { type: integer, format: int64, description: Build time in Unix seconds }
+            git_commit: { type: string, description: Source commit; empty when Git metadata is unavailable }
+            zig_version: { type: string }
+            operating_system: { type: string }
+            architecture: { type: string }
+            mode: { type: string }
+        process:
+          description: Current ZigFS process telemetry; null if unsupported or measurement failed.
+          type: [object, "null"]
+          properties:
+            resident_bytes: { type: integer, format: int64, minimum: 0 }
+            cpu_seconds: { type: number, minimum: 0, description: Cumulative CPU time across all process threads }
+            sampled_at_seconds: { type: number, description: Monotonic sample time for interval calculations; not a wall-clock timestamp }
     Health:
       type: object
       additionalProperties: false
@@ -3104,6 +3124,47 @@ components:
           items:
             type: string
             enum: [inspect_logs, restore_from_backup]
+        diagnostics:
+          oneOf:
+            - $ref: "#/components/schemas/RuntimeDiagnostics"
+            - type: "null"
+    OperationMetrics:
+      type: object
+      required: [active, completed, failed, last_duration_ms, last_succeeded]
+      properties:
+        active: { type: integer, minimum: 0 }
+        completed: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+        last_duration_ms: { type: [integer, "null"], minimum: 0 }
+        last_succeeded: { type: [boolean, "null"] }
+    RuntimeDiagnostics:
+      type: object
+      description: Process-lifetime counters and a non-mutating data-filesystem probe, measured by ZigFS.
+      required: [storage, metadata, http]
+      properties:
+        storage:
+          type: object
+          properties:
+            state: { type: string, enum: [online, offline, unknown] }
+            online: { type: [integer, "null"], description: Accessible configured data filesystems; not physical disks }
+            offline: { type: [integer, "null"] }
+            read_only: { type: [boolean, "null"] }
+        metadata:
+          type: object
+          properties:
+            ready: { type: boolean, description: Index initialized and recovery ready; not a full integrity scan }
+            buckets: { type: [integer, "null"] }
+            objects: { type: [integer, "null"], description: Indexed object entries including delete markers }
+            directories: { type: [integer, "null"] }
+            listings: { $ref: "#/components/schemas/OperationMetrics" }
+        http:
+          type: object
+          properties:
+            active_connections: { type: integer }
+            accepted_connections: { type: integer }
+            rejected_connections: { type: integer, description: API connection scheduling failures since startup }
+            s3: { $ref: "#/components/schemas/OperationMetrics" }
+            management: { $ref: "#/components/schemas/OperationMetrics" }
     Settings:
       type: object
       additionalProperties: false

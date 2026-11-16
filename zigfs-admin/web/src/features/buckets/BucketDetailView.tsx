@@ -1,10 +1,11 @@
+import { loadBucketSnapshot } from './bucketSnapshot'
 import { AnonymousAccess } from './AnonymousAccess'
 import { formatDateTime } from '@/lib/dateTime'
 import { Textarea } from '../../components/ui/Textarea'
 import { Alert, AlertTitle, AlertDescription } from '../../components/ui/alert'
 import { OptionSelect } from '../../components/ui/OptionSelect'
 import { t, getFormatLocale, displayValue } from '@/locales'
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Archive,
   ArrowLeft,
@@ -61,7 +62,6 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
   const [tagDialogOpen, setTagDialogOpen] = useState(false)
   const [policyDocument, setPolicyDocument] = useState('')
   const [policyDraft, setPolicyDraft] = useState('')
-  const [policyReady, setPolicyReady] = useState(false)
   const [accessPolicyDialogOpen, setAccessPolicyDialogOpen] = useState(false)
   const [accessPolicyDraft, setAccessPolicyDraft] = useState<'Private' | 'Readonly' | 'Public' | 'Custom'>('Private')
   const [encryptionDialogOpen, setEncryptionDialogOpen] = useState(false)
@@ -79,42 +79,47 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
   const [quotaUnit, setQuotaUnit] = useState(1024 ** 3)
   const [quotaBytes, setQuotaBytes] = useState('')
   const [quotaObjects, setQuotaObjects] = useState('')
-  const [usage, setUsage] = useState<BucketUsage>({ bytes: 0, objects: 0 })
+  const [usage, setUsage] = useState<BucketUsage | null>(null)
   const [loading, setLoading] = useState(false)
   const notifyError = useErrorToast()
+  const refreshGeneration = useRef(0)
 
   const refresh = useCallback(async () => {
     if (!bucketName) return
+    const generation = ++refreshGeneration.current
     const stopLoading = startLoading(t('buckets.loadingBucketConfiguration'))
+    setLoading(true)
+    setBucket(null)
+    setConfiguration(null)
+    setUsage(null)
+    setTags({})
+    setLifecycleRules([])
     try {
-      setLoading(true)
-      const [buckets, bucketConfiguration, bucketUsage] = await Promise.all([
-        api.listBuckets(),
-        api.getBucketConfiguration(bucketName),
-        api.getBucketUsage(bucketName),
-      ])
-      const current = buckets.find((item) => item.name === bucketName)
-      if (!current) throw new Error(t('buckets.bucketValueDoesNotExist', { '0': bucketName }))
-      setBucket(current)
-      setConfiguration(bucketConfiguration)
+      const snapshot = await loadBucketSnapshot(api, bucketName)
+      if (generation !== refreshGeneration.current) return
+      setBucket(snapshot.bucket)
+      setConfiguration(snapshot.configuration)
+      setUsage(snapshot.usage)
+      if (snapshot.errors.length) notifyError(snapshot.errors.map(reason => reason instanceof Error ? reason.message : t('buckets.configurationUnknown')).join('\n'))
+      const bucketConfiguration = snapshot.configuration
+      if (!bucketConfiguration) return
       setQuotaBytes(bucketConfiguration.max_bytes == null ? '' : String(bucketConfiguration.max_bytes))
       setQuotaObjects(bucketConfiguration.max_objects == null ? '' : String(bucketConfiguration.max_objects))
       setTags(parseTags(bucketConfiguration.tags_json))
       setLifecycleRules(bucketConfiguration.lifecycle_configuration
         ? parseLifecycleConfiguration(bucketConfiguration.lifecycle_configuration)
         : [])
-
-      setUsage(bucketUsage)
     } catch (reason) {
-      notifyError((reason as Error).message)
+      if (generation === refreshGeneration.current) notifyError((reason as Error).message)
     } finally {
-      setLoading(false)
+      if (generation === refreshGeneration.current) setLoading(false)
       stopLoading()
     }
-  }, [api, bucketName, startLoading])
+  }, [api, bucketName, startLoading, notifyError])
 
   useEffect(() => {
     void refresh()
+    return () => { refreshGeneration.current++ }
   }, [refresh])
 
   async function updateVersioning(versioning: 'Enabled' | 'Suspended') {
@@ -135,21 +140,20 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
 
   useEffect(() => {
     let active = true
-    setPolicyReady(false)
     api.getBucketPolicy(bucketName).then(result => {
-      if (active) { setPolicyDocument(result.document); setPolicyReady(true) }
+      if (active) { setPolicyDocument(result.document) }
     }).catch(reason => { if (active) notifyError((reason as Error).message) })
     return () => { active = false }
   }, [api, bucketName, activeSection])
 
   async function openAccessPolicyDialog() {
+    if (!configuration) return
     setLoading(true)
     try {
       const result = await api.getBucketPolicy(bucketName)
       setPolicyDocument(result.document)
-      setPolicyReady(true)
       setPolicyDraft(result.document || JSON.stringify({ Version: '2012-10-17', Statement: [] }, null, 2))
-      setAccessPolicyDraft(result.document ? 'Custom' : configuration?.access_policy ?? 'Private')
+      setAccessPolicyDraft(result.document ? 'Custom' : configuration.access_policy)
       setAccessPolicyDialogOpen(true)
     } catch (reason) { notifyError((reason as Error).message) }
     finally { setLoading(false) }
@@ -413,7 +417,7 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
             <span className="bucket-identity-icon" aria-hidden="true"><Archive /></span>
             <div>
               <h2>{bucket?.name ?? bucketName}</h2>
-              <p>{t('buckets.ownerLabel')} <strong>{bucket?.owner ?? '-'}</strong><span>{t('buckets.access')} <strong>{displayValue(configuration?.access_policy ?? 'Private')}</strong></span></p>
+              <p>{t('buckets.ownerLabel')} <strong>{bucket?.owner ?? '-'}</strong><span>{t('buckets.access')} <strong>{configuration ? displayValue(configuration.access_policy) : t('buckets.configurationUnknown')}</strong></span></p>
             </div>
           </div>
         </div>
@@ -442,15 +446,15 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
           {activeSection === 'Summary' ? <>
           <SettingsSection>
             <div className="bucket-setting-item bucket-access-policy-setting">
-              <div className="bucket-setting-copy"><div className="bucket-setting-label"><Shield aria-hidden="true" /><span>{t('buckets.accessPolicy')}</span><Badge>{!policyReady ? '—' : configuration?.access_policy === 'Custom' || policyDocument ? t('buckets.customPolicy') : configuration?.access_policy === 'Public' ? t('buckets.public') : configuration?.access_policy === 'Readonly' ? t('buckets.readonly') : t('buckets.private')}</Badge></div><p className="bucket-setting-description">{t('buckets.accessPolicyDescription')}</p></div>
+              <div className="bucket-setting-copy"><div className="bucket-setting-label"><Shield aria-hidden="true" /><span>{t('buckets.accessPolicy')}</span><Badge>{configuration ? displayValue(configuration.access_policy) : t('buckets.configurationUnknown')}</Badge></div><p className="bucket-setting-description">{t('buckets.accessPolicyDescription')}</p></div>
               <Button variant="outline" size="sm" disabled={loading || !configuration} onClick={() => void openAccessPolicyDialog()}><Pencil aria-hidden="true" />{t('buckets.editQuota')}</Button>
             </div>
             <div className="bucket-setting-item bucket-encryption-setting">
-              <div className="bucket-setting-copy"><div className="bucket-setting-label"><LockKeyhole aria-hidden="true" /><span>{t('buckets.encryption')}</span><Badge>{configuration?.encryption === 'KMS' ? 'aws:kms' : configuration?.encryption === 'Enabled' ? t('buckets.encryptionAlgorithmAes256') : t('buckets.notConfigured')}</Badge></div><p className="bucket-setting-description">{t('buckets.encryptionDescription')}</p></div>
+              <div className="bucket-setting-copy"><div className="bucket-setting-label"><LockKeyhole aria-hidden="true" /><span>{t('buckets.encryption')}</span><Badge>{!configuration ? t('buckets.configurationUnknown') : configuration?.encryption === 'KMS' ? 'aws:kms' : configuration?.encryption === 'Enabled' ? t('buckets.encryptionAlgorithmAes256') : t('buckets.notConfigured')}</Badge></div><p className="bucket-setting-description">{t('buckets.encryptionDescription')}</p></div>
               <Button variant="outline" size="sm" disabled={loading || !configuration} onClick={() => { setEncryptionDraft(configuration?.encryption ?? 'Disabled'); setKmsKeyDraft(configuration?.kms_key_id ?? ''); setKmsKeysReady(false); setEncryptionDialogOpen(true) }}><Pencil aria-hidden="true" />{t('buckets.editQuota')}</Button>
             </div>
             <div className="bucket-setting-item bucket-versioning-control">
-              <div className="bucket-setting-copy"><div className="bucket-setting-label"><Archive aria-hidden="true" /><span>{t('buckets.versioning')}</span><Badge>{configuration?.versioning === 'Enabled' ? t('buckets.enabled') : configuration?.versioning === 'Suspended' ? t('buckets.suspended') : t('buckets.disabled')}</Badge></div><p className="bucket-setting-description">{t('buckets.versioningDescription')}</p></div>
+              <div className="bucket-setting-copy"><div className="bucket-setting-label"><Archive aria-hidden="true" /><span>{t('buckets.versioning')}</span><Badge>{!configuration ? t('buckets.configurationUnknown') : configuration?.versioning === 'Enabled' ? t('buckets.enabled') : configuration?.versioning === 'Suspended' ? t('buckets.suspended') : t('buckets.disabled')}</Badge></div><p className="bucket-setting-description">{t('buckets.versioningDescription')}</p></div>
               <Switch
                 aria-label={t('buckets.bucketVersioning')}
                 checked={configuration?.versioning === 'Enabled'}
@@ -459,12 +463,12 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
               />
             </div>
             <div className="bucket-setting-item bucket-object-locking-setting">
-              <div className="bucket-setting-copy"><div className="bucket-setting-label"><LockKeyhole aria-hidden="true" /><span>{t('buckets.objectLocking')}</span><Badge>{configuration?.object_locking ? t('buckets.enabled') : t('buckets.disabled')}</Badge></div><p className="bucket-setting-description">{t('buckets.objectLockingDescription')}</p></div>
+              <div className="bucket-setting-copy"><div className="bucket-setting-label"><LockKeyhole aria-hidden="true" /><span>{t('buckets.objectLocking')}</span><Badge>{!configuration ? t('buckets.configurationUnknown') : configuration?.object_locking ? t('buckets.enabled') : t('buckets.disabled')}</Badge></div><p className="bucket-setting-description">{t('buckets.objectLockingDescription')}</p></div>
             </div>
           </SettingsSection>
           <SettingsSection>
             <div className="bucket-setting-item bucket-retention-setting">
-              <div className="bucket-setting-copy"><div className="bucket-setting-label"><KeyRound aria-hidden="true" /><span>{t('buckets.retention')}</span><Badge>{configuration?.retention_enabled ? t('buckets.enabled') : t('buckets.notConfigured')}</Badge></div><p className="bucket-setting-description">{t('buckets.retentionDescription')}</p></div>
+              <div className="bucket-setting-copy"><div className="bucket-setting-label"><KeyRound aria-hidden="true" /><span>{t('buckets.retention')}</span><Badge>{!configuration ? t('buckets.configurationUnknown') : configuration?.retention_enabled ? t('buckets.enabled') : t('buckets.notConfigured')}</Badge></div><p className="bucket-setting-description">{t('buckets.retentionDescription')}</p></div>
               <Button className="bucket-retention-edit" variant="outline" size="sm" onClick={openRetentionDialog} disabled={loading || !configuration?.object_locking}><Pencil aria-hidden="true" />{t('buckets.editQuota')}</Button>
               {configuration?.retention_enabled && <dl className="bucket-retention-details">
                 <div><dt>{t('buckets.mode')}</dt><dd>{configuration.retention_mode}</dd></div>
@@ -473,23 +477,23 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
               </dl>}
             </div>
             <div className="bucket-setting-item bucket-quota-setting">
-              <div className="bucket-setting-copy"><div className="bucket-setting-label"><Gauge aria-hidden="true" /><span>{t('buckets.quota')}</span><Badge>{configuration?.max_bytes || configuration?.max_objects ? t('buckets.enabled') : t('buckets.disabled')}</Badge></div><p className="bucket-setting-description">{t('buckets.quotaDescription')}</p></div>
+              <div className="bucket-setting-copy"><div className="bucket-setting-label"><Gauge aria-hidden="true" /><span>{t('buckets.quota')}</span><Badge>{!configuration ? t('buckets.configurationUnknown') : configuration?.max_bytes || configuration?.max_objects ? t('buckets.enabled') : t('buckets.disabled')}</Badge></div><p className="bucket-setting-description">{t('buckets.quotaDescription')}</p></div>
               {(Boolean(configuration?.max_bytes) || Boolean(configuration?.max_objects)) && <dl className="bucket-quota-details">
                 {Boolean(configuration?.max_bytes) && <>
                   <div><dt>{t('buckets.quotaSize')}</dt><dd>{formatQuotaBytes(configuration!.max_bytes!)}</dd></div>
-                  <div><dt>{t('buckets.quotaUsage')}</dt><dd>{formatQuotaBytes(usage.bytes)} ({formatQuotaPercent(usage.bytes, configuration!.max_bytes!)})</dd></div>
+                  <div><dt>{t('buckets.quotaUsage')}</dt><dd>{usage ? `${formatQuotaBytes(usage.bytes)} (${formatQuotaPercent(usage.bytes, configuration!.max_bytes!)})` : t('buckets.configurationUnknown')}</dd></div>
                 </>}
                 {Boolean(configuration?.max_objects) && <>
                   <div><dt>{t('buckets.maximumObjects')}</dt><dd>{configuration!.max_objects!.toLocaleString(getFormatLocale())}</dd></div>
-                  <div><dt>{t('buckets.objectQuotaUsage')}</dt><dd>{usage.objects.toLocaleString(getFormatLocale())} ({formatQuotaPercent(usage.objects, configuration!.max_objects!)})</dd></div>
+                  <div><dt>{t('buckets.objectQuotaUsage')}</dt><dd>{usage ? `${usage.objects.toLocaleString(getFormatLocale())} (${formatQuotaPercent(usage.objects, configuration!.max_objects!)})` : t('buckets.configurationUnknown')}</dd></div>
                 </>}
               </dl>}
               <Button className="bucket-quota-edit" variant="outline" size="sm" onClick={openQuotaDialog} disabled={loading || !configuration}><Pencil aria-hidden="true" />{t('buckets.editQuota')}</Button>
 
             </div>
             <div className="bucket-setting-item bucket-tags-setting">
-              <div className="bucket-setting-copy"><div className="bucket-setting-label"><Tags aria-hidden="true" /><span>{t('buckets.tags')}</span><Badge>{Object.keys(tags).length ? t('buckets.configured') : t('buckets.notConfigured')}</Badge></div><p className="bucket-setting-description">{t('buckets.bucketTagsDescription')}</p></div>
-              <Button className="bucket-tags-add-action" variant="outline" size="sm" type="button" onClick={() => setTagDialogOpen(true)} disabled={loading}><Plus aria-hidden="true" />{t('buckets.addTag')}</Button>
+              <div className="bucket-setting-copy"><div className="bucket-setting-label"><Tags aria-hidden="true" /><span>{t('buckets.tags')}</span><Badge>{!configuration ? t('buckets.configurationUnknown') : Object.keys(tags).length ? t('buckets.configured') : t('buckets.notConfigured')}</Badge></div><p className="bucket-setting-description">{t('buckets.bucketTagsDescription')}</p></div>
+              <Button className="bucket-tags-add-action" variant="outline" size="sm" type="button" onClick={() => setTagDialogOpen(true)} disabled={loading || !configuration}><Plus aria-hidden="true" />{t('buckets.addTag')}</Button>
               <div className="bucket-tags-list">
                 {Object.entries(tags).map(([key, value]) => <Badge className="bucket-tag-chip" key={key}>
                   <span>{key}:{value}</span>
@@ -503,18 +507,18 @@ export function BucketDetailView({ api, bucketName, onBack }: BucketDetailViewPr
                     void persistTags(next)
                   })()} disabled={loading}><X aria-hidden="true" /></button>
                 </Badge>)}
-                {Object.keys(tags).length === 0 && <span className="bucket-tags-empty">{t('buckets.noTags')}</span>}
+                {configuration && Object.keys(tags).length === 0 && <span className="bucket-tags-empty">{t('buckets.noTags')}</span>}
               </div>
             </div>
           </SettingsSection>
-          </> : activeSection === 'Events' ? <BucketEvents key={bucketName} api={api} bucketName={bucketName} /> : activeSection === 'Lifecycle' ? <LifecycleRulesEditor
+          </> : activeSection === 'Events' ? <BucketEvents key={bucketName} api={api} bucketName={bucketName} /> : activeSection === 'Lifecycle' ? configuration ? <LifecycleRulesEditor
             rules={lifecycleRules}
             bucketName={bucketName}
             versioned={configuration?.versioning === 'Enabled' || configuration?.versioning === 'Suspended'}
             onRefresh={refresh}
             loading={loading}
             onSave={saveLifecycle}
-          /> : <AnonymousAccess key={bucketName} api={api} bucketName={bucketName} />}
+          /> : <Alert><AlertTitle>{t('buckets.bucketConfiguration')}</AlertTitle><AlertDescription>{t('buckets.configurationUnknown')}<Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => void refresh()}>{t('buckets.refresh')}</Button></AlertDescription></Alert> : <AnonymousAccess key={bucketName} api={api} bucketName={bucketName} />}
         </div>
         <Dialog open={accessPolicyDialogOpen} onOpenChange={(open) => { if (!loading) setAccessPolicyDialogOpen(open) }}>
           <DialogContent className="bucket-access-policy-dialog" onInteractOutside={(event) => event.preventDefault()}>

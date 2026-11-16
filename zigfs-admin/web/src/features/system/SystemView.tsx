@@ -1,3 +1,4 @@
+import { serviceHealth } from './diagnostics'
 import { formatDate, formatDateTime } from '@/lib/dateTime'
 import { t, getFormatLocale } from '@/locales'
 import { Activity, Archive, CheckCircle2, ChevronDown, Database, Layers, RefreshCw, Server, TriangleAlert } from 'lucide-react'
@@ -74,8 +75,15 @@ export function SystemView({ api, diagnosticsOnly = false }: { api: ApiClient; d
   const storage = snapshot?.storage
   const scanner = snapshot?.scanner
   const settings = snapshot?.settings
-  const healthy = health?.status === 'ready' && health.recovery === 'ready' && snapshot?.failures.length === 0 && scanner?.last_attempt_succeeded !== false
-  const status = !snapshot ? t('system.loading') : healthy ? t('system.healthy') : health ? t('system.needsAttention') : t('system.unknown')
+  const runtime = health?.diagnostics
+  const volume = runtime?.storage
+  const metadata = runtime?.metadata
+  const http = runtime?.http
+  const healthState = serviceHealth(health, snapshot?.failures.length ?? 0, scanner?.last_attempt_succeeded)
+  const healthy = healthState === 'healthy'
+  const status = !snapshot ? t('system.loading') : t(healthy ? 'system.healthy' : healthState === 'attention' ? 'system.needsAttention' : 'system.unknown')
+  const metricCount = (value: number | null | undefined) => value == null ? t('system.unknown') : value.toLocaleString(getFormatLocale())
+  const requestSummary = (value: import('../../types/api').OperationMetrics) => t('system.requestMetrics', { active: metricCount(value.active), completed: metricCount(value.completed), failed: metricCount(value.failed) })
   // Storage.used measures logical object bytes, not filesystem allocation.
   const physicalUsed = storage?.physical_used ?? null
   const capacityPercent = physicalUsed !== null && storage?.total && storage.total > 0 ? Math.min(100, physicalUsed / storage.total * 100) : null
@@ -84,8 +92,9 @@ export function SystemView({ api, diagnosticsOnly = false }: { api: ApiClient; d
     { name: t('system.peerHealth'), state: t('system.notApplicable'), detail: t('system.singleNodeDeploymentNoClusterPeersAreConfigured'), source: 'deployment_topology' },
     { name: t('system.storageReadiness'), state: health ? health.status === 'ready' && health.recovery === 'ready' ? t('system.healthy') : t('system.needsAttention') : t('system.unknown'), detail: health ? t('system.storageRecoveryValueValue', { '0': health.recovery, '1': health.reason || t('common.storageReportsReady') }) : t('system.storageReadinessCouldNotBeRetrieved'), source: 'runtime_readiness' },
     { name: t('system.usageFreshness'), state: !scanner ? t('system.unknown') : scanner.last_attempt_succeeded === false ? t('system.needsAttention') : scanner.last_completed_at ? t('system.reported') : t('system.awaitingScan'), detail: scanner?.last_attempt_succeeded === false ? t('system.theLatestScanAttemptFailedTheLastSuccessfulResult') : scanner?.last_completed_at ? t('system.namespaceScanResultsAreAvailableThisTimestampRecordsA') : t('system.noSuccessfulScanHasBeenReportedSinceStartup'), extra: scanner?.last_completed_at ? t('system.lastSuccessfulScanValue', { '0': formatDateTime(scanner.last_completed_at * 1000) }) : undefined, source: 'storage_scanner' },
-    { name: t('system.listingAndMetacache'), state: t('system.notReported'), detail: t('system.objectListingsUseLocalMetadataMetacacheHealthAndListing'), source: 'local_metadata', extra: t('system.clusterQuorumAndInternodeTimeoutMetricsDoNotApply') },
-    { name: t('system.workloadAdmission'), state: t('system.notReported'), detail: t('system.theCurrentRuntimeDoesNotPublishPerClassWorkload'), source: 'runtime_admission' },
+    { name: t('system.dataFilesystem'), state: t(!volume || volume.state === 'unknown' ? 'system.unknown' : volume.state === 'offline' ? 'system.offline' : volume.read_only ? 'system.filesystemReadOnly' : 'system.online'), detail: t('system.filesystemProbeHelp'), source: 'data_root_fstatvfs' },
+    { name: t('system.localIndexAndListings'), state: t(!metadata ? 'system.unknown' : metadata.ready ? 'system.ready' : 'system.needsAttention'), detail: metadata ? t('system.indexMetrics', { buckets: metricCount(metadata.buckets), objects: metricCount(metadata.objects), directories: metricCount(metadata.directories) }) : t('system.diagnosticsUnavailable'), source: 'metadata_index', extra: metadata ? t('system.listingMetrics', { active: metricCount(metadata.listings.active), completed: metricCount(metadata.listings.completed), failed: metricCount(metadata.listings.failed), duration: metadata.listings.last_duration_ms == null ? t('system.noListingRequests') : formatScanDuration(metadata.listings.last_duration_ms), outcome: t(metadata.listings.last_succeeded == null ? 'system.noListingRequests' : metadata.listings.last_succeeded ? 'system.lastListingSucceeded' : 'system.lastListingFailed') }) : undefined },
+    { name: t('system.httpAdmission'), state: t(http ? 'system.reported' : 'system.unknown'), detail: http ? t('system.connectionMetrics', { active: metricCount(http.active_connections), accepted: metricCount(http.accepted_connections), rejected: metricCount(http.rejected_connections) }) : t('system.diagnosticsUnavailable'), source: 'http_runtime', extra: http ? t('system.httpRequestMetrics', { s3: requestSummary(http.s3), management: requestSummary(http.management) }) : undefined },
   ]
 
   return <section className="monitoring-page" aria-busy={busy}>
@@ -95,14 +104,14 @@ export function SystemView({ api, diagnosticsOnly = false }: { api: ApiClient; d
     </header>
 
     <Card className="monitoring-summary" role="status">
-      <div>{healthy ? <CheckCircle2 aria-hidden="true" /> : <TriangleAlert aria-hidden="true" />}<strong>{!snapshot ? t('system.loadingServiceStatus') : healthy ? t('system.serviceIsHealthy') : health ? t('system.serviceNeedsAttention') : t('system.serviceHealthIsUnknown')}</strong></div>
+      <div>{healthy ? <CheckCircle2 aria-hidden="true" /> : <TriangleAlert aria-hidden="true" />}<strong>{!snapshot ? t('system.loadingServiceStatus') : healthy ? t('system.serviceIsHealthy') : healthState === 'attention' ? t('system.serviceNeedsAttention') : t('system.serviceHealthIsUnknown')}</strong></div>
       <span>{t('system.singleNodeDeployment')} {snapshot?.failures.length ? t('system.valueDataSourceSUnavailable', { '0': snapshot.failures.length }) : system ? t('system.oneServerReported') : t('system.waitingForServerData')}</span>
     </Card>
 
     <div className="monitoring-grid">
       <Card>
         <CardHeader><div className="monitoring-card-heading"><CardTitle>{t('system.serviceHealth')}</CardTitle><Badge>{status}</Badge></div><CardDescription>{t('system.readinessAndRecoveryStatusOfThisZigfsInstance')}</CardDescription></CardHeader>
-        <CardContent><div className="monitoring-grid monitoring-health-counts"><div><h4>{t('system.servers')}</h4><div className="monitoring-metrics"><Metric label={t('system.reported')} value={system ? '1' : '—'} /><Metric label={t('system.ready')} value={health ? health.status === 'ready' ? '1' : '0' : '—'} /></div></div><div><h4>{t('system.disks')}</h4><div className="monitoring-metrics"><Metric label={t('system.online')} value={t('common.notReported')} /><Metric label={t('system.offline')} value={t('common.notReported')} /></div></div></div><Separator /><div className="monitoring-metrics"><Metric label={t('system.recovery')} value={health?.recovery ?? t('common.unknown')} /><Metric label={t('system.version')} value={system?.version ?? '—'} /></div></CardContent>
+        <CardContent><div className="monitoring-grid monitoring-health-counts"><div><h4>{t('system.servers')}</h4><div className="monitoring-metrics"><Metric label={t('system.reported')} value={system ? '1' : '—'} /><Metric label={t('system.ready')} value={health ? health.status === 'ready' ? '1' : '0' : '—'} /></div></div><div><h4>{t('system.dataFilesystems')}</h4><div className="monitoring-metrics"><Metric label={t('system.online')} value={metricCount(volume?.online)} /><Metric label={t('system.offline')} value={metricCount(volume?.offline)} /></div></div></div><Separator /><div className="monitoring-metrics"><Metric label={t('system.recovery')} value={health?.recovery ?? t('common.unknown')} /><Metric label={t('system.version')} value={system?.version ?? '—'} /></div></CardContent>
       </Card>
       {!diagnosticsOnly && <Card>
         <CardHeader><CardTitle>{t('system.storageUsageAndScanner')}</CardTitle><CardDescription>{t('system.reviewCapacityPressureAndScannerActivityInOnePlace')}</CardDescription></CardHeader>
@@ -131,7 +140,7 @@ export function SystemView({ api, diagnosticsOnly = false }: { api: ApiClient; d
 
     <Card><Collapsible open={diagnosticsOpen} onOpenChange={setDiagnosticsOpen}>
       <CardHeader><div className="monitoring-card-heading"><div><CardTitle>{t('system.diagnosticDetails')}</CardTitle><CardDescription>{t('system.reportedDiagnosticsAndTheirDataSourcesUnsupportedChecksAre')}</CardDescription></div><CollapsibleTrigger asChild><Button variant="ghost" size="sm">{diagnosticsOpen ? t('system.collapse') : t('system.expand')}<ChevronDown data-icon="inline-end" /></Button></CollapsibleTrigger></div></CardHeader>
-      <CollapsibleContent><CardContent><div className="monitoring-diagnostics">{diagnostics.map(item => <div className="monitoring-diagnostic" key={item.name}><strong>{item.name}</strong><Badge>{item.state}</Badge><div><p>{item.detail}</p>{item.extra && <p className="monitoring-muted">{item.extra}</p>}<span>{t('system.source')} {item.source}</span></div></div>)}</div></CardContent></CollapsibleContent>
+      <CollapsibleContent><CardContent><div className="monitoring-diagnostics">{diagnostics.map(item => <div className="monitoring-diagnostic" key={item.name}><strong>{item.name}</strong><Badge>{item.state}</Badge><div><p>{item.detail}</p>{item.extra && <p className="monitoring-muted">{item.extra}</p>}<span>{t('system.source')} {item.source}</span></div></div>)}</div><p className="monitoring-muted">{t('system.runtimeMetricsHelp')}</p></CardContent></CollapsibleContent>
     </Collapsible></Card>
     <p className="monitoring-footnote"><Activity aria-hidden="true" />{t('system.refreshesAutomaticallyEvery30SecondsUnreportedMeasurementsAreNot')}</p>
   </section>

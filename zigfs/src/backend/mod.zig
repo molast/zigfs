@@ -4,6 +4,7 @@ pub const event_webhook = @import("event_webhook.zig");
 const std = @import("std");
 
 pub const credential_master_key = @import("credential_master_key.zig");
+pub const process_metrics = @import("process_metrics.zig");
 pub const filesystem_capacity = @import("filesystem_capacity.zig");
 pub const local = @import("local.zig");
 pub const local_multipart_data = @import("local_multipart_data.zig");

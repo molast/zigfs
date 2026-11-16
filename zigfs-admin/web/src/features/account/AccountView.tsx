@@ -1,3 +1,4 @@
+import { accountStatusKey } from './accountStatus'
 import { useState } from 'react'
 import { ArrowLeft, RefreshCw, ShieldCheck } from 'lucide-react'
 import { t } from '@/locales'
@@ -50,7 +51,7 @@ export function AccountView({ session, security, api, onSession, onNavigate }: {
           <dt className="text-muted-foreground">{t('account.username')}</dt><dd>{session.username}</dd>
           <dt className="text-muted-foreground">{t('account.role')}</dt><dd className="flex flex-wrap gap-2">{t(session.is_root || session.capabilities?.admin ? 'account.administrator' : 'account.user')}<Badge>{t('account.temporarySession')}</Badge></dd>
           <dt className="text-muted-foreground">{t('navigation.policies')}</dt><dd className="flex flex-wrap gap-2">{session.policies?.length ? [...new Set(session.policies)].map(name => <Badge key={name}>{name}</Badge>) : '—'}</dd>
-          <dt className="text-muted-foreground">{t('account.status')}</dt><dd>{t('account.enabled')}</dd>
+          <dt className="text-muted-foreground">{t('account.status')}</dt><dd>{t(accountStatusKey(session))}</dd>
           <dt className="text-muted-foreground">{t('account.source')}</dt><dd>{t(source === 'deployment' ? 'account.deployment' : source === 'oidc' ? 'account.oidc' : source === 'sts' ? 'account.sts' : 'account.local')}</dd>
           <dt className="text-muted-foreground">{t('account.expires')}</dt><dd>{formatDateTime(session.expires_at * 1000)}</dd>
           {session.is_root && <><dt className="text-muted-foreground">{t('account.rootAccessKey')}</dt><dd className="break-all font-mono">{session.root_access_key || t('account.notConfigured')}</dd></>}

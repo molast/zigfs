@@ -7,6 +7,7 @@ export interface ApiErrorBody {
 }
 
 export interface AdminSession {
+  account_enabled?: boolean | null
   auth_source?: 'deployment' | 'local' | 'oidc' | 'sts'
   root_access_key?: string | null
   session_access_key?: string | null
@@ -24,7 +25,23 @@ export interface AdminSession {
   capabilities?: { admin: boolean; kms: boolean; s3: boolean; sts: boolean; s3_console?: boolean; kms_list?: boolean; kms_describe?: boolean; server_info?: boolean; console_log?: boolean }
 }
 
+export interface ProcessMetrics {
+  resident_bytes: number
+  cpu_seconds: number
+  sampled_at_seconds: number
+}
+
+export interface ReleaseCheck {
+  current_version: string
+  latest_version: string
+  update_available: boolean
+  release_url: string
+  checked_at: number
+}
+
 export interface SystemInfo {
+  build?: { built_at: number; git_commit: string; zig_version: string; operating_system: string; architecture: string; mode: string } | null
+  process?: ProcessMetrics | null
   version: string
   uptime: number
   storage_used: number
@@ -229,7 +246,22 @@ export interface StorageScannerStatus {
   last_scan: StorageScanReport | null
 }
 
+export interface OperationMetrics {
+  active: number
+  completed: number
+  failed: number
+  last_duration_ms: number | null
+  last_succeeded: boolean | null
+}
+
+export interface RuntimeDiagnostics {
+  storage: { state: 'online' | 'offline' | 'unknown'; online: number | null; offline: number | null; read_only: boolean | null }
+  metadata: { ready: boolean; buckets: number | null; objects: number | null; directories: number | null; listings: OperationMetrics }
+  http: { active_connections: number; accepted_connections: number; rejected_connections: number; s3: OperationMetrics; management: OperationMetrics }
+}
+
 export interface ManagementHealth {
+  diagnostics?: RuntimeDiagnostics | null
   status: 'ready' | 'degraded' | 'recovery'
   recovery: 'initializing' | 'recovering' | 'ready' | 'recovery_required'
   reason: string
