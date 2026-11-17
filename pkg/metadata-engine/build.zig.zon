@@ -1,7 +1,7 @@
 .{
     .name = .metadata_engine,
     .fingerprint = 0x4bf679418a77f1fa,
-    .version = "0.2.0",
+    .version = "0.3.0",
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
     .paths = .{ "build.zig", "build.zig.zon", "src", "bench", "tools", "tests", "README.md" },

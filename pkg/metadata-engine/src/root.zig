@@ -23,4 +23,5 @@ test {
     _ = @import("tests.zig");
     _ = @import("advanced_tests.zig");
     _ = @import("reliability_tests.zig");
+    _ = @import("maintenance_tests.zig");
 }

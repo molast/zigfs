@@ -18,7 +18,11 @@ pub const Error = error{
 
 pub const ExpectedGeneration = union(enum) {
     any,
+    /// Legacy never-present predicate. Rejected after the first physical GC.
     missing,
+    /// Current Stats.gc_epoch, captured before deciding to create a missing key.
+    /// A GC crossing invalidates this predicate even if the key is absent again.
+    missing_at: u48,
     exact: u64,
 };
 

@@ -361,26 +361,30 @@ test "WAL quota leaves enough space to checkpoint and resume writes" {
     try put(&engine, "c");
 }
 
-test "version one standalone files remain readable before explicit checkpoint upgrade" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var engine = try Engine.open(a, io, tmp.dir);
-    try put(&engine, "old");
-    engine.deinit();
-    const file = try tmp.dir.openFile(io, "wal", .{ .mode = .read_write });
-    defer file.close(io);
-    var header: [80]u8 = undefined;
-    try std.testing.expectEqual(@as(usize, 80), try file.readPositionalAll(io, &header, 0));
-    std.mem.writeInt(u16, header[8..10], 1, .little);
-    std.crypto.hash.sha2.Sha256.hash(header[0..48], header[48..80], .{});
-    try file.writePositionalAll(io, &header, 0);
-    var reopened = try Engine.open(a, io, tmp.dir);
-    defer reopened.deinit();
-    try checkValue(&reopened, "old");
-    try reopened.checkpoint();
-    var new_header: [80]u8 = undefined;
-    const bytes = try tmp.dir.readFile(io, "wal", &new_header);
-    try std.testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, bytes[8..10], .little));
+test "old database headers are rejected without modifying files" {
+    for ([_]u16{ 1, 2 }) |version| {
+        for ([_][]const u8{ "wal", "snapshot" }) |name| {
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            var engine = try Engine.open(a, io, tmp.dir);
+            try put(&engine, "old");
+            try engine.checkpoint();
+            engine.deinit();
+            const file = try tmp.dir.openFile(io, name, .{ .mode = .read_write });
+            defer file.close(io);
+            const size = (try file.stat(io)).size;
+            var header: [80]u8 = undefined;
+            try std.testing.expectEqual(@as(usize, 80), try file.readPositionalAll(io, &header, 0));
+            std.mem.writeInt(u16, header[8..10], version, .little);
+            std.crypto.hash.sha2.Sha256.hash(header[0..48], header[48..80], .{});
+            try file.writePositionalAll(io, &header, 0);
+            try std.testing.expectError(error.UnsupportedFormat, Engine.open(a, io, tmp.dir));
+            var after: [80]u8 = undefined;
+            try std.testing.expectEqual(@as(usize, 80), try file.readPositionalAll(io, &after, 0));
+            try std.testing.expectEqualSlices(u8, &header, &after);
+            try std.testing.expectEqual(size, (try file.stat(io)).size);
+        }
+    }
 }
 
 fn pageAllocationScenario(allocator: std.mem.Allocator, engine: *Engine) !void {
@@ -714,7 +718,7 @@ test "buffered WAL recovery crosses small and large frames and repairs partial t
     }
 }
 
-test "unordered v2 snapshot bulk rebuild remains sorted and rejects duplicates" {
+test "v3 snapshot rejects unordered keys and duplicates" {
     const codec = @import("codec.zig");
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -729,19 +733,12 @@ test "unordered v2 snapshot bulk rebuild remains sorted and rejects duplicates" 
     try std.testing.expectEqual(bytes.len, try snapshot.readPositionalAll(io, bytes, 0));
     const frame_size = (try codec.decodeHeader(bytes[80..][0..64])).length;
     try std.testing.expectEqual(@as(usize, 80 + 3 * frame_size), bytes.len);
-    // Same-sized records allow a checksum-preserving reorder, simulating the
-    // unordered snapshots produced before round one without a format change.
+    // Reordering preserves each frame checksum but violates v3 key order.
     try snapshot.writePositionalAll(io, bytes[80 + 2 * frame_size ..], 80);
     try snapshot.writePositionalAll(io, bytes[80..][0..frame_size], 80 + 2 * frame_size);
-    var reopened = try Engine.open(a, io, tmp.dir);
-    const scan = try reopened.interface().scan(a, .object);
-    defer scan.deinit(a);
-    try std.testing.expectEqualStrings("a", scan.records[0].key);
-    try std.testing.expectEqualStrings("b", scan.records[1].key);
-    try std.testing.expectEqualStrings("c", scan.records[2].key);
-    try std.testing.expectEqual(@as(i16, 2), reopened.indexes[2].root.?.height);
-    reopened.deinit();
-    try snapshot.writePositionalAll(io, bytes[80..][0..frame_size], 80);
+    try std.testing.expectError(error.CorruptRecord, Engine.open(a, io, tmp.dir));
+    try snapshot.writePositionalAll(io, bytes, 0);
+    try snapshot.writePositionalAll(io, bytes[80..][0..frame_size], 80 + frame_size);
     try std.testing.expectError(error.CorruptRecord, Engine.open(a, io, tmp.dir));
 }
 

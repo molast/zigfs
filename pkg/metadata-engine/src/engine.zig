@@ -13,8 +13,8 @@ const Map = std.StringHashMapUnmanaged(*ordered.Node);
 const wal_magic = "ZFMELOG1";
 const snapshot_magic = "ZFMESNP1";
 
-/// Keys/nodes remain live until Engine.deinit. Payload ownership is transferred
-/// by snapshot_pinned; checkpoint_mutex prevents overlapping view lifetimes.
+/// Keys/nodes of a pinned view remain live until release: checkpoint_mutex
+/// excludes physical GC and overlapping views. snapshot_pinned transfers payload ownership.
 const SnapshotEntry = struct {
     entry: codec.Entry,
     node: *ordered.Node,
@@ -50,11 +50,19 @@ pub const Point = enum {
     snapshot_published,
     after_snapshot,
     cleanup_started,
+    gc_snapshot_synced,
+    gc_snapshot_published,
+    gc_durable,
+    backup_captured,
+    backup_synced,
+    backup_published,
 };
 
 /// Optional diagnostic hook. Must not reenter the engine while the state lock
 /// is held. Only checkpoint_captured/snapshot_written/snapshot_synced run
-/// outside the state lock, as does cleanup_started. Used by crash probes.
+/// outside the state lock, as do cleanup_started and all backup_* points.
+/// The gc_* points hold the state lock. Hooks may not recursively call maintenance.
+/// Used by crash probes.
 pub const Hook = struct {
     context: *anyopaque,
     call: *const fn (*anyopaque, Point) void,
@@ -87,8 +95,9 @@ pub const Engine = struct {
     wal_length: u64 = 80,
     recovery_required: bool = false,
     state_lock_start: ?std.Io.Timestamp = null,
+    gc_epoch: u48 = 0,
     /// Deterministic persistence-boundary injection, only acted on in test builds.
-    test_fault: ?enum { after_append, after_sync, after_snapshot, short_write, disk_full, sync_failure, directory_sync_failure, link_unsupported, archive_link_failure } = null,
+    test_fault: ?enum { after_append, after_sync, after_snapshot, short_write, disk_full, sync_failure, directory_sync_failure, link_unsupported, archive_link_failure, gc_before_publish, gc_after_publish, backup_before_publish } = null,
 
     /// Test-only repeated failures; set before starting concurrent workers.
     test_cleanup_failure: ?struct {
@@ -269,7 +278,10 @@ pub const Engine = struct {
             const current = self.maps[index].get(mutation.key);
             switch (mutation.expected) {
                 .any => {},
-                .missing => if (current != null) return error.Conflict,
+                .missing => if (self.gc_epoch != 0 or current != null) return error.Conflict,
+                .missing_at => |epoch| {
+                    if (epoch != self.gc_epoch or current != null) return error.Conflict;
+                },
                 .exact => |expected| {
                     if (current == null or current.?.generation != expected) return error.Conflict;
                 },
@@ -364,26 +376,8 @@ pub const Engine = struct {
         const capture_start = timing.begin(self.options.diagnostics, self.io);
         // Capture immutable record metadata and pin its payload. Only values
         // overwritten while the view exists need deferred reclamation.
-        const entries = try self.allocator.alloc(SnapshotEntry, self.counters.records);
-        defer self.allocator.free(entries);
-        var captured: usize = 0;
-        defer for (entries[0..captured]) |view| view.release(self.allocator);
-        for (self.indexes, 0..) |index, namespace| {
-            var iterator = index.iterator("", false);
-            while (iterator.nextNode()) |node| {
-                const mutable_node = @constCast(node);
-                std.debug.assert(!mutable_node.snapshot_pinned.load(.monotonic));
-                entries[captured] = .{
-                    .entry = .{
-                        .record_type = @fromBackingInt(@intCast(namespace + 1)),
-                        .record = node.record(),
-                    },
-                    .node = mutable_node,
-                };
-                mutable_node.snapshot_pinned.store(true, .release);
-                captured += 1;
-            }
-        }
+        const entries = try self.captureViewLocked();
+        defer self.releaseView(entries);
         self.counters.phases.snapshot_capture.record(self.io, capture_start);
         const boundary = self.generation;
         const captured_dirty_bytes = self.counters.dirty_bytes;
@@ -396,7 +390,7 @@ pub const Engine = struct {
         self.at(.checkpoint_captured);
         var snapshot = try self.root.createFileAtomic(self.io, "snapshot", .{ .replace = true });
         defer snapshot.deinit(self.io);
-        const header = fileHeader(snapshot_magic, self.database_id, boundary, entries.len);
+        const header = snapshotHeader(self.database_id, boundary, entries.len, self.gc_epoch);
         var write_buffer: [64 * 1024]u8 = undefined;
         var writer = snapshot.file.writer(self.io, &write_buffer);
         try writer.interface.writeAll(&header);
@@ -434,6 +428,200 @@ pub const Engine = struct {
         // array and stable keys do not depend on the current record version.
         self.unlockState();
         locked = false;
+    }
+
+    /// Physically reclaim all current tombstones and shrink map capacity.
+    /// Serializes with checkpoints/backups and blocks reads/writes through the
+    /// durable snapshot install. Old missing predicates are fenced by gc_epoch.
+    /// On an uncertain install error, reopen before using this instance again.
+    pub fn collectTombstones(self: *Engine) !struct { reclaimed: usize, gc_epoch: u48 } {
+        self.checkpoint_mutex.lockUncancelable(self.io);
+        defer self.checkpoint_mutex.unlock(self.io);
+        self.lockState();
+        defer self.unlockState();
+        if (self.options.read_only) return error.ReadOnly;
+        if (self.recovery_required) return error.Unavailable;
+
+        var live_count: usize = 0;
+        var live_bytes: usize = 0;
+        for (self.indexes) |index| {
+            var iterator = index.iterator("", false);
+            while (iterator.nextNode()) |node| {
+                if (node.tombstone) continue;
+                live_count += 1;
+                live_bytes += node.key.len + node.payload.len;
+            }
+        }
+        const reclaimed = self.counters.records - live_count;
+        if (reclaimed == 0) return .{ .reclaimed = 0, .gc_epoch = self.gc_epoch };
+        if (live_bytes > self.options.max_snapshot_bytes) return error.ResourceLimit;
+        const next_epoch = std.math.add(u48, self.gc_epoch, 1) catch return error.GenerationExhausted;
+        const entries = try self.allocator.alloc(SnapshotEntry, live_count);
+        defer self.allocator.free(entries);
+        var replacements: [6]Map = @splat(.empty);
+        defer for (&replacements) |*map| map.deinit(self.allocator);
+        var position: usize = 0;
+        for (self.indexes, 0..) |index, namespace| {
+            var iterator = index.iterator("", false);
+            while (iterator.nextNode()) |node| {
+                if (node.tombstone) continue;
+                // These views do not need pins: the state lock stays held.
+                entries[position] = .{
+                    .entry = .{ .record_type = @fromBackingInt(@intCast(namespace + 1)), .record = node.record() },
+                    .node = @constCast(node),
+                };
+                try replacements[namespace].put(self.allocator, node.key, @constCast(node));
+                position += 1;
+            }
+        }
+        // Allocate everything before persistence; after snapshot publication the
+        // in-memory switch cannot fail. Rotation preserves the old recovery path.
+        self.rotateLocked() catch |err| {
+            if (err != error.ResourceLimit) self.recovery_required = true;
+            return err;
+        };
+        var snapshot = try self.root.createFileAtomic(self.io, "snapshot", .{ .replace = true });
+        defer snapshot.deinit(self.io);
+        try self.writeView(snapshot.file, entries, self.generation, next_epoch);
+        self.at(.gc_snapshot_synced);
+        if (@import("builtin").is_test and self.test_fault == .gc_before_publish) return error.Unavailable;
+
+        self.recovery_required = true;
+        try snapshot.replace(self.io);
+        self.at(.gc_snapshot_published);
+        if (@import("builtin").is_test and self.test_fault == .gc_after_publish) return error.Unavailable;
+        try durable.syncParent(self.root, self.io, "snapshot");
+        self.at(.gc_durable);
+
+        self.indexes = @splat(.{});
+        for (&self.maps, &replacements) |*old, *replacement| {
+            var iterator = old.valueIterator();
+            while (iterator.next()) |node_pointer| {
+                const node = node_pointer.*;
+                std.debug.assert(!node.snapshot_pinned.load(.monotonic));
+                if (node.tombstone) {
+                    self.allocator.free(node.key);
+                    self.allocator.free(node.payload);
+                    self.allocator.destroy(node);
+                }
+            }
+            old.deinit(self.allocator);
+            old.* = replacement.*;
+            replacement.* = .empty;
+        }
+        for (entries) |view| {
+            const node = view.node;
+            node.left = null;
+            node.right = null;
+            node.height = 1;
+            self.indexes[typeIndex(view.entry.record_type)].upsert(self.allocator, node);
+        }
+        self.gc_epoch = next_epoch;
+        self.counters.records = live_count;
+        self.counters.live_bytes = live_bytes;
+        self.counters.tombstones_reclaimed += reclaimed;
+        self.counters.checkpoint_generation = self.generation;
+        self.counters.dirty_bytes = 0;
+        self.counters.checkpoints += 1;
+        self.recovery_required = false;
+        // A cleanup failure leaves a valid GC snapshot and cleanup_pending;
+        // callers inspect stats/retryCleanup rather than assuming GC rolled back.
+        try self.pruneLocked();
+        return .{ .reclaimed = reclaimed, .gc_epoch = next_epoch };
+    }
+
+    /// Export an online, point-in-time database into a NEW child of parent.
+    /// name must be one path component; existing destinations are never replaced.
+    /// parent is caller-owned and must stay open. The private staging directory
+    /// is renamed only after snapshot, empty WAL, LOCK and directory are synced.
+    /// Writes continue during streaming; GC/checkpoints/other backups wait.
+    /// A failure after publication can leave a complete destination: inspect it
+    /// before retrying. SIGKILL may leave a private .metadata-backup-* directory.
+    pub fn backup(self: *Engine, parent: std.Io.Dir, name: []const u8) !struct { generation: u64, gc_epoch: u48, records: usize } {
+        if (!codec.validKey(name) or std.mem.indexOfAny(u8, name, "/\\") != null or
+            std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return error.InvalidKey;
+        self.checkpoint_mutex.lockUncancelable(self.io);
+        defer self.checkpoint_mutex.unlock(self.io);
+        self.lockState();
+        var locked = true;
+        defer if (locked) self.unlockState();
+        if (self.recovery_required) return error.Unavailable;
+        if (self.counters.live_bytes > self.options.max_snapshot_bytes) return error.ResourceLimit;
+        const entries = try self.captureViewLocked();
+        defer self.releaseView(entries);
+        const boundary = self.generation;
+        const epoch = self.gc_epoch;
+        self.unlockState();
+        locked = false;
+        self.at(.backup_captured);
+
+        var random: [16]u8 = undefined;
+        try self.io.randomSecure(&random);
+        var name_buffer: [64]u8 = undefined;
+        const temporary = try std.fmt.bufPrint(&name_buffer, ".metadata-backup-{x}", .{random});
+        try parent.createDir(self.io, temporary, .default_dir);
+        var published = false;
+        defer if (!published) parent.deleteTree(self.io, temporary) catch {};
+        var directory = try parent.openDir(self.io, temporary, .{ .iterate = true });
+        defer directory.close(self.io);
+        const snapshot = try directory.createFile(self.io, "snapshot", .{ .exclusive = true });
+        defer snapshot.close(self.io);
+        try self.writeView(snapshot, entries, boundary, epoch);
+        const wal = try directory.createFile(self.io, "wal", .{ .exclusive = true });
+        defer wal.close(self.io);
+        const header = fileHeader(wal_magic, self.database_id, boundary, 0);
+        try wal.writePositionalAll(self.io, &header, 0);
+        try wal.sync(self.io);
+        const lock = try directory.createFile(self.io, "LOCK", .{ .exclusive = true });
+        defer lock.close(self.io);
+        try lock.sync(self.io);
+        try durable.syncDirectory(directory, self.io);
+        self.at(.backup_synced);
+        if (@import("builtin").is_test and self.test_fault == .backup_before_publish) return error.Unavailable;
+        try parent.renamePreserve(temporary, parent, name, self.io);
+        published = true;
+        self.at(.backup_published);
+        try durable.syncParent(parent, self.io, name);
+        return .{ .generation = boundary, .gc_epoch = epoch, .records = entries.len };
+    }
+
+    fn captureViewLocked(self: *Engine) ![]SnapshotEntry {
+        const entries = try self.allocator.alloc(SnapshotEntry, self.counters.records);
+        var captured: usize = 0;
+        for (self.indexes, 0..) |index, namespace| {
+            var iterator = index.iterator("", false);
+            while (iterator.nextNode()) |node| {
+                const mutable_node = @constCast(node);
+                std.debug.assert(!mutable_node.snapshot_pinned.load(.monotonic));
+                entries[captured] = .{
+                    .entry = .{ .record_type = @fromBackingInt(@intCast(namespace + 1)), .record = node.record() },
+                    .node = mutable_node,
+                };
+                mutable_node.snapshot_pinned.store(true, .release);
+                captured += 1;
+            }
+        }
+        return entries;
+    }
+
+    fn releaseView(self: *Engine, entries: []SnapshotEntry) void {
+        for (entries) |view| view.release(self.allocator);
+        self.allocator.free(entries);
+    }
+
+    fn writeView(self: *Engine, file: std.Io.File, entries: []const SnapshotEntry, boundary: u64, epoch: u48) !void {
+        const header = snapshotHeader(self.database_id, boundary, entries.len, epoch);
+        var buffer: [64 * 1024]u8 = undefined;
+        var writer = file.writer(self.io, &buffer);
+        try writer.interface.writeAll(&header);
+        for (entries) |view| {
+            const entry = view.entry;
+            const bytes = try codec.encode(self.allocator, &.{entry}, entry.record.generation);
+            defer self.allocator.free(bytes);
+            try writer.interface.writeAll(bytes);
+        }
+        try writer.interface.flush();
+        try file.sync(self.io);
     }
 
     fn rotateLocked(self: *Engine) !void {
@@ -593,7 +781,7 @@ pub const Engine = struct {
         const wal_header = try readFileHeader(self.wal, self.io, wal_magic);
         self.database_id = wal_header.database_id;
         self.wal_base = wal_header.generation;
-        if (wal_header.count != 0) return error.CorruptRecord;
+        if (wal_header.count != 0 or wal_header.gc_epoch != 0) return error.CorruptRecord;
         const snapshot = self.root.openFile(self.io, "snapshot", .{}) catch |err| switch (err) {
             error.FileNotFound => null,
             else => return err,
@@ -603,6 +791,7 @@ pub const Engine = struct {
             const header = try readFileHeader(file, self.io, snapshot_magic);
             if (!std.mem.eql(u8, &header.database_id, &self.database_id)) return error.CorruptRecord;
             try self.loadSnapshot(file, header.count, header.generation);
+            self.gc_epoch = header.gc_epoch;
             self.generation = header.generation;
             self.counters.checkpoint_generation = header.generation;
         }
@@ -619,7 +808,7 @@ pub const Engine = struct {
             const file = try self.root.openFile(self.io, segments.name(segment.base, &path_buffer), .{});
             defer file.close(self.io);
             const header = try readFileHeader(file, self.io, wal_magic);
-            if (header.generation != segment.base or header.count != 0 or
+            if (header.generation != segment.base or header.count != 0 or header.gc_epoch != 0 or
                 !std.mem.eql(u8, &header.database_id, &self.database_id)) return error.CorruptRecord;
             const replayed = try self.replay(file, segment.base);
             if (replayed.generation != end or replayed.length != (try file.stat(self.io)).size) return error.CorruptRecord;
@@ -671,7 +860,6 @@ pub const Engine = struct {
         var starts: [6]usize = @splat(0);
         for (1..6) |index| starts[index] = starts[index - 1] + counts[index - 1];
         var loaded: [6]usize = @splat(0);
-        var sorted: [6]bool = @splat(true);
         for (0..count) |_| {
             const bytes = (try frames.next()) orelse return error.CorruptRecord;
             const views = try decoder.decode(self.allocator, bytes);
@@ -681,6 +869,10 @@ pub const Engine = struct {
             const map = &self.maps[index];
             if (loaded[index] >= counts[index]) return error.CorruptRecord;
             if (map.contains(view.key)) return error.CorruptRecord;
+            const position = starts[index] + loaded[index];
+            if (loaded[index] != 0 and std.mem.order(u8, nodes[position - 1].key, view.key) != .lt) {
+                return error.CorruptRecord;
+            }
             const node = try self.allocator.create(ordered.Node);
             errdefer self.allocator.destroy(node);
             const key = try self.allocator.dupe(u8, view.key);
@@ -694,24 +886,12 @@ pub const Engine = struct {
             // Map owns all loaded nodes even before AVL construction, so open's
             // error cleanup also covers partial loads and duplicate records.
             map.putAssumeCapacityNoClobber(key, node);
-            const position = starts[index] + loaded[index];
-            if (loaded[index] != 0 and std.mem.order(u8, nodes[position - 1].key, key) != .lt) {
-                sorted[index] = false;
-            }
             nodes[position] = node;
             loaded[index] += 1;
         }
         for (&self.indexes, 0..) |*index, namespace| {
             const items = nodes[starts[namespace]..][0..loaded[namespace]];
-            // v1/v2 do not promise ordering. New snapshots are sorted, but only
-            // skip sorting after checking actual order while loading the file.
-            if (!sorted[namespace]) {
-                std.mem.sort(*ordered.Node, items, {}, struct {
-                    fn less(_: void, left: *ordered.Node, right: *ordered.Node) bool {
-                        return std.mem.order(u8, left.key, right.key) == .lt;
-                    }
-                }.less);
-            }
+            // v3 requires strict per-namespace key order, checked during load.
             index.buildSorted(items);
         }
         self.counters.records = @intCast(count);
@@ -815,6 +995,7 @@ pub const Engine = struct {
         defer self.unlockState();
         var result = self.counters;
         result.generation = self.generation;
+        result.gc_epoch = self.gc_epoch;
         result.active_wal_bytes = self.wal_length;
         result.recovery_required = self.recovery_required;
         return result;
@@ -836,7 +1017,10 @@ pub const Engine = struct {
             options.max_bytes == 0 or options.max_bytes > self.options.max_page_bytes or
             options.prefix.len > codec.Limits.max_key_bytes) return error.ResourceLimit;
         if (options.expected_generation) |expected| {
-            if (self.generation != expected) return error.Conflict;
+            if (self.generation != expected or self.gc_epoch != (options.expected_gc_epoch orelse 0)) return error.Conflict;
+        }
+        if (options.expected_gc_epoch) |epoch| {
+            if (self.gc_epoch != epoch) return error.Conflict;
         }
         var records: std.ArrayList(port.Record) = .empty;
         errdefer {
@@ -884,7 +1068,7 @@ pub const Engine = struct {
         }
         const next = if (key != null and last != null) try allocator.dupe(u8, last.?) else null;
         errdefer if (next) |value| allocator.free(value);
-        return .{ .records = try records.toOwnedSlice(allocator), .next_start_after = next, .generation = self.generation, .visited = visited };
+        return .{ .records = try records.toOwnedSlice(allocator), .next_start_after = next, .generation = self.generation, .gc_epoch = self.gc_epoch, .visited = visited };
     }
 
     fn freeMaps(self: *Engine) void {
@@ -982,7 +1166,7 @@ fn clone(allocator: std.mem.Allocator, record: port.Record) !port.Record {
 fn fileHeader(magic: *const [8]u8, database_id: [16]u8, generation: u64, count: u64) [80]u8 {
     var bytes = @as([80]u8, @splat(0));
     @memcpy(bytes[0..8], magic);
-    std.mem.writeInt(u16, bytes[8..10], 2, .little);
+    std.mem.writeInt(u16, bytes[8..10], 3, .little);
     std.mem.writeInt(u64, bytes[16..24], generation, .little);
     std.mem.writeInt(u64, bytes[24..32], count, .little);
     @memcpy(bytes[32..48], &database_id);
@@ -990,18 +1174,25 @@ fn fileHeader(magic: *const [8]u8, database_id: [16]u8, generation: u64, count: 
     return bytes;
 }
 
-fn readFileHeader(file: std.Io.File, io: std.Io, magic: *const [8]u8) !struct { database_id: [16]u8, generation: u64, count: u64 } {
+fn snapshotHeader(database_id: [16]u8, generation: u64, count: u64, epoch: u48) [80]u8 {
+    var bytes = fileHeader(snapshot_magic, database_id, generation, count);
+    std.mem.writeInt(u48, bytes[10..16], epoch, .little);
+    std.crypto.hash.sha2.Sha256.hash(bytes[0..48], bytes[48..80], .{});
+    return bytes;
+}
+
+fn readFileHeader(file: std.Io.File, io: std.Io, magic: *const [8]u8) !struct { database_id: [16]u8, generation: u64, count: u64, gc_epoch: u48 } {
     var bytes: [80]u8 = undefined;
     if (try file.readPositionalAll(io, &bytes, 0) != bytes.len) return error.CorruptRecord;
     if (!std.mem.eql(u8, bytes[0..8], magic)) return error.CorruptRecord;
     const version = std.mem.readInt(u16, bytes[8..10], .little);
-    if (version != 1 and version != 2) return error.UnsupportedFormat;
-    if (!std.mem.allEqual(u8, bytes[10..16], 0)) return error.CorruptRecord;
+    if (version != 3) return error.UnsupportedFormat;
     var checksum: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes[0..48], &checksum, .{});
     if (!std.mem.eql(u8, &checksum, bytes[48..80])) return error.CorruptRecord;
     return .{
         .database_id = bytes[32..48].*,
+        .gc_epoch = std.mem.readInt(u48, bytes[10..16], .little),
         .generation = std.mem.readInt(u64, bytes[16..24], .little),
         .count = std.mem.readInt(u64, bytes[24..32], .little),
     };

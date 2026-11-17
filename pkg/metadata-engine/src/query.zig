@@ -10,6 +10,8 @@ pub const ScanOptions = struct {
     include_tombstones: bool = true,
     /// Supply a previous page's generation to reject a mixed-generation scan.
     expected_generation: ?u64 = null,
+    /// Pair with expected_generation; omission means epoch zero for old callers.
+    expected_gc_epoch: ?u48 = null,
 };
 
 pub const Page = struct {
@@ -17,6 +19,7 @@ pub const Page = struct {
     /// Exclusive resume key, including skipped tombstones. Null means exhausted.
     next_start_after: ?[]u8,
     generation: u64,
+    gc_epoch: u48,
     visited: usize,
 
     pub fn deinit(self: Page, allocator: std.mem.Allocator) void {

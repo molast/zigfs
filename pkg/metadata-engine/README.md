@@ -50,7 +50,8 @@ _ = try repository.tombstone(allocator, .object, "bucket/key", .{ .exact = gener
 - `engine.commit(mutations)` 为一个原子事务；`runtime.commit(mutations)` 将这个事务加入
   FIFO 队列。Group Commit 合并多个独立事务的同步，不将其变成一个跨请求原子事务。
 - mutations/key/payload 在 commit 返回前必须保持有效且不可修改。已接收请求不可取消等待。
-- `.missing` 不匹配 tombstone；`.exact` 检查当前 generation。每个事务只有一个新 generation。
+- `.missing` 不匹配 tombstone，且仅在首次物理回收前可用；启用回收的调用者须使用
+  `.{ .missing_at = epoch }`。`.exact` 检查当前 generation。每个事务只有一个新 generation。
 - 队列满返回 Busy；资源额度不足返回 ResourceLimit；读写结果不确定时返回 Unavailable，
   engine.stats().recovery_required 为 true，后续数据读取和写入均拒绝，必须关闭重开。
 
@@ -77,7 +78,7 @@ defer page.deinit(allocator);
 第一个待返回记录超过字节预算时返回 ResourceLimit，避免返回无法前进的游标。
 
 `next_start_after == null` 才表示结束。游标是排他 key，不是 S3 token。
-默认每页独立一致；提供上一页的 generation 可在分页期间有写入时返回 Conflict，
+默认每页独立一致；同时提供上一页的 generation 与 gc_epoch 可在分页期间有写入或回收时返回 Conflict，
 调用者应从头重试。此模式不是跨页 MVCC 快照。旧 `scan` 按有序索引全量复制，不再额外排序，但仍不适合作为有界分页接口。
 
 ## 快照、资源与指标
@@ -107,7 +108,7 @@ checkpoint_mutex 一直持有到视图释放完成。get/scan/page 仍返回独�
 第一轮优化后，HashMap 持有共享记录节点，AVL 借用节点；覆盖更新保留键和节点。
 恢复使用 64 KiB 读缓冲并复用大帧缓冲。快照先校验并统计各命名空间容量，再预留
 HashMap、加载记录和批量构建 AVL。新快照按命名空间/键排序；读取时实际验证顺序，
-旧的无序 v1/v2 快照会排序后建树，文件格式仍为 v2。
+v3 快照要求各命名空间内的键严格递增；乱序和重复键均视为损坏。
 同一时刻最多一个 checkpoint；并发写入产生的新 WAL 不会被该快照清理。
 回收失败保留 cleanup_pending，后台即使没有新写入也会重试删除及目录同步，不需要新快照。
 也可手动调用 engine.retryCleanup()。ResourceLimit 不会自动等待，调用方可在维护后重试；
@@ -117,7 +118,7 @@ Engine 默认限制 100 万条记录、512 MiB key/payload 常驻数据、512 Mi
 1 GiB 保留 WAL；单段目标 16 MiB，事务不会被拆段。页最多 1 万条、16 MiB 返回数据。
 这些不是进程 RSS 上限：还需要 HashMap、AVL、编码缓冲、固定视图条目、被覆盖的旧值和 allocator 开销。
 WAL 优先通过硬链接封存同步后的旧 inode，再原子安装并同步新活跃 WAL；成功切换前不允许新追加。
-只有 OperationUnsupported 回退到复制归档，其他失败冻结实例。格式仍为 v2；
+只有 OperationUnsupported 回退到复制归档，其他失败冻结实例。WAL 和快照统一为 v3；
 WAL 额度不含复制回退的临时副本和 snapshot 文件，磁盘需留出空间。
 
 `engine.stats()` 提供 generation、快照边界、记录数、逻辑字节数、WAL 字节数、提交同步次数、
@@ -126,7 +127,7 @@ WAL 额度不含复制回退的临时副本和 snapshot 文件，磁盘需留出
 `runtime.stats()` 提供排队数、峰值待处理数、拒绝数、组数、effective_checkpoint_wal_bytes
 和维护错误。checkpoint_failures 累计快照及清理重试失败，last_checkpoint_error 在维护成功
 后清空；累计失败次数保留。
-指标计数在重启后重新开始；generation 和 checkpoint generation 从磁盘恢复。
+指标计数在重启后重新开始；generation、checkpoint generation 和 gc_epoch 从磁盘恢复。
 
 ## 离线检查与恢复
 
@@ -134,19 +135,22 @@ WAL 额度不含复制回退的临时副本和 snapshot 文件，磁盘需留出
 zig-out/bin/metadata-tool inspect /path/to/database
 zig-out/bin/metadata-tool recover /path/to/database
 zig-out/bin/metadata-tool checkpoint /path/to/database
+# 调用者已采用 missing_at 后，显式回收删除标记：
+zig-out/bin/metadata-tool gc /path/to/database
 ```
 
 所有命令要求数据库没有其他实例占用。输出 JSON 到 stdout，错误以非零状态退出。
 `inspect` 不创建、删除或截断文件；检测到不完整尾部会报告 `incomplete_tail_bytes`。
 `recover` 只在完整验证通过后截断最后的不完整帧，并清理安全回收的日志和已知原子临时文件；
 完整帧校验失败、缺段、未来格式或损坏快照会明确失败，不能靠跳过损坏继续写入。
-`checkpoint` 恢复后创建快照。
+`checkpoint` 恢复后创建快照；`gc` 恢复后执行物理回收，会改变缺失条件写入要求。
 
 可在目录参数后指定 `max_records max_live_bytes`，用于检查采用较高资源额度创建的数据库。
 检查依然需要重建内存索引；资源不足与数据损坏是不同错误。
 
-文件格式 v2 支持分段 WAL；v1 独立包数据可读取，checkpoint/轮转会写 v2。
-旧 v1 程序应拒绝新格式。此兼容性仅指此前独立包，不是 ZigFS `.record` 格式。
+WAL 与 snapshot 统一使用文件格式 v3，80 B 文件头中的 6 B 字段用于回收世代
+（WAL 中必须为零）。不兼容 v1/v2，遇到旧格式返回 UnsupportedFormat，不迁移、不静默
+覆盖。开发环境可停止旧实例并删除旧专用数据目录，再用新版本初始化。此操作会丢失旧数据。
 
 ## 压测与持续验证
 
@@ -181,10 +185,10 @@ bbolt、Pebble、Badger 的独立 KV 对照见 [数据量、耗时与内存对�
 ## 保持的边界
 
 元数据仍全驻内存；读写共享状态锁，Group Commit 持锁到同步完成。没有磁盘页索引、
-MVCC 或跨进程读写。tombstone 暂不回收，以保持条件写入语义；可回收的是快照覆盖的 WAL。
+MVCC 或跨进程读写。tombstone 可显式物理回收，要求调用者采用世代条件；后台不自动回收。
 业务 payload 不解释，不自动拆分对象版本、迁移 sidecar 或管理对象 GC。
 
-只有一个快照，没有损坏快照自动回退。备份需停机复制整个包目录，不能只复制 snapshot。
+只有一个快照，没有损坏快照自动回退。支持在线备份 API；手工复制现有库仍须停机复制完整目录。
 文件 sync 与 SIGKILL 验证不等于真实断电保证；Linux/NAS 文件系统仍需部署环境验证。
 
 详见 [设计文档](../../docs/zigfs-metadata-engine-design.md)。
@@ -239,4 +243,48 @@ ENOSPC、空间恢复后的事务原子性和只读挂载。脚本先检查容�
 
 新增事务测试包含 96 条跨命名空间原子修改、八客户端 CAS 转账守恒，以及短写、磁盘满、
 同步失败和同步后中断的多命名空间矩阵。tombstone 继续计入记录额度并保留 CAS 语义；
-“回收验证”指 WAL 和临时视图回收，未新增 tombstone 物理 GC。
+第四轮当时的“回收验证”指 WAL 和临时视图；后续物理 GC 与在线备份见下节。
+
+
+## 安全回收与在线备份（0.3.0）
+
+```zig
+// 在进行“键不存在”的业务判断之前取世代；冲突后重新判断业务，不要盲目刷新世代重试。
+const epoch = engine.stats().gc_epoch;
+_ = try engine.interface().put(allocator, .object, "new-key", .{ .missing_at = epoch }, "value");
+
+// 显式维护：释放 tombstone 的节点、键、记录额度，并收缩 HashMap 容量。
+const collected = try engine.collectTombstones();
+_ = collected;
+
+// backup_parent 为调用者持有的目录句柄，"backup-001" 必须不存在。
+// 返回捕获时的 generation、gc_epoch、records，可直接打开该目录验证或恢复。
+const saved = try engine.backup(backup_parent, "backup-001");
+_ = saved;
+```
+
+回收仅在确实存在 tombstone 时增加 `gc_epoch`；此后旧 `.missing` 和旧世代的
+`.missing_at` 均返回 Conflict，即使目标键从未存在。旧 `.exact` 不能匹配已经回收的键，
+重建后 generation 仍严格递增。`.any` 继续表示无条件写入，不提供旧请求保护。
+普通 checkpoint 不回收 tombstone；请先更新所有创建调用者，再显式开启回收。
+分页一致性检查需同时传 `expected_generation = page.generation` 和
+`expected_gc_epoch = page.gc_epoch`；省略世代按零处理。
+
+回收与检查点、备份串行，回收写快照及重建索引期间阻塞读写；尚未做增量后台 GC。
+临时需要存活节点的新映射和视图数组，并不承诺 RSS 立即下降。安装结果不确定时冻结实例，
+须重新打开；安装完成后的 WAL 清理失败可能返回错误，但回收已经生效，查看
+`gc_epoch`、`tombstones_reclaimed`、`cleanup_pending`，可调用 `retryCleanup()`。
+
+在线备份在捕获视图后允许写入，只包含捕获边界之前的数据。输出独立 snapshot、空 WAL
+和 LOCK，不依赖源目录或硬链接；先同步临时目录，再以不覆盖方式发布正式目录并同步父目录。
+目标应为受调用者控制的专用备份目录。失败不冻结源库；发布后的同步错误可能留下完整备份，
+重试前应 inspect，不能假定目录不存在。进程强杀可能留下 `.metadata-backup-*` 临时目录，
+确认没有备份任务使用后可清理；不要把它当作已完成备份。
+
+备份期间检查点/回收会等待；写入可能因 WAL 额度背压，覆盖值也可能增加临时内存。
+同一进程通过 Engine API 发起在线备份，不通过离线 CLI 越过数据库锁。
+恢复时可直接打开备份目录，或在目标引擎停止后复制整个备份目录到新的专用位置；
+恢复是回退到备份边界，应用必须废弃旧实例的条件写入令牌。
+该备份不包含 ZigFS 对象数据或外部密钥，不是完整 ZigFS 备份。
+
+格式、安全性与验证记录见 [维护功能说明](bench/MAINTENANCE-VALIDATION.md)。

@@ -23,6 +23,9 @@ pub const Options = struct {
 pub const Stats = struct {
     phases: PhaseStats = .{},
     generation: u64 = 0,
+    /// Persistent absence fence; increments only when tombstones are reclaimed.
+    gc_epoch: u48 = 0,
+    tombstones_reclaimed: u64 = 0,
     checkpoint_generation: u64 = 0,
     records: usize = 0,
     live_bytes: usize = 0,

@@ -10,7 +10,7 @@ const Barrier = struct {
 
     fn hook(context: *anyopaque, point: metadata.Point) void {
         const self: *Barrier = @ptrCast(@alignCast(context));
-        if (point == .checkpoint_captured and self.mutate_on_capture) {
+        if ((point == .checkpoint_captured or point == .backup_captured) and self.mutate_on_capture) {
             self.mutate_on_capture = false;
             const engine = self.engine.?;
             _ = engine.commit(&.{
@@ -39,6 +39,50 @@ pub fn main(init: std.process.Init) !void {
     var engine = try metadata.Engine.openWithOptions(std.heap.smp_allocator, init.io, root, .{ .segment_bytes = 128 });
     defer engine.deinit();
     const repository = engine.interface();
+    if (std.mem.eql(u8, mode, "gc-crash") or std.mem.eql(u8, mode, "backup-crash")) {
+        if (args.len != 4) return error.InvalidArguments;
+        _ = try repository.tombstone(std.heap.smp_allocator, .bucket, "gc-deleted", .missing);
+        const backup = std.mem.eql(u8, mode, "backup-crash");
+        if (backup) _ = try engine.collectTombstones();
+        const target = std.meta.stringToEnum(metadata.Point, args[3]) orelse return error.InvalidArguments;
+        var barrier: Barrier = .{
+            .root = root,
+            .io = init.io,
+            .target = target,
+            .engine = &engine,
+            .mutate_on_capture = backup,
+        };
+        engine.hook = .{ .context = &barrier, .call = Barrier.hook };
+        if (backup) {
+            _ = try engine.backup(root, "backup");
+        } else {
+            _ = try engine.collectTombstones();
+        }
+        return error.FaultPointNotReached;
+    }
+    if (std.mem.eql(u8, mode, "gc-verify")) {
+        const epoch = engine.stats().gc_epoch;
+        if (epoch > 1) return error.ValidationFailed;
+        if (epoch == 0) {
+            const record = try repository.get(std.heap.smp_allocator, .bucket, "gc-deleted");
+            defer record.deinit(std.heap.smp_allocator);
+            if (!record.tombstone) return error.ValidationFailed;
+        } else {
+            if (repository.get(std.heap.smp_allocator, .bucket, "gc-deleted")) |record| {
+                record.deinit(std.heap.smp_allocator);
+                return error.ValidationFailed;
+            } else |err| if (err != error.NotFound) return err;
+            if (repository.put(std.heap.smp_allocator, .bucket, "gc-deleted", .{ .missing_at = 0 }, "stale")) |_| {
+                return error.ValidationFailed;
+            } else |err| if (err != error.Conflict) return err;
+            _ = try repository.put(std.heap.smp_allocator, .bucket, "gc-deleted", .{ .missing_at = epoch }, "fresh");
+        }
+        const acknowledged = try repository.get(std.heap.smp_allocator, .object, "acknowledged");
+        defer acknowledged.deinit(std.heap.smp_allocator);
+        if (!std.mem.eql(u8, acknowledged.payload, "durable")) return error.ValidationFailed;
+        try engine.checkpoint();
+        return;
+    }
     if (std.mem.eql(u8, mode, "group-crash") or std.mem.eql(u8, mode, "group-verify")) {
         if (args.len != 4) return error.InvalidArguments;
         if (std.mem.eql(u8, mode, "group-crash")) {

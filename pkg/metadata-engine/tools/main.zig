@@ -7,13 +7,14 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     const args = try init.minimal.args.toSlice(allocator);
     if (args.len < 3 or args.len > 5) {
-        std.debug.print("usage: metadata-tool inspect|recover|checkpoint DIRECTORY [max_records] [max_live_bytes]\n", .{});
+        std.debug.print("usage: metadata-tool inspect|recover|checkpoint|gc DIRECTORY [max_records] [max_live_bytes]\n", .{});
         return error.InvalidArguments;
     }
     const inspect = std.mem.eql(u8, args[1], "inspect");
     const recover = std.mem.eql(u8, args[1], "recover");
     const checkpoint = std.mem.eql(u8, args[1], "checkpoint");
-    if (!inspect and !recover and !checkpoint) return error.InvalidArguments;
+    const gc = std.mem.eql(u8, args[1], "gc");
+    if (!inspect and !recover and !checkpoint and !gc) return error.InvalidArguments;
     var root = try std.Io.Dir.cwd().openDir(init.io, args[2], .{});
     defer root.close(init.io);
     var options: metadata.Options = .{ .read_only = inspect };
@@ -25,6 +26,7 @@ pub fn main(init: std.process.Init) !void {
     var engine = try metadata.Engine.openWithOptions(std.heap.smp_allocator, init.io, root, options);
     defer engine.deinit();
     if (checkpoint) try engine.checkpoint();
+    if (gc) _ = try engine.collectTombstones();
     const json = try std.json.Stringify.valueAlloc(allocator, engine.stats(), .{});
     try std.Io.File.stdout().writeStreamingAll(init.io, json);
     try std.Io.File.stdout().writeStreamingAll(init.io, "\n");

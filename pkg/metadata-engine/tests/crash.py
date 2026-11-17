@@ -93,6 +93,37 @@ def main():
             run(probe, 'pinned-verify', str(directory))
             run(tool, 'inspect', str(directory))
             print(f'PASS pinned view SIGKILL {point}')
+        for point in ('gc_snapshot_synced', 'gc_snapshot_published', 'gc_durable', 'cleanup_started'):
+            directory = Path(temporary) / f'gc-{point}'
+            directory.mkdir()
+            run(probe, 'seed', str(directory))
+            kill_at_boundary(probe, directory, 'gc-crash', point)
+            before = contents(directory)
+            report = json.loads(run(tool, 'inspect', str(directory)).stdout)
+            assert before == contents(directory), f'gc-{point}: inspect changed files'
+            expected_epoch = 0 if point == 'gc_snapshot_synced' else 1
+            assert report['gc_epoch'] == expected_epoch
+            assert report['records'] == (2 if expected_epoch == 0 else 1)
+            run(probe, 'gc-verify', str(directory))
+            print(f'PASS tombstone GC SIGKILL {point}')
+        for point in ('backup_captured', 'backup_synced', 'backup_published'):
+            directory = Path(temporary) / f'backup-{point}'
+            directory.mkdir()
+            run(probe, 'seed', str(directory))
+            kill_at_boundary(probe, directory, 'backup-crash', point)
+            before = contents(directory)
+            run(tool, 'inspect', str(directory))
+            assert before == contents(directory), f'backup-{point}: inspect changed files'
+            backup = directory / 'backup'
+            if point == 'backup_published':
+                report = json.loads(run(tool, 'inspect', str(backup)).stdout)
+                assert report['gc_epoch'] == 1 and report['generation'] == 2
+                assert report['records'] == 1
+                run(probe, 'verify', str(backup))
+            else:
+                assert not backup.exists(), f'{point}: incomplete backup published'
+            run(probe, 'pinned-verify', str(directory))
+            print(f'PASS online backup SIGKILL {point}')
         # Verify offline detection and explicit tail repair are separate actions.
         directory = Path(temporary) / 'torn-tail'
         directory.mkdir()

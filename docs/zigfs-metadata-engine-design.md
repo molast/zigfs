@@ -1,7 +1,7 @@
 # ZigFS Metadata Engine 设计与验证
 
 - 位置：[`pkg/metadata-engine`](../pkg/metadata-engine/README.md)
-- 工具链：Zig 0.17.0；package 版本 0.2.0；文件格式 v2
+- 工具链：Zig 0.17.0；package 版本 0.3.0；WAL / Snapshot 统一 v3，不兼容旧格式
 - 状态：独立引擎核心能力已实现；运行维护收尾与验收缺口见第 12 节，尚未接入 ZigFS
 - 本文描述实际实现与待办；部署级验收仍需目标 NAS/Linux、磁盘空间故障和断电验证
 - 开发阶段决策：不做历史数据迁移，以空数据根切换并重建测试数据；本次核对不执行删除
@@ -72,11 +72,16 @@ pkg/metadata-engine/
 | `engine.commitGroup(items)` | 按顺序执行独立事务，合并最终 WAL sync，分别返回结果 |
 | `engine.scanPage(...)` | AVL seek、有界访问和字节预算 |
 | `engine.checkpoint()` | 捕获一致视图，锁外写快照，安全安装和回收 |
+| `engine.collectTombstones()` | 显式回收删除标记、持久化缺失世代并收缩索引；阻塞式维护 |
+| `engine.backup(parent, name)` | 在线固定视图导出，发布独立可恢复目录，不覆盖已有目标 |
 | `engine.stats()` | 健康状态、数据量、WAL、同步、恢复和维护指标 |
 | `runtime.start / stop / interface / commit / stats` | 可选提交协调与后台维护 |
 
-`.any` 无条件更新；`.missing` 要求记录不存在，tombstone 仍算存在；`.exact` 要求当前
-记录 generation 匹配。条件失败返回 Conflict，不产生该事务的部分修改。
+`.any` 无条件更新；`.missing` 要求记录不存在且 gc_epoch 为零，tombstone 仍算存在；
+`.{ .missing_at = epoch }` 要求记录不存在且 epoch 与当前回收世代相同。启用物理回收前
+必须将所有创建调用者改用 missing_at；取世代应先于“不存在”的业务判断，Conflict 后
+重新判断业务，不能仅刷新世代盲目重试。`.exact` 要求当前记录 generation 匹配。
+条件失败返回 Conflict，不产生该事务的部分修改。
 批次内重复 `(type,key)` 被拒绝；跨事务的同 key 修改按提交顺序检查条件。
 
 generation 为事务序号，不是 S3 Version ID 或对象数据 UUID。成功事务严格递增；
@@ -104,7 +109,8 @@ Engine/Runtime 启用后不得移动。root 由调用者持有，生命周期长
 - 兼容接口 scan 按 AVL 顺序复制，省去额外排序，但仍为全量复制，不应当作有界分页使用。
 
 分页参数：prefix、排他 start_after、limit、max_bytes、include_tombstones、可选
-expected_generation。排序比较原始 key 字节，不做大小写折叠、路径规范化或 locale 排序。
+expected_generation / expected_gc_epoch。回收不增加事务 generation，所以一致分页必须
+同时携带上一页的两个字段；世代省略时视为零。排序比较原始 key 字节，不做大小写折叠、路径规范化或 locale 排序。
 
 limit 限制访问 key 数量，而不是仅限制返回记录，避免大量 tombstone 造成无界扫描。
 过滤后可能有空页和有效 continuation；next_start_after 为空才表示结束。
@@ -176,16 +182,18 @@ HTTP 错误；不可直接假定新增包错误与现有 ZigFS 错误集合相�
 | 偏移 | 长度 | 含义 |
 | --- | --- | --- |
 | 0 | 8 | `ZFMELOG1` 或 `ZFMESNP1`；Magic 保持稳定，版本由独立字段决定 |
-| 8 | 2 | 当前文件格式版本 2；兼容读取版本 1 |
-| 10 | 6 | 保留位，必须零 |
+| 8 | 2 | WAL / Snapshot 均为版本 3；其他版本明确拒绝 |
+| 10 | 6 | Snapshot 为 u48 gc_epoch，小端并纳入校验和；WAL 必须零 |
 | 16 | 8 | WAL base generation，或 Snapshot 一致视图 generation |
 | 24 | 8 | Snapshot 条目数；WAL 为零 |
 | 32 | 16 | 数据库随机身份标识 |
 | 48 | 32 | 前 48 字节 SHA-256 |
 
 显式 little-endian，不依赖 Zig 内存布局。Snapshot 与所有需要重放的段必须匹配数据库
-身份。v1 独立包文件可直接打开；首次轮转/checkpoint 写 v2，旧版程序因不支持版本而拒绝。
-不支持把 ZigFS 原 `.record` 目录当成此格式。
+身份。开发阶段不保留 v1/v2 兼容，不迁移；旧格式返回 UnsupportedFormat，启动时不
+静默删除或重置。调用者停止旧实例后可删除旧专用数据目录，再初始化新库。
+Snapshot 的世代随 checkpoint 和备份持久化；世代溢出拒绝回收，不能回绕。
+不支持把 ZigFS 原 `.record` 目录当成此格式。v3 Snapshot 要求各命名空间内严格键序。
 
 ### 6.2 事务帧（继续使用帧版本 1）
 
@@ -222,7 +230,7 @@ Snapshot 每条记录一个帧，保留原 generation，包括 tombstone。校�
 base >= 活跃段 base 的归档视为未安装轮转，成功恢复后可清理。
 归档链接与旧活跃 WAL 暂时指向同一 inode；状态锁禁止轮转期间追加，任何轮转错误冻结实例。
 新 WAL 替换并同步目录后才切换句柄。重开先验证恢复链，再删除未安装轮转的冗余名字，
-之后才能接收新写入。缺段、错误数据库身份和 generation 连续性规则不变，格式仍为 v2。
+之后才能接收新写入。缺段、错误数据库身份和 generation 连续性规则不变；当前文件头为 v3。
 硬链接路径不复制数据；复制回退路径仍需要临时整段空间，磁盘规划须预留该空间。
 
 恢复先读 Snapshot，再按 base 顺序验证所需归档段，最后读取活跃段。段内 generation
@@ -261,8 +269,12 @@ checkpoint 由独立快照锁串行化：
 首版只有一个快照，不支持损坏快照自动回退。未来若保存多个快照，必须同时保留从最旧
 可回退快照到最新确认提交的 WAL 链，仅保留旧快照文件不能保证安全回退。
 
-tombstone 不回收，保留 `.missing/.exact` 语义；对象内容、历史版本和 multipart 的回收
-不属于此包。这里的安全回收明确指已覆盖 WAL、冗余归档与启动时孤立临时文件。
+普通 checkpoint 保留 tombstone。显式 collectTombstones 在快照锁与状态锁下预分配
+存活记录的新 HashMap，轮转 WAL，写不含 tombstone 且 gc_epoch 加一的快照，同步并原子
+安装后才释放删除节点、键和值并重建 AVL。新世代与删除结果位于同一校验文件中，恢复
+不会出现“记录已回收而世代未更新”。版本号不回绕，旧 exact 无法匹配重建后的记录。
+回收可释放记录额度并收缩映射容量，但会阻塞读写；没有后台自动或增量物理 GC。
+对象内容、历史版本和 multipart 业务回收不属于此包。
 
 Runtime 默认每秒检查一次，只有存在新 generation 才考虑 checkpoint。第二轮默认自适应策略：
 
@@ -316,8 +328,15 @@ checkpoint_failures、last_checkpoint_error。Runtime transactions 为处理的�
 工具不会跳过损坏帧、重置损坏实例或强行恢复未来格式。检查也需要内存索引，资源限制
 可通过参数调整，不能将 ResourceLimit 当作 CorruptRecord。
 
-备份需停止 Runtime 和全部外部请求、关闭引擎，再复制整个专用目录。Snapshot 本身不是
-最新完整备份；备份时不能遗漏增量 WAL 和数据库身份。此包的备份也不是完整 ZigFS 备份。
+手工复制源库仍需停止 Runtime 和全部外部请求、关闭引擎，再复制整个专用目录，不能
+遗漏增量 WAL。新增 backup(parent, name) API 可在线捕获固定视图并锁外写入独立目录，
+包含该边界的 snapshot、同边界空 WAL 和 LOCK。全部文件及临时目录同步后，使用不覆盖
+rename 发布正式名字并同步父目录。成功输出可直接打开；中断可能留下私有临时目录，
+发布后同步错误则可能留下完整目标。源库不会因目标 I/O 失败被冻结。
+备份、checkpoint 与 GC 共享快照锁；备份期间读写继续，但检查点推迟可能造成 WAL
+额度背压，覆盖旧值可能增加临时内存。恢复后必须废弃旧实例条件令牌，不能跨恢复沿用。
+此包的备份也不是完整 ZigFS 备份，详细接口与边界见
+[维护功能说明](../pkg/metadata-engine/bench/MAINTENANCE-VALIDATION.md)。
 
 ## 11. 测试与性能验证
 
@@ -333,7 +352,7 @@ zig build soak -Doptimize=ReleaseFast -- --seconds 60 --operations 100000 --work
 测试覆盖仓库契约、原子批次、条件写竞争、OOM 所有权、每字节截断恢复、完整帧损坏、
 AVL 逆序插入与分页、tombstone 访问预算、字节预算、Group Commit 条件顺序与同步失败、
 短写/磁盘满/目录同步失败注入、分段恢复/缺段、快照期间新写入、只读检查、资源额度、
-FIFO 背压和停机排空、后台维护、v1 兼容及原子临时文件清理。
+FIFO 背压和停机排空、后台维护、旧格式拒绝及原子临时文件清理。
 
 SIGKILL 脚本在真实子进程的 15 个引擎位置等待父进程强杀：append 后、sync 前后、归档安装后、
 活跃 WAL 替换前后目录同步边界、快照视图捕获、临时快照写完/同步后、快照替换/目录同步后。
@@ -368,8 +387,8 @@ soak 重复完整的写入、读取、分页、快照和恢复流程，校验 ke
 | WAL 分段、恢复链、快照与安全日志回收 | `src/engine.zig`、`src/segments.zig` | 截断、缺段、快照期间新写入、进程强杀 |
 | 资源额度、指标、离线检查 | `src/options.zig`、`tools/main.zig` | 额度拒绝、只读检查、尾部恢复 |
 
-源码路径均相对于 `pkg/metadata-engine`。第四轮后 Debug/ReleaseSafe 各 62 项测试、27 个
-SIGKILL 边界通过；新增持续混合模型、真实文件系统故障和备份恢复验证见
+源码路径均相对于 `pkg/metadata-engine`。维护功能补齐后 Debug/ReleaseSafe 各 73 项测试、34 个
+SIGKILL 边界通过（详见第 15 节）；新增持续混合模型、真实文件系统故障和备份恢复验证见
 [第四轮报告](../pkg/metadata-engine/bench/ROUND4-VALIDATION.md)。此前十万条多进程持续校验和百万条容量校验记录仍保留。
 详见 [验证记录](../pkg/metadata-engine/bench/V2-VALIDATION.md)。
 
@@ -400,8 +419,8 @@ SIGKILL 边界通过；新增持续混合模型、真实文件系统故障和备
 ### 12.4 不属于本轮待补功能的内容
 
 - 数据迁移、保留旧 generation 的导入、在线双写、反向迁移及旧数据降级回滚：按开发阶段
-  决策取消，不再作为接入门槛。已存在的独立包 v1 读取能力可保留，不扩展兼容范围。
-- 磁盘页索引、跨页 MVCC、损坏快照自动回退、tombstone 物理回收、分布式复制：本文明确
+  决策取消，不再作为接入门槛。v1/v2 兼容也已移除，旧开发数据可删除后重建。
+- 磁盘页索引、跨页 MVCC、损坏快照自动回退、分布式复制：本文明确
   未实现的扩展能力，不应在没有新需求时当作本轮必须补齐的遗漏。
 - S3 业务模型、delimiter/版本列表适配、对象 GC 及事务 Outbox：属于项目接入或业务层
   后续工作，不在不透明 payload 存储包中重复建设；第 13 节保留对应的接入边界。
@@ -631,3 +650,17 @@ bbolt 读快照与 Zig checkpoint 不能当成同一操作。不同缓存预算�
 
 现有补测中，10 万条完成四项配置、100 万条完成三项配置，四项长测仅给预测，一项
 bbolt 测试中止。这些状态是后续计划的依据，不因本节列出优化方案而变成已完成验证。
+
+
+## 15. 四轮之后补齐的维护功能（0.3.0）
+
+按新增需求实现显式安全 tombstone 回收和在线备份，独立包仍未接入 ZigFS。
+新库和文件统一采用 v3，不兼容旧格式。首次实际回收以后创建请求使用 missing_at，分页同时检查 generation/gc_epoch；旧 missing
+失败关闭，不能静默将“历史删除”当成“从未存在”。回收世代持久化于 Snapshot v3，
+回收不改变存活记录版本号，旧 exact 在键不存在或被新版本重建时均冲突。
+
+在线备份使用固定视图而非复制正在变化的源目录；目标目录仅在完整同步后发布。
+验证覆盖空库、全删除、重复回收、额度释放、旧条件拒绝、OOM、并发写入/回收/备份、
+发布故障和新增 7 个 SIGKILL 边界。详细命令与结果见
+[维护功能验证](../pkg/metadata-engine/bench/MAINTENANCE-VALIDATION.md)。
+此前四轮报告是当时实现的历史记录；其中“无物理 GC”“仅停机备份”由本节更新。

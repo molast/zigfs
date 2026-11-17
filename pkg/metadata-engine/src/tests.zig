@@ -236,7 +236,7 @@ test "future format is rejected without modifying files" {
     engine.deinit();
     var file = try tmp.dir.openFile(io, "wal", .{ .mode = .read_write });
     defer file.close(io);
-    try file.writePositionalAll(io, &.{ 3, 0 }, 8);
+    try file.writePositionalAll(io, &.{ 4, 0 }, 8);
     try std.testing.expectError(error.UnsupportedFormat, Engine.open(a, io, tmp.dir));
     try std.testing.expectEqual(@as(u64, 80), (try file.stat(io)).size);
 }
