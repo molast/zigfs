@@ -1,7 +1,7 @@
 # ZigFS CLI
 
 `zc` is the ZigFS command-line client. It provides local connection aliases and a signed S3 protocol client.
-Bucket basics, paginated listings, single-object copy/move/delete, explicit batch deletion and multipart upload/resume/pipe are available. Recursive/multi-source transfers and unversioned bucket cleanup are available; management workflows follow in later steps.
+Bucket basics, paginated listings, single-object copy/move/delete, explicit batch deletion and multipart upload/resume/pipe are available. Recursive/multi-source transfers, unversioned bucket cleanup, presigned sharing and browser POST uploads are available; management workflows follow in later steps.
 
 ## Build and run
 
@@ -704,6 +704,11 @@ splitting requests into at most 1000 keys each. The JSON forms remain
 unknown fields, Quiet=true, versions and duplicates are rejected before execution.
 Inputs of at most 1000 keys without explicit bulk controls retain the step 06
 1 MiB limit and response shape. Use `--summary` for the bulk output contract.
+**Historical step 08 validation scope:** the following force-cleanup restrictions
+and test evidence describe the earlier implementation. Current `rb --force` and
+`rm --versions` use the version-aware path described below under R01–R08; its
+new behavior and supported options remain pending validation.
+
 Large-batch and force-cleanup paths accept shared network options/custom signed
 headers, but reject per-object options rather than silently ignoring them.
 
@@ -732,3 +737,259 @@ missing/existing targets, retained parts after 412, concurrent create-only publi
 automatic pipe overwrite protection and bulk multipart without overwrite. A server
 application test injects a changed generation between observation and completion
 and checks that publication rejects it without losing the pending upload.
+
+## Step 09: presigned URLs and browser POST
+
+```sh
+zc share local/example-bucket/path/file.bin --expire 24h
+zc object share local/example-bucket/path/file.bin --method HEAD
+zc share local/example-bucket/path/new.bin --method PUT --expire 10m \
+  --header 'Content-Type: application/octet-stream' --header 'If-None-Match: *'
+zc share local/example-bucket/path/file.bin --method DELETE --expire 60s
+zc share local/example-bucket/path/file.bin --version-id null
+zc share local/example-bucket/large.bin --operation create-multipart-upload
+zc share local/example-bucket/large.bin --operation upload-part --upload-id ID --part-number 1
+zc share local/example-bucket/large.bin --operation list-parts --upload-id ID
+zc share local/example-bucket/large.bin --operation complete-multipart-upload --upload-id ID
+zc share local/example-bucket/large.bin --operation abort-multipart-upload --upload-id ID
+```
+
+`share` is the alias for `object share`. Generation is offline: it signs the
+resolved endpoint, region, path/DNS bucket lookup, method, query and required
+headers without checking permissions or object existence. The consumer must use
+the returned method and headers exactly. GET/PUT/DELETE/HEAD are supported;
+multipart `--operation` selects POST/PUT/GET/POST/DELETE respectively. UploadPart
+requires a part number from 1 to 10000; all multipart operations except create
+require UploadId. Complete consumers must supply the usual completion XML body.
+`--version-id` is accepted for ordinary GET/HEAD/DELETE, not PUT or multipart.
+Unsupported combinations are rejected before output.
+
+Output is one JSON envelope (indented in human mode) with `data.url`, `method`,
+`headers`, `expires_at` (Unix seconds), and `expires_in`. Header names are lower
+case, whitespace normalized, and duplicates/reserved authentication headers
+rejected. Literal key slashes, dot segments, Unicode and special characters retain
+S3 encoding; `--bucket-lookup auto` uses path style. `--endpoint`, `--region`, and
+`--bucket-lookup` override alias settings. The URL consumer controls its own TLS
+settings. No URL is fetched during signing.
+
+Expiry defaults to 1h; accept positive integer seconds or `s/m/h/d`, at most 7d.
+Session credentials require their **actual** expiration via
+`--credential-expiration UNIX_SECONDS` or `ZC_CREDENTIAL_EXPIRATION` (flag wins).
+An already-expired credential or a requested lifetime extending beyond that time
+is rejected, rather than silently shortened. Alias configuration does not yet
+store expiry or refresh credentials, and opaque session tokens cannot reveal it;
+the supplied timestamp must come from the credential issuer. The endpoint still
+enforces actual credential expiry, revocation and access policy when a URL is used.
+
+Share output intentionally contains bearer URLs or signed form credentials,
+including the access-key identifier and temporary token when applicable. `--quiet`
+still returns the requested capability. Secret access keys are never output;
+errors omit input values. Treat generated output as private.
+
+For POST, create a policy template (only `conditions`; expiration and authentication
+conditions are generated):
+
+```json
+{"conditions":[["starts-with","$key","incoming/"],{"Content-Type":"application/octet-stream"},["content-length-range",0,16777216],{"success_action_status":"201"}]}
+```
+
+```sh
+zc --json share post local/example-bucket --policy-file policy.json \
+  --field key=incoming/file.bin --expire 15m > form.json
+zc object post local/example-bucket --file ./file.bin --fields-file form.json --yes
+```
+
+Exact object conditions and `eq` supply fields automatically; `starts-with`
+requires a matching `--field NAME=VALUE`. Key and exactly one content-length-range
+condition are mandatory, and all fields must be covered. Supported fields are key,
+Content-Type, success_action_status (200/201/204), Content-MD5,
+x-amz-checksum-crc64nvme and x-amz-meta-*. Checksums, when supplied, must describe the
+actual bytes; this command does not calculate them. Authentication fields and
+bucket are supplied by the signer and cannot be overridden in the template.
+Contradictory conditions, unknown fields, redirects and `${filename}` substitution
+are rejected; this step uses literal keys. Templates/field files are bounded to
+256 KiB, regular files without a final-component symlink. Templates have at most
+100 conditions; encoded policy is at most 64 KiB. POST signatures share the URL
+expiry and temporary-credential rules.
+
+`share post` returns `data.url`, `method: POST`, `fields`, `expires_at`. Save the
+whole envelope or its plain fields object for `object post --fields-file`.
+Envelopes must match the resolved target URL, preventing accidental submission to
+a different alias endpoint; plain fields intentionally use the specified target.
+The form is submitted without an Authorization header; its own policy/signature
+provides authorization. `--yes` confirms that the POST may replace an object.
+
+`object post` sends actual multipart/form-data, fields first and file last, with a
+random boundary and fixed safe filename. The file is read incrementally from an
+open handle, with no whole-file memory buffer or temporary copy; keep it unchanged
+during upload. Only regular files (up to 5 TiB) are accepted, no stdin. Responses
+are bounded to 64 KiB of headers and 1 MiB of body. The command accepts only the
+expected 200/201/204 success status; 201 must have PostResponse, a nonempty ETag and
+the expected Key. It returns `http_status` and `bytes_uploaded`, never echoes form
+fields or arbitrary server messages. TLS verification defaults on; `--ca-cert`,
+`--insecure`, `--connect-timeout` and `--timeout` follow alias/request precedence.
+Redirects are refused and POST never retries, including ambiguous disconnects.
+
+This step also fixes two server gaps found by real tests: authenticated presigned
+multipart create/list/abort accept the signed URL's unsigned-payload semantics,
+and POST policies use their expiration instead of the ordinary 15-minute header
+authentication age limit (future timestamps beyond clock skew remain rejected).
+
+`tests/share_checks.py`, run inside `tests/s3api_integration.py`, independently
+recomputes URL/policy HMACs and exercises real GET/PUT/HEAD/DELETE, all five multipart
+operations, version selection, required headers, path encoding, temporary
+credentials, tampering, POST 200/201/204, 8 MiB streaming and size conditions. It also
+covers past/future/expired policy dates, DNS signing without network, redirects,
+ambiguous disconnects, HTTP-200 errors and TLS verification. No external S3 account
+or manual interaction is required; AWS interoperability is not claimed by these
+local tests.
+
+
+## 批量接入步骤 10–29（待验证）
+
+本批次集中连接 100 项单机/旧协议 S3 操作和 114 条 Management 路由；已有步骤 01–09 的验收记录继续保留，新增命令及扩展字段统一待验证。此前批量接入执行过编译和静态检查；本轮缺口补全只修改逻辑、生成模型/清单及格式化，没有编译或测试。完整入口、管理端位置参数和限制见 [CLI-COVERAGE.md](CLI-COVERAGE.md)。后续集中验证，不再逐步重复跑全套测试。
+
+```sh
+# 配置写操作显式确认；--dry-run 校验输入并预览请求
+zc bucket version enable local/data --yes
+zc bucket version list local/data
+zc bucket cors set local/data --file cors.json --yes
+zc bucket lifecycle set local/data --file lifecycle.json --yes
+zc object tag set local/data/a.txt --file tagging.json --yes
+zc object get local/data/a.txt ./a.txt --version-id VERSION_ID
+zc cp local/data/a.txt local/data/b.txt --version-id VERSION_ID
+zc mv local/data/a.txt local/data/b.txt --version-id VERSION_ID --yes
+zc rm local/data/a.txt --version-id VERSION_ID --yes
+zc rm local/data/prefix/ --versions --recursive --dry-run
+zc rb local/data --force --dry-run
+
+# 配置文件是具体 payload；input-json 则是含 Bucket/Key 的完整 API 请求
+zc s3api put-object-retention local --generate-input-skeleton
+zc s3api put-object-retention local --input-json retention-request.json --yes
+zc s3api list-object-versions local --input-json versions-request.json --all-pages
+zc object list local/data --list-api v1
+zc multipart copy-part local/data/source local/data/target --upload-id ID --part-number 1 --yes
+zc sql local/data/data.csv --input-json select-request.json --output records.csv --yes
+zc object annotation get local/data/a.txt --name NAME --output annotation.bin
+
+# 远端扫描显式授权；列表失败、超限都会停止，不返回截断成功
+zc find local/data/ --fallback --name report
+zc tree local/data/ --fallback
+zc du local/data/ --fallback
+zc diff ./source/ local/data/prefix/ --fallback
+zc mirror ./source/ local/data/prefix/ --fallback --dry-run
+zc mirror ./source/ local/data/prefix/ --fallback --overwrite --remove --yes
+zc ping local
+zc ready local
+zc completions zsh > ./zc-completions.zsh
+
+# 管理认证与 S3 分离，先在 alias 配置 management_endpoint
+zc admin auth login local --file login.json
+zc admin auth session local
+zc admin user list local
+zc admin user update local USER_NAME --file user-update.json --yes
+zc admin kms key action local --file key-action.json --yes
+zc quota set local/data --max-bytes 1073741824 --yes
+zc admin auth logout local --yes
+```
+
+管理请求文件和响应结构以仓库 Management OpenAPI 为准；各命令 `--help` 显示真实 HTTP 路径、位置参数和请求契约。登录会话按管理端点保存到配置旁 `.sessions/` 下的 0600 文件，检查服务端返回的到期时间；登录输出不打印 token。OIDC start/callback/refresh/logout 是显式协议步骤，登录跳转 URL 不由 CLI 自动打开。
+
+新增 S3 命令读取固定模型，`--kebab-case-field VALUE` 映射请求字段；列表/结构/map 参数用 JSON 字符串，所有字段均可放完整 `--input-json` 文件。高层 `--file` 配置文件与 `--body` 原始二进制文件不同。新列表高层默认分页；原始 s3api 保持单页，需要时使用新增模型入口的 `--all-pages`。分页最多 10000 页 / 64 MiB；不支持的组合明确报错。
+
+`anonymous set TARGET --mode download|upload|public|none` **替换或删除整份策略**。`ilm rule add/edit TARGET --id ID --file RULE_JSON`、`ilm rule remove TARGET --id ID` 读取后替换配置，没有服务端 CAS；初始化完整规则也可使用 `bucket lifecycle set`。`event get/set/clear` 使用 S3 通知，原生事件目标/订阅使用 `admin event-destination/event-subscription`，两者不混用。
+
+新增扫描和 mirror 最多 100000 项 / 64 MiB；本地根目录须存在，拒绝符号链接和不安全对象路径。同实例使用 size+ETag 比较，本地/远端保守复制；复制阶段失败不会进入删除阶段。版本清理先取得完整计划；没有全局快照锁，并发写入可能导致最终 DeleteBucket 失败。`watch` 的服务端事件游标和客户端消费逻辑已接入，待验证；需新版服务端和管理端 Bearer 权限，不能将有限回放解释为无损投递。
+
+Select 校验事件帧 CRC、处理 Records/Stats/Progress/End 和错误帧，仅把 Records 写入输出文件，收到完整 End 后才原子发布；annotation/torrent 也要求输出文件。服务器不支持某 API 时直接返回错误，不模拟归档/报表/ABAC 等能力。SHA256 可自动计算，其他上传校验算法需要提供对应值；SSE-C 传协议格式的 Base64 密钥/MD5。日期头使用 HTTP 日期，XML 时间使用 ISO 8601。
+
+扩展字段优先通过 s3api 完整 JSON 使用。自动分片恢复、stdout/按行读取、校验下载与扩展字段的部分组合仍显式拒绝，未声称全部组合已实现。完整自测仍由 CLI 自动化完成；本轮延后执行不等于改成人工手工验收。
+
+### 缺口补全用法（逻辑已接入，待验证）
+
+```sh
+zc tag set local/photos/a.jpg --tag project=demo --tag owner=team --yes
+zc tag remove local/photos/a.jpg --key owner --yes
+zc cors set local/photos cors.xml --yes
+zc retention set governance 30d local/photos/a.jpg --yes
+zc legalhold clear local/photos/a.jpg --yes
+zc event add local/photos --id images --type queue --arn QUEUE_ARN --events s3:ObjectCreated:* --prefix images/ --yes
+zc ilm rule export local/photos --output lifecycle.json
+zc ilm rule import local/photos lifecycle.json --yes
+zc tree local/photos --fallback --level 3
+zc find local/photos --fallback --name '*.jpg' --newer 7d --min-size 1MiB
+zc du local --fallback --versions
+zc mirror ./photos local/photos --fallback --include '*.jpg' --watch --interval 30 --overwrite --yes
+zc watch local/photos --events PUT,DELETE --cursor-file ./photos.cursor.json
+zc admin user disable local alice --yes
+zc admin group add-members local editors alice bob --yes
+zc admin policy attach local readonly --user alice --yes
+zc admin idp openid set local corporate --file provider.json --yes
+zc admin kms key status local KEY_ID
+zc admin kms key delete local KEY_ID --pending-window-days 7 --yes
+```
+
+CORS 接受 JSON/XML 文件或 `-` 标准输入；生命周期 export 输出原始配置，可直接 import。配置读改写没有 S3 CAS，需串行操作。原始模型 JSON 参数继续可用；OIDC 机密通过配置文件提供。
+
+`find --name` 使用 `*`/`?` 通配，`--regex` 使用 POSIX ERE；`--newer/--older` 使用 s/m/h/d/y 相对时长，年按 365 天。`tree --level` 截断会给出 `view_truncated`。`du` 优先管理快照，只有显式 `--fallback` 才扫描对象；本地相对路径建议写 `./目录`。
+
+`mirror --watch` 周期执行完整比较和同步，不是对象事件订阅。`watch` 消费实际成功对象事件，输出 JSON Lines；只对网络失败做有限重连，游标过期退出，绝不静默从最新位置跳过。检查点在整页输出后保存，崩溃恢复可能重复。详细权限、回放容量与重启语义见 [事件游标契约](../docs/api/object-watch.md)。
+
+本轮未编译、未测试、未联调，现有 `zc` 和服务端二进制未重建；所有新增行为等待后续集中验证。
+
+### 再次复扫后的接续补全（待验证）
+
+```sh
+zc retention clear local/photos/a.jpg --bypass --yes
+zc mirror ./photos local/photos --endpoint https://storage.example --ca-cert ca.pem --fallback --overwrite --yes
+zc s3api put-bucket-cors local --input-json - --yes < cors-request.json
+zc admin kms key create local --name reports --description 'Report encryption' --set-as-default --yes
+zc admin kms key status local
+zc admin idp openid update local corporate --display-name Corporate --yes
+```
+
+retention bypass 由共享请求层生成对应字段；mirror 的复制与删除沿用扫描阶段的 S3 连接覆盖参数。模型化 `--input-json -`、配置 `--file -` 和管理 JSON 输入支持有界 stdin（4 MiB）；同次不能让 JSON 和 body 争用 stdin，也不能同时指定 file/input-json。凭据与会话文件不使用 stdin。
+
+OIDC update 先读取现有 provider，仅覆盖用户给出的字段；JSON 与短选项可组合，短选项优先。机密经 JSON 提交，空 client_secret 保留服务器现值，脱敏占位符不能作为机密写回。该读改写无 CAS，请串行修改同一 provider。
+
+管理便利命令的 help 已包含对应位置参数、选项与权限/执行边界。KMS key create 支持 name/description/set-as-default；status 无 ID 列出元数据与能力，有 ID 查询单项。KMS tag、list 分页、restart/roundtrip 以及 access-key provider 聚合过滤没有现成统一契约，仍属于上游参考范围；用户密钥使用 admin user access-key list。
+
+本轮仅补逻辑、生成覆盖文档并格式化，所有新增及修正行为仍待验证，未重建二进制。
+
+### 三项断点补全（待验证）
+
+对象属性 `--all-pages` 的续页游标使用整数；未返回 ObjectParts 时保留已取得的属性页并结束。`retention set --default TARGET --file lock.json --yes`（以及 input-json / object-lock-configuration 形式）转发清理后的参数，文件采用 Bucket Object Lock 配置结构。
+
+`watch --cursor-file PATH` 只接受真实文件路径，拒绝 `-`，并与 `--cursor` 互斥；如需字面文件名 `-`，写为 `./-`。本轮只补逻辑与文档并格式化，未编译、测试或联调。
+
+### 响应元数据与生命周期往返（待验证）
+
+旧请求和模型化请求共用自定义元数据响应头提取，忽略大小写匹配 `x-amz-meta-`，键名输出为小写；HTTP 临时响应中的头不会混入最终响应。模型化 HeadObject/GetObject 的结果同时提供 `data.result.Metadata` 和兼容旧消费者的 `data.metadata`，未返回元数据时为空对象。
+
+`ilm rule list/export` 的文档格式为 Rules 加可选的独立设置，例如：
+
+```json
+{
+  "Rules": [
+    {"ID": "expire-temp", "Status": "Enabled", "Filter": {"Prefix": "tmp/"}, "Expiration": {"Days": 30}}
+  ],
+  "TransitionDefaultMinimumObjectSize": "varies_by_storage_class"
+}
+```
+
+最小转换大小设置可为 `varies_by_storage_class` 或 `all_storage_classes_128K`。导入时 Rules 写入生命周期 XML 正文，独立设置写入对应请求头。规则增改删（仍有规则时）保留服务端返回的设置；删除最后一条规则仍删除整份配置。
+
+import 兼容仅含 Rules 的旧文件、完整请求的 LifecycleConfiguration 包装和旧 CLI 结果 envelope；同时出现的内外层设置必须一致。旧文件未指定设置时不猜测值，由服务端采用其缺省行为。此导出格式用于 `ilm rule import`；直接使用 `bucket lifecycle set --file` 时文件仍须是纯 LifecycleConfiguration 正文，独立设置通过模型字段选项提供。
+
+本轮只补上述字段处理逻辑和文档并格式化，没有编译、测试或联调，也不代表全部 CLI 已审查或验收。
+
+## R01–R08 集中补全（待验证）
+
+八项已补写逻辑，逐项记录见 [集中静态审查清单](../docs/zigfs-zc-cli-static-review.md)。本轮未编译、运行测试、执行 CLI 或联调；现有二进制未重建。
+
+- `rm ALIAS/BUCKET/KEY --versions` 删除指定 Key 的版本和删除标记；加 `--recursive/-r` 按前缀。`rb ALIAS/BUCKET --force` 清理版本后删桶，存在未完成上传须另加 `--dangerous`。均要求 `--yes` 或 `--dry-run`。
+- 版本清理支持 `--endpoint`、`--region`、`--bucket-lookup`、`--ca-cert`、`--insecure`、`--timeout`、`--connect-timeout`、`--page-size 1..1000`、`--bypass-governance-retention`（别名 `--bypass`）。绕过仅传给对象删除，不绕过合规模式或 legal hold。该路径串行、首错停止，拒绝 include/exclude、并发、重试/限速、header、summary、continue-on-error、fail-empty 等普通 bulk 参数。
+- 历史删除和 mirror 在失败/取消时输出 `status=error`、原退出码及 `cause`，`progress` 包含已确认成功数量和阶段/目标，`completed`、`unstarted` 说明进度，`outcome_unknown` 保守标记已尝试但未确认成功的失败操作。没有自动回滚或不确定写重试。
+- `du ALIAS --fallback` 进入服务扫描时完整消费 ListBuckets；逐桶释放临时数据，只保留统计。所有桶/对象/版本/上传/分片的扫描记录共用 100000 条和 64 MiB 序列化页面预算，桶数另限 10000，过滤不绕过预算；超限失败，预算不等于 RSS 上限。
+- 未完成上传按分片总大小做 min/max-size 筛选；服务扫描保留多次 include/exclude。扫描错误保留原退出码和原始错误，附加失败阶段。diff/mirror 两端共享单次扫描预算。
+- version enable/suspend、lock clear、legalhold enable/disable 拒绝不适用参数；通知每种动作单独校验参数。`event add --file` 可配 `--id`/`--type`，不能再配 arn/events/prefix/suffix，避免静默忽略。

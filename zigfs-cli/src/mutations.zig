@@ -74,6 +74,11 @@ pub fn execute(a: A, ctx: aliases.Context, action: []const u8, operands: []const
     var it = values.iterator();
     while (it.next()) |e| {
         const n = e.key_ptr.*;
+        if (eq(n, "--version-id")) {
+            if (batch) return error.InvalidInput;
+            if (!copy and !move) try put(a, &input, "VersionId", e.value_ptr.*);
+            continue;
+        }
         if (api.isValueOption(n)) {
             try pass.appendSlice(a, &.{ n, e.value_ptr.* });
             continue;
@@ -96,6 +101,10 @@ pub fn execute(a: A, ctx: aliases.Context, action: []const u8, operands: []const
     }
     if (copy or move) {
         try put(a, &input, "CopySource", try signing.encode(a, try std.fmt.allocPrint(a, "/{s}/{s}", .{ source.bucket, source.key }), true));
+        if (values.get("--version-id")) |v| {
+            const encoded = try signing.encode(a, v, false);
+            try put(a, &input, "CopySource", try std.fmt.allocPrint(a, "{s}?versionId={s}", .{ text(input, "CopySource").?, encoded }));
+        }
         if (overwrite) {
             if (input.object.contains("IfNoneMatch")) return error.InvalidInput;
         } else {
@@ -136,17 +145,19 @@ pub fn execute(a: A, ctx: aliases.Context, action: []const u8, operands: []const
         return finish(a, json, quiet, action, preview);
     }
     // Fail closed for enabled/suspended versioning and for unavailable/denied checks.
-    for ([_]Remote{ source, destination }, 0..) |r, index| {
+    if (move and !values.contains("--version-id")) for ([_]Remote{ source, destination }, 0..) |r, index| {
         if (index == 1 and eq(source.bucket, destination.bucket)) continue;
         const check = try api.executeInput(a, ctx, "get-bucket-versioning", pass.items, config, true, false, try target(a, r, false));
         if (check.exit_code != 0) return failed(a, json, check, "versioning", false);
         const version = (try data(a, check)).object.get("result").?;
         if (!(version == .string and version.string.len == 0) and !(version == .object and version.object.count() == 0))
             return report(a, json, "NOT_SUPPORTED", "versioned or unknown bucket state; version-aware mutations await step 10", 7, "versioning", false, null);
-    }
+    };
     var original: ?V = null;
     if (move) {
-        const observed = try api.executeInput(a, ctx, "head-object", pass.items, config, true, false, try target(a, source, true));
+        var source_head = try target(a, source, true);
+        if (values.get("--version-id")) |v| try put(a, &source_head, "VersionId", v);
+        const observed = try api.executeInput(a, ctx, "head-object", pass.items, config, true, false, source_head);
         if (observed.exit_code != 0) return failed(a, json, observed, "source-head", false);
         original = (try data(a, observed)).object.get("headers").?;
         const etag = text(original.?, "etag") orelse return error.InvalidResponse;
@@ -161,7 +172,11 @@ pub fn execute(a: A, ctx: aliases.Context, action: []const u8, operands: []const
     const reads = pass.items[0 .. pass.items.len - 1];
     const copied_etag = text(completed.object.get("result").?, "ETag") orelse return error.InvalidResponse;
     for ([_]Remote{ destination, source }, 0..) |r, index| {
-        const observed = api.executeInput(a, ctx, "head-object", reads, config, true, false, try target(a, r, true)) catch return report(a, json, "MOVE_INCOMPLETE", "copy succeeded; verification failed; source deletion was not attempted", 1, "verify", true, null);
+        var check_input = try target(a, r, true);
+        if (index == 1) {
+            if (values.get("--version-id")) |v| try put(a, &check_input, "VersionId", v);
+        }
+        const observed = api.executeInput(a, ctx, "head-object", reads, config, true, false, check_input) catch return report(a, json, "MOVE_INCOMPLETE", "copy succeeded; verification failed; source deletion was not attempted", 1, "verify", true, null);
         if (observed.exit_code != 0) return failed(a, json, observed, "verify", true);
         const headers = (try data(a, observed)).object.get("headers").?;
         const expected = if (index == 0) copied_etag else text(original.?, "etag").?;
@@ -171,7 +186,9 @@ pub fn execute(a: A, ctx: aliases.Context, action: []const u8, operands: []const
         };
         if (!same) return report(a, json, "MOVE_INCOMPLETE", "object changed during move; destination retained; source deletion was not attempted", 6, "verify", true, null);
     }
-    const deleted = api.executeInput(a, ctx, "delete-object", pass.items, config, true, false, try target(a, source, true)) catch return report(a, json, "MOVE_INCOMPLETE", "copy succeeded; delete outcome unknown; inspect source before retrying", 1, "delete-source", true, null);
+    var delete_input = try target(a, source, true);
+    if (values.get("--version-id")) |v| try put(a, &delete_input, "VersionId", v);
+    const deleted = api.executeInput(a, ctx, "delete-object", pass.items, config, true, false, delete_input) catch return report(a, json, "MOVE_INCOMPLETE", "copy succeeded; delete outcome unknown; inspect source before retrying", 1, "delete-source", true, null);
     if (deleted.exit_code != 0) return failed(a, json, deleted, "delete-source", true);
     var result_data: V = .{ .object = .{} };
     try result_data.object.put(a, "copy", completed);

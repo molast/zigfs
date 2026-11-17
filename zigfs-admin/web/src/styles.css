@@ -2081,7 +2081,7 @@ html[data-theme="dark"], .dark {
 @media (max-width: 720px) { .monitor-trends { grid-template-columns: minmax(0, 1fr); } .monitor-gauge-value { font-size: 22px; } .monitor-stat-value { font-size: 18px; } }
 
 .monitor-module { min-width: 0; }
-.monitor-module > [data-slot="collapsible-trigger"] { background: var(--muted); border-radius: var(--radius); }
+.monitor-module > [data-slot="collapsible-trigger"] { background: var(--muted); border-radius: var(--radius); font-size: 14px; line-height: 20px; font-weight: 500; }
 
 [data-slot="select-trigger"][data-size="xs"] { height: 28px; min-height: 28px; padding: 3px 8px; gap: 6px; font-size: 12px; line-height: 20px; }
 .monitor-overview-card [data-slot="card-header"] { padding: 10px 12px 8px; }
@@ -2125,4 +2125,26 @@ html[data-theme="dark"], .dark {
   .monitor-resource-memory, .monitor-resource-disk { gap: 6px; }
   .monitor-memory-ring { width: 54px; height: 54px; }
   .monitor-resource-reading { flex-wrap: wrap; gap: 2px 6px; }
+}
+
+.ui-card-with-help {
+  position: relative;
+}
+.ui-card-with-help > [data-slot="card-header"] {
+  padding-right: 42px;
+}
+.ui-card-help.ui-button {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  color: var(--muted-foreground);
+}
+.ui-card-help.ui-button:hover {
+  color: var(--foreground);
+}
+.ui-card-with-help.monitoring-summary {
+  padding-right: 42px;
+}
+.ui-card-with-help > [data-slot="collapsible"] > [data-slot="card-header"] {
+  padding-right: 42px;
 }

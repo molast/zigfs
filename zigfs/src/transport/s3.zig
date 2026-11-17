@@ -31,6 +31,7 @@ pub const service_name = "s3";
 // Constructed only after authentication and action/resource checks. Anonymous
 // requests retain their explicit public-bucket checks; legacy keys remain owner-scoped.
 const BucketAccess = struct {
+    presigned: bool = false,
     owner: []const u8,
     iam_authorized: bool = false,
     principal: ?*const credential_service.AuthMaterial = null,
@@ -287,6 +288,7 @@ pub fn serveRequest(
         };
     }
     var bucket_access: BucketAccess = .{
+        .presigned = uses_presigned_auth,
         .owner = auth_material.owner,
         .principal = &auth_material,
         .context = conditions,
@@ -1911,8 +1913,10 @@ fn servePostPolicyUpload(
         return respondError(request, application.allocator, .service_unavailable, request_id);
     }).toSeconds();
     const difference: i128 = @as(i128, signed_at) - now;
-    const absolute_difference = if (difference < 0) -difference else difference;
-    if (absolute_difference > application.config.s3_request_time_skew_seconds) {
+    // POST policy expiration controls age, as presigned URL expiry does. Only
+    // reject signatures dated too far in the future; an otherwise valid policy
+    // must not silently expire at the ordinary header-auth clock-skew window.
+    if (difference > application.config.s3_request_time_skew_seconds) {
         return respondError(request, application.allocator, .request_time_too_skewed, request_id);
     }
 
@@ -3366,7 +3370,7 @@ fn ensureBucketOwner(
 }
 
 fn ensureEmptyRequestForAccess(request: *const std.http.Server.Request, headers: []const sigv4.Header, access: BucketAccess) ?protocol.ErrorKind {
-    return if (access.owner.len == 0 and access.iam_authorized) ensureEmptyRequestWithHash(request, .unsigned) else ensureEmptyRequest(request, headers);
+    return if (access.presigned or (access.owner.len == 0 and access.iam_authorized)) ensureEmptyRequestWithHash(request, .unsigned) else ensureEmptyRequest(request, headers);
 }
 
 fn ensureEmptyRequest(

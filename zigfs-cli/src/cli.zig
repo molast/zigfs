@@ -1,5 +1,9 @@
 const std = @import("std");
 const aliases = @import("alias.zig");
+const management = @import("management.zig");
+const modeled = @import("modeled.zig");
+const share = @import("share.zig");
+const versions = @import("versions.zig");
 const bulk = @import("bulk.zig");
 const multipart = @import("multipart.zig");
 const objects = @import("objects.zig");
@@ -15,7 +19,7 @@ pub const Options = struct {
     quiet: bool = false,
     debug: bool = false,
 };
-pub const Command = enum { help, version, alias, s3api, browse, objects, multipart, unavailable };
+pub const Command = enum { help, version, alias, s3api, browse, objects, multipart, share, modeled, unavailable };
 pub const ParseError = error{ UnknownOption, UnknownCommand, MissingValue, InvalidFormat, ConflictingOptions, UnexpectedArgument, TooManyArguments };
 
 const Entry = struct {
@@ -24,10 +28,14 @@ const Entry = struct {
     description: []const u8,
     group: bool = false,
     implemented: bool = false,
+    modeled: bool = false,
 };
 
 // Reserved entries provide help only. Add real handlers when their implementation lands.
-const registry = [_]Entry{
+const base_registry = [_]Entry{
+    .{ .path = "object share", .alias = "share", .description = "Generate a presigned S3 URL", .implemented = true },
+    .{ .path = "share post", .description = "Generate signed POST form fields", .implemented = true },
+    .{ .path = "object post", .description = "Upload a signed browser POST form", .implemented = true },
     .{ .path = "multipart", .description = "Manage multipart uploads", .group = true, .implemented = true },
     .{ .path = "pipe", .description = "Upload stdin using bounded multipart buffering", .implemented = true },
     .{ .path = "multipart create", .description = "create multipart upload", .implemented = true },
@@ -71,7 +79,7 @@ const registry = [_]Entry{
     .{ .path = "bucket remove", .alias = "rb", .description = "Remove a bucket", .implemented = true },
     .{ .path = "bucket stat", .description = "Check bucket access", .implemented = true },
     .{ .path = "bucket location", .description = "Read bucket region", .implemented = true },
-    .{ .path = "bucket version", .alias = "version", .description = "Manage bucket versioning; use --version for the CLI version" },
+    .{ .path = "bucket version", .alias = "version", .description = "Manage bucket versioning; use --version for the CLI version", .group = true, .implemented = true, .modeled = true },
     .{ .path = "object put", .alias = "put", .description = "Upload one object", .implemented = true },
     .{ .path = "object get", .alias = "get", .description = "Download one object", .implemented = true },
     .{ .path = "object list", .description = "List objects", .implemented = true },
@@ -84,6 +92,39 @@ const registry = [_]Entry{
     .{ .path = "object head", .alias = "head", .description = "Print the beginning of an object", .implemented = true },
     .{ .path = "ls", .description = "List buckets or objects according to the remote path", .implemented = true },
 };
+
+const workflows = @import("workflows.zig");
+const convenience = @import("convenience.zig");
+const catalog = struct {
+    const entries = @import("catalog.zig").entries ++ @import("management_catalog.zig").entries ++ workflows.entries ++ @import("compat_catalog.zig").entries;
+};
+const registry_data = buildRegistry();
+const registry = registry_data.items[0..registry_data.len];
+const RegistryData = struct { items: [base_registry.len + catalog.entries.len * 5]Entry, len: usize };
+fn buildRegistry() RegistryData {
+    @setEvalBranchQuota(500000);
+    var result: RegistryData = undefined;
+    result.len = base_registry.len;
+    @memcpy(result.items[0..base_registry.len], &base_registry);
+    for (catalog.entries) |entry| {
+        for (entry.path, 0..) |c, i| {
+            if (c != ' ') continue;
+            const prefix = entry.path[0..i];
+            var found = false;
+            for (result.items[0..result.len]) |old| if (std.mem.eql(u8, old.path, prefix)) {
+                found = true;
+                break;
+            };
+            if (!found) {
+                result.items[result.len] = .{ .path = prefix, .description = "Pending-validation command group", .group = true, .implemented = true, .modeled = true };
+                result.len += 1;
+            }
+        }
+        result.items[result.len] = .{ .path = entry.path, .description = "Connected; pending validation", .implemented = true, .modeled = true };
+        result.len += 1;
+    }
+    return result;
+}
 
 pub const Invocation = struct {
     command: Command = .help,
@@ -186,11 +227,12 @@ pub fn parse(args: []const []const u8) ParseError!Invocation {
                 const split = std.mem.indexOfScalar(u8, arg, '=');
                 const name = if (split) |at| arg[0..at] else arg;
                 const protocol = std.mem.startsWith(u8, registry[result.entry.?].path, "s3api ");
+                const sharing = share.wanted(registry[result.entry.?].path);
                 const multi = std.mem.startsWith(u8, registry[result.entry.?].path, "multipart ") or equal(registry[result.entry.?].path, "pipe");
                 const transfer = std.mem.startsWith(u8, registry[result.entry.?].path, "object ") and !equal(registry[result.entry.?].path, "object list");
                 const high = !std.mem.startsWith(u8, registry[result.entry.?].path, "alias ");
-                const flag = if (bulk.isFlag(name)) true else if (multi) multipart.isFlag(name) else if (transfer) objects.isFlag(name) else if (high and !protocol) browse.isFlag(name) else if (protocol) s3api.isFlag(name) else aliases.isFlag(name);
-                const value_option = if (bulk.isValueOption(name)) true else if (multi) multipart.isValueOption(name) else if (transfer) objects.isValueOption(name) else if (high and !protocol) browse.isValueOption(name) else if (protocol) s3api.isValueOption(name) else aliases.isValueOption(name);
+                const flag = if (registry[result.entry.?].modeled) modeled.isFlag(name) else if (sharing) share.isFlag(name) else if (bulk.isFlag(name)) true else if (multi) multipart.isFlag(name) else if (transfer) objects.isFlag(name) else if (high and !protocol) browse.isFlag(name) else if (protocol) s3api.isFlag(name) else aliases.isFlag(name);
+                const value_option = if (registry[result.entry.?].modeled) !modeled.isFlag(name) else if (sharing) share.isValueOption(name) else if (bulk.isValueOption(name)) true else if (multi) multipart.isValueOption(name) else if (transfer) objects.isValueOption(name) else if (high and !protocol) browse.isValueOption(name) else if (protocol) s3api.isValueOption(name) else aliases.isValueOption(name);
                 if (!flag and !value_option) return error.UnknownOption;
                 try result.append(arg);
                 if (value_option and split == null) {
@@ -202,7 +244,9 @@ pub fn parse(args: []const []const u8) ParseError!Invocation {
             continue;
         }
         if (result.entry) |entry| {
-            if (registry[entry].group) {
+            if (!end_options and equal(registry[entry].path, "object share") and equal(arg, "post") and operands == 0) {
+                result.entry = childEntryByShare();
+            } else if (registry[entry].group) {
                 result.entry = childEntry(entry, arg) orelse return error.UnknownCommand;
                 if (end_options and registry[result.entry.?].implemented) try result.append("--");
             } else {
@@ -223,7 +267,7 @@ pub fn parse(args: []const []const u8) ParseError!Invocation {
         if (operands != 0) return error.UnexpectedArgument;
         result.command = .help;
     } else if (result.entry) |entry| {
-        result.command = if (registry[entry].group) .help else if (registry[entry].implemented) if (std.mem.startsWith(u8, registry[entry].path, "s3api ")) .s3api else if (std.mem.startsWith(u8, registry[entry].path, "alias ")) .alias else if (std.mem.startsWith(u8, registry[entry].path, "multipart ") or equal(registry[entry].path, "pipe")) .multipart else if (std.mem.startsWith(u8, registry[entry].path, "object ") and !equal(registry[entry].path, "object list")) .objects else .browse else .unavailable;
+        result.command = if (registry[entry].group) .help else if (registry[entry].implemented) if (registry[entry].modeled) .modeled else if (share.wanted(registry[entry].path)) .share else if (std.mem.startsWith(u8, registry[entry].path, "s3api ")) .s3api else if (std.mem.startsWith(u8, registry[entry].path, "alias ")) .alias else if (std.mem.startsWith(u8, registry[entry].path, "multipart ") or equal(registry[entry].path, "pipe")) .multipart else if (std.mem.startsWith(u8, registry[entry].path, "object ") and !equal(registry[entry].path, "object list")) .objects else .browse else .unavailable;
     }
     return result;
 }
@@ -255,11 +299,13 @@ fn helpText(allocator: std.mem.Allocator, entry_id: ?usize) ![]u8 {
     if (entry_id) |id| {
         const entry = registry[id];
         try w.print("ZigFS CLI (zc)\nUsage: zc {s} [OPTIONS]\n{s}\n", .{ entry.path, entry.description });
+        if (entry.modeled and std.mem.startsWith(u8, entry.path, "admin ") and !entry.group) try w.writeAll(try management.describe(allocator, convenience.canonical(entry.path)));
         if (entry.alias) |alias| try w.print("Alias: {s}\n", .{alias});
         if (entry.implemented) {
-            try w.writeAll(if (std.mem.startsWith(u8, entry.path, "s3api")) s3api.help else if (std.mem.startsWith(u8, entry.path, "alias")) aliases.help else if (std.mem.startsWith(u8, entry.path, "object ") and !equal(entry.path, "object list")) objects.help else if (std.mem.startsWith(u8, entry.path, "multipart") or equal(entry.path, "pipe")) multipart.help else browse.help);
+            try w.writeAll(if (entry.modeled) if (convenience.wanted(entry.path)) (if (std.mem.startsWith(u8, entry.path, "admin ")) @import("admin_workflows.zig").help(convenience.canonical(entry.path)) else convenience.help) else if (std.mem.startsWith(u8, entry.path, "admin")) management.help else if (workflows.wanted(entry.path)) workflows.help else modeled.help else if (share.wanted(entry.path)) share.help else if (std.mem.startsWith(u8, entry.path, "s3api")) s3api.help else if (std.mem.startsWith(u8, entry.path, "alias")) aliases.help else if (std.mem.startsWith(u8, entry.path, "object ") and !equal(entry.path, "object list")) objects.help else if (std.mem.startsWith(u8, entry.path, "multipart") or equal(entry.path, "pipe")) multipart.help else browse.help);
         } else try w.writeAll("Status: reserved, not implemented. Help is available; business execution exits 7.\n");
         if (entry.implemented and (std.mem.startsWith(u8, entry.path, "object") or equal(entry.path, "bucket remove"))) try w.writeAll(bulk.help);
+        if (entry.implemented and (equal(entry.path, "object remove") or equal(entry.path, "bucket remove"))) try w.writeAll(versions.help);
         if (entry.group) {
             try w.writeAll(if (entry.implemented) "Subcommands:\n" else "Reserved subcommands (help only):\n");
             for (registry) |child| {
@@ -269,7 +315,7 @@ fn helpText(allocator: std.mem.Allocator, entry_id: ?usize) ![]u8 {
         }
         try w.print("Example: zc {s} --help\n\n", .{entry.path});
     } else {
-        try w.writeAll("ZigFS CLI (zc)\nUsage: zc [OPTIONS] [COMMAND]\n       zc help [COMMAND [SUBCOMMAND]]\n\nAvailable: help, --version, alias set/list/info/remove/export/import, s3api\nAvailable: bucket list/create/stat/location/remove, object list/put/get/stat/show/head/copy, ls/mb/rb/put/get/cat/head/stat/cp\nAvailable: mv/rm, object remove-batch, multipart create/upload-part/parts/list/complete/abort, pipe\nReserved legacy name (help only): version\nUnlisted high-level S3 commands remain reserved. s3api performs signed HTTP requests; alias commands only manage local settings.\nUse --version for the CLI version; 'version' is reserved for bucket versioning.\nExamples: zc --version; zc bucket --help; zc help object copy\n\n");
+        try w.writeAll("ZigFS CLI (zc)\nUsage: zc [OPTIONS] [COMMAND]\n       zc help [COMMAND [SUBCOMMAND]]\n\nAvailable: help, --version, alias set/list/info/remove/export/import, s3api\nAvailable: bucket list/create/stat/location/remove, object list/put/get/stat/show/head/copy, ls/mb/rb/put/get/cat/head/stat/cp\nAvailable: mv/rm, object remove-batch, multipart create/upload-part/parts/list/complete/abort, pipe\nAvailable: share, object share, share post, object post\nAvailable: version, tag, cors, retention, legalhold, ilm, event, quota, anonymous\nAvailable: find/tree/du/diff/mirror/watch/completions and admin command groups (pending validation)\ns3api performs signed HTTP requests; alias commands only manage local settings.\nUse --version for the CLI version; version manages bucket versioning.\nExamples: zc --version; zc bucket --help; zc help object copy\n\n");
     }
     try w.writeAll(global_help);
     return try allocator.dupe(u8, text.written());
@@ -318,13 +364,40 @@ pub fn execute(allocator: std.mem.Allocator, args: []const []const u8) !Response
     return executeWithContext(allocator, args, null);
 }
 
+fn completions(a: std.mem.Allocator, args: []const []const u8) !Response {
+    if (args.len != 1) return error.InvalidInput;
+    const shell = args[0];
+    var out: std.Io.Writer.Allocating = .init(a);
+    if (equal(shell, "bash")) {
+        try out.writer.writeAll("_zc_complete() { local prefix=\"${COMP_WORDS[*]:1:COMP_CWORD-1}\" line tail; COMPREPLY=(); while IFS= read -r line; do if [[ -z \"$prefix\" ]]; then tail=\"$line\"; elif [[ \"$line\" == \"$prefix \"* ]]; then tail=\"${line#\"$prefix \"}\"; else continue; fi; tail=\"${tail%% *}\"; [[ \"$tail\" == \"${COMP_WORDS[COMP_CWORD]}\"* ]] && COMPREPLY+=(\"$tail\"); done <<'ZC_COMMANDS'\n");
+        for (registry) |entry| if (entry.implemented) {
+            try out.writer.print("{s}\n", .{entry.path});
+            if (entry.alias) |alias| try out.writer.print("{s}\n", .{alias});
+        };
+        try out.writer.writeAll("ZC_COMMANDS\n}\ncomplete -F _zc_complete zc\n");
+    } else if (equal(shell, "zsh")) {
+        try out.writer.writeAll("#compdef zc\n_zc() { local prefix=\"${(j: :)words[2,CURRENT-1]}\" line tail; local -a choices; while IFS= read -r line; do if [[ -z \"$prefix\" ]]; then tail=\"$line\"; elif [[ \"$line\" == \"$prefix \"* ]]; then tail=\"${line#\"$prefix \"}\"; else continue; fi; choices+=(\"${tail%% *}\"); done <<'ZC_COMMANDS'\n");
+        for (registry) |entry| if (entry.implemented) {
+            try out.writer.print("{s}\n", .{entry.path});
+            if (entry.alias) |alias| try out.writer.print("{s}\n", .{alias});
+        };
+        try out.writer.writeAll("ZC_COMMANDS\ncompadd -a choices\n}\ncompdef _zc zc\n");
+    } else if (equal(shell, "fish")) {
+        for (registry) |entry| if (entry.implemented) {
+            const cut = std.mem.lastIndexOfScalar(u8, entry.path, ' ');
+            if (cut) |i| try out.writer.print("complete -c zc -f -n '__fish_seen_subcommand_from {s}' -a '{s}'\n", .{ entry.path[0..i], entry.path[i + 1 ..] }) else try out.writer.print("complete -c zc -f -n '__fish_use_subcommand' -a '{s}'\n", .{entry.path});
+        };
+    } else return error.InvalidInput;
+    return .{ .exit_code = 0, .stdout = out.written() };
+}
 fn executeWithContext(allocator: std.mem.Allocator, args: []const []const u8, context: ?aliases.Context) !Response {
     const invocation = parse(args) catch |err| return failure(allocator, wantsJson(args), "USAGE_ERROR", errorMessage(err), 2);
     const json = invocation.options.format == .json;
-    if (invocation.command == .s3api or invocation.command == .browse or invocation.command == .objects or invocation.command == .multipart) {
+    if (invocation.command == .modeled and equal(registry[invocation.entry.?].path, "completions")) return completions(allocator, invocation.args[0..invocation.arg_count]) catch return failure(allocator, json, "USAGE_ERROR", "completions requires bash, zsh or fish", 2);
+    if (invocation.command == .s3api or invocation.command == .browse or invocation.command == .objects or invocation.command == .multipart or invocation.command == .share or invocation.command == .modeled) {
         const ctx = context orelse return failure(allocator, json, "GENERAL_ERROR", "network context unavailable", 1);
         const bulk_command = bulk.wanted(registry[invocation.entry.?].path, invocation.args[0..invocation.arg_count]);
-        const handler: *const @TypeOf(s3api.execute) = if (bulk_command) &bulk.execute else if (invocation.command == .multipart) &multipart.execute else if (invocation.command == .objects) &objects.execute else if (invocation.command == .browse) &browse.execute else &s3api.execute;
+        const handler: *const @TypeOf(s3api.execute) = if (versions.wanted(registry[invocation.entry.?].path, invocation.args[0..invocation.arg_count])) &versions.execute else if (invocation.command == .modeled) if (convenience.wanted(registry[invocation.entry.?].path)) &convenience.execute else if (std.mem.startsWith(u8, registry[invocation.entry.?].path, "admin ")) &management.execute else if (workflows.wanted(registry[invocation.entry.?].path)) &workflows.execute else &modeled.execute else if (invocation.command == .share) &share.execute else if (bulk_command) &bulk.execute else if (invocation.command == .multipart) &multipart.execute else if (invocation.command == .objects) &objects.execute else if (invocation.command == .browse) &browse.execute else &s3api.execute;
         const path = registry[invocation.entry.?].path;
         const output = handler(allocator, ctx, if (invocation.command != .s3api) path else path[6..], invocation.args[0..invocation.arg_count], invocation.config_path, json, invocation.options.quiet) catch |err| {
             const code: u8 = switch (err) {
@@ -332,12 +405,16 @@ fn executeWithContext(allocator: std.mem.Allocator, args: []const []const u8, co
                 error.PathAlreadyExists, error.ResumeMismatch, error.WouldBlock => 6,
                 error.AccessDenied, error.InsecurePermissions => 4,
                 error.UnsupportedOperation, error.UnsupportedSignature => 7,
-                error.InvalidInput, error.UnknownInputField, error.ConfirmationRequired, error.RawOutputConflict, error.InvalidHeader, error.DuplicateHeader, error.InvalidAliasInput, error.InvalidEndpoint, error.InvalidConfiguration, error.DuplicateAlias, error.IncompleteCredentials, error.CredentialsRequired, error.MissingHome => 2,
+                error.Interrupted, error.Canceled, error.Cancelled => 130,
+                error.InvalidInput, error.ConflictingOptions, error.UnknownInputField, error.ConfirmationRequired, error.RawOutputConflict, error.InvalidHeader, error.DuplicateHeader, error.InvalidAliasInput, error.InvalidEndpoint, error.InvalidConfiguration, error.DuplicateAlias, error.IncompleteCredentials, error.CredentialsRequired, error.MissingHome => 2,
                 else => 1,
             };
             const message = switch (err) {
                 error.ResumeMismatch => "resume source, layout, identity or remote parts differ; upload was not completed",
                 error.InvalidResponse => "invalid server response, pagination, resume data or safety limit exceeded",
+                error.ScanLimitExceeded => "cumulative scan budget exceeded; no complete result available",
+                error.ConflictingOptions => "conflicting options; file input cannot be combined with shortcut fields",
+                error.Interrupted, error.Canceled, error.Cancelled => "interrupted; in-flight mutations may have an unknown outcome",
                 error.UnknownInputField => "unknown or not-yet-supported operation input field",
                 error.ConfirmationRequired => "write/delete operation requires --yes",
                 error.RawOutputConflict => "JSON downloads require --output FILE; raw stdout cannot contain JSON metadata",
@@ -408,7 +485,7 @@ fn executeWithContext(allocator: std.mem.Allocator, args: []const []const u8, co
     const body = switch (invocation.command) {
         .help => try helpText(allocator, invocation.entry),
         .version => try std.fmt.allocPrint(allocator, "zc {s}\n", .{version}),
-        .unavailable, .alias, .s3api, .browse, .objects, .multipart => unreachable,
+        .unavailable, .alias, .s3api, .browse, .objects, .multipart, .share, .modeled => unreachable,
     };
     if (!json) return .{ .exit_code = 0, .stdout = body };
     defer allocator.free(body);
@@ -510,8 +587,14 @@ test "single object aliases and literal stdout target" {
 
 test {
     std.testing.refAllDecls(multipart);
+    std.testing.refAllDecls(share);
 }
 
 test {
     std.testing.refAllDecls(bulk);
+}
+
+fn childEntryByShare() usize {
+    for (registry, 0..) |entry, i| if (equal(entry.path, "share post")) return i;
+    unreachable;
 }

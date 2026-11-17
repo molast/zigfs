@@ -130,6 +130,7 @@ pub const Application = struct {
     scanner_last_success: ?bool = null,
     policy_mutex: @import("observed_mutex.zig").Mutex = .init,
     event_mutex: std.Io.Mutex = .init,
+    object_watch: @import("object_watch.zig").Feed = .{},
     audit_mutex: std.Io.Mutex = .init,
     audit_events: std.ArrayListUnmanaged(AuditEvent) = .empty,
 
@@ -588,6 +589,7 @@ pub const Application = struct {
     }
 
     pub fn deinit(self: *Application, io: std.Io) void {
+        self.object_watch.deinit(self.allocator);
         self.monitor.history.deinit(self.allocator);
         if (self.logger) |*logger| logger.deinit();
         self.logger = null;

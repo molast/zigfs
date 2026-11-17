@@ -279,3 +279,14 @@ Range 字节不能用完整对象摘要验证。原有身份、对象/版本和 
 流式读取明文重新计算完整内容摘要，不能直接返回清单摘要或把 ETag 当 SHA256。
 分段校验 GET 额外读取完整对象一次，校验 HEAD 同样需要完整读取，内存按流式缓冲控制；
 不修改持久化格式。本次输出为完整内容 SHA256，不输出 AWS multipart COMPOSITE 摘要。
+
+
+### CLI 预签名与 POST Policy 有效期
+
+`zc share` 支持 GET/PUT/DELETE/HEAD 和 create/upload-part/list-parts/complete/abort
+分片预签名。已鉴权的预签名空正文操作不再要求额外的 payload hash 请求头；
+方法、路径、query、必需 headers 与 session token 仍由 SigV4 校验。
+POST Policy 以签名 policy 中的 expiration 控制有效期，不再被普通 Header Auth 的
+15 分钟年龄窗口提前截断；未来签名时间仍受配置的时钟偏差上限约束，实际凭据
+有效期和权限仍由服务端校验。`zc share post` 离线签名最长 7 天，临时凭据额外受
+调用方提供的真实凭据到期时间限制。真实联调用例见 `zigfs-cli/tests/share_checks.py`。

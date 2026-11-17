@@ -78,6 +78,7 @@ pub const routes = [_]Route{
     .{ .method = .patch, .path = "/_admin/v1/buckets/:name/configuration" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/usage" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/events" },
+    .{ .method = .get, .path = "/_admin/v1/buckets/:name/watch" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/event-subscriptions" },
     .{ .method = .put, .path = "/_admin/v1/buckets/:name/event-subscriptions" },
     .{ .method = .get, .path = "/_admin/v1/buckets/:name/versions" },
@@ -187,6 +188,12 @@ pub fn serveRequest(
                 .PATCH => serveUpdateBucketConfiguration(request, application, request_id, raw_name),
                 else => respondMethodNotAllowed(request, request_id, "GET, PATCH"),
             };
+        }
+        if (std.mem.endsWith(u8, resource, "/watch")) {
+            if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
+            const raw_name = resource[0 .. resource.len - "/watch".len];
+            if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '/') != null) return respondError(request, request_id, .bad_request, "InvalidBucketName", "invalid bucket name");
+            return serveObjectWatch(request, application, request_id, raw_name, target, caller.expires_at);
         }
         if (std.mem.endsWith(u8, resource, "/usage")) {
             if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
@@ -448,6 +455,76 @@ fn bucketVisibleToCaller(
         if (decision == .allow) return true;
     }
     return identity_allowed;
+}
+
+/// Bounded long-poll event feed. Authentication is checked for every request;
+/// a wait never crosses the caller's bearer expiry. Requires management authority.
+fn serveObjectWatch(request: *std.http.Server.Request, app: *Application, request_id: []const u8, raw_name: []const u8, target: []const u8, expires_at: i64) !std.http.Status {
+    const io = app.io orelse return respondNotReady(request, request_id);
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const name = decodeComponent(a, raw_name, false) catch return respondError(request, request_id, .bad_request, "InvalidBucketName", "invalid bucket name");
+    const service = app.bucketService() orelse return respondNotReady(request, request_id);
+    const bucket = service.head(name) catch |err| return respondBucketError(request, request_id, err);
+    defer bucket.deinit(app.allocator);
+    var cursor: ?[]const u8 = null;
+    var prefix: []const u8 = "";
+    var suffix: []const u8 = "";
+    var events: []const u8 = "";
+    var wait: u32 = 20;
+    var limit: usize = 200;
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    if (std.mem.indexOfScalar(u8, target, '?')) |start| {
+        var pairs = std.mem.splitScalar(u8, target[start + 1 ..], '&');
+        while (pairs.next()) |pair| {
+            const at = std.mem.indexOfScalar(u8, pair, '=') orelse return respondError(request, request_id, .bad_request, "InvalidQuery", "expected key=value");
+            const key = pair[0..at];
+            if (seen.contains(key)) return respondError(request, request_id, .bad_request, "InvalidQuery", "duplicate query field");
+            try seen.put(a, key, {});
+            const value = decodeComponent(a, pair[at + 1 ..], true) catch return respondError(request, request_id, .bad_request, "InvalidQuery", "invalid query encoding");
+            if (std.mem.eql(u8, key, "cursor")) {
+                cursor = value;
+            } else if (std.mem.eql(u8, key, "prefix")) {
+                prefix = value;
+            } else if (std.mem.eql(u8, key, "suffix")) {
+                suffix = value;
+            } else if (std.mem.eql(u8, key, "events")) {
+                events = value;
+            } else if (std.mem.eql(u8, key, "wait")) {
+                wait = std.fmt.parseInt(u32, value, 10) catch
+                    return respondError(request, request_id, .bad_request, "InvalidQuery", "invalid wait");
+            } else if (std.mem.eql(u8, key, "limit")) {
+                limit = std.fmt.parseInt(usize, value, 10) catch
+                    return respondError(request, request_id, .bad_request, "InvalidQuery", "invalid limit");
+            } else {
+                return respondError(request, request_id, .bad_request, "InvalidQuery", "unknown query field");
+            }
+        }
+    }
+    if (wait > 20 or limit == 0 or limit > 200 or prefix.len > 1024 or suffix.len > 1024) return respondError(request, request_id, .bad_request, "InvalidQuery", "query exceeds limits");
+    if (events.len > 0) {
+        var categories = std.mem.splitScalar(u8, events, ',');
+        while (categories.next()) |category| {
+            _ = std.meta.stringToEnum(@import("../ports/bucket_events.zig").Category, category) orelse return respondError(request, request_id, .bad_request, "InvalidQuery", "unknown event category");
+        }
+    }
+    const deadline = std.Io.Clock.awake.now(io).toMilliseconds() + @as(i64, wait) * 1000;
+    var next = cursor;
+    while (true) {
+        if (expires_at > 0 and std.Io.Clock.real.now(io).toSeconds() >= expires_at) return respondError(request, request_id, .unauthorized, "ExpiredToken", "bearer session expired");
+        var page_arena = std.heap.ArenaAllocator.init(app.allocator);
+        defer page_arena.deinit();
+        const pa = page_arena.allocator();
+        const page = app.object_watch.read(pa, io, bucket.id, next, prefix, suffix, events, limit) catch |err| return respondError(request, request_id, if (err == error.CursorExpired) .conflict else .bad_request, @errorName(err), "event cursor unavailable; restart explicitly to accept a replay gap");
+        if (page.items.len > 0 or page.initialized or std.Io.Clock.awake.now(io).toMilliseconds() >= deadline) {
+            var items: std.ArrayList(std.json.Value) = .empty;
+            for (page.items) |bytes| try items.append(pa, (try std.json.parseFromSlice(std.json.Value, pa, bytes, .{})).value);
+            return respondJson(request, request_id, .ok, .{ .items = items.items, .next_cursor = page.cursor, .initialized = page.initialized, .replay = "bounded-memory", .ordered_by = "capture-sequence" });
+        }
+        next = try a.dupe(u8, page.cursor);
+        try std.Io.sleep(io, .fromMilliseconds(100), .awake);
+    }
 }
 
 fn serveListBucketEvents(

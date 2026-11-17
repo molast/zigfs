@@ -40,6 +40,27 @@ fn emit(a: A, f: *File, v: anytype) !void {
 /// Pages have independent arenas. Anonymous disk spool keeps stdout atomic on
 /// remote failures without accumulating the complete listing in memory.
 pub fn execute(a: A, ctx: aliases.Context, action: []const u8, args: []const []const u8, config: ?[]const u8, json: bool, quiet: bool) anyerror!api.Output {
+    if (eq(action, "object list") or eq(action, "ls")) {
+        var v1 = false;
+        for (args, 0..) |arg, i| if (eq(arg, "--list-api=v1") or (eq(arg, "--list-api") and i + 1 < args.len and eq(args[i + 1], "v1"))) {
+            v1 = true;
+        };
+        if (v1) {
+            var forwarded: std.ArrayList([]const u8) = .empty;
+            var n: usize = 0;
+            while (n < args.len) : (n += 1) {
+                if (eq(args[n], "--list-api")) {
+                    n += 1;
+                    continue;
+                }
+                if (eq(args[n], "--list-api=v1")) continue;
+                if (eq(args[n], "--recursive") or eq(args[n], "-r")) continue;
+                try forwarded.append(a, if (eq(args[n], "--page-size")) "--max-keys" else args[n]);
+            }
+            return @import("modeled.zig").execute(a, ctx, "object list-v1", forwarded.items, config, json, quiet);
+        }
+    }
+
     var target: ?[]const u8 = null;
     var pass: std.ArrayList([]const u8) = .empty;
     var recursive = false;
@@ -223,9 +244,9 @@ pub const help =
     \\Lists all pages; default delimiter /; recursive lists all matching objects.
     \\JSON is one document. Results spool to disk; page failures emit no partial list.
     \\Safety bounds: 100000 pages, 64 KiB token; repeated tokens fail explicitly.
-    \\Remove: --yes required, or --dry-run; only empty buckets; no force cleanup.
+    \\Remove: --yes required, or --dry-run; empty buckets by default; --force uses version-aware cleanup (pending validation).
     \\Connection overrides: --endpoint --region --bucket-lookup --ca-cert --insecure
     \\  --connect-timeout --timeout --retry-attempts; -H/--header x-amz-NAME:VALUE
-    \\Unsupported flags (versioning, lock, force, ignore-existing) are rejected.
+    \\For version cleanup options and restrictions, see rb/rm --help.
     \\
 ;

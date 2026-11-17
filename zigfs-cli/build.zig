@@ -12,6 +12,13 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    const time_module = b.createModule(.{
+        .root_source_file = b.path("../zigfs/src/common/time.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    cli_module.addImport("utc_time", time_module);
+
     cli_module.addCSourceFile(.{ .file = b.path("src/http_transport.c"), .flags = &.{"-std=c99"} });
     cli_module.linkSystemLibrary("curl", .{});
 

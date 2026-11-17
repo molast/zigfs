@@ -1,0 +1,9 @@
+{
+  "s3_source": "https://github.com/boto/botocore/blob/develop/botocore/data/s3/2006-03-01/service-2.json",
+  "s3_downloaded": "2026-11-17",
+  "s3_sha256": "84c3a4e6ac1c80ed49cb1ddf1f548ea7f51d8a41acbfa0f198b9ba0028d784e8",
+  "management_source": "docs/api/zigfs-management-v1.openapi.yaml",
+  "management_sha256": "c2aeff832cda52112d30fc3a1f03190199a05871ce181b69d939caa782ef7ee4",
+  "operations": 100,
+  "status": "pending validation"
+}

@@ -125,3 +125,13 @@ cleanup:
     curl_easy_cleanup(c);
     return result;
 }
+
+/* POSIX extended regular expressions for find; never execute shell commands. */
+#include <regex.h>
+int zc_regex(const char *pattern, const char *value) {
+    regex_t expression;
+    if (regcomp(&expression, pattern, REG_EXTENDED | REG_NOSUB) != 0) return -1;
+    int result = regexec(&expression, value, 0, NULL, 0);
+    regfree(&expression);
+    return result == 0 ? 1 : result == REG_NOMATCH ? 0 : -1;
+}

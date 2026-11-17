@@ -14,7 +14,7 @@ fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 pub fn isFlag(s: []const u8) bool {
-    for ([_][]const u8{ "-r", "--recursive", "--summary", "--continue-on-error", "--fail-empty", "--portable-names", "--force", "--dangerous" }) |n| if (eq(s, n)) return true;
+    for ([_][]const u8{ "-r", "--recursive", "--summary", "--continue-on-error", "--fail-empty", "--portable-names", "--versions", "--force", "--dangerous", "--bypass", "--bypass-governance-retention" }) |n| if (eq(s, n)) return true;
     return false;
 }
 pub fn isValueOption(s: []const u8) bool {
@@ -73,7 +73,7 @@ fn text(v: V, k: []const u8) ?[]const u8 {
     const f = v.object.get(k) orelse return null;
     return if (f == .string) f.string else null;
 }
-fn glob(pattern: []const u8, value: []const u8) bool {
+pub fn glob(pattern: []const u8, value: []const u8) bool {
     var p: usize = 0;
     var v: usize = 0;
     var star: ?usize = null;

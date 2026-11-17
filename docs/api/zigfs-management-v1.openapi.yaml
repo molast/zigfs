@@ -1980,6 +1980,46 @@ paths:
         '409': { description: Invalid key state, unsupported operation, or KMS is not running }
         '503': { description: Key store or provider unavailable }
 
+  /_admin/v1/buckets/{name}/watch:
+    get:
+      summary: Read the bounded object event feed with a resumable cursor
+      description: >-
+        Requires management authority. Events come from the post-success object event sink,
+        independent of audit logs and notification subscriptions. Omit cursor to start at
+        the current tail. Cursor expiry, process restart or capture failure returns 409;
+        clients must explicitly accept a gap before restarting. Wait is bounded by bearer
+        expiry. Retention is at most 4096 events or 8 MiB across the process. This is not
+        durable or exactly-once delivery. Order is capture order, not storage commit order.
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}}
+        - {name: cursor, in: query, schema: {type: string}}
+        - {name: prefix, in: query, schema: {type: string, maxLength: 1024}}
+        - {name: suffix, in: query, schema: {type: string, maxLength: 1024}}
+        - name: events
+          in: query
+          schema: {type: string}
+          description: Comma-separated PUT, GET, DELETE, ILM, SCANNER categories
+        - {name: wait, in: query, schema: {type: integer, minimum: 0, maximum: 20, default: 20}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 200}}
+      responses:
+        '200':
+          description: Ordered events and a cursor that also advances over filtered events
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor, initialized]
+                properties:
+                  items: {type: array, maxItems: 200, items: {type: object}}
+                  next_cursor: {type: string}
+                  initialized: {type: boolean}
+                  replay: {type: string, enum: [bounded-memory]}
+                  ordered_by: {type: string, enum: [capture-sequence]}
+        '409': {description: CursorExpired; no silent reset}
+        '400': {description: Invalid cursor or query}
+        '401': {description: Missing or expired management bearer}
+        '403': {description: Insufficient management permission}
+
 components:
   securitySchemes:
     managementBearer:
@@ -2548,6 +2588,14 @@ components:
       additionalProperties: false
       minProperties: 1
       properties:
+        max_bytes:
+          type: integer
+          minimum: 0
+          description: Capacity quota in bytes; zero clears the quota.
+        max_objects:
+          type: integer
+          minimum: 0
+          description: Object count quota; zero clears the quota.
         kms_key_id:
           type: string
           maxLength: 256

@@ -571,6 +571,7 @@ ZIGFS_SECRET_KEY={SK}
         cleaned = cli(['--json','rb','real/zc-bulk','--force','--dangerous','--yes','--concurrency','2'])
         assert cleaned['data']['bucket_removed']
         cli(['--json','bucket','stat','real/zc-bulk'],code=5)
+        exec(Path(__file__).with_name('share_checks.py').read_text(), globals())
         print('PASS step 08: recursive and multi-source copy/move/remove, filters, collisions/traversal/symlink rejection, batch chunks, failure summaries and guarded cleanup.')
         print('PASS step 07: real conditional Complete, concurrent create/replace, automatic no-overwrite, lifecycle/pagination, pipe, lost-part recovery, policy/source mismatch protection and ambiguous Complete refusal.')
         print('PASS step 06: same-instance copy/move/delete, metadata, source/target conditions, confirmation, 1000-key batch and versioning guard.')
@@ -864,6 +865,23 @@ ZIGFS_SECRET_KEY={SK}
         alias('mismatch', f'https://127.0.0.1:{tls.server_port}', '--ca-cert',str(root/'cert.pem'))
         call('list-buckets', name='mismatch', code=3)
         call('list-buckets', name='mismatch', options=('--insecure',))
+        post_tls = ThreadingHTTPServer(('127.0.0.1', 0), PostFixture)
+        post_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        post_context.load_cert_chain(root/'cert.pem', root/'key.pem')
+        post_tls.socket = post_context.wrap_socket(post_tls.socket, server_side=True)
+        threading.Thread(target=post_tls.serve_forever, daemon=True).start()
+        try:
+            PostFixture.mode = 'ok'
+            fields_path.write_text(json.dumps(fixture_fields))
+            alias('posttls', f'https://localhost:{post_tls.server_port}')
+            post_args = ['--json', 'object', 'post', 'posttls/test-bucket', '--file', str(post_source), '--fields-file', str(fields_path), '--yes']
+            cli(post_args, code=3)
+            cli(post_args + ['--ca-cert', str(root/'cert.pem')])
+            cli(post_args + ['--insecure'])
+            cli(post_args + ['--endpoint', f'https://127.0.0.1:{post_tls.server_port}', '--ca-cert', str(root/'cert.pem')], code=3)
+        finally:
+            post_tls.shutdown()
+            post_tls.server_close()
         print('PASS TLS fixture: default rejection, custom CA, hostname mismatch, explicit insecure.')
     finally:
         tls.shutdown(); tls.server_close()

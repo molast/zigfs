@@ -14,7 +14,7 @@ export function MonitorSection({ title, panels, description, attention = 0, defa
 }) {
   const [open, setOpen] = useState(defaultOpen)
   return <Collapsible open={open} onOpenChange={setOpen} className="monitor-module">
-    <CollapsibleTrigger aria-label={title} className="group flex w-full flex-wrap items-center gap-2 px-2 py-1.5 text-left text-sm font-semibold">
+    <CollapsibleTrigger aria-label={title} className="group flex w-full flex-wrap items-center gap-2 px-2 py-1.5 text-left text-sm font-medium">
       <ChevronRight aria-hidden="true" className="size-4 shrink-0 transition-transform group-data-[state=open]:rotate-90" />
       <span>{title}</span><span className="text-xs font-normal text-muted-foreground">{t('monitor.panelCount', { count: panels })}</span>
       {attention > 0 && <Badge variant="destructive">{t('monitor.firingCount', { count: attention })}</Badge>}

@@ -28,6 +28,9 @@ pub fn capture(ctx: *anyopaque, event: notifications.Event) void {
 }
 pub fn captureEvent(app: *App, event: notifications.Event) !void {
     const io = app.io orelse return;
+    app.object_watch.append(app.allocator, io, event) catch |err| {
+        std.log.err("Object watch capture failed: {s}; cursors invalidated", .{@errorName(err)});
+    };
     const root = app.data_root orelse return;
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();

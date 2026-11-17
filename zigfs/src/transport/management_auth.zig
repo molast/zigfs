@@ -153,6 +153,7 @@ pub fn authenticateUser(a: std.mem.Allocator, app: *Application, username: []con
 // Until a route has a narrower body/resource-aware guard it requires full
 // management authority. Unknown/new endpoints never default to read access.
 pub fn routeAction(method: std.http.Method, path: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, path, "/_admin/v1/buckets/") and std.mem.endsWith(u8, path, "/watch")) return "admin:*";
     if (std.mem.startsWith(u8, path, "/_admin/v1/buckets/") and std.mem.endsWith(u8, path, "/event-subscriptions")) return "admin:*";
     if (method != .GET) {
         if (std.mem.endsWith(u8, path, "/directories/cleanup") or (method == .DELETE and std.mem.endsWith(u8, path, "/directories"))) return "admin:*";

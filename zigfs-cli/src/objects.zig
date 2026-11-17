@@ -9,12 +9,30 @@ fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 const fields = .{
-    .{ "--content-type", "ContentType" },                  .{ "--content-encoding", "ContentEncoding" },
-    .{ "--content-disposition", "ContentDisposition" },    .{ "--content-language", "ContentLanguage" },
-    .{ "--cache-control", "CacheControl" },                .{ "--if-match", "IfMatch" },
-    .{ "--if-none-match", "IfNoneMatch" },                 .{ "--if-modified-since", "IfModifiedSince" },
-    .{ "--if-unmodified-since", "IfUnmodifiedSince" },     .{ "--range", "Range" },
-    .{ "--expected-bucket-owner", "ExpectedBucketOwner" }, .{ "--request-payer", "RequestPayer" },
+    .{ "--server-side-encryption", "ServerSideEncryption" },
+    .{ "--ssekms-key-id", "SSEKMSKeyId" },
+    .{ "--ssekms-encryption-context", "SSEKMSEncryptionContext" },
+    .{ "--sse-customer-algorithm", "SSECustomerAlgorithm" },
+    .{ "--sse-customer-key", "SSECustomerKey" },
+    .{ "--sse-customer-key-md5", "SSECustomerKeyMD5" },
+    .{ "--storage-class", "StorageClass" },
+    .{ "--tagging", "Tagging" },
+    .{ "--object-lock-mode", "ObjectLockMode" },
+    .{ "--object-lock-retain-until-date", "ObjectLockRetainUntilDate" },
+    .{ "--object-lock-legal-hold-status", "ObjectLockLegalHoldStatus" },
+    .{ "--version-id", "VersionId" },
+    .{ "--content-type", "ContentType" },
+    .{ "--content-encoding", "ContentEncoding" },
+    .{ "--content-disposition", "ContentDisposition" },
+    .{ "--content-language", "ContentLanguage" },
+    .{ "--cache-control", "CacheControl" },
+    .{ "--if-match", "IfMatch" },
+    .{ "--if-none-match", "IfNoneMatch" },
+    .{ "--if-modified-since", "IfModifiedSince" },
+    .{ "--if-unmodified-since", "IfUnmodifiedSince" },
+    .{ "--range", "Range" },
+    .{ "--expected-bucket-owner", "ExpectedBucketOwner" },
+    .{ "--request-payer", "RequestPayer" },
 };
 pub fn isFlag(n: []const u8) bool {
     return eq(n, "--resume") or eq(n, "--overwrite") or eq(n, "--yes") or eq(n, "--dry-run") or eq(n, "--insecure");
@@ -183,7 +201,10 @@ pub fn executeAt(a: A, ctx: aliases.Context, action: []const u8, args: []const [
     } else if (!stat) try pass.appendSlice(a, &.{ "--output", local });
     // Validate operation-specific fields even for previews.
     const operation: []const u8 = if (upload) "put-object" else if (stat) "head-object" else "get-object";
-    try api.validateInput(std.meta.stringToEnum(api.Operation, operation).?, input);
+    api.validateInput(std.meta.stringToEnum(api.Operation, operation).?, input) catch |err| switch (err) {
+        error.UnknownInputField, error.UnsupportedOperation => try @import("modeled.zig").validateRequest(a, operation, input),
+        else => return err,
+    };
     var it = values.iterator();
     while (it.next()) |e| if (api.isValueOption(e.key_ptr.*)) try pass.appendSlice(a, &.{ e.key_ptr.*, e.value_ptr.* });
     try pass.append(a, remote[0..slash]);

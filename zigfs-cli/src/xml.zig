@@ -1,7 +1,8 @@
 //! Bounded S3 XML decoder. No DTD/external entities, namespaces do not alter local names.
 const std = @import("std");
 const A = std.mem.Allocator;
-pub const Node = struct { name: []const u8, text: []const u8, children: []const Node };
+pub const Attribute = struct { name: []const u8, value: []const u8 };
+pub const Node = struct { name: []const u8, text: []const u8, children: []const Node, attributes: []const Attribute = &.{} };
 const Parser = struct {
     a: A,
     bytes: []const u8,
@@ -28,17 +29,18 @@ const Parser = struct {
         self.at += 1;
         const full_name = try self.name();
         const local = if (std.mem.lastIndexOfScalar(u8, full_name, ':')) |i| full_name[i + 1 ..] else full_name;
+        var attributes: std.ArrayList(Attribute) = .empty;
         while (true) {
             self.skip();
             if (self.starts("/>")) {
                 self.at += 2;
-                return .{ .name = local, .text = "", .children = &.{} };
+                return .{ .name = local, .text = "", .children = &.{}, .attributes = attributes.items };
             }
             if (self.starts(">")) {
                 self.at += 1;
                 break;
             }
-            _ = try self.name();
+            const attribute_name = try self.name();
             self.skip();
             if (!self.starts("=")) return error.InvalidXml;
             self.at += 1;
@@ -46,10 +48,14 @@ const Parser = struct {
             if (self.at == self.bytes.len or (self.bytes[self.at] != '"' and self.bytes[self.at] != '\'')) return error.InvalidXml;
             const quote = self.bytes[self.at];
             self.at += 1;
+            const attribute_start = self.at;
             while (self.at < self.bytes.len and self.bytes[self.at] != quote) : (self.at += 1) {
                 if (self.bytes[self.at] == '<') return error.InvalidXml;
             }
             if (self.at == self.bytes.len) return error.InvalidXml;
+            if (attributes.items.len >= 128) return error.InvalidXml;
+            for (attributes.items) |old| if (std.mem.eql(u8, old.name, attribute_name)) return error.InvalidXml;
+            try attributes.append(self.a, .{ .name = attribute_name, .value = try decode(self.a, self.bytes[attribute_start..self.at]) });
             self.at += 1;
         }
         var children: std.ArrayList(Node) = .empty;
@@ -79,7 +85,7 @@ const Parser = struct {
             }
         }
         if (children.items.len > 0 and std.mem.trim(u8, text.items, " \t\r\n").len != 0) return error.InvalidXml;
-        return .{ .name = local, .text = text.items, .children = children.items };
+        return .{ .name = local, .text = text.items, .children = children.items, .attributes = attributes.items };
     }
 };
 pub fn decode(a: A, text: []const u8) ![]const u8 {
@@ -123,8 +129,16 @@ pub fn child(node: Node, name: []const u8) ?[]const u8 {
     return null;
 }
 pub fn toJson(a: A, node: Node) anyerror!std.json.Value {
-    if (node.children.len == 0) return .{ .string = node.text };
+    var attribute_count: usize = 0;
+    for (node.attributes) |attribute| if (!std.mem.startsWith(u8, attribute.name, "xmlns")) {
+        attribute_count += 1;
+    };
+    if (node.children.len == 0 and attribute_count == 0) return .{ .string = node.text };
     var object: std.json.ObjectMap = .{};
+    for (node.attributes) |attribute| {
+        if (std.mem.startsWith(u8, attribute.name, "xmlns")) continue;
+        try object.put(a, attribute.name, .{ .string = attribute.value });
+    }
     for (node.children) |n| {
         const value = try toJson(a, n);
         const entry = try object.getOrPut(a, n.name);

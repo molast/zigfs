@@ -54,7 +54,7 @@ fn normalize(a: A, value: []const u8) ![]const u8 {
 }
 pub const Signed = struct { authorization: []const u8, headers: []Header, canonical: []const u8 };
 pub fn sign(a: A, method: []const u8, path: []const u8, canonical_query: []const u8, headers: []const Header, payload_hash: []const u8, date: []const u8, region: []const u8, ak: []const u8, sk: []const u8) !Signed {
-    if (date.len != 16 or payload_hash.len != 64) return error.InvalidSigningInput;
+    if (date.len != 16 or (payload_hash.len != 64 and !std.mem.eql(u8, payload_hash, "UNSIGNED-PAYLOAD"))) return error.InvalidSigningInput;
     const normalized = try a.alloc(Header, headers.len);
     for (headers, normalized) |h, *out| out.* = .{ .name = try std.ascii.allocLowerString(a, h.name), .value = try normalize(a, h.value) };
     std.mem.sort(Header, normalized, {}, struct {
@@ -113,4 +113,21 @@ test "S3 key encoding preserves literal slashes percent unicode and dot segments
     try std.testing.expectEqualStrings("a//../%E4%B8%AD%20%2B%25%3F", try encode(a, "a//../中 +%?", true));
     try std.testing.expectEqualStrings("a=%20&a=%2B&z=", try query(a, &.{ .{ .name = "z", .value = "" }, .{ .name = "a", .value = "+" }, .{ .name = "a", .value = " " } }));
     try std.testing.expectEqualStrings("19700101T000000Z", try timestamp(a, 0));
+}
+
+pub fn policySignature(a: A, encoded: []const u8, date: []const u8, region: []const u8, secret: []const u8) ![64]u8 {
+    if (date.len != 16) return error.InvalidSigningInput;
+    const seed = try std.fmt.allocPrint(a, "AWS4{s}", .{secret});
+    defer std.crypto.secureZero(u8, seed);
+    var key: [32]u8 = undefined;
+    Hmac.create(&key, date[0..8], seed);
+    for ([_][]const u8{ region, "s3", "aws4_request" }) |part| {
+        var next: [32]u8 = undefined;
+        Hmac.create(&next, part, &key);
+        key = next;
+    }
+    defer std.crypto.secureZero(u8, &key);
+    var signature: [32]u8 = undefined;
+    Hmac.create(&signature, encoded, &key);
+    return std.fmt.bytesToHex(signature, .lower);
 }

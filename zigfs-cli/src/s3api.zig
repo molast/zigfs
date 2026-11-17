@@ -10,7 +10,7 @@ const max_control = 4 * 1024 * 1024;
 const ReadFn = *const fn (?*anyopaque, [*]u8, usize) callconv(.c) usize;
 const WriteFn = *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) c_int;
 extern fn zc_http([*:0]const u8, [*:0]const u8, [*]const [*:0]const u8, usize, [*:0]const u8, c_int, c_long, c_long, i64, c_int, i64, ?ReadFn, ?WriteFn, ?*anyopaque, [*]u8, usize, *usize, [*]u8, usize, *usize, *c_long) c_int;
-pub const Output = struct { exit_code: u8 = 0, stdout: []const u8 = "", stderr: []const u8 = "" };
+pub const Output = @import("wire.zig").Output;
 
 pub const Operation = enum { @"create-multipart-upload", @"upload-part", @"list-parts", @"list-multipart-uploads", @"complete-multipart-upload", @"abort-multipart-upload", @"copy-object", @"delete-object", @"delete-objects", @"get-bucket-versioning", @"delete-bucket", @"create-bucket", @"list-buckets", @"head-bucket", @"get-bucket-location", @"list-objects-v2", @"head-object", @"get-object", @"put-object" };
 pub fn isFlag(name: []const u8) bool {
@@ -38,6 +38,7 @@ fn allowed(op: Operation, field: []const u8) bool {
     if (op == .@"abort-multipart-upload") return in(field, &.{ "Key", "UploadId" });
     if (op == .@"create-bucket") return eq(field, "CreateBucketConfiguration");
     if (eq(field, "Key")) return isObject(op);
+    if (op == .@"delete-object" and eq(field, "VersionId")) return true;
     if (op == .@"delete-objects") return eq(field, "Delete") or eq(field, "RequestPayer");
     if (eq(field, "RequestPayer")) return isObject(op) or op == .@"list-objects-v2";
     if (op == .@"list-buckets") return in(field, &.{ "Prefix", "ContinuationToken", "MaxBuckets", "BucketRegion" });
@@ -99,11 +100,14 @@ pub fn validateInput(op: Operation, input: Value) !void {
             const objects = value.object.get("Objects") orelse return error.InvalidInput;
             if (objects != .array or objects.array.items.len == 0 or objects.array.items.len > 1000) return error.InvalidInput;
             for (objects.array.items, 0..) |item, i| {
-                if (item != .object or item.object.count() != 1) return error.InvalidInput;
+                if (item != .object or item.object.count() > 2) return error.InvalidInput;
+                var item_fields = item.object.iterator();
+                while (item_fields.next()) |field| if (!in(field.key_ptr.*, &.{ "Key", "VersionId" })) return error.UnknownInputField;
+                if (get(item, "VersionId")) |version| if (version != .string or version.string.len == 0) return error.InvalidInput;
                 const k = string(item, "Key") orelse return error.InvalidInput;
                 if (k.len == 0 or k.len > 1024) return error.InvalidInput;
                 try safeValue(k);
-                for (objects.array.items[0..i]) |prior| if (eq(k, string(prior, "Key").?)) return error.InvalidInput;
+                for (objects.array.items[0..i]) |prior| if (eq(k, string(prior, "Key").?) and eq(string(item, "VersionId") orelse "", string(prior, "VersionId") orelse "")) return error.InvalidInput;
             }
         } else if (eq(key, "Metadata")) {
             if (value != .object) return error.InvalidInput;
@@ -136,7 +140,10 @@ pub fn validateInput(op: Operation, input: Value) !void {
     if (op == .@"delete-objects" and get(input, "Delete") == null) return error.InvalidInput;
     if (op == .@"copy-object") {
         const source = string(input, "CopySource") orelse return error.InvalidInput;
-        if (source.len == 0 or std.mem.indexOfAny(u8, source, "?#") != null) return error.InvalidInput;
+        if (source.len == 0 or std.mem.indexOfAny(u8, source, "#") != null) return error.InvalidInput;
+        if (std.mem.indexOfScalar(u8, source, '?')) |at| {
+            if (!std.mem.startsWith(u8, source[at + 1 ..], "versionId=") or source.len == at + 11 or std.mem.indexOfScalar(u8, source[at + 1 ..], '&') != null) return error.InvalidInput;
+        }
         const directive = string(input, "MetadataDirective") orelse "COPY";
         if (!in(directive, &.{ "COPY", "REPLACE" })) return error.InvalidInput;
         if (eq(directive, "COPY")) {
@@ -357,7 +364,16 @@ pub fn executeTransfer(a: A, ctx: aliases.Context, operation: []const u8, args: 
     }
     const input_bytes = if (r.values.get("--input-json")) |p| try readInput(a, ctx.io, p) else "{}";
     const input = supplied orelse (std.json.parseFromSlice(Value, a, input_bytes, .{ .allocate = .alloc_always }) catch return error.InvalidInput).value;
-    try validateInput(op, input);
+    validateInput(op, input) catch |err| switch (err) {
+        error.UnknownInputField, error.UnsupportedOperation => {
+            if (options.verify_sha256 or options.lines != null or options.body_offset != 0 or options.body_length != null or options.output_dir != null or options.expected_body_sha256 != null) return err;
+            const modeled = @import("modeled.zig");
+            var modeled_args = try modeled.parse(a, args);
+            if (options.overwrite) try modeled_args.flags.put(a, "--overwrite", {});
+            return modeled.executeInput(a, ctx, operation, modeled_args, r.alias_name orelse return error.InvalidInput, input, config_path, json, quiet);
+        },
+        else => return err,
+    };
     if (mutating(op) and !r.flags.contains("--yes")) return error.ConfirmationRequired;
     if ((op != .@"put-object" and op != .@"upload-part" and r.values.contains("--body")) or (!mutating(op) and r.flags.contains("--yes"))) return error.InvalidInput;
     if (op != .@"get-object" and r.values.contains("--output")) return error.InvalidInput;
@@ -425,7 +441,8 @@ pub fn executeTransfer(a: A, ctx: aliases.Context, operation: []const u8, args: 
     if (op == .@"delete-objects") {
         var nodes: std.ArrayList(xml.Node) = .empty;
         for (get(input, "Delete").?.object.get("Objects").?.array.items) |item| {
-            const children = try a.alloc(xml.Node, 1);
+            const children = try a.alloc(xml.Node, if (string(item, "VersionId") != null) 2 else 1);
+            if (string(item, "VersionId")) |v| children[1] = .{ .name = "VersionId", .text = v, .children = &.{} };
             children[0] = .{ .name = "Key", .text = string(item, "Key").?, .children = &.{} };
             try nodes.append(a, .{ .name = "Object", .text = "", .children = children });
         }
@@ -590,18 +607,8 @@ pub fn executeTransfer(a: A, ctx: aliases.Context, operation: []const u8, args: 
             if (options.overwrite) try f.replace(ctx.io) else try f.link(ctx.io);
         }
         if (stdout or quiet and !json) return .{};
-        var metadata: std.json.ObjectMap = .{};
-        var header_lines = std.mem.splitSequence(u8, header_buffer[0..header_len], "\r\n");
-        while (header_lines.next()) |line| {
-            if (std.mem.startsWith(u8, line, "HTTP/")) {
-                metadata = .{};
-                continue;
-            }
-            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
-            const name = try std.ascii.allocLowerString(a, line[0..colon]);
-            if (std.mem.startsWith(u8, name, "x-amz-meta-")) try metadata.put(a, name[11..], .{ .string = std.mem.trim(u8, line[colon + 1 ..], " \t") });
-        }
-        const data = .{ .metadata = Value{ .object = metadata }, .checksum_verified = options.verify_sha256, .operation = operation, .status_code = status, .request_id = request_id, .attempts = attempt, .result = decoded, .bytes_written = transfer.written, .headers = .{ .checksum_sha256 = responseHeader(header_buffer[0..header_len], "x-amz-checksum-sha256"), .content_range = responseHeader(header_buffer[0..header_len], "content-range"), .last_modified = responseHeader(header_buffer[0..header_len], "last-modified"), .bucket_region = responseHeader(header_buffer[0..header_len], "x-amz-bucket-region"), .etag = responseHeader(header_buffer[0..header_len], "etag"), .version_id = responseHeader(header_buffer[0..header_len], "x-amz-version-id"), .content_length = responseHeader(header_buffer[0..header_len], "content-length"), .content_type = responseHeader(header_buffer[0..header_len], "content-type") } };
+        const metadata = try @import("wire.zig").headerMap(a, header_buffer[0..header_len], "x-amz-meta-");
+        const data = .{ .metadata = metadata, .checksum_verified = options.verify_sha256, .operation = operation, .status_code = status, .request_id = request_id, .attempts = attempt, .result = decoded, .bytes_written = transfer.written, .headers = .{ .checksum_sha256 = responseHeader(header_buffer[0..header_len], "x-amz-checksum-sha256"), .content_range = responseHeader(header_buffer[0..header_len], "content-range"), .last_modified = responseHeader(header_buffer[0..header_len], "last-modified"), .bucket_region = responseHeader(header_buffer[0..header_len], "x-amz-bucket-region"), .etag = responseHeader(header_buffer[0..header_len], "etag"), .version_id = responseHeader(header_buffer[0..header_len], "x-amz-version-id"), .content_length = responseHeader(header_buffer[0..header_len], "content-length"), .content_type = responseHeader(header_buffer[0..header_len], "content-type") } };
         const output = if (json) try std.json.Stringify.valueAlloc(a, .{ .schema_version = 1, .type = "s3api", .status = "success", .data = data }, .{}) else try std.json.Stringify.valueAlloc(a, data, .{ .whitespace = .indent_2 });
         return .{ .stdout = try std.fmt.allocPrint(a, "{s}\n", .{output}) };
     }
@@ -686,7 +693,7 @@ fn checkDeletes(a: A, input: Value, decoded: Value) !struct { result: Value, fai
                 const key = string(item, "Key") orelse return error.InvalidResponse;
                 var found = false;
                 for (requested, 0..) |request, i| {
-                    if (eq(key, string(request, "Key").?)) {
+                    if (eq(key, string(request, "Key").?) and (string(request, "VersionId") == null or eq(string(request, "VersionId").?, string(item, "VersionId") orelse ""))) {
                         if (seen[i]) return error.InvalidResponse;
                         seen[i] = true;
                         found = true;
@@ -696,6 +703,7 @@ fn checkDeletes(a: A, input: Value, decoded: Value) !struct { result: Value, fai
                 if (!found) return error.InvalidResponse;
                 var sanitized: Value = .{ .object = .{} };
                 try sanitized.object.put(a, "Key", .{ .string = key });
+                if (string(item, "VersionId")) |v| try sanitized.object.put(a, "VersionId", .{ .string = v });
                 if (eq(kind, "Error")) {
                     failed += 1;
                     const code = string(item, "Code") orelse return error.InvalidResponse;
