@@ -29,6 +29,7 @@ tmp/
 *.pid
 benchmarks/reports/
 compatibility/reports/
+/pkg/metadata-engine/bench/results/
 
 # Local configuration and secrets
 .env
