@@ -14,6 +14,33 @@ pub const Status = enum(u8) {
     active = 1,
 };
 
+pub const StorageClass = enum(u8) {
+    standard = 0,
+    glacier = 1,
+    deep_archive = 2,
+    intelligent_tiering = 3,
+
+    pub fn wire(self: StorageClass) []const u8 {
+        return switch (self) {
+            .standard => "STANDARD",
+            .glacier => "GLACIER",
+            .deep_archive => "DEEP_ARCHIVE",
+            .intelligent_tiering => "INTELLIGENT_TIERING",
+        };
+    }
+    pub fn parse(value: []const u8) ?StorageClass {
+        for ([_]StorageClass{ .standard, .glacier, .deep_archive, .intelligent_tiering }) |item| {
+            if (std.mem.eql(u8, value, item.wire())) return item;
+        }
+        return null;
+    }
+};
+
+pub const ArchiveTier = enum(u8) { none = 0, archive_access = 1, deep_archive_access = 2 };
+pub fn archived(storage_class: StorageClass, tier: ArchiveTier) bool {
+    return storage_class == .glacier or storage_class == .deep_archive or tier != .none;
+}
+
 pub const Encryption = enum(u8) {
     unencrypted = 0,
     encrypted = 1,
@@ -136,6 +163,9 @@ pub const View = struct {
     retention_until_unix_seconds: ?i64 = null,
     retention_mode: ?bucket_domain.RetentionMode = null,
     legal_hold: bool = false,
+    storage_class: StorageClass = .standard,
+    restored_until: ?i64 = null,
+    archive_tier: ArchiveTier = .none,
 };
 
 pub const Object = struct {
@@ -164,6 +194,9 @@ pub const Object = struct {
     retention_until_unix_seconds: ?i64 = null,
     retention_mode: ?bucket_domain.RetentionMode = null,
     legal_hold: bool = false,
+    storage_class: StorageClass = .standard,
+    restored_until: ?i64 = null,
+    archive_tier: ArchiveTier = .none,
 
     pub fn deinit(self: Object, allocator: std.mem.Allocator) void {
         allocator.free(self.bucket_name);
@@ -198,6 +231,9 @@ pub const Object = struct {
             .retention_until_unix_seconds = self.retention_until_unix_seconds,
             .retention_mode = self.retention_mode,
             .legal_hold = self.legal_hold,
+            .storage_class = self.storage_class,
+            .restored_until = self.restored_until,
+            .archive_tier = self.archive_tier,
         };
     }
 };
@@ -255,6 +291,9 @@ pub fn cloneFromView(
         .retention_until_unix_seconds = source.retention_until_unix_seconds,
         .retention_mode = source.retention_mode,
         .legal_hold = source.legal_hold,
+        .storage_class = source.storage_class,
+        .restored_until = source.restored_until,
+        .archive_tier = source.archive_tier,
     };
 }
 

@@ -36,6 +36,7 @@ pub const Entry = struct {
     retention_until_unix_seconds: ?i64 = null,
     retention_mode: ?bucket_domain.RetentionMode = null,
     legal_hold: bool = false,
+    storage_class: @import("../domain/object.zig").StorageClass = .standard,
 
     pub fn deinit(self: Entry, allocator: std.mem.Allocator) void {
         allocator.free(self.key);
@@ -178,6 +179,7 @@ pub const ObjectListingService = struct {
                 .retention_until_unix_seconds = object.retention_until_unix_seconds,
                 .retention_mode = object.retention_mode,
                 .legal_hold = object.legal_hold,
+                .storage_class = object.storage_class,
             };
             initialized_objects += 1;
         }

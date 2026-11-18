@@ -30,13 +30,14 @@ pub const service_name = "s3";
 
 // Constructed only after authentication and action/resource checks. Anonymous
 // requests retain their explicit public-bucket checks; legacy keys remain owner-scoped.
-const BucketAccess = struct {
+pub const BucketAccess = struct {
     presigned: bool = false,
     owner: []const u8,
     iam_authorized: bool = false,
     principal: ?*const credential_service.AuthMaterial = null,
     context: iam.Context = .{},
     kms_selection: ?@import("../application/kms.zig").Envelope = null,
+    website_status: ?std.http.Status = null,
 };
 
 const ByteRange = struct {
@@ -91,7 +92,7 @@ pub fn serveRequest(
     audit_context: *AuditContext,
 ) !std.http.Status {
     // Browsers use this unauthenticated preflight before direct presigned writes and deletes.
-    if (request.head.method == .OPTIONS) return respondCorsPreflight(request, request_id);
+    if (request.head.method == .OPTIONS) return @import("s3_extensions.zig").preflight(request, application, request_id);
 
     const allocator = application.allocator;
     const raw_target = request.head.target;
@@ -267,7 +268,7 @@ pub fn serveRequest(
     };
 
     if (parsed.operation != .delete_objects) {
-        const action = inheritedActionFor(parsed.operation, (parsed.query("versionId") catch null) != null);
+        const action = if (parsed.operation == .extension) @import("s3_extensions.zig").action(request.head.method, parsed) else inheritedActionFor(parsed.operation, (parsed.query("versionId") catch null) != null);
         if (!auth_material.allowsWithContext(allocator, action, parsed.bucket, parsed.key, conditions)) return respondError(request, allocator, .access_denied, request_id);
         if (governanceBypassRequestedFromHeaders(headers.items) and !auth_material.allowsWithContext(allocator, "s3:BypassGovernanceRetention", parsed.bucket, parsed.key, conditions)) return respondError(request, allocator, .access_denied, request_id);
     }
@@ -276,6 +277,17 @@ pub fn serveRequest(
         defer source.deinit();
         const source_conditions = resourceContext(condition_arena.allocator(), application, source.bucket, conditions) catch return respondError(request, allocator, .service_unavailable, request_id);
         if (!auth_material.allowsWithContext(allocator, if (source.version_id != null) "s3:GetObjectVersion" else "s3:GetObject", source.bucket, source.key, source_conditions)) return respondError(request, allocator, .access_denied, request_id);
+    }
+    if (parsed.operation == .extension) {
+        const read = request.head.method == .GET or request.head.method == .HEAD or
+            (parsed.key != null and (parsed.query("select") catch null) != null);
+        const legacy_action: credential_domain.Action = if (parsed.key != null)
+            (if (read) .get_object else .put_object)
+        else
+            (if (read) .head_bucket else .create_bucket);
+        policy.authorize(auth_material.policy, legacy_action) catch {
+            return respondError(request, allocator, .access_denied, request_id);
+        };
     }
     if (actionFor(parsed.operation)) |action| {
         policy.authorize(auth_material.policy, action) catch {
@@ -472,6 +484,7 @@ pub fn serveRequest(
             request_id,
         ),
         .post_policy_upload => respondError(request, allocator, .invalid_request, request_id),
+        .extension => @import("s3_extensions.zig").serve(request, application, parsed, bucket_access, headers.items, payload_hash, request_id),
         .unsupported => respondError(request, allocator, .not_implemented, request_id),
     };
 }
@@ -511,6 +524,68 @@ fn serveAnonymousRequest(
     request_id: []const u8,
     peer: std.Io.net.IpAddress,
     secure_transport: bool,
+) !std.http.Status {
+    var arena = std.heap.ArenaAllocator.init(application.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var resolved = parsed;
+    var website_status: ?std.http.Status = null;
+    if (parsed.bucket != null and parsed.parameters.len == 0 and
+        (request.head.method == .GET or request.head.method == .HEAD))
+    {
+        const configuration = @import("../application/s3_configuration.zig");
+        const buckets = application.bucketService() orelse return respondError(request, a, .service_unavailable, request_id);
+        if (buckets.head(parsed.bucket.?)) |bucket| {
+            defer bucket.deinit(application.allocator);
+            if (try configuration.load(a, application.systemStore(), bucket.id, "website")) |website| {
+                if (configuration.child(website, "IndexDocument")) |index| {
+                    const suffix = configuration.text(index, "Suffix") orelse return respondError(request, a, .invalid_request, request_id);
+                    if (parsed.key == null or std.mem.endsWith(u8, parsed.key.?, "/")) {
+                        resolved.key = try std.fmt.allocPrint(a, "{s}{s}", .{ parsed.key orelse "", suffix });
+                        resolved.decoded_path = try std.fmt.allocPrint(a, "/{s}/{s}", .{ parsed.bucket.?, resolved.key.? });
+                        resolved.operation = if (request.head.method == .HEAD) .head_object else .get_object;
+                    }
+                }
+                // Custom error documents are used only for buckets explicitly public
+                // through the legacy read policy. Restricted policies retain S3 errors.
+                const has_resource_policy = policy_present: {
+                    application.policy_mutex.lockUncancelable(application.io.?);
+                    defer application.policy_mutex.unlock(application.io.?);
+                    const record = try resource_policies.load(a, application.systemStore(), application.io.?, bucket.id);
+                    break :policy_present record != null and !record.?.value.deleted;
+                };
+                if (!has_resource_policy and !bucket.block_public_access and
+                    (bucket.access_policy == .readonly or bucket.access_policy == .public) and resolved.key != null)
+                {
+                    const objects = application.objectService() orelse return respondError(request, a, .service_unavailable, request_id);
+                    if (objects.head(bucket.name, resolved.key.?)) |object| {
+                        object.deinit(application.allocator);
+                    } else |err| {
+                        if (err == error.ObjectNotFound) {
+                            if (configuration.child(website, "ErrorDocument")) |document| {
+                                resolved.key = configuration.text(document, "Key") orelse return respondError(request, a, .invalid_request, request_id);
+                                resolved.decoded_path = try std.fmt.allocPrint(a, "/{s}/{s}", .{ parsed.bucket.?, resolved.key.? });
+                                resolved.operation = if (request.head.method == .HEAD) .head_object else .get_object;
+                                website_status = .not_found;
+                            }
+                        }
+                    }
+                }
+            }
+        } else |_| {}
+    }
+    return serveAnonymousResolved(request, application, resolved, headers, request_id, peer, secure_transport, website_status);
+}
+
+fn serveAnonymousResolved(
+    request: *std.http.Server.Request,
+    application: *Application,
+    parsed: protocol.ParsedTarget,
+    headers: []const sigv4.Header,
+    request_id: []const u8,
+    peer: std.Io.net.IpAddress,
+    secure_transport: bool,
+    website_status: ?std.http.Status,
 ) !std.http.Status {
     if ((singleHeader(headers, "x-amz-server-side-encryption") catch return respondError(request, application.allocator, .invalid_argument, request_id)) != null) return respondError(request, application.allocator, .invalid_argument, request_id);
     if (hasUnsupportedHeaders(parsed.operation, headers)) return respondError(request, application.allocator, .not_implemented, request_id);
@@ -575,7 +650,7 @@ fn serveAnonymousRequest(
             if (!source_allowed) return respondError(request, application.allocator, .access_denied, request_id);
         }
     }
-    const access: BucketAccess = .{ .owner = "", .iam_authorized = true, .context = ctx };
+    const access: BucketAccess = .{ .owner = "", .iam_authorized = true, .context = ctx, .website_status = website_status };
     return switch (operation) {
         .get_object => serveGetObject(request, application, parsed, access, headers, .unsigned, request_id),
         .head_object => serveHeadObject(request, application, parsed, access, headers, .unsigned, request_id),
@@ -620,7 +695,7 @@ fn inheritedActionFor(operation: protocol.Operation, versioned: bool) []const u8
         .delete_objects => "s3:DeleteObject",
         .list_parts => "s3:ListMultipartUploadParts",
         .abort_multipart_upload => "s3:AbortMultipartUpload",
-        .unsupported => "s3:Unsupported",
+        .extension, .unsupported => "s3:Unsupported",
     };
 }
 
@@ -648,7 +723,7 @@ fn actionFor(operation: protocol.Operation) ?credential_domain.Action {
         .list_parts => .get_object,
         .abort_multipart_upload => .delete_object,
         .post_policy_upload => .put_object,
-        .unsupported => null,
+        .extension, .unsupported => null,
     };
 }
 
@@ -710,12 +785,14 @@ fn resourceContext(a: std.mem.Allocator, app: *Application, bucket_name: ?[]cons
     defer bucket.deinit(app.allocator);
     var entries: std.ArrayList(iam.Entry) = .empty;
     try entries.appendSlice(a, base.entries);
-    if (bucket.tags_json) |raw_tags| {
-        const parsed_tags = std.json.parseFromSlice(std.json.Value, a, raw_tags, .{}) catch return error.InvalidTags;
-        defer parsed_tags.deinit();
-        if (parsed_tags.value == .object) {
-            var iterator = parsed_tags.value.object.iterator();
-            while (iterator.next()) |entry| try entries.append(a, .{ .key = try std.fmt.allocPrint(a, "aws:ResourceTag/{s}", .{entry.key_ptr.*}), .value = if (entry.value_ptr.* == .string) try a.dupe(u8, entry.value_ptr.*.string) else return error.InvalidTags });
+    if (try @import("../application/s3_configuration.zig").abacEnabled(a, app.systemStore(), bucket.id)) {
+        if (bucket.tags_json) |raw_tags| {
+            const parsed_tags = std.json.parseFromSlice(std.json.Value, a, raw_tags, .{}) catch return error.InvalidTags;
+            defer parsed_tags.deinit();
+            if (parsed_tags.value == .object) {
+                var iterator = parsed_tags.value.object.iterator();
+                while (iterator.next()) |entry| try entries.append(a, .{ .key = try std.fmt.allocPrint(a, "aws:ResourceTag/{s}", .{entry.key_ptr.*}), .value = if (entry.value_ptr.* == .string) try a.dupe(u8, entry.value_ptr.*.string) else return error.InvalidTags });
+            }
         }
     }
     const io = app.io orelse return error.Unavailable;
@@ -795,7 +872,7 @@ fn serveObjectTagging(request: *std.http.Server.Request, app: *Application, pars
     return respondEmpty(request, .no_content, request_id, &.{});
 }
 
-fn parseTagXml(a: std.mem.Allocator, body: []const u8, tags: *std.ArrayList(object_tags.Tag)) !void {
+pub fn parseTagXml(a: std.mem.Allocator, body: []const u8, tags: *std.ArrayList(object_tags.Tag)) !void {
     var cursor: usize = 0;
     while (std.mem.indexOfPos(u8, body, cursor, "<Tag>")) |tag_start| {
         const key_start = std.mem.indexOfPos(u8, body, tag_start, "<Key>") orelse return error.InvalidTagXml;
@@ -989,6 +1066,10 @@ fn serveCreateBucket(
     const buckets = application.bucketService() orelse {
         return respondError(request, application.allocator, .service_unavailable, request_id);
     };
+    const lock_header = singleHeader(headers, "x-amz-bucket-object-lock-enabled") catch return respondError(request, application.allocator, .invalid_argument, request_id);
+    if (lock_header) |value| {
+        if (!std.mem.eql(u8, value, "true") and !std.mem.eql(u8, value, "false")) return respondError(request, application.allocator, .invalid_argument, request_id);
+    }
     const result = buckets.create(parsed.bucket.?, access.owner) catch |err| {
         return respondError(request, application.allocator, mapBucketError(err), request_id);
     };
@@ -1000,6 +1081,12 @@ fn serveCreateBucket(
             .bucket_already_owned_by_you,
             request_id,
         );
+    }
+    if (lock_header != null and std.mem.eql(u8, lock_header.?, "true")) {
+        const versioned = buckets.setVersioning(parsed.bucket.?, .enabled) catch |err| return respondError(request, application.allocator, mapBucketError(err), request_id);
+        versioned.deinit(application.allocator);
+        const locked = buckets.setObjectLocking(parsed.bucket.?, true) catch |err| return respondError(request, application.allocator, mapBucketError(err), request_id);
+        locked.deinit(application.allocator);
     }
     const location = parsed.decoded_path;
     const extra = [_]std.http.Header{.{ .name = "location", .value = location }};
@@ -1298,8 +1385,9 @@ fn serveListObjects(
     bucket.deinit(application.allocator);
     const list_type = parsed.query("list-type") catch {
         return respondError(request, application.allocator, .invalid_argument, request_id);
-    } orelse return respondError(request, application.allocator, .invalid_argument, request_id);
-    if (!std.mem.eql(u8, list_type, "2")) {
+    };
+    const legacy = list_type == null;
+    if (list_type != null and !std.mem.eql(u8, list_type.?, "2")) {
         return respondError(request, application.allocator, .invalid_argument, request_id);
     }
     const fetch_owner = parsed.query("fetch-owner") catch {
@@ -1313,7 +1401,7 @@ fn serveListObjects(
         else
             return respondError(request, application.allocator, .invalid_argument, request_id)
     else
-        false;
+        legacy;
     const prefix = parsed.query("prefix") catch {
         return respondError(request, application.allocator, .invalid_argument, request_id);
     } orelse "";
@@ -1323,7 +1411,7 @@ fn serveListObjects(
     const continuation_token = parsed.query("continuation-token") catch {
         return respondError(request, application.allocator, .invalid_argument, request_id);
     };
-    const start_after = parsed.query("start-after") catch {
+    const start_after = parsed.query(if (legacy) "marker" else "start-after") catch {
         return respondError(request, application.allocator, .invalid_argument, request_id);
     };
     const max_keys_value = parsed.query("max-keys") catch {
@@ -1366,6 +1454,7 @@ fn serveListObjects(
         include_owner,
         access.owner,
         result,
+        legacy,
     ) catch {
         return respondError(request, application.allocator, .internal_error, request_id);
     };
@@ -1495,7 +1584,7 @@ fn serveListObjectVersions(
                 const etag = formatStoredEtag(entry.etag_md5, entry.etag_part_count, &etag_buffer);
                 writer.writeAll("</LastModified><ETag>") catch return error.WriteFailed;
                 protocol.writeXmlEscaped(writer, etag) catch return error.WriteFailed;
-                writer.print("</ETag><Size>{d}</Size><StorageClass>STANDARD</StorageClass>", .{entry.size}) catch return error.WriteFailed;
+                writer.print("</ETag><Size>{d}</Size><StorageClass>{s}</StorageClass>", .{ entry.size, entry.storage_class.wire() }) catch return error.WriteFailed;
             } else {
                 writer.writeAll("</LastModified>") catch return error.WriteFailed;
             }
@@ -1762,7 +1851,10 @@ fn servePutObject(
             break :streamed streaming_source.interface();
         },
     };
+    const storage_header = singleHeader(headers, "x-amz-storage-class") catch return respondError(request, application.allocator, .invalid_argument, request_id);
+    const storage_class = object_domain.StorageClass.parse(storage_header orelse "STANDARD") orelse return respondError(request, application.allocator, .invalid_argument, request_id);
     const object = objects.put(bucket_name, key, source, .{
+        .storage_class = storage_class,
         .encryption = requestedEncryption(headers),
         .kms_key = requestedKmsKey(headers),
         .kms_selection = access.kms_selection,
@@ -2330,6 +2422,10 @@ fn serveCopyObject(
     payload_hash: sigv4.PayloadHash,
     request_id: []const u8,
 ) !std.http.Status {
+    const storage_header = singleHeader(headers, "x-amz-storage-class") catch
+        return respondError(request, application.allocator, .invalid_argument, request_id);
+    const storage_class = object_domain.StorageClass.parse(storage_header orelse "STANDARD") orelse
+        return respondError(request, application.allocator, .invalid_argument, request_id);
     if (ensureEmptyRequestWithHash(request, payload_hash) != null) {
         return respondError(request, application.allocator, .invalid_request, request_id);
     }
@@ -2428,6 +2524,7 @@ fn serveCopyObject(
             .content_type = content_type,
             .user_metadata = metadata,
             .expected_current = expected_current,
+            .storage_class = storage_class,
             .encryption = requestedEncryption(headers),
             .kms_key = requestedKmsKey(headers),
             .kms_selection = access.kms_selection,
@@ -2533,6 +2630,7 @@ fn serveGetObject(
     };
     defer lease.deinit();
     const object = lease.metadata();
+    lease.ensureReadable() catch |err| return respondError(request, application.allocator, mapObjectError(err), request_id);
     if (!kmsReadAllowed(application.allocator, access, object)) return respondError(request, application.allocator, .access_denied, request_id);
     const conditions = parseConditionalHeaders(headers) catch {
         return respondError(request, application.allocator, .invalid_argument, request_id);
@@ -2570,12 +2668,14 @@ fn serveGetObject(
         const digest = lease.fullChecksumSha256() catch |err| return respondError(request, application.allocator, mapObjectError(err), request_id);
         response_headers.setChecksum(digest);
     }
-    const header_values = response_headers.populate(object, request_id);
+    var cors_arena = std.heap.ArenaAllocator.init(application.allocator);
+    defer cors_arena.deinit();
+    const header_values = try @import("s3_cors.zig").headers(cors_arena.allocator(), application, object.bucket_id, request.head.method, headers, response_headers.populate(object, request_id));
     var response_buffer: [16 * 1024]u8 = undefined;
     var body_writer = try request.respondStreaming(&response_buffer, .{
         .content_length = if (range) |value| value.length else object.size,
         .respond_options = .{
-            .status = if (range != null) .partial_content else .ok,
+            .status = access.website_status orelse (if (range != null) .partial_content else .ok),
             .extra_headers = header_values,
         },
     });
@@ -2589,7 +2689,7 @@ fn serveGetObject(
     _ = application.runtime_metrics.downloaded_bytes.fetchAdd(if (range) |value| value.length else object.size, .monotonic);
     application.runtime_metrics.operations[@backingInt(parsed.operation)].payload(application.io.?, 0, if (range) |value| value.length else object.size);
     objects.notifyObject(.GET, "ObjectAccessed:Get", object.*);
-    return if (range != null) .partial_content else .ok;
+    return access.website_status orelse (if (range != null) .partial_content else .ok);
 }
 
 fn serveHeadObject(
@@ -2646,14 +2746,16 @@ fn serveHeadObject(
         const digest = lease.fullChecksumSha256() catch |err| return respondError(request, application.allocator, mapObjectError(err), request_id);
         response_headers.setChecksum(digest);
     }
-    const header_values = response_headers.populate(object, request_id);
+    var cors_arena = std.heap.ArenaAllocator.init(application.allocator);
+    defer cors_arena.deinit();
+    const header_values = try @import("s3_cors.zig").headers(cors_arena.allocator(), application, object.bucket_id, request.head.method, headers, response_headers.populate(object, request_id));
     try request.respond("", .{
-        .status = .ok,
+        .status = access.website_status orelse .ok,
         .transfer_encoding = .none,
         .extra_headers = header_values,
     });
     objects.notifyObject(.GET, "ObjectAccessed:Head", object.*);
-    return .ok;
+    return access.website_status orelse .ok;
 }
 
 fn governanceBypassRequestedFromHeaders(headers: []const sigv4.Header) bool {
@@ -3350,7 +3452,7 @@ fn serveDeleteObjects(
     return respondXml(request, xml.written(), .ok, request_id, &.{});
 }
 
-fn ensureBucketOwner(
+pub fn ensureBucketOwner(
     application: *Application,
     bucket_name: []const u8,
     access: BucketAccess,
@@ -3456,7 +3558,7 @@ const XmlPayloadError = error{
     ChecksumMismatch,
 };
 
-fn readXmlPayload(
+pub fn readXmlPayload(
     request: *std.http.Server.Request,
     allocator: std.mem.Allocator,
     max_length: usize,
@@ -3480,7 +3582,7 @@ fn readXmlPayload(
     return body;
 }
 
-fn mapXmlPayloadError(err: XmlPayloadError) protocol.ErrorKind {
+pub fn mapXmlPayloadError(err: XmlPayloadError) protocol.ErrorKind {
     return switch (err) {
         error.OutOfMemory => .internal_error,
         error.InvalidRequest => .invalid_request,
@@ -3500,7 +3602,7 @@ fn xmlElementText(xml: []const u8, name: []const u8) ?[]const u8 {
     return std.mem.trim(u8, xml[value_start .. value_start + relative_end], " \t\r\n");
 }
 
-fn parseRequestedVersion(parsed: protocol.ParsedTarget) error{ InvalidVersionId, DuplicateQueryParameter }!?object_domain.VersionId {
+pub fn parseRequestedVersion(parsed: protocol.ParsedTarget) error{ InvalidVersionId, DuplicateQueryParameter }!?object_domain.VersionId {
     const value = try parsed.query("versionId");
     return if (value) |encoded| object_domain.parseVersionId(encoded) catch error.InvalidVersionId else null;
 }
@@ -3815,10 +3917,13 @@ fn hasUnsupportedHeaders(
             if (operation != .put_object and operation != .create_multipart_upload) return true;
             continue;
         }
+        if (std.ascii.eqlIgnoreCase(header.name, "x-amz-storage-class")) {
+            if (operation != .put_object or object_domain.StorageClass.parse(header.value) == null) return true;
+            continue;
+        }
         if (std.ascii.startsWithIgnoreCase(header.name, "x-amz-server-side-encryption-") or
             std.ascii.startsWithIgnoreCase(header.name, "x-amz-copy-source-server-side-encryption-") or
             std.ascii.eqlIgnoreCase(header.name, "x-amz-server-side-encryption-customer-algorithm") or
-            std.ascii.eqlIgnoreCase(header.name, "x-amz-storage-class") or
             std.ascii.eqlIgnoreCase(header.name, "x-amz-acl") or
             std.ascii.startsWithIgnoreCase(header.name, "x-amz-grant-") or
             std.ascii.eqlIgnoreCase(header.name, "x-amz-mfa") or
@@ -3899,7 +4004,7 @@ fn parseStreamingDecodedLength(headers: []const sigv4.Header) error{InvalidLengt
     return std.fmt.parseInt(u64, encoded, 10) catch error.InvalidLength;
 }
 
-fn singleHeader(
+pub fn singleHeader(
     headers: []const sigv4.Header,
     name: []const u8,
 ) error{DuplicateHeader}!?[]const u8 {
@@ -4207,6 +4312,8 @@ const ObjectResponseHeaders = struct {
     include_version_id: bool,
     version_id: [object_domain.VersionId.encoded_length]u8,
     version_id_length: usize,
+    restore_header: [100]u8 = undefined,
+    restore_length: usize = 0,
 
     fn setChecksum(self: *ObjectResponseHeaders, digest: [32]u8) void {
         var encoded: [44]u8 = undefined;
@@ -4258,7 +4365,13 @@ const ObjectResponseHeaders = struct {
             ) catch return error.NoSpaceLeft;
             result.content_range_length = content_range.len;
         }
-        const fixed_count: usize = 8 + @as(usize, @intFromBool(object.encryption == .encrypted)) + @as(usize, @intFromBool(encryptionInfo(object).kms_key != null)) +
+        if (object.restored_until) |until| {
+            var date_buffer: [29]u8 = undefined;
+            const date = try time.formatHttpDate(until, &date_buffer);
+            const header = try std.fmt.bufPrint(&result.restore_header, "ongoing-request=\"false\", expiry-date=\"{s}\"", .{date});
+            result.restore_length = header.len;
+        }
+        const fixed_count: usize = 11 + @as(usize, @intFromBool(object.encryption == .encrypted)) + @as(usize, @intFromBool(encryptionInfo(object).kms_key != null)) +
             @as(usize, @intFromBool(include_content_length)) +
             @as(usize, @intFromBool(range != null)) +
             @as(usize, @intFromBool(include_version_id));
@@ -4284,6 +4397,16 @@ const ObjectResponseHeaders = struct {
         request_id: []const u8,
     ) []const std.http.Header {
         var index: usize = 0;
+        self.headers[index] = .{ .name = "x-amz-storage-class", .value = object.storage_class.wire() };
+        index += 1;
+        if (object.archive_tier != .none) {
+            self.headers[index] = .{ .name = "x-amz-archive-status", .value = if (object.archive_tier == .archive_access) "ARCHIVE_ACCESS" else "DEEP_ARCHIVE_ACCESS" };
+            index += 1;
+        }
+        if (self.restore_length > 0) {
+            self.headers[index] = .{ .name = "x-amz-restore", .value = self.restore_header[0..self.restore_length] };
+            index += 1;
+        }
         if (self.checksum_sha256) |*value| {
             self.headers[index] = .{ .name = "x-amz-checksum-sha256", .value = value };
             index += 1;
@@ -4363,7 +4486,7 @@ fn formatEtag(etag_md5: [16]u8, buffer: *[34]u8) []const u8 {
     return buffer;
 }
 
-fn formatObjectEtag(object: *const object_domain.Object, buffer: *[40]u8) []const u8 {
+pub fn formatObjectEtag(object: *const object_domain.Object, buffer: *[40]u8) []const u8 {
     return formatStoredEtag(object.etag_md5, object.etag_part_count, buffer);
 }
 
@@ -4394,6 +4517,7 @@ fn buildListObjectsXml(
     include_owner: bool,
     owner: []const u8,
     result: object_listing.Result,
+    legacy: bool,
 ) error{OutOfMemory}![]u8 {
     var output: std.Io.Writer.Allocating = .init(allocator);
     errdefer output.deinit();
@@ -4402,7 +4526,26 @@ fn buildListObjectsXml(
     writeEncodedXml(writer, bucket_name, url_encoding) catch return error.OutOfMemory;
     writer.writeAll("</Name><Prefix>") catch return error.OutOfMemory;
     writeEncodedXml(writer, prefix, url_encoding) catch return error.OutOfMemory;
-    writer.print("</Prefix><KeyCount>{d}</KeyCount><MaxKeys>{d}</MaxKeys>", .{ result.key_count, max_keys }) catch return error.OutOfMemory;
+    writer.writeAll("</Prefix>") catch return error.OutOfMemory;
+    if (!legacy) writer.print("<KeyCount>{d}</KeyCount>", .{result.key_count}) catch return error.OutOfMemory;
+    writer.print("<MaxKeys>{d}</MaxKeys>", .{max_keys}) catch return error.OutOfMemory;
+    if (legacy) {
+        writer.writeAll("<Marker>") catch return error.OutOfMemory;
+        writeEncodedXml(writer, start_after orelse "", url_encoding) catch return error.OutOfMemory;
+        writer.writeAll("</Marker>") catch return error.OutOfMemory;
+        if (result.is_truncated) {
+            var marker: []const u8 = "";
+            for (result.objects) |object| {
+                if (std.mem.order(u8, object.key, marker) == .gt) marker = object.key;
+            }
+            for (result.common_prefixes) |common_prefix| {
+                if (std.mem.order(u8, common_prefix, marker) == .gt) marker = common_prefix;
+            }
+            writer.writeAll("<NextMarker>") catch return error.OutOfMemory;
+            writeEncodedXml(writer, marker, url_encoding) catch return error.OutOfMemory;
+            writer.writeAll("</NextMarker>") catch return error.OutOfMemory;
+        }
+    }
     if (delimiter) |value| {
         writer.writeAll("<Delimiter>") catch return error.OutOfMemory;
         writeEncodedXml(writer, value, url_encoding) catch return error.OutOfMemory;
@@ -4414,13 +4557,13 @@ fn buildListObjectsXml(
         protocol.writeXmlEscaped(writer, value) catch return error.OutOfMemory;
         writer.writeAll("</ContinuationToken>") catch return error.OutOfMemory;
     }
-    if (start_after) |value| {
+    if (if (legacy) null else start_after) |value| {
         writer.writeAll("<StartAfter>") catch return error.OutOfMemory;
         writeEncodedXml(writer, value, url_encoding) catch return error.OutOfMemory;
         writer.writeAll("</StartAfter>") catch return error.OutOfMemory;
     }
     writer.print("<IsTruncated>{s}</IsTruncated>", .{if (result.is_truncated) "true" else "false"}) catch return error.OutOfMemory;
-    if (result.next_continuation_token) |value| {
+    if (if (legacy) null else result.next_continuation_token) |value| {
         writer.writeAll("<NextContinuationToken>") catch return error.OutOfMemory;
         protocol.writeXmlEscaped(writer, value) catch return error.OutOfMemory;
         writer.writeAll("</NextContinuationToken>") catch return error.OutOfMemory;
@@ -4431,9 +4574,10 @@ fn buildListObjectsXml(
         writer.writeAll("</Key><LastModified>") catch return error.OutOfMemory;
         protocol.writeIsoTime(writer, object.last_modified_unix_seconds) catch return error.OutOfMemory;
         var etag: [40]u8 = undefined;
-        writer.print("</LastModified><ETag>{s}</ETag><Size>{d}</Size><StorageClass>STANDARD</StorageClass>", .{
+        writer.print("</LastModified><ETag>{s}</ETag><Size>{d}</Size><StorageClass>{s}</StorageClass>", .{
             formatStoredEtag(object.etag_md5, object.etag_part_count, &etag),
             object.size,
+            object.storage_class.wire(),
         }) catch return error.OutOfMemory;
         if (include_owner) {
             writer.writeAll("<Owner><ID>") catch return error.OutOfMemory;
@@ -4471,7 +4615,7 @@ fn writeEncodedXml(
     }
 }
 
-fn respondError(
+pub fn respondError(
     request: *std.http.Server.Request,
     allocator: std.mem.Allocator,
     kind: protocol.ErrorKind,
@@ -4514,7 +4658,7 @@ fn respondInvalidRange(
     return respondErrorWithHeaders(request, allocator, .invalid_range, request_id, &headers);
 }
 
-fn respondXml(
+pub fn respondXml(
     request: *std.http.Server.Request,
     body: []const u8,
     status: std.http.Status,
@@ -4537,7 +4681,7 @@ fn respondXml(
     return status;
 }
 
-fn respondEmpty(
+pub fn respondEmpty(
     request: *std.http.Server.Request,
     status: std.http.Status,
     request_id: []const u8,
@@ -4558,7 +4702,7 @@ fn respondEmpty(
     return status;
 }
 
-fn respondCorsPreflight(
+pub fn respondCorsPreflight(
     request: *std.http.Server.Request,
     request_id: []const u8,
 ) !std.http.Status {
@@ -4686,7 +4830,7 @@ fn mapPostPolicyError(err: PostPolicyError) protocol.ErrorKind {
     };
 }
 
-fn mapBucketError(err: bucket_service.Error) protocol.ErrorKind {
+pub fn mapBucketError(err: bucket_service.Error) protocol.ErrorKind {
     return switch (err) {
         error.InvalidBucketName => .invalid_bucket_name,
         error.InvalidOwner => .access_denied,
@@ -4703,7 +4847,7 @@ fn mapBucketError(err: bucket_service.Error) protocol.ErrorKind {
     };
 }
 
-fn mapObjectError(err: object_service.Error) protocol.ErrorKind {
+pub fn mapObjectError(err: object_service.Error) protocol.ErrorKind {
     return switch (err) {
         error.InvalidBucketName => .invalid_bucket_name,
         error.InvalidObjectKey,
@@ -4713,6 +4857,7 @@ fn mapObjectError(err: object_service.Error) protocol.ErrorKind {
         error.InputReadFailed,
         error.InvalidRange,
         => .invalid_request,
+        error.InvalidObjectState => .invalid_object_state,
         error.BucketNotFound => .no_such_bucket,
         error.DirectoryNotEmpty => .directory_not_empty,
         error.ObjectNotFound => .no_such_key,
@@ -5151,7 +5296,7 @@ fn requestedKmsKey(headers: []const sigv4.Header) ?[]const u8 {
     return (singleHeader(headers, "x-amz-server-side-encryption-aws-kms-key-id") catch null) orelse "";
 }
 
-fn kmsReadAllowed(a: std.mem.Allocator, access: BucketAccess, object: *const object_domain.Object) bool {
+pub fn kmsReadAllowed(a: std.mem.Allocator, access: BucketAccess, object: *const object_domain.Object) bool {
     if (encryptionInfo(object).kms_key) |key_name| return if (access.principal) |principal| principal.allowsKms(a, "kms:Decrypt", key_name, access.context) else false;
     return true;
 }

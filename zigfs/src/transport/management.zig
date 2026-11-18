@@ -3666,6 +3666,8 @@ fn serveEventDestinations(request: *std.http.Server.Request, app: *Application, 
         for (buckets.buckets) |bucket| {
             const rules = @import("../application/bucket_subscriptions.zig").load(a, app.systemStore(), io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot check subscriptions");
             for (rules.items) |rule| if (std.mem.eql(u8, rule.destination, name)) return respondError(request, request_id, .conflict, "EventDestinationInUse", "remove bucket subscriptions before deleting destination");
+            const s3_rules = @import("../application/s3_notifications.zig").load(a, app.systemStore(), bucket.id) catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot check S3 subscriptions");
+            for (s3_rules.items) |rule| if (std.mem.eql(u8, rule.destination, name)) return respondError(request, request_id, .conflict, "EventDestinationInUse", "remove S3 notifications before deleting destination");
         }
     }
 

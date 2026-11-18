@@ -2563,6 +2563,9 @@ components:
       additionalProperties: false
       required: [name, versioning]
       properties:
+        block_public_access:
+          type: boolean
+          description: Blocks anonymous access even when a resource policy grants it.
         kms_key_id:
           type: string
           maxLength: 256
@@ -2588,6 +2591,9 @@ components:
       additionalProperties: false
       minProperties: 1
       properties:
+        block_public_access:
+          type: boolean
+          description: Blocks anonymous access even when a resource policy grants it.
         max_bytes:
           type: integer
           minimum: 0

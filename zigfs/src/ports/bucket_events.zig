@@ -10,6 +10,8 @@ pub const Event = struct {
     etag: []const u8 = "",
     version_id: []const u8 = "",
     generation: u64 = 0,
+    /// Captured from the accessed version, avoiding reentrant object locking.
+    intelligent_tiering: bool = false,
 };
 /// Invoked only after the operation succeeds and storage locks are released.
 /// Captures a durable outbox record; it never connects to a remote destination.

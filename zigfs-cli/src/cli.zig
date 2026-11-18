@@ -508,7 +508,7 @@ test "help and version dispatch with strict option validation" {
     try std.testing.expectEqual(Command.help, (try parse(&.{})).command);
     for ([_][]const u8{ "-V", "--version" }) |flag|
         try std.testing.expectEqual(Command.version, (try parse(&.{flag})).command);
-    try std.testing.expectEqual(Command.unavailable, (try parse(&.{"version"})).command);
+    try std.testing.expectEqual(Command.help, (try parse(&.{"version"})).command);
     try std.testing.expectError(error.UnknownOption, parse(&.{ "--help", "--typo" }));
     try std.testing.expectError(error.ConflictingOptions, parse(&.{ "bucket", "--version" }));
     try std.testing.expectError(error.UnexpectedArgument, parse(&.{ "help", "mv", "extra" }));
@@ -533,9 +533,9 @@ test "format values conflicts and end of options" {
     try std.testing.expectError(error.ConflictingOptions, parse(&.{ "--json", "--format=auto" }));
     try std.testing.expectEqual(Format.json, (try parse(&.{ "--json", "--format=json" })).options.format);
     try std.testing.expectError(error.UnknownCommand, parse(&.{ "--", "--version" }));
-    const literal = try parse(&.{ "version", "--", "--json" });
+    const literal = try parse(&.{ "version", "info", "--", "--json" });
     try std.testing.expectEqual(Format.auto, literal.options.format);
-    try std.testing.expectEqual(Command.unavailable, literal.command);
+    try std.testing.expectEqual(Command.modeled, literal.command);
 }
 
 test "responses use correct streams codes and JSON without leaking arguments" {
@@ -548,8 +548,8 @@ test "responses use correct streams codes and JSON without leaking arguments" {
     try std.testing.expect(std.mem.indexOf(u8, bad.stderr, "DO_NOT_ECHO") == null);
     const parsed = try std.json.parseFromSlice(std.json.Value, a, bad.stderr, .{});
     try std.testing.expectEqualStrings("USAGE_ERROR", parsed.value.object.get("error").?.object.get("code").?.string);
-    const reserved = try execute(a, &.{ "--json", "version" });
-    try std.testing.expectEqual(@as(u8, 7), reserved.exit_code);
+    const group_help = try execute(a, &.{ "--json", "version" });
+    try std.testing.expectEqual(@as(u8, 0), group_help.exit_code);
     const result = try execute(a, &.{ "--quiet", "--json", "--version" });
     try std.testing.expectEqualStrings("", result.stderr);
     const v = try std.json.parseFromSlice(std.json.Value, a, result.stdout, .{});
@@ -558,7 +558,7 @@ test "responses use correct streams codes and JSON without leaking arguments" {
     try std.testing.expectEqualStrings("", quiet.stdout);
     const help = try execute(a, &.{ "bucket", "version", "--help", "--json" });
     _ = try std.json.parseFromSlice(std.json.Value, a, help.stdout, .{});
-    try std.testing.expect(std.mem.indexOf(u8, help.stdout, "not implemented") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help.stdout, "not implemented") == null);
 }
 
 test {
@@ -597,4 +597,14 @@ test {
 fn childEntryByShare() usize {
     for (registry, 0..) |entry, i| if (equal(entry.path, "share post")) return i;
     unreachable;
+}
+
+test "scan budget enforces cumulative record and byte limits without changing failed accounting" {
+    var budget: modeled.ScanBudget = .{};
+    try budget.charge(60000, 32 * 1024 * 1024);
+    try budget.charge(40000, 32 * 1024 * 1024);
+    try std.testing.expectError(error.ScanLimitExceeded, budget.charge(1, 0));
+    try std.testing.expectError(error.ScanLimitExceeded, budget.charge(0, 1));
+    try std.testing.expectEqual(@as(usize, 100000), budget.records);
+    try std.testing.expectEqual(@as(usize, 64 * 1024 * 1024), budget.bytes);
 }

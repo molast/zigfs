@@ -67,6 +67,19 @@ pub const Context = struct {
         var buffer: [32]u8 = undefined;
         const outcome = std.fmt.bufPrint(&buffer, "{s}:{d}", .{ if (@backingInt(status) < 400) "success" else "failure", @backingInt(status) }) catch return;
         self.request.request_id = request_id;
+        if (self.metrics_operation != null) {
+            if (resource.bucket) |bucket| {
+                @import("../application/s3_access_logging.zig").record(app, .{
+                    .bucket = bucket,
+                    .key = resource.object_key,
+                    .method = self.request.method,
+                    .actor = self.actor,
+                    .request_id = request_id,
+                    .status = @intCast(@backingInt(status)),
+                    .duration_ms = duration_ms,
+                }) catch |err| std.log.warn("S3 access log delivery failed: {s}", .{@errorName(err)});
+            }
+        }
         app.recordAudit(.{
             .event_id = event_id,
             .event_time = event_time,

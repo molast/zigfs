@@ -5,13 +5,14 @@ const id = @import("../common/id.zig");
 
 pub const magic = [4]u8{ 'Z', 'F', 'O', 'B' };
 pub const major_version: u16 = 1;
-pub const minor_version: u16 = 7;
+pub const minor_version: u16 = 8;
 pub const legacy_header_length: usize = 136;
 pub const etag_header_length: usize = 140;
 pub const encryption_header_length: usize = 252;
 pub const retention_header_length: usize = encryption_header_length + 16;
 pub const kms_header_length: usize = retention_header_length + 805;
-pub const header_length: usize = kms_header_length + 50;
+pub const layout_header_length: usize = kms_header_length + 50;
+pub const header_length: usize = layout_header_length + 10;
 pub const multipart_part_length: usize = 64;
 
 const flags_offset: usize = 8;
@@ -168,6 +169,9 @@ pub fn encode(allocator: std.mem.Allocator, value: Value) EncodeError![]u8 {
         @memcpy(bytes[1075..1091], &completion.upload_id);
         @memcpy(bytes[1091..1123], &completion.parts_digest);
     }
+    bytes[1123] = @backingInt(value.storage_class);
+    std.mem.writeInt(i64, bytes[1124..1132], value.restored_until orelse 0, .little);
+    bytes[1132] = @backingInt(value.archive_tier);
     var offset = header_length;
     copyField(bytes, &offset, value.bucket_name);
     copyField(bytes, &offset, value.key);
@@ -210,6 +214,7 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
         4 => encryption_header_length,
         5 => retention_header_length,
         6 => kms_header_length,
+        7 => layout_header_length,
         else => header_length,
     };
     if (bytes.len < encoded_header_length) return error.InvalidLength;
@@ -399,6 +404,9 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) DecodeError!Decod
             .retention_until_unix_seconds = retention_until,
             .retention_mode = retention_mode,
             .legal_hold = encoded_minor_version >= 5 and bytes[legal_hold_offset] != 0,
+            .archive_tier = if (encoded_minor_version < 8) .none else std.enums.fromInt(object_domain.ArchiveTier, bytes[1132]) orelse return error.UnsupportedFlags,
+            .storage_class = if (encoded_minor_version < 8) .standard else std.enums.fromInt(object_domain.StorageClass, bytes[1123]) orelse return error.UnsupportedFlags,
+            .restored_until = if (encoded_minor_version < 8 or std.mem.readInt(i64, bytes[1124..1132], .little) == 0) null else std.mem.readInt(i64, bytes[1124..1132], .little),
         },
         .metadata_storage = metadata,
         .manifest_storage = manifest_parts,
@@ -610,4 +618,26 @@ test "v6 object metadata remains readable after segment layout extension" {
     defer decoded.deinit(std.testing.allocator);
     try std.testing.expectEqual(.contiguous, decoded.value.data_layout);
     try std.testing.expect(decoded.value.multipart_completion == null);
+}
+
+test "archive metadata round trips and v7 payloads remain STANDARD" {
+    const a = std.testing.allocator;
+    var value = testValue();
+    value.storage_class = .glacier;
+    value.restored_until = 1_900_000_000;
+    const bytes = try encode(a, value);
+    defer a.free(bytes);
+    const restored = try decode(a, bytes);
+    defer restored.deinit(a);
+    try std.testing.expectEqual(object_domain.StorageClass.glacier, restored.value.storage_class);
+    try std.testing.expectEqual(value.restored_until, restored.value.restored_until);
+    const old = try a.alloc(u8, bytes.len - 10);
+    defer a.free(old);
+    @memcpy(old[0..layout_header_length], bytes[0..layout_header_length]);
+    @memcpy(old[layout_header_length..], bytes[header_length..]);
+    std.mem.writeInt(u16, old[6..8], 7, .little);
+    const legacy = try decode(a, old);
+    defer legacy.deinit(a);
+    try std.testing.expectEqual(object_domain.StorageClass.standard, legacy.value.storage_class);
+    try std.testing.expect(legacy.value.restored_until == null);
 }

@@ -1,5 +1,7 @@
 # ZigFS CLI（`zc`）设计参考：基于 RustFS `rc`
 
+> **最新复验（2026-11-18）**：见 [后台能力与验证报告](zigfs-zc-cli-validation.md)。81/81 扩展场景通过，已加入实际归档恢复、加密注解 CRUD、通知重试、网站访问、日志落桶和报表生成；智能分层有控制时钟的存储测试。本地实现边界与剩余兼容限制详见报告；下方历史“待验证/受阻”状态保留供追溯。
+
 > 状态：设计输入文档 / 命令覆盖与行为约定（非已实现功能说明）  
 > 核对日期：2026-11-16；上游基线：RustFS CLI `main` 的 README 与命令参考（可变分支，非固定 Release）  
 > 命令前缀暂定：`zc`  
@@ -11,7 +13,7 @@
 - **本次范围**：补齐单机 S3 指令设计；多机/复制拓扑明确排除，云专属协议单列可选适配。第 2.2 节的范围裁定优先于旧参考段落和旧版服务端支持表。
 - **上游参考**：第 2、3 节以 RustFS 已公开文档为参考，将命令前缀改写为 `zc`，不代表 ZigFS 已实现，也不承诺与上游逐参数兼容。
 - **ZigFS 建议**：第 1 节、第 2.1.5 节、第 2.2 节和第 3.9 节提出本项目的设计约定或扩展；其他段落中的建议亦明确标注，尚需实现与验证。
-- **当前 CLI**：步骤 01–03 已完成：全局参数、帮助/版本、bucket/object 注册框架、传统别名、JSON 与退出码。程序版本使用 `zc --version` / `-V`；`zc version` 已保留为 Bucket 版本管理别名，目前执行返回 7。alias set/list/info/remove/export/import 与本地连接配置已可用；HTTP/SigV4 与首批 8 个 s3api 操作子集已接入；高层 S3 命令和管理操作仍待实现；支持清单见 [CLI README](../zigfs-cli/README.md)。
+- **当前 CLI**：步骤 01–09 保留已有验收；步骤 10–29 已接入并进行了集中运行验证，存在明确后端缺口及未覆盖分支，见顶部运行报告。`zc --version` / `-V` 显示程序版本；`zc version` 为 Bucket 版本管理命令组，返回帮助（退出 0）。
 - **服务端能力**：标准 S3、ZigFS Management 和 RustFS Admin 是不同协议。CLI 不得把其中一个协议的能力当作另一个协议的支持证明，不得直接访问 ZigFS 数据目录。
 - 本文补齐命令家族、重要参数和执行约定，不复制上游全部帮助文本。上游页面之间也可能存在滞后，例如 `object.md` 仍描述单源复制，`cp.md` 已列出多源复制；有差异时记录差异，实施前核对对应版本的 parser 和测试。
 - 旧版 [S3 覆盖表](api/s3-api-coverage.md) 与近期功能文档可能不同步。支持状态应联合核对当前代码、[Management 契约](api/zigfs-management-v1.openapi.yaml)及专项文档，不能仅凭旧表判定未实现。
@@ -938,7 +940,7 @@ KMS 的 describe/rotate/schedule-deletion/cancel-deletion/delete 应映射到契
 
 ## 4. 按指令优先级分步实施
 
-本节是后续开发的执行顺序。**步骤 01–09 已验收完成；步骤 10–29 已批量接入，状态为待验证（具体实现边界见第 4.8 节）**；进度与验证证据记录在第 4.8 节，文档规划本身不计入功能完成。
+本节是后续开发的执行顺序。**步骤 01–09 已验收完成；步骤 10–29 已批量接入并执行集中验证，逐步状态见下表和顶部运行报告（具体实现边界见第 4.8 节）**；进度与验证证据记录在第 4.8 节，文档规划本身不计入功能完成。
 
 ### 4.1 执行规则与依赖
 
@@ -972,13 +974,13 @@ KMS 的 describe/rotate/schedule-deletion/cancel-deletion/delete 应映射到契
 | 步骤 | 状态 | 实施命令 / 工作 | 前置依赖 | 本步验收结果 |
 |---|---|---|---|---|
 | 09 | 已完成 | `share` GET/PUT/DELETE/HEAD、multipart 预签名、`share post`、`object post` | 05/07 | 临时凭据有效期上限；签名 query/header；POST Policy 条件及表单上传；正文与输出契约正确 |
-| 10 | 待验证 | `bucket version get/enable/suspend/set/list`；所有适用命令的 `--version-id`；版本化 rm/rb | 06–08 | Enabled/Suspended、null 版本、DeleteMarker、精确恢复/复制、批量 VersionId；强制清桶不跳过历史版本 |
-| 11 | 待验证 | `bucket policy get/set/clear/status`、`anonymous`；Bucket/Object ACL、Public Access Block、Ownership | 03/10 | 最小权限与显式 Deny；配置替换/清除语义；权限变更实测影响访问；不把所有入口简化为匿名策略 |
-| 12 | 待验证 | `tag`、`bucket tag`、`object tag`；`bucket cors get/set/clear` | 10–11 | Bucket/对象/精确版本标签隔离；完整配置往返；指定标签删除不误清其他标签；CORS 实际响应验证 |
-| 13 | 待验证 | `bucket encryption get/set/clear`；上传/复制/分片的 SSE-S3/SSE-KMS 字段 | 05/07/11 | 默认设置与请求覆盖分离；已有对象不被默认设置重写；无权访问密钥失败；密钥材料脱敏 |
-| 14 | 待验证 | `bucket lock info/set/clear`、`object retention`、`object legalhold` 及兼容别名 | 10–11 | 创建锁定桶、版本保护、governance bypass 权限、compliance 不可削弱；清默认规则不关闭锁 |
-| 15 | 待验证 | `bucket lifecycle get/set/clear`、`ilm rule add/edit/list/remove/export/import` | 10/12/14 | Prefix/Tag/Size/And 规则和过期版本/分片清理；规则保存与后台实际执行分别验证；仅本地 tier |
-| 16 | 待验证 | `bucket notification get/set`、`event`、`quota` | 11–12；原生后端需 19 | S3 通知与 ZigFS 订阅模型分开；空配置清除；并发读改写风险说明；配额须验证写入限制，不仅配置成功 |
+| 10 | 部分已验证 | `bucket version get/enable/suspend/set/list`；所有适用命令的 `--version-id`；版本化 rm/rb | 06–08 | Enabled/Suspended、null 版本、DeleteMarker、精确恢复/复制、批量 VersionId；强制清桶不跳过历史版本 |
+| 11 | 部分通过／缺口 | `bucket policy get/set/clear/status`、`anonymous`；Bucket/Object ACL、Public Access Block、Ownership | 03/10 | 最小权限与显式 Deny；配置替换/清除语义；权限变更实测影响访问；不把所有入口简化为匿名策略 |
+| 12 | 部分通过／后端受阻 | `tag`、`bucket tag`、`object tag`；`bucket cors get/set/clear` | 10–11 | Bucket/对象/精确版本标签隔离；完整配置往返；指定标签删除不误清其他标签；CORS 实际响应验证 |
+| 13 | 本地路径已验证 | `bucket encryption get/set/clear`；上传/复制/分片的 SSE-S3/SSE-KMS 字段 | 05/07/11 | 默认设置与请求覆盖分离；已有对象不被默认设置重写；无权访问密钥失败；密钥材料脱敏 |
+| 14 | 后端受阻 | `bucket lock info/set/clear`、`object retention`、`object legalhold` 及兼容别名 | 10–11 | 创建锁定桶、版本保护、governance bypass 权限、compliance 不可削弱；清默认规则不关闭锁 |
+| 15 | 配置路径已验证 | `bucket lifecycle get/set/clear`、`ilm rule add/edit/list/remove/export/import` | 10/12/14 | Prefix/Tag/Size/And 规则和过期版本/分片清理；规则保存与后台实际执行分别验证；仅本地 tier |
+| 16 | 部分通过／后端受阻 | `bucket notification get/set`、`event`、`quota` | 11–12；原生后端需 19 | S3 通知与 ZigFS 订阅模型分开；空配置清除；并发读改写风险说明；配额须验证写入限制，不仅配置成功 |
 
 **P1 里程碑**：版本与数据保护贯穿已有命令；常用配置有真实协议和行为验证。quota 或原生事件若依赖 Management 登录，可先完成步骤 19 再回补，不把 S3 签名凭据直接当管理会话。
 
@@ -986,8 +988,8 @@ KMS 的 describe/rotate/schedule-deletion/cancel-deletion/delete 应映射到契
 
 | 步骤 | 状态 | 实施命令 / 工作 | 前置依赖 | 本步验收结果 |
 |---|---|---|---|---|
-| 17 | 待验证 | `find/tree/du/diff`、`ping/ready` | 04–05/10；管理快照需 19 | 全分页、有界内存；du 明示扫描来源/截断；没有 fallback 授权不扫描；liveness/readiness 分开 |
-| 18 | 待验证 | `mirror`、`watch`、`completions` | 08/10/17；watch 需事件流协议 | 本地↔单实例及同实例 Bucket 同步；先比较后删除；列表失败禁止删除；事件重连限制明确；补全只列已开放命令 |
+| 17 | 所测分支通过 | `find/tree/du/diff`、`ping/ready` | 04–05/10；管理快照需 19 | 全分页、有界内存；du 明示扫描来源/截断；没有 fallback 授权不扫描；liveness/readiness 分开 |
+| 18 | 所测分支通过 | `mirror`、`watch`、`completions` | 08/10/17；watch 需事件流协议 | 本地↔单实例及同实例 Bucket 同步；先比较后删除；列表失败禁止删除；事件重连限制明确；补全只列已开放命令 |
 
 **P2 里程碑**：常用脚本可稳定处理大列表、同步计划与部分失败。跨站同步、无损事件流和 exactly-once 不属于本次承诺；watch 的游标事件契约已补入，客户端与服务端均待集中验证。
 
@@ -995,10 +997,10 @@ KMS 的 describe/rotate/schedule-deletion/cancel-deletion/delete 应映射到契
 
 | 步骤 | 状态 | 实施命令 / 工作 | 前置依赖 | 本步验收结果 |
 |---|---|---|---|---|
-| 19 | 待验证 | `admin auth login/session/logout`、OIDC 登录适配；独立 Management endpoint/client | 01–03 | 管理 token 安全存储/过期；退出失效；与 S3 alias 认证分离；无管理权限不能写配置 |
-| 20 | 待验证 | `admin user/group/policy/access-key`、OIDC provider、role-session；service-account 按实际契约接入 | 19 | 创建/更新/禁用/删除及关联权限；一次性凭据响应；会话记录删除不冒充吊销；不存在端点的入口不启用 |
-| 21 | 待验证 | `admin settings/config`、`admin kms`、Bucket configuration、event-destination/subscription | 19–20 | 类型/权限验证；KMS 后端能力、rotate/delete 状态机；配置持久化；事件目标测试；回补步骤 13/16 原生依赖 |
-| 22 | 待验证 | `admin system/health/storage/scanner/gc/monitoring/diagnostics/logs/audit-logs`、directory/multipart/legalhold 原生入口 | 19/21 | 有界查询/下载、脱敏、GC 真实回收；审计记录；保护状态与 S3 一致；不读写数据目录 |
+| 19 | 部分已验证 | `admin auth login/session/logout`、OIDC 登录适配；独立 Management endpoint/client | 01–03 | 管理 token 安全存储/过期；退出失效；与 S3 alias 认证分离；无管理权限不能写配置 |
+| 20 | 部分已验证 | `admin user/group/policy/access-key`、OIDC provider、role-session；service-account 按实际契约接入 | 19 | 创建/更新/禁用/删除及关联权限；一次性凭据响应；会话记录删除不冒充吊销；不存在端点的入口不启用 |
+| 21 | 部分已验证 | `admin settings/config`、`admin kms`、Bucket configuration、event-destination/subscription | 19–20 | 类型/权限验证；KMS 后端能力、rotate/delete 状态机；配置持久化；事件目标测试；回补步骤 13/16 原生依赖 |
+| 22 | 查询已验证 | `admin system/health/storage/scanner/gc/monitoring/diagnostics/logs/audit-logs`、directory/multipart/legalhold 原生入口 | 19/21 | 有界查询/下载、脱敏、GC 真实回收；审计记录；保护状态与 S3 一致；不读写数据目录 |
 
 **P3 里程碑**：第 3.9 节当前已有单机 Management 契约有对应 CLI 工作流。`admin service` 的本地 restart/stop 等仅在存在明确服务端契约后单独接入；RustFS cluster、MFA 和 IAM archive 不借用名称伪装支持。
 
@@ -1006,13 +1008,13 @@ KMS 的 describe/rotate/schedule-deletion/cancel-deletion/delete 应映射到契
 
 | 步骤 | 状态 | 实施命令 / 工作 | 前置依赖 | 本步验收结果 |
 |---|---|---|---|---|
-| 23 | 待验证 | `multipart copy-part`、`object attributes`；剩余条件、checksum、metadata、SSE-C 等输入字段 | 07/10/13 | 源版本/范围/条件正确；Attributes ObjectParts 分页；源目标加密分离；字段支持逐项登记 |
-| 24 | 待验证 | `bucket website/logging/request-payment/accelerate` | 11/19 | 完整 get/set/clear（仅存在 DELETE 的配置）；网站/日志实际行为和本地适用性；计费/全球加速单列云端验收，不冒充本地功能 |
-| 25 | 待验证 | `bucket analytics/inventory/metrics/intelligent-tiering` 四操作族 | 12/15/24 | 按 ID 的 list/get/set/remove 和分页；同实例报表投递与后台执行；云指标/存储级别能力另列限制 |
-| 26 | 待验证 | `object restore`、`sql` / SelectObjectContent、历史 `object torrent` | 05/15/23 | 本地归档恢复异步状态；Select 事件流错误/统计/结束；历史接口有协议实现才算完成，不搭建多机网络 |
-| 27 | 待验证 | `object annotation get/set/clear/list`、`object encryption update`、`bucket abac get/set` | 10–13/23 | annotation 版本/分页/条件隔离；原地加密更新不改变版本冒充；ABAC 授权实测，云端 TagResource 依赖单列 |
-| 28 | 待验证 | `object list --list-api v1`；旧 Get/PutBucketLifecycle、Get/PutBucketNotification | 04/15–16 | Marker 与 V2 token 分开；旧请求/响应 schema 独立验证，不改名转发新版协议 |
-| 29 | 待验证 | 对照第 2.2.3 节逐项收口高层入口、s3api、所有输入字段及测试记录 | 01–28 的适用步骤 | 96 项单机规划与 4 项旧协议兼容逐项有结论；无遗漏/重复；未通过项列为缺口，不发布“全兼容”声明 |
+| 23 | 协议通过／后端受阻 | `multipart copy-part`、`object attributes`；剩余条件、checksum、metadata、SSE-C 等输入字段 | 07/10/13 | 源版本/范围/条件正确；Attributes ObjectParts 分页；源目标加密分离；字段支持逐项登记 |
+| 24 | 后端受阻 | `bucket website/logging/request-payment/accelerate` | 11/19 | 完整 get/set/clear（仅存在 DELETE 的配置）；网站/日志实际行为和本地适用性；计费/全球加速单列云端验收，不冒充本地功能 |
+| 25 | 后端受阻 | `bucket analytics/inventory/metrics/intelligent-tiering` 四操作族 | 12/15/24 | 按 ID 的 list/get/set/remove 和分页；同实例报表投递与后台执行；云指标/存储级别能力另列限制 |
+| 26 | 未通过 | `object restore`、`sql` / SelectObjectContent、历史 `object torrent` | 05/15/23 | 本地归档恢复异步状态；Select 事件流错误/统计/结束；历史接口有协议实现才算完成，不搭建多机网络 |
+| 27 | 后端受阻 | `object annotation get/set/clear/list`、`object encryption update`、`bucket abac get/set` | 10–13/23 | annotation 版本/分页/条件隔离；原地加密更新不改变版本冒充；ABAC 授权实测，云端 TagResource 依赖单列 |
+| 28 | 部分通过／后端受阻 | `object list --list-api v1`；旧 Get/PutBucketLifecycle、Get/PutBucketNotification | 04/15–16 | Marker 与 V2 token 分开；旧请求/响应 schema 独立验证，不改名转发新版协议 |
+| 29 | 入口已验证／未全验收 | 对照第 2.2.3 节逐项收口高层入口、s3api、所有输入字段及测试记录 | 01–28 的适用步骤 | 96 项单机规划与 4 项旧协议兼容逐项有结论；无遗漏/重复；未通过项列为缺口，不发布“全兼容”声明 |
 
 **P4 里程碑**：完成单机适用能力和旧协议的逐项验收。96 项是命令规划分类，并不表示每个字段都能在本机提供 AWS 服务；例如 Accelerate、外部 CloudWatch、ABAC 的 s3control 标签操作必须标记云端依赖。报告分别列出本地通过、仅远端通过、待实现和不适用，不能将远端通过计入 ZigFS 服务端兼容率。
 
@@ -1028,7 +1030,7 @@ KMS 的 describe/rotate/schedule-deletion/cancel-deletion/delete 应映射到契
 
 ### 4.8 每一步的完成条件与进度登记
 
-**当前统一状态**：集中静态审查 R01–R08 八项已补写逻辑，统一 **待验证**，详见 [集中静态审查清单](zigfs-zc-cli-static-review.md)。100 项 S3/114 条管理映射无漏注册不等于兼容性验收通过。本轮未运行构建、CLI、测试或联调。
+**当前运行状态（2026-11-18）**：R01–R08 已验证报告列出的关键分支；步骤 10–29 部分通过、部分受后端能力阻塞。完整结果和仍未覆盖项见 [集中运行验证](zigfs-zc-cli-validation.md)。下面各轮“待验证”段落保留当时交付状态。
 
 **字段处理补全**：模型化与旧请求路径共用 Metadata 响应头提取，并保留 data.metadata 输出；生命周期规则编辑、list/export/import 保留 TransitionDefaultMinimumObjectSize，导入兼容旧文件。两项已修改逻辑、均待验证；本轮未进行全仓完整审查，未编译、测试或联调。实际覆盖分支见 [交付登记](zigfs-zc-cli-gap-audit.md)。
 

@@ -34,6 +34,8 @@ pub fn namespaceFor(key: []const u8) error{InvalidKey}!Type {
     const prefixes = .{
         .{ "system/bucket-policies/", Type.bucket_policy },
         .{ "system/object-tags/", Type.object_tag },
+        .{ "config/s3-buckets/", Type.settings },
+        .{ "config/s3-objects/", Type.settings },
         .{ "config/bucket-subscriptions/", Type.bucket_subscription },
     };
     inline for (prefixes) |route| {

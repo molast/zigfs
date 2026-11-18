@@ -19,6 +19,14 @@ pub const Entry = struct {
 };
 pub fn matches(rule: subscriptions.Subscription, event: notifications.Event) bool {
     if (rule.destination.len == 0 or !std.mem.startsWith(u8, event.key, rule.prefix) or !std.mem.endsWith(u8, event.key, rule.suffix)) return false;
+    if (rule.event_names.len > 0) {
+        var selected = false;
+        for (rule.event_names) |name| {
+            if (std.mem.eql(u8, name, event.name) or
+                (std.mem.endsWith(u8, name, "*") and std.mem.startsWith(u8, event.name, name[0 .. name.len - 1]))) selected = true;
+        }
+        if (!selected) return false;
+    }
     for (rule.events) |category| if (std.mem.eql(u8, category, @tagName(event.category))) return true;
     return false;
 }
@@ -28,6 +36,7 @@ pub fn capture(ctx: *anyopaque, event: notifications.Event) void {
 }
 pub fn captureEvent(app: *App, event: notifications.Event) !void {
     const io = app.io orelse return;
+    @import("s3_tiering.zig").recordAccess(app, event) catch |err| std.log.warn("Tiering access tracking failed: {s}", .{@errorName(err)});
     app.object_watch.append(app.allocator, io, event) catch |err| {
         std.log.err("Object watch capture failed: {s}; cursors invalidated", .{@errorName(err)});
     };
@@ -37,7 +46,12 @@ pub fn captureEvent(app: *App, event: notifications.Event) !void {
     const a = arena.allocator();
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    const rules = try subscriptions.load(a, app.systemStore(), io, event.bucket_id);
+    const management_rules = try subscriptions.load(a, app.systemStore(), io, event.bucket_id);
+    const s3_rules = try @import("s3_notifications.zig").load(a, app.systemStore(), event.bucket_id);
+    var combined: std.ArrayList(subscriptions.Subscription) = .empty;
+    try combined.appendSlice(a, management_rules.items);
+    try combined.appendSlice(a, s3_rules.items);
+    const rules: subscriptions.Settings = .{ .items = combined.items };
     var any = false;
     for (rules.items) |rule| if (matches(rule, event)) {
         any = true;

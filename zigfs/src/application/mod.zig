@@ -3154,3 +3154,88 @@ test "system metadata survives reopen and backup without configuration sidecars"
         try std.testing.expectEqual(expected.generation, actual.generation);
     }
 }
+
+test "intelligent archive transition gates data and restore returns the same version to hot reads" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const a = std.testing.allocator;
+    const data_root = try testDataRootPath(a, &tmp);
+    defer a.free(data_root);
+    var app = Application.initWithAllocator(.{ .data_root = data_root, .metrics_enabled = false }, a);
+    defer app.deinit(std.testing.io);
+    try app.initialize(std.testing.io);
+    const created = try app.bucketService().?.create("tiering-test", "owner");
+    defer created.deinit(a);
+    const Source = @import("s3_access_logging.zig").Source;
+    var source: Source = .{ .bytes = "archive integrity" };
+    const original = try app.objectService().?.put("tiering-test", "cold", source.interface(), .{ .storage_class = .intelligent_tiering });
+    defer original.deinit(a);
+    const filename = try std.fmt.allocPrint(a, "config/s3-buckets/{s}/intelligent-tiering.json", .{std.fmt.bytesToHex(created.bucket.id, .lower)});
+    defer a.free(filename);
+    try app.systemStore().put(a, filename, "{\"test\":\"<IntelligentTieringConfiguration><Id>test</Id><Status>Enabled</Status><Tiering><Days>90</Days><AccessTier>ARCHIVE_ACCESS</AccessTier></Tiering></IntelligentTieringConfiguration>\"}");
+    const tiering = @import("s3_tiering.zig");
+    try std.testing.expectEqual(@as(usize, 0), try tiering.scan(&app, original.last_modified_unix_seconds + 89 * 86400));
+    try std.testing.expectEqual(@as(usize, 1), try tiering.scan(&app, original.last_modified_unix_seconds + 91 * 86400));
+    {
+        var lease = try app.objectService().?.open("tiering-test", "cold");
+        defer lease.deinit();
+        try std.testing.expectError(error.InvalidObjectState, lease.ensureReadable());
+    }
+    const restored = try app.objectService().?.setRestore("tiering-test", "cold", original.version_id, original.last_modified_unix_seconds + 92 * 86400, original.data_generation);
+    defer restored.deinit(a);
+    try std.testing.expectEqual(@import("../domain/object.zig").ArchiveTier.none, restored.archive_tier);
+    try std.testing.expectEqualSlices(u8, &original.etag_md5, &restored.etag_md5);
+    var lease = try app.objectService().?.open("tiering-test", "cold");
+    defer lease.deinit();
+    try lease.ensureReadable();
+    var sink = @import("test_support").streams.CollectingSink.init(a);
+    defer sink.deinit();
+    try lease.stream(sink.interface());
+    try std.testing.expectEqualStrings("archive integrity", sink.bytes.items);
+}
+
+test "archive expiry and annotation ciphertext stay bound to their parent generation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const a = std.testing.allocator;
+    const data_root = try testDataRootPath(a, &tmp);
+    defer a.free(data_root);
+    var app = Application.initWithAllocator(.{ .data_root = data_root, .metrics_enabled = false }, a);
+    defer app.deinit(std.testing.io);
+    try app.initialize(std.testing.io);
+    const created = try app.bucketService().?.create("archive-test", "owner");
+    defer created.deinit(a);
+    var source: @import("s3_access_logging.zig").Source = .{ .bytes = "archived content" };
+    const objects = app.objectService().?;
+    const original = try objects.put("archive-test", "cold", source.interface(), .{ .storage_class = .glacier });
+    defer original.deinit(a);
+    const expired = try objects.setRestore("archive-test", "cold", original.version_id, 1, original.data_generation);
+    defer expired.deinit(a);
+    {
+        var lease = try objects.open("archive-test", "cold");
+        defer lease.deinit();
+        try std.testing.expectError(error.InvalidObjectState, lease.ensureReadable());
+    }
+    var wrong_generation = original.data_generation;
+    wrong_generation[0] ^= 1;
+    try std.testing.expectError(error.Conflict, objects.setRestore("archive-test", "cold", original.version_id, 100, wrong_generation));
+
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const annotations = @import("object_annotations.zig");
+    const filename = try annotations.path(scratch, &original);
+    const key: [32]u8 = @splat(0x42);
+    const entry = try annotations.put(scratch, std.testing.io, app.systemStore(), filename, key, "note", "private annotation payload");
+    const ciphertext = try app.systemStore().read(scratch, entry.blob, 1024);
+    try std.testing.expect(std.mem.indexOf(u8, ciphertext, "private annotation payload") == null);
+    try std.testing.expectEqualStrings("private annotation payload", try annotations.get(scratch, app.systemStore(), key, entry));
+    try std.testing.expectError(error.AuthenticationFailed, annotations.get(scratch, app.systemStore(), @splat(0x43), entry));
+    var moved = entry;
+    moved.blob = try std.fmt.allocPrint(scratch, "{s}.moved", .{entry.blob});
+    try app.systemStore().put(scratch, moved.blob, ciphertext);
+    try std.testing.expectError(error.AuthenticationFailed, annotations.get(scratch, app.systemStore(), key, moved));
+    try annotations.remove(scratch, app.systemStore(), filename, "note");
+    try std.testing.expectEqual(@as(usize, 0), (try annotations.load(scratch, app.systemStore(), filename)).entries.len);
+    try std.testing.expectError(error.NotFound, app.systemStore().read(scratch, entry.blob, 1024));
+}

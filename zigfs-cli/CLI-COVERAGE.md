@@ -1,4 +1,6 @@
-# CLI 批量接入清单（待验证）
+# CLI 命令注册清单（运行验证另列）
+
+最新运行证据见 [2026-11-18 集中验证](../docs/zigfs-zc-cli-validation.md)。下方待验证表示尚未完成逐操作全部分支验收；历史实现交付说明不替代该报告。
 
 由 `python3 zigfs-cli/scripts/generate_coverage.py` 静态生成；仅核对注册表，不能替代运行验证。
 

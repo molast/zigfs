@@ -161,9 +161,11 @@ pub fn send(a: A, ctx: aliases.Context, r: Request) !Reply {
     var status: c_long = 0;
     const has_body = eq(r.method, "PUT") or eq(r.method, "POST") or eq(r.method, "PATCH");
     const result = zc_http(url, try a.dupeSentinel(u8, r.method, 0), wire.items.ptr, wire.items.len, try a.dupeSentinel(u8, r.connection.ca_cert, 0), @intFromBool(r.connection.insecure), @as(c_long, r.connection.connect_timeout) * 1000, @as(c_long, r.connection.timeout) * 1000, 0, @intFromBool(has_body), @intCast(t.size), if (has_body) Transfer.read else null, if (r.output != null) Transfer.write else null, &t, headers.ptr, headers.len, &hn, body.ptr, body.len, &bn, &status);
-    if (t.decoder) |d| if (!d.complete()) {
-        t.failed = true;
-    };
+    if (status >= 200 and status < 300) {
+        if (t.decoder) |d| if (!d.complete()) {
+            t.failed = true;
+        };
+    }
     if (result == 0 and !t.failed and status >= 200 and status < 300) {
         if (atomic) |*f| {
             try f.file.sync(ctx.io);

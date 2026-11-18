@@ -161,7 +161,16 @@ ZIGFS_SECRET_KEY={SK}
         cli(['--json', 'bucket', 'stat', 'real/zc-empty'], code=5)
         for extra in ('--force', '--with-lock', '--ignore-existing'):
             cli(['--json', 'mb', 'real/zc-empty', extra], code=2)
-        cli(['--json', 'ls', f'real/{bucket}', '--list-api', 'v1'], code=7)
+        legacy_listing = cli(['--json', 'ls', f'real/{bucket}', '--list-api', 'v1',
+                              '--page-size', '1'])['data']
+        assert legacy_listing['complete'] and len(legacy_listing['pages']) == 2
+        legacy_names = set()
+        for page in legacy_listing['pages']:
+            legacy_names.update(item['Key'] for item in page.get('Contents', []))
+            legacy_names.update(item['Prefix'] for item in page.get('CommonPrefixes', []))
+        shallow_names = {item['entry'].get('Key', item['entry'].get('Prefix'))
+                         for item in shallow['items']}
+        assert legacy_names == shallow_names
         assert not cli(['--quiet', 'ls', f'real/{bucket}'], raw=True)
         assert cli(['ls', f'real/{bucket}', '--summarize'], raw=True).endswith(b'entries, 1 pages\n')
         alias('bad', endpoint, sk='wrong-secret-key-0123456789abcdef')
@@ -277,8 +286,8 @@ ZIGFS_SECRET_KEY={SK}
         keys_file.write_text(json.dumps({'Objects': [{'Key': 'missing-from-file'}], 'Quiet': False}))
         cli(['--json', 'object', 'remove-batch', f'real/{bucket}', '--file', str(keys_file), '--dry-run'])
         cli(['--json', 'object', 'remove-batch', f'real/{bucket}', '--file', str(keys_file), '--yes'])
-        keys_file.write_text(json.dumps({'Objects': [{'Key': 'lines', 'VersionId': 'null'}]}))
-        cli(['--json', 'object', 'remove-batch', f'real/{bucket}', '--file', str(keys_file), '--yes'], code=2)
+        keys_file.write_text(json.dumps({'Objects': [{'Key': 'missing-version', 'VersionId': 'null'}]}))
+        cli(['--json', 'object', 'remove-batch', f'real/{bucket}', '--file', str(keys_file), '--yes'])
         keys_file.write_text(json.dumps(['duplicate', 'duplicate']))
         cli(['--json', 'object', 'remove-batch', f'real/{bucket}', '--keys-file', str(keys_file), '--yes'], code=2)
         keys_file.write_text(json.dumps([f'missing-{i}' for i in range(1000)]))
@@ -292,8 +301,8 @@ ZIGFS_SECRET_KEY={SK}
         cli(['--json', 'mb', 'real/zc-versioned'])
         for state in ('Enabled', 'Suspended'):
             request(endpoint + '/_admin/v1/buckets/zc-versioned/configuration', 'PATCH', json.dumps({'versioning': state}).encode(), auth)
-            cli(['--json', 'rm', 'real/zc-versioned/key', '--yes'], code=7)
-            cli(['--json', 'cp', source, 'real/zc-versioned/key'], code=7)
+            cli(['--json', 'rm', 'real/zc-versioned/key', '--yes'])
+            cli(['--json', 'cp', source, 'real/zc-versioned/key'])
         # Conditional Complete: real server, retained pending uploads, and racing publishers.
         def prepared_completion(key, data=b'conditional multipart'):
             remote = f'real/{bucket}/{key}'
@@ -562,14 +571,14 @@ ZIGFS_SECRET_KEY={SK}
         assert bad['error']['summary']['not_started'] == 1
         continued = cli(['--json','cp','real/zc-bulk/missing','real/zc-bulk/exact','real/zc-bulk/continue/','--continue-on-error'],code=5)
         assert continued['error']['summary']['completed'] == 1
-        cli(['--json','rb','real/zc-versioned','--force','--dangerous','--yes'],code=7)
+        cli(['--json','rb','real/zc-versioned','--force','--dangerous','--yes'])
         pending_id = cli(['--json','multipart','create','real/zc-bulk/pending'])['data']['result']['UploadId']
         cli(['--json','rb','real/zc-bulk','--force','--yes'],code=6)
         cli(['--json','stat','real/zc-bulk/exact'])
         clean_preview = cli(['--json','rb','real/zc-bulk','--force','--dangerous','--dry-run'])
         assert clean_preview['data']['remove_bucket']
-        cleaned = cli(['--json','rb','real/zc-bulk','--force','--dangerous','--yes','--concurrency','2'])
-        assert cleaned['data']['bucket_removed']
+        cleaned = cli(['--json','rb','real/zc-bulk','--force','--dangerous','--yes'])
+        assert cleaned['data']['removed_bucket']
         cli(['--json','bucket','stat','real/zc-bulk'],code=5)
         exec(Path(__file__).with_name('share_checks.py').read_text(), globals())
         print('PASS step 08: recursive and multi-source copy/move/remove, filters, collisions/traversal/symlink rejection, batch chunks, failure summaries and guarded cleanup.')

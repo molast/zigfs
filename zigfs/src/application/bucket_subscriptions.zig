@@ -6,6 +6,7 @@ pub const Subscription = struct {
     prefix: []const u8 = "",
     suffix: []const u8 = "",
     events: []const []const u8,
+    event_names: []const []const u8 = &.{},
 };
 pub const Settings = struct { items: []const Subscription = &.{} };
 pub fn validate(settings: Settings) !void {

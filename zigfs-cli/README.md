@@ -1,5 +1,7 @@
 # ZigFS CLI
 
+> 2026-11-18 运行验证：新增 77 个场景组 49 通过、28 未通过；详细命令、后端缺口和剩余范围见 [集中运行报告](../docs/zigfs-zc-cli-validation.md)。下文 2026-11-17 的待验证状态保留为历史。未实现对象子资源现在明确拒绝，不能用 encryption update/annotation 等代替普通对象写入。
+
 `zc` is the ZigFS command-line client. It provides local connection aliases and a signed S3 protocol client.
 Bucket basics, paginated listings, single-object copy/move/delete, explicit batch deletion and multipart upload/resume/pipe are available. Recursive/multi-source transfers, unversioned bucket cleanup, presigned sharing and browser POST uploads are available; management workflows follow in later steps.
 

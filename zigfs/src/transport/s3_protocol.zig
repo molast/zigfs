@@ -35,6 +35,7 @@ pub const Operation = enum {
     complete_multipart_upload,
     abort_multipart_upload,
     post_policy_upload,
+    extension,
     unsupported,
 };
 
@@ -248,6 +249,9 @@ fn classify(
     parameters: []const QueryParameter,
 ) Operation {
     if (bucket == null) return if (method == .GET) .list_buckets else .unsupported;
+    if (@import("s3_extensions.zig").recognizes(method, key != null, parameters)) {
+        return .extension;
+    }
     if (key == null) {
         if (queryShape(parameters, "encryption") != .missing) {
             if (queryShape(parameters, "encryption") != .empty) return .unsupported;
@@ -301,10 +305,21 @@ fn classify(
                 .get_bucket_versioning
             else if (queryShape(parameters, "lifecycle") == .empty and parameters.len == 1)
                 .get_bucket_lifecycle
+            else if (isV1Listing(parameters))
+                .list_objects_v2
             else
                 .unsupported,
             else => .unsupported,
         };
+    }
+    // These subresources have no handler yet. Never treat their request bodies
+    // as object data or return ordinary object bytes as a successful response.
+    for ([_][]const u8{
+        "acl",        "annotation", "attributes", "encryption",
+        "legal-hold", "retention",  "restore",    "select",
+        "torrent",
+    }) |subresource| {
+        if (queryShape(parameters, subresource) != .missing) return .unsupported;
     }
     if (key != null and queryShape(parameters, "tagging") != .missing) {
         if (queryShape(parameters, "tagging") != .empty) return .unsupported;
@@ -465,6 +480,7 @@ pub const ErrorKind = enum {
     directory_not_empty,
     invalid_bucket_name,
     invalid_request,
+    invalid_object_state,
     invalid_argument,
     invalid_location_constraint,
     malformed_xml,
@@ -516,6 +532,7 @@ pub fn describe(kind: ErrorKind) ErrorDescriptor {
         .bucket_not_empty => .{ .code = "BucketNotEmpty", .message = "The bucket you tried to delete is not empty.", .status = .conflict },
         .directory_not_empty => .{ .code = "DirectoryNotEmpty", .message = "The directory you tried to delete is not empty.", .status = .conflict },
         .invalid_bucket_name => .{ .code = "InvalidBucketName", .message = "The specified bucket is not valid.", .status = .bad_request },
+        .invalid_object_state => .{ .code = "InvalidObjectState", .message = "The object storage class does not support restore.", .status = .forbidden },
         .invalid_request => .{ .code = "InvalidRequest", .message = "The request is invalid.", .status = .bad_request },
         .invalid_argument => .{ .code = "InvalidArgument", .message = "Invalid Argument.", .status = .bad_request },
         .invalid_location_constraint => .{ .code = "InvalidLocationConstraint", .message = "The specified location constraint is not valid.", .status = .bad_request },
@@ -746,4 +763,36 @@ test "presigned object tags never route to object mutations" {
     const invalid = try parseTarget(std.testing.allocator, .DELETE, "/bucket/key?tagging=bad");
     defer invalid.deinit();
     try std.testing.expectEqual(Operation.unsupported, invalid.operation);
+}
+
+test "object subresources never fall through to object data operations" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{
+        "acl",       "annotation", "attributes", "encryption", "legal-hold",
+        "retention", "restore",    "select",     "torrent",
+    }) |subresource| {
+        const target = try std.fmt.allocPrint(allocator, "/bucket/key?{s}&versionId=null&X-Amz-Signature=test", .{subresource});
+        defer allocator.free(target);
+        for ([_]std.http.Method{ .GET, .HEAD, .PUT, .POST, .DELETE }) |method| {
+            const parsed = try parseTarget(allocator, method, target);
+            defer parsed.deinit();
+            try std.testing.expect(parsed.operation == .unsupported or parsed.operation == .extension);
+        }
+        const conflict_target = try std.fmt.allocPrint(allocator, "/bucket/key?tagging&{s}", .{subresource});
+        defer allocator.free(conflict_target);
+        const conflicting = try parseTarget(allocator, .DELETE, conflict_target);
+        defer conflicting.deinit();
+        try std.testing.expectEqual(Operation.unsupported, conflicting.operation);
+    }
+}
+
+fn isV1Listing(parameters: []const QueryParameter) bool {
+    for (parameters) |parameter| {
+        var allowed = false;
+        for ([_][]const u8{ "prefix", "delimiter", "marker", "max-keys", "encoding-type" }) |name| {
+            if (std.mem.eql(u8, parameter.name, name)) allowed = true;
+        }
+        if (!allowed) return false;
+    }
+    return true;
 }

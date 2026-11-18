@@ -40,10 +40,11 @@ for args in (["--format"], ["--format="], ["--format", "xml"], ["--bad"],
 for args in (["--json", "--format=human"], ["--bad", "--json"],
              ["--json", "--format"], ["--format=human", "--json"]):
     run(args, 2, "stderr")
-for args in (["version"], ["bucket", "version"], ["version", "source", "target"],
-             ["version", "--", "--json"]):
-    run(args, 7)
-run(["version", "--json"], 7, "stderr")
+for args in (["version"], ["bucket", "version"]):
+    run(args)
+for args in (["version", "source", "target"], ["version", "--", "--json"]):
+    run(args, 2)
+run(["version", "--json"], json_stream="stdout")
 secret = run(["--json", "--secret=DO_NOT_ECHO"], 2, "stderr")
 assert "DO_NOT_ECHO" not in secret.stderr
 assert run(["mv", "--help"]).stdout == run(["object", "move", "--help"]).stdout

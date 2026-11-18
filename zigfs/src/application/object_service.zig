@@ -29,6 +29,7 @@ pub const Error = error{
     CorruptMetadata,
     CorruptData,
     InvalidRange,
+    InvalidObjectState,
     ConditionNotMet,
     InvalidVersionId,
     DeleteMarker,
@@ -40,6 +41,7 @@ pub const Error = error{
 
 pub const PutOptions = struct {
     creation_event: enum { put, post } = .put,
+    storage_class: object_domain.StorageClass = .standard,
     encryption: ?bool = null,
     kms_key: ?[]const u8 = null,
     kms_selection: ?@import("kms.zig").Envelope = null,
@@ -102,6 +104,9 @@ pub const VersionListEntry = struct {
     retention_until_unix_seconds: ?i64 = null,
     retention_mode: ?bucket_domain.RetentionMode = null,
     legal_hold: bool = false,
+    storage_class: object_domain.StorageClass = .standard,
+    restored_until: ?i64 = null,
+    archive_tier: object_domain.ArchiveTier = .none,
 
     pub fn deinit(self: VersionListEntry, allocator: std.mem.Allocator) void {
         allocator.free(self.key);
@@ -138,6 +143,30 @@ pub const ReadLease = struct {
         defer self.allocator.free(ad);
         self.prepared_dek = try unwrapKms(self.kms, self.allocator, envelope, ad);
     }
+    /// Domain-separated annotation key. The caller must securely erase the result.
+    /// Rewrapping an object's data key preserves existing annotation decryption.
+    pub fn annotationKey(self: *ReadLease) Error!secret_box.Key {
+        const object = self.metadata();
+        const master = self.master_key orelse return error.Unavailable;
+        var source = master.*;
+        defer std.crypto.secureZero(u8, &source);
+        if (object.encryption_metadata) |metadata_value| {
+            const ad = buildEncryptionAssociatedData(self.allocator, object.bucket_id, object.key, object.data_generation) catch return error.OutOfMemory;
+            defer self.allocator.free(ad);
+            source = if (metadata_value.kms) |envelope|
+                try unwrapKms(self.kms, self.allocator, envelope, ad)
+            else
+                object_encryption.unwrapDataKey(self.allocator, master.*, ad, .{
+                    .nonce = metadata_value.wrapped_key_nonce,
+                    .tag = metadata_value.wrapped_key_tag,
+                    .ciphertext = metadata_value.wrapped_key,
+                }) catch return error.CorruptData;
+        }
+        var key: secret_box.Key = undefined;
+        std.crypto.auth.hmac.sha2.HmacSha256.create(&key, "zigfs.annotations.v1", &source);
+        return key;
+    }
+
     pub fn metadata(self: *const ReadLease) *const object_domain.Object {
         return &(self.object orelse unreachable);
     }
@@ -163,6 +192,18 @@ pub const ReadLease = struct {
     }
 
     pub fn stream(self: *ReadLease, sink: byte_stream.Sink) Error!void {
+        try self.ensureReadable();
+        return self.streamForRestore(sink);
+    }
+
+    pub fn ensureReadable(self: *const ReadLease) Error!void {
+        const object = self.metadata();
+        if (object_domain.archived(object.storage_class, object.archive_tier) and
+            (object.restored_until orelse 0) <= std.Io.Clock.real.now(self.io).toSeconds()) return error.InvalidObjectState;
+    }
+
+    /// Restore verification bypasses only the archive read gate, never decryption/integrity.
+    pub fn streamForRestore(self: *ReadLease, sink: byte_stream.Sink) Error!void {
         const object = self.object orelse unreachable;
         if (object.multipart_manifest) |manifest| {
             const store = self.multipart_data_store orelse return error.CorruptData;
@@ -205,6 +246,7 @@ pub const ReadLease = struct {
         length: u64,
         sink: byte_stream.Sink,
     ) Error!void {
+        try self.ensureReadable();
         const object = self.object orelse unreachable;
         if (offset > object.size or length > object.size - offset) return error.InvalidRange;
         if (object.multipart_manifest) |manifest| {
@@ -441,6 +483,7 @@ pub const ObjectService = struct {
         else
             try self.open(source_bucket_name, source_key);
         defer source_lease.deinit();
+        try source_lease.ensureReadable();
         const source_object = source_lease.metadata();
         const source_view = source_object.view();
         if (options.expected_source_generation) |generation| {
@@ -575,6 +618,7 @@ pub const ObjectService = struct {
             null else null;
         const value: object_store_port.Value = .{
             .id = object_id,
+            .storage_class = options.storage_class,
             .bucket_id = bucket.id,
             .bucket_name = bucket_name,
             .key = key,
@@ -784,7 +828,18 @@ pub const ObjectService = struct {
         const hex = std.fmt.bytesToHex(object.etag_md5, .lower);
         var etag_buffer: [40]u8 = undefined;
         const etag: []const u8 = if (object.etag_part_count == 0) &hex else std.fmt.bufPrint(&etag_buffer, "{s}-{d}", .{ hex, object.etag_part_count }) catch unreachable;
-        sink.emit(.{ .category = category, .name = name, .bucket_id = object.bucket_id, .bucket = object.bucket_name, .key = object.key, .size = object.size, .etag = etag, .version_id = object.version_id.write(&version), .generation = object.metadata_generation });
+        sink.emit(.{
+            .category = category,
+            .name = name,
+            .bucket_id = object.bucket_id,
+            .bucket = object.bucket_name,
+            .key = object.key,
+            .size = object.size,
+            .etag = etag,
+            .version_id = object.version_id.write(&version),
+            .generation = object.metadata_generation,
+            .intelligent_tiering = object.storage_class == .intelligent_tiering,
+        });
     }
     fn notifyDelete(self: ObjectService, bucket: []const u8, key: []const u8, result: DeleteResult, explicit_version: bool) void {
         if (!result.deleted) return;
@@ -1027,6 +1082,190 @@ pub const ObjectService = struct {
         };
     }
 
+    pub fn setRestore(self: ObjectService, bucket_name: []const u8, key: []const u8, version_id: object_domain.VersionId, until: i64, expected_data: [16]u8) Error!object_domain.Object {
+        try validateAddress(bucket_name, key);
+        const lock = self.object_locks.get(bucket_name, key);
+        lock.lockUncancelable(self.io);
+        defer lock.unlock(self.io);
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
+        const current = try self.loadHistoryLocked(bucket_name, key) orelse return error.ObjectNotFound;
+        defer current.deinit(self.allocator);
+        const existing = switch (current) {
+            .active => |history| history,
+            else => return error.ObjectNotFound,
+        };
+        var found: ?usize = null;
+        for (existing.entries, 0..) |entry, index| if (object_domain.VersionId.eql(entry.versionId(), version_id)) {
+            found = index;
+            break;
+        };
+        const target = found orelse return error.ObjectNotFound;
+        var history = cloneHistory(self.allocator, existing) catch return error.OutOfMemory;
+        defer history.deinit(self.allocator);
+        switch (history.entries[target]) {
+            .object => |*object| {
+                if (!object_domain.archived(object.storage_class, object.archive_tier)) return error.InvalidObjectState;
+                if (!std.mem.eql(u8, &object.data_generation, &expected_data)) return error.Conflict;
+                object.restored_until = if (object.storage_class == .intelligent_tiering) null else until;
+                if (object.storage_class == .intelligent_tiering) object.archive_tier = .none;
+            },
+            .delete_marker => return error.ObjectNotFound,
+        }
+        const generation = self.object_store.putHistory(self.allocator, &history, .{ .exact = existing.metadata_generation }) catch |err| return mapObjectStoreError(err);
+        var prepared = self.index.prepareObject(bucket_name, key) catch |err| return mapIndexError(err);
+        defer prepared.deinit(self.index.allocator);
+        self.index.publishObject(&prepared, generation);
+        return switch (history.entries[target]) {
+            .object => |object| object_domain.cloneFromView(self.allocator, object.view(), generation) catch return error.OutOfMemory,
+            .delete_marker => unreachable,
+        };
+    }
+
+    pub fn setArchiveTier(self: ObjectService, bucket_name: []const u8, key: []const u8, version_id: object_domain.VersionId, tier: object_domain.ArchiveTier, expected_data: [16]u8, access_store: @import("../metadata/system_store.zig").SystemStore, access_path: []const u8, expected_access: []const u8) Error!object_domain.Object {
+        try validateAddress(bucket_name, key);
+        const lock = self.object_locks.get(bucket_name, key);
+        lock.lockUncancelable(self.io);
+        defer lock.unlock(self.io);
+        const current_access = access_store.read(self.allocator, access_path, 64) catch |err| switch (err) {
+            error.NotFound => null,
+            else => return error.Unavailable,
+        };
+        defer if (current_access) |value| self.allocator.free(value);
+        if (!std.mem.eql(u8, current_access orelse "0", expected_access)) return error.ConditionNotMet;
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
+        const current = try self.loadHistoryLocked(bucket_name, key) orelse return error.ObjectNotFound;
+        defer current.deinit(self.allocator);
+        const existing = switch (current) {
+            .active => |history| history,
+            else => return error.ObjectNotFound,
+        };
+        var found: ?usize = null;
+        for (existing.entries, 0..) |entry, index| if (object_domain.VersionId.eql(entry.versionId(), version_id)) {
+            found = index;
+            break;
+        };
+        const target = found orelse return error.ObjectNotFound;
+        var history = cloneHistory(self.allocator, existing) catch return error.OutOfMemory;
+        defer history.deinit(self.allocator);
+        switch (history.entries[target]) {
+            .object => |*object| {
+                if (object.storage_class != .intelligent_tiering) return error.InvalidObjectState;
+                if (!std.mem.eql(u8, &object.data_generation, &expected_data)) return error.Conflict;
+                object.archive_tier = tier;
+                object.restored_until = null;
+            },
+            .delete_marker => return error.ObjectNotFound,
+        }
+        const generation = self.object_store.putHistory(self.allocator, &history, .{ .exact = existing.metadata_generation }) catch |err| return mapObjectStoreError(err);
+        var prepared = self.index.prepareObject(bucket_name, key) catch |err| return mapIndexError(err);
+        defer prepared.deinit(self.index.allocator);
+        self.index.publishObject(&prepared, generation);
+        return switch (history.entries[target]) {
+            .object => |object| object_domain.cloneFromView(self.allocator, object.view(), generation) catch return error.OutOfMemory,
+            .delete_marker => unreachable,
+        };
+    }
+
+    pub fn updateEncryption(self: ObjectService, bucket_name: []const u8, key: []const u8, version_id: object_domain.VersionId, selection: @import("kms.zig").Envelope) Error!object_domain.Object {
+        try validateAddress(bucket_name, key);
+        const lock = self.object_locks.get(bucket_name, key);
+        lock.lockUncancelable(self.io);
+        defer lock.unlock(self.io);
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
+        const current = try self.loadHistoryLocked(bucket_name, key) orelse return error.ObjectNotFound;
+        defer current.deinit(self.allocator);
+        const existing = switch (current) {
+            .active => |history| history,
+            else => return error.ObjectNotFound,
+        };
+        var found: ?usize = null;
+        for (existing.entries, 0..) |entry, index| if (object_domain.VersionId.eql(entry.versionId(), version_id)) {
+            found = index;
+            break;
+        };
+        const target = found orelse return error.ObjectNotFound;
+        var history = cloneHistory(self.allocator, existing) catch return error.OutOfMemory;
+        defer history.deinit(self.allocator);
+        switch (history.entries[target]) {
+            .object => |*object| {
+                if (object.legal_hold or self.objectRetentionActive(object.*)) return error.ObjectLocked;
+                // Only the envelope changes: immutable ciphertext, versions and checksums stay intact.
+                if (object.encryption != .encrypted or object.data_layout == .segments) return error.InvalidObjectKey;
+                var metadata = object.encryption_metadata orelse return error.CorruptMetadata;
+                const master_key = self.master_key orelse return error.Unavailable;
+                const ad = buildEncryptionAssociatedData(self.allocator, object.bucket_id, object.key, object.data_generation) catch return error.OutOfMemory;
+                defer self.allocator.free(ad);
+                var dek = if (metadata.kms) |envelope| try unwrapKms(self.kms, self.allocator, envelope, ad) else object_encryption.unwrapDataKey(self.allocator, master_key.*, ad, .{
+                    .nonce = metadata.wrapped_key_nonce,
+                    .tag = metadata.wrapped_key_tag,
+                    .ciphertext = metadata.wrapped_key,
+                }) catch return error.CorruptData;
+                defer std.crypto.secureZero(u8, &dek);
+                metadata.kms = try wrapKmsSelection(self.kms, self.allocator, selection, ad, dek);
+                metadata.wrapped_key = @splat(0);
+                metadata.wrapped_key_nonce = @splat(0);
+                metadata.wrapped_key_tag = @splat(0);
+                object.encryption_metadata = metadata;
+            },
+            .delete_marker => return error.ObjectNotFound,
+        }
+        const generation = self.object_store.putHistory(self.allocator, &history, .{ .exact = existing.metadata_generation }) catch |err| return mapObjectStoreError(err);
+        var prepared = self.index.prepareObject(bucket_name, key) catch |err| return mapIndexError(err);
+        defer prepared.deinit(self.index.allocator);
+        self.index.publishObject(&prepared, generation);
+        return switch (history.entries[target]) {
+            .object => |object| object_domain.cloneFromView(self.allocator, object.view(), generation) catch return error.OutOfMemory,
+            .delete_marker => unreachable,
+        };
+    }
+
+    pub fn setRetention(self: ObjectService, bucket_name: []const u8, key: []const u8, version_id: object_domain.VersionId, until: ?i64, mode: ?bucket_domain.RetentionMode, bypass: bool) Error!object_domain.Object {
+        try validateAddress(bucket_name, key);
+        const lock = self.object_locks.get(bucket_name, key);
+        lock.lockUncancelable(self.io);
+        defer lock.unlock(self.io);
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
+        const current = try self.loadHistoryLocked(bucket_name, key) orelse return error.ObjectNotFound;
+        defer current.deinit(self.allocator);
+        const existing = switch (current) {
+            .active => |history| history,
+            else => return error.ObjectNotFound,
+        };
+        var found: ?usize = null;
+        for (existing.entries, 0..) |entry, index| if (object_domain.VersionId.eql(entry.versionId(), version_id)) {
+            found = index;
+            break;
+        };
+        const target = found orelse return error.ObjectNotFound;
+        var history = cloneHistory(self.allocator, existing) catch return error.OutOfMemory;
+        defer history.deinit(self.allocator);
+        switch (history.entries[target]) {
+            .object => |*object| {
+                if (self.objectRetentionActive(object.*)) {
+                    const shortens = until == null or until.? < object.retention_until_unix_seconds.?;
+                    const changes_mode = mode != object.retention_mode;
+                    if ((shortens or changes_mode) and
+                        (object.retention_mode == .compliance or !bypass)) return error.RetentionActive;
+                }
+                object.retention_until_unix_seconds = until;
+                object.retention_mode = mode;
+            },
+            .delete_marker => return error.ObjectNotFound,
+        }
+        const generation = self.object_store.putHistory(self.allocator, &history, .{ .exact = existing.metadata_generation }) catch |err| return mapObjectStoreError(err);
+        var prepared = self.index.prepareObject(bucket_name, key) catch |err| return mapIndexError(err);
+        defer prepared.deinit(self.index.allocator);
+        self.index.publishObject(&prepared, generation);
+        return switch (history.entries[target]) {
+            .object => |object| object_domain.cloneFromView(self.allocator, object.view(), generation) catch return error.OutOfMemory,
+            .delete_marker => unreachable,
+        };
+    }
+
     fn hasDirectoryChildren(self: ObjectService, bucket_name: []const u8, key: []const u8) Error!bool {
         for (self.index.objectEntries()) |entry| {
             if (!std.mem.eql(u8, entry.bucket, bucket_name) or
@@ -1233,6 +1472,9 @@ pub const ObjectService = struct {
                         .retention_until_unix_seconds = object.retention_until_unix_seconds,
                         .retention_mode = object.retention_mode,
                         .legal_hold = object.legal_hold,
+                        .storage_class = object.storage_class,
+                        .restored_until = object.restored_until,
+                        .archive_tier = object.archive_tier,
                     },
                     .delete_marker => |marker| .{
                         .key = key,
@@ -1545,6 +1787,12 @@ test "object retention blocks deletes and only governance permits bypass" {
     try std.testing.expectEqual(bucket_domain.RetentionMode.governance, created.retention_mode.?);
     try std.testing.expect(created.retention_until_unix_seconds.? > std.Io.Clock.real.now(std.testing.io).toSeconds());
     try std.testing.expectError(error.RetentionActive, objects.delete("retention-test", "governed.txt"));
+    try std.testing.expectError(error.RetentionActive, objects.setRetention("retention-test", "governed.txt", created.version_id, null, null, false));
+    const cleared = try objects.setRetention("retention-test", "governed.txt", created.version_id, null, null, true);
+    defer cleared.deinit(std.testing.allocator);
+    try std.testing.expect(cleared.retention_until_unix_seconds == null);
+    try std.testing.expectEqualSlices(u8, &created.etag_md5, &cleared.etag_md5);
+    try std.testing.expect(object_domain.VersionId.eql(created.version_id, cleared.version_id));
     try std.testing.expect((try objects.deleteWithGovernanceBypass("retention-test", "governed.txt", true)).deleted);
 
     const compliance = try buckets.setRetention("retention-test", .{ .enabled = true, .default_duration_seconds = 86400, .mode = .compliance });
@@ -1553,6 +1801,11 @@ test "object retention blocks deletes and only governance permits bypass" {
     const compliance_object = try objects.put("retention-test", "compliance.txt", compliance_source.interface(), .{});
     defer compliance_object.deinit(std.testing.allocator);
     try std.testing.expectEqual(bucket_domain.RetentionMode.compliance, compliance_object.retention_mode.?);
+    try std.testing.expectError(error.RetentionActive, objects.setRetention("retention-test", "compliance.txt", compliance_object.version_id, null, null, true));
+    try std.testing.expectError(error.RetentionActive, objects.setRetention("retention-test", "compliance.txt", compliance_object.version_id, compliance_object.retention_until_unix_seconds, .governance, true));
+    const extended = try objects.setRetention("retention-test", "compliance.txt", compliance_object.version_id, compliance_object.retention_until_unix_seconds.? + 60, .compliance, false);
+    defer extended.deinit(std.testing.allocator);
+    try std.testing.expectEqual(compliance_object.retention_until_unix_seconds.? + 60, extended.retention_until_unix_seconds.?);
     const held = try objects.setLegalHold("retention-test", "compliance.txt", compliance_object.version_id, true);
     defer held.deinit(std.testing.allocator);
     try std.testing.expect(held.legal_hold);

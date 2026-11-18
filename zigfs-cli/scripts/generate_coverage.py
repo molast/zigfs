@@ -11,7 +11,7 @@ routes = json.loads((root / 'src/models/management-routes.json').read_text())
 assert len({r['command'] for r in routes}) == len(routes), 'duplicate management command'
 assert not base & new.keys(), 'duplicate S3 command'
 assert not workflows & (base | new.keys()), 'duplicate workflow command'
-lines = ['# CLI 批量接入清单（待验证）', '', '由 `python3 zigfs-cli/scripts/generate_coverage.py` 静态生成；仅核对注册表，不能替代运行验证。', '', '单机 S3 与旧协议共 **100** 项；保留原有已验收路径，新增字段及命令均待验证。多机复制和云端可选 API 不注册。', '', '完整请求字段来自 `src/models/s3.json`；默认通过 `s3api OP ALIAS --input-json FILE` 提交，复杂字段不要求每个高层入口都有独立短选项。', '', '| S3 operation | s3api 入口 | 高层映射 / 已有路径 | 批量接入状态 |', '|---|---|---|---|']
+lines = ['# CLI 命令注册清单（运行验证另列）', '', '最新运行证据见 [2026-11-18 集中验证](../docs/zigfs-zc-cli-validation.md)。下方待验证表示尚未完成逐操作全部分支验收；历史实现交付说明不替代该报告。', '', '由 `python3 zigfs-cli/scripts/generate_coverage.py` 静态生成；仅核对注册表，不能替代运行验证。', '', '单机 S3 与旧协议共 **100** 项；保留原有已验收路径，新增字段及命令均待验证。多机复制和云端可选 API 不注册。', '', '完整请求字段来自 `src/models/s3.json`；默认通过 `s3api OP ALIAS --input-json FILE` 提交，复杂字段不要求每个高层入口都有独立短选项。', '', '| S3 operation | s3api 入口 | 高层映射 / 已有路径 | 批量接入状态 |', '|---|---|---|---|']
 for op in sorted(model['operations']):
     assert 's3api ' + op in base | new.keys(), op
     high = [p for p, mapped in new.items() if mapped == op and (not p.startswith('s3api '))]

@@ -152,6 +152,14 @@ fn serveLifecycleScanner(application: *Application, interval_seconds: u64) void 
         interval.sleep(io) catch return;
         const service = application.lifecycleService() orelse continue;
         const now = std.Io.Clock.real.now(io).toSeconds();
+        _ = @import("../application/s3_tiering.zig").scan(application, now) catch |err| blk: {
+            std.log.warn("S3 intelligent tiering failed: {s}", .{@errorName(err)});
+            break :blk 0;
+        };
+        _ = @import("../application/s3_reports.zig").scan(application, now) catch |err| blk: {
+            std.log.warn("S3 report generation failed: {s}", .{@errorName(err)});
+            break :blk 0;
+        };
         const report = service.scan(now) catch |err| {
             logging.reportFailure(.storage, err, @errorReturnTrace(), @src(), "ZigFS lifecycle scan failed: {t}", .{err});
             continue;

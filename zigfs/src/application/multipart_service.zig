@@ -869,6 +869,7 @@ fn mapObjectError(err: object_service.Error) Error {
         error.ConditionNotMet => error.ConditionNotMet,
         error.CorruptMetadata => error.CorruptMetadata,
         error.CorruptData => error.CorruptData,
+        error.InvalidObjectState => error.Unavailable,
         else => error.Unavailable,
     };
 }

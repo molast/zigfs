@@ -1,0 +1,337 @@
+[
+  {
+    "name": "10 version aliases and paginated versions",
+    "status": "pass"
+  },
+  {
+    "name": "12 bucket tags repeated keys and selective removal",
+    "status": "pass"
+  },
+  {
+    "name": "12 object tags repeated keys and selective removal",
+    "status": "pass"
+  },
+  {
+    "name": "11 bucket acl get",
+    "status": "pass"
+  },
+  {
+    "name": "11 object acl get",
+    "status": "pass"
+  },
+  {
+    "name": "11 bucket public-access-block get",
+    "status": "pass"
+  },
+  {
+    "name": "11 bucket ownership get",
+    "status": "pass"
+  },
+  {
+    "name": "12 CORS stdin roundtrip and real preflight",
+    "status": "pass"
+  },
+  {
+    "name": "13 SSE-S3 default and existing object preservation",
+    "status": "pass"
+  },
+  {
+    "name": "15 lifecycle first rule export import remove all",
+    "status": "pass"
+  },
+  {
+    "name": "17 scanning filters service usage health",
+    "status": "pass"
+  },
+  {
+    "name": "18 mirror filter diff completions",
+    "status": "pass"
+  },
+  {
+    "name": "19 management login session private storage",
+    "status": "pass"
+  },
+  {
+    "name": "16 S3 notification delivery retry filters and removal",
+    "status": "pass"
+  },
+  {
+    "name": "11 Management block_public_access field accepted",
+    "status": "pass"
+  },
+  {
+    "name": "11 anonymous policy changes real access after backend PAB opt-out",
+    "status": "pass"
+  },
+  {
+    "name": "24 website serves index directory error document and enforces public access",
+    "status": "pass"
+  },
+  {
+    "name": "27 ABAC switch controls bucket resource tag authorization",
+    "status": "pass"
+  },
+  {
+    "name": "24 access logging writes successful and failed requests without recursion",
+    "status": "pass"
+  },
+  {
+    "name": "admin user list",
+    "status": "pass"
+  },
+  {
+    "name": "admin group list",
+    "status": "pass"
+  },
+  {
+    "name": "admin policy list",
+    "status": "pass"
+  },
+  {
+    "name": "admin access-key list",
+    "status": "pass"
+  },
+  {
+    "name": "admin oidc-provider list",
+    "status": "pass"
+  },
+  {
+    "name": "admin role-session list",
+    "status": "pass"
+  },
+  {
+    "name": "admin settings get",
+    "status": "pass"
+  },
+  {
+    "name": "admin kms info",
+    "status": "pass"
+  },
+  {
+    "name": "admin system",
+    "status": "pass"
+  },
+  {
+    "name": "admin health",
+    "status": "pass"
+  },
+  {
+    "name": "admin storage info",
+    "status": "pass"
+  },
+  {
+    "name": "admin monitoring",
+    "status": "pass"
+  },
+  {
+    "name": "admin diagnostics get",
+    "status": "pass"
+  },
+  {
+    "name": "admin logs get",
+    "status": "pass"
+  },
+  {
+    "name": "admin audit-logs get",
+    "status": "pass"
+  },
+  {
+    "name": "16 quota enforcement",
+    "status": "pass"
+  },
+  {
+    "name": "14 lock default file legalhold governance bypass historical cleanup",
+    "status": "pass"
+  },
+  {
+    "name": "20 IAM user toggles group members policy attachment",
+    "status": "pass"
+  },
+  {
+    "name": "20 OIDC incremental update preserves omitted fields",
+    "status": "pass"
+  },
+  {
+    "name": "25 analytics CRUD",
+    "status": "pass"
+  },
+  {
+    "name": "25 inventory CRUD",
+    "status": "pass"
+  },
+  {
+    "name": "25 metrics CRUD",
+    "status": "pass"
+  },
+  {
+    "name": "25 intelligent-tiering CRUD",
+    "status": "pass"
+  },
+  {
+    "name": "26 restore rejects STANDARD object without modifying bytes",
+    "status": "pass"
+  },
+  {
+    "name": "26 local archived object restore permits verified temporary reads",
+    "status": "pass"
+  },
+  {
+    "name": "26 Select real Records stream and unsupported SQL rejection",
+    "status": "pass"
+  },
+  {
+    "name": "26 torrent response is not ordinary object bytes",
+    "status": "pass"
+  },
+  {
+    "name": "27 annotation encrypted CRUD pagination condition and generation isolation",
+    "status": "pass"
+  },
+  {
+    "name": "21 local KMS configuration key create status rotate schedule and cancel deletion",
+    "status": "pass"
+  },
+  {
+    "name": "27 in-place encryption update preserves object bytes",
+    "status": "pass"
+  },
+  {
+    "name": "18 watch real event cursor filtering JSONL and private checkpoint",
+    "status": "pass"
+  },
+  {
+    "name": "23 multipart copy-part completion preserves source bytes",
+    "status": "pass"
+  },
+  {
+    "name": "safety unsupported subresource mutations reject without replacing or deleting bytes",
+    "status": "pass"
+  },
+  {
+    "name": "23 attributes including no ObjectParts pagination",
+    "status": "pass"
+  },
+  {
+    "name": "24/27 bucket website roundtrip",
+    "status": "pass"
+  },
+  {
+    "name": "24/27 bucket logging roundtrip",
+    "status": "pass"
+  },
+  {
+    "name": "24/27 bucket request-payment roundtrip",
+    "status": "pass"
+  },
+  {
+    "name": "24/27 bucket accelerate roundtrip",
+    "status": "pass"
+  },
+  {
+    "name": "24/27 bucket abac roundtrip",
+    "status": "pass"
+  },
+  {
+    "name": "28 V1 object listing",
+    "status": "pass"
+  },
+  {
+    "name": "28 legacy lifecycle schema roundtrip",
+    "status": "pass"
+  },
+  {
+    "name": "28 legacy notification PUT",
+    "status": "pass"
+  },
+  {
+    "name": "28 legacy notification GET",
+    "status": "pass"
+  },
+  {
+    "name": "R06 and watch early argument rejection",
+    "status": "pass"
+  },
+  {
+    "name": "R08 cleanup and management help boundaries",
+    "status": "pass"
+  },
+  {
+    "name": "29 all generated and compatibility help paths and S3 skeletons",
+    "status": "pass"
+  },
+  {
+    "name": "protocol R01 ListBuckets pages empty/repeated token",
+    "status": "pass"
+  },
+  {
+    "name": "protocol R05 service preserves repeated include filters",
+    "status": "pass"
+  },
+  {
+    "name": "protocol R04 cross-bucket cumulative budget counts filtered records",
+    "status": "pass"
+  },
+  {
+    "name": "protocol R04 sampled RSS across 10 and 400 pages",
+    "status": "pass",
+    "evidence": {
+      "pages": [
+        10,
+        400
+      ],
+      "sampled_peak_rss_kib": [
+        10016,
+        11456
+      ],
+      "scope": "empty pages; 10ms sampling, not an RSS hard limit"
+    }
+  },
+  {
+    "name": "protocol ObjectParts integer cursor and absent ObjectParts",
+    "status": "pass"
+  },
+  {
+    "name": "protocol modeled JSON stdin and conflicting stdin sources reject before network",
+    "status": "pass"
+  },
+  {
+    "name": "protocol modeled Metadata case-insensitive header map and legacy output",
+    "status": "pass"
+  },
+  {
+    "name": "protocol lifecycle minimum-size header preservation and file roundtrip",
+    "status": "pass"
+  },
+  {
+    "name": "protocol retention default file consumed flag and bypass header",
+    "status": "pass"
+  },
+  {
+    "name": "protocol R02/R03 version connection overrides bypass and partial failure",
+    "status": "pass"
+  },
+  {
+    "name": "protocol R03 SIGINT preserves confirmed progress and unknown in-flight outcome",
+    "status": "pass"
+  },
+  {
+    "name": "protocol R05 incomplete upload size filter after ListParts",
+    "status": "pass"
+  },
+  {
+    "name": "protocol R07 scanner preserves denial exit code and stage",
+    "status": "pass"
+  },
+  {
+    "name": "protocol R03 mirror connection override and partial failure",
+    "status": "pass"
+  },
+  {
+    "name": "19/20 logout removes session and limited principal cannot manage users or watch",
+    "status": "pass"
+  },
+  {
+    "name": "18/21 restart preserves versioning KMS decryption and rejects stale watch cursor",
+    "status": "pass"
+  }
+]

@@ -534,9 +534,21 @@ fn executeOne(a: A, ctx: aliases.Context, op: []const u8, r: Args, alias_name: [
             }
         }
     } else if (!wire.eq(method, "GET") and !wire.eq(method, "HEAD") and !wire.eq(method, "DELETE")) {
-        var buf: Io.Writer.Allocating = .init(a);
-        try node(a, m, &buf.writer, text(ref, "locationName") orelse text(ref, "shape").?, ref, input, 0);
-        body = buf.written();
+        // URI, query and header-only operations (notably UploadPartCopy)
+        // have no request body. Emitting their shape name creates invalid XML.
+        var body_members = get(s, "members").?.object.iterator();
+        var has_body_members = false;
+        while (body_members.next()) |member| {
+            if (get(member.value_ptr.*, "location") == null and input.object.contains(member.key_ptr.*)) {
+                has_body_members = true;
+                break;
+            }
+        }
+        if (has_body_members) {
+            var buf: Io.Writer.Allocating = .init(a);
+            try node(a, m, &buf.writer, text(ref, "locationName") orelse text(ref, "shape").?, ref, input, 0);
+            body = buf.written();
+        }
     }
     try headers.appendSlice(a, r.headers.items);
     if (r.flags.contains("--dry-run")) return wire.output(a, json, quiet, "request-plan", .{ .operation = op, .method = method, .path = path, .query = pairs.items, .mutating = !wire.eq(method, "GET") and !wire.eq(method, "HEAD"), .body_bytes = body.len });

@@ -47,6 +47,8 @@ pub fn execute(a: A, ctx: aliases.Context, action: []const u8, args: []const []c
         };
         if (v1) {
             var forwarded: std.ArrayList([]const u8) = .empty;
+            var recursive = false;
+            try forwarded.append(a, "--all-pages");
             var n: usize = 0;
             while (n < args.len) : (n += 1) {
                 if (eq(args[n], "--list-api")) {
@@ -54,9 +56,13 @@ pub fn execute(a: A, ctx: aliases.Context, action: []const u8, args: []const []c
                     continue;
                 }
                 if (eq(args[n], "--list-api=v1")) continue;
-                if (eq(args[n], "--recursive") or eq(args[n], "-r")) continue;
+                if (eq(args[n], "--recursive") or eq(args[n], "-r")) {
+                    recursive = true;
+                    continue;
+                }
                 try forwarded.append(a, if (eq(args[n], "--page-size")) "--max-keys" else args[n]);
             }
+            if (!recursive) try forwarded.appendSlice(a, &.{ "--delimiter", "/" });
             return @import("modeled.zig").execute(a, ctx, "object list-v1", forwarded.items, config, json, quiet);
         }
     }
