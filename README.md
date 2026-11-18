@@ -307,7 +307,7 @@ node zigfs/bench/run.mjs
 
 - [兼容性测试说明](compatibility/README.md)
 - [SDK Conformance 契约](docs/sdk/conformance.md)
-- [基准测试说明](docs/benchmarks.md)
+- [基准测试说明](zigfs/docs/benchmarks.md)
 - [已知限制](docs/known-limitations.md)
 
 ## 📁 项目结构
@@ -349,7 +349,7 @@ node zigfs/bench/run.mjs
 
 - [单机 S3 与 IAM 完整权限实施计划](docs/plans/iam-permissions-completion.md)
 - [运维手册](docs/operations.md)
-- [存储扫描与文件清理架构](docs/storage-reclamation.md)
+- [存储扫描与文件清理架构](zigfs/docs/storage-reclamation.md)
 - [备份与恢复](docs/backup-and-recovery.md)
 - [配置参考](docs/configuration.md)
 - [SDK 设计](docs/sdk/design.md)

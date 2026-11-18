@@ -1,7 +1,7 @@
 # Phase 8 性能基线
 
-基准工具位于 [zigfs/bench/run.mjs](../zigfs/bench/run.mjs)，运行和参数说明见
-[zigfs/bench/README.md](../zigfs/bench/README.md)。它使用 ZigFS 的标准 S3/Data API
+基准工具位于 [zigfs/bench/run.mjs](../bench/run.mjs)，运行和参数说明见
+[zigfs/bench/README.md](../bench/README.md)。它使用 ZigFS 的标准 S3/Data API
 和 Signature V4，不绕过鉴权、Metadata Commit、fsync 或 checksum。
 
 ## 工作负载

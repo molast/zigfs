@@ -1,5 +1,7 @@
 # ZigFS Documentation
 
+[文档站架构设计](docs/zigfs-docs-architecture.md)
+
 Official ZigFS documentation site built with [FumaPress](https://press.fumadocs.dev/) on Waku, React, and Fumadocs. Content is maintained as Markdown/MDX under `content/en` and `content/zh` and is statically generated for CDN hosting.
 
 ## Development

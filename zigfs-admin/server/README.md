@@ -1,5 +1,7 @@
 # zigfs-admin server
 
+[Admin 文档索引](../docs/README.md)
+
 Go + Gin web forwarding server for ZigFS Admin.
 
 ## Docker builds

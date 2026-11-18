@@ -2,6 +2,18 @@
 
 本目录是 ZigFS 使用、配置、部署和接口文档的入口。文档使用标准 Markdown 和相对链接，可作为后续文档站的内容来源。
 
+## 文档归属
+
+根目录 `docs/` 保留跨项目规则、共享 API 契约、配置使用、部署运维及联调记录。
+单个项目专属的设计、实现和验证文档放在该项目内；新增文档按此规则归档。
+
+- [CLI 文档](../zigfs-cli/docs/README.md)：指令设计、审计、验证报告和性能记录。
+- [服务端文档](../zigfs/docs/README.md)：存储实现、元数据接入、内部设计和性能基线。
+- [Admin 文档](../zigfs-admin/docs/README.md)：控制台交互和开发说明。
+- [元数据引擎设计](../pkg/metadata-engine/docs/zigfs-metadata-engine-design.md)：独立组件设计与验证。
+- [文档站设计](../zigfs-docs/docs/zigfs-docs-architecture.md)：文档站架构；开发入口见 [zigfs-docs](../zigfs-docs/README.md)。
+- [统一客户端上传规则](client-upload-policy.md)：CLI 与 Admin 共用，保留在本目录。
+
 ## 配置与使用
 
 - [账户资料与 Root 凭证](account-and-root-credentials.md)：Profile/Security、部署 root 登录和 S3 密钥。
@@ -23,7 +35,7 @@
 - [网络部署示例](deployment/network.md)：本机、局域网、HTTPS 代理、虚拟主机寻址和容器网络。
 - [运维手册](operations.md)。
 - [备份与恢复](backup-and-recovery.md)。
-- [存储扫描与清理](storage-reclamation.md)。
+- [存储扫描与清理](../zigfs/docs/storage-reclamation.md)。
 - [已知限制](known-limitations.md)。
 
 ## 接口与兼容性
@@ -50,4 +62,4 @@
 | 部署 / 网络与反向代理 | `deployment/network.md` | 部署运维人员 |
 | API / 网络配置 | `api/network-settings.md` | 集成开发者 |
 
-迁移到文档站时保留文件间链接，按站点框架添加导航和页面元数据即可。当前尚未搭建或发布在线文档站。`plans/` 是设计和实施记录，应与用户文档分开，不应把计划项直接展示为已实现能力。
+迁移到文档站时保留文件间链接，按站点框架添加导航和页面元数据即可。文档站源码已位于 `zigfs-docs/`，开发与构建方式见其 [README](../zigfs-docs/README.md)；是否上线以实际部署为准。`plans/` 是设计和实施记录，应与用户文档分开，不应把计划项直接展示为已实现能力。

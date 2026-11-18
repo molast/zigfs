@@ -1,6 +1,6 @@
 # 本地 S3 扩展行为（2026-11-18）
 
-这些接口使用 ZigFS 元数据、对象存储、IAM 和现有后台扫描器。它们不建立 AWS 服务连接，也不表示 AWS S3 全字段兼容。运行证据见 [CLI 验收](../zigfs-zc-cli-validation.md)。
+这些接口使用 ZigFS 元数据、对象存储、IAM 和现有后台扫描器。它们不建立 AWS 服务连接，也不表示 AWS S3 全字段兼容。运行证据见 [CLI 验收](../../zigfs-cli/docs/zigfs-zc-cli-validation.md)。
 
 ## 存储格式与归档
 

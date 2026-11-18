@@ -16,7 +16,7 @@
 - **当前 CLI**：步骤 01–09 保留已有验收；步骤 10–29 已接入并进行了集中运行验证，存在明确后端缺口及未覆盖分支，见顶部运行报告。`zc --version` / `-V` 显示程序版本；`zc version` 为 Bucket 版本管理命令组，返回帮助（退出 0）。
 - **服务端能力**：标准 S3、ZigFS Management 和 RustFS Admin 是不同协议。CLI 不得把其中一个协议的能力当作另一个协议的支持证明，不得直接访问 ZigFS 数据目录。
 - 本文补齐命令家族、重要参数和执行约定，不复制上游全部帮助文本。上游页面之间也可能存在滞后，例如 `object.md` 仍描述单源复制，`cp.md` 已列出多源复制；有差异时记录差异，实施前核对对应版本的 parser 和测试。
-- 旧版 [S3 覆盖表](api/s3-api-coverage.md) 与近期功能文档可能不同步。支持状态应联合核对当前代码、[Management 契约](api/zigfs-management-v1.openapi.yaml)及专项文档，不能仅凭旧表判定未实现。
+- 旧版 [S3 覆盖表](../../docs/api/s3-api-coverage.md) 与近期功能文档可能不同步。支持状态应联合核对当前代码、[Management 契约](../../docs/api/zigfs-management-v1.openapi.yaml)及专项文档，不能仅凭旧表判定未实现。
 
 ## 1. 设计约定
 
@@ -505,7 +505,7 @@ zc bucket encryption set <ALIAS/BUCKET> --mode sse-kms --key-id <KEY_ID>
 zc bucket encryption clear <ALIAS/BUCKET>
 ```
 
-这是上游已公开的命令家族。仅影响未来写入，不会重写、解密或重新加密已有对象。ZigFS 接入标准 S3 Bucket Encryption API；SSE-S3/SSE-KMS 支持范围见 [SSE-S3](api/sse-s3.md) 和 [SSE-KMS](api/sse-kms.md)。对象上传参数与 Bucket 默认设置应分别描述，不能因为支持 KMS 管理就推断支持所有 SSE 模式。
+这是上游已公开的命令家族。仅影响未来写入，不会重写、解密或重新加密已有对象。ZigFS 接入标准 S3 Bucket Encryption API；SSE-S3/SSE-KMS 支持范围见 [SSE-S3](../../docs/api/sse-s3.md) 和 [SSE-KMS](../../docs/api/sse-kms.md)。对象上传参数与 Bucket 默认设置应分别描述，不能因为支持 KMS 管理就推断支持所有 SSE 模式。
 
 ### 2.1.3 Object Lock、Retention 与 Legal Hold
 
@@ -936,7 +936,7 @@ zc admin integrity <readiness|inventory|audit|migrate|job|resume|pause|cancel> <
 
 KMS 的 describe/rotate/schedule-deletion/cancel-deletion/delete 应映射到契约枚举；ZigFS 当前七天待删除语义不等于上游 `--pending-window-days 7..30`，也不代表到期自动删除。服务 restart/stop、MFA、cluster pool/heal、site replication、IAM archive 等在接入前必须先确认本项目对应端点，不能因为第 3 节列出名称就启用。
 
-相关设计来源：[事件目标](api/event-destinations.md)、[Bucket 订阅](api/bucket-event-subscriptions.md)、[日志](api/system-logs.md)、[KMS 权限](api/kms-console-permissions.md)、[存储回收](storage-reclamation.md)。
+相关设计来源：[事件目标](../../docs/api/event-destinations.md)、[Bucket 订阅](../../docs/api/bucket-event-subscriptions.md)、[日志](../../docs/api/system-logs.md)、[KMS 权限](../../docs/api/kms-console-permissions.md)、[存储回收](../../zigfs/docs/storage-reclamation.md)。
 
 ## 4. 按指令优先级分步实施
 
@@ -1042,7 +1042,7 @@ KMS 的 describe/rotate/schedule-deletion/cancel-deletion/delete 应映射到契
 
 **批量开发状态约定（2026-11-17）**：根据当前开发安排，步骤 10–29 的客户端请求层、命令入口及主要工作流集中接入后，统一登记为 **待验证**，不再每接一个步骤就重复执行全套测试。步骤 01–09 保留已有完成记录。此前批量接入轮仅执行 CLI 编译、Zig 格式及静态注册表核对；**未运行单元、smoke、集成或 AWS 实测**，不能把编译成功计为行为验收。
 
-“待验证”表示本次已交付的逻辑等待集中核验，**不表示服务端接口均支持、所有参数组合均实现或全部 S3 兼容**。服务端缺口与显式拒绝的组合单独登记，不能随着表格状态被隐藏。详细逐操作清单见 [CLI-COVERAGE.md](../zigfs-cli/CLI-COVERAGE.md)，使用方式见 [CLI README](../zigfs-cli/README.md#批量接入步骤-1029待验证)。
+“待验证”表示本次已交付的逻辑等待集中核验，**不表示服务端接口均支持、所有参数组合均实现或全部 S3 兼容**。服务端缺口与显式拒绝的组合单独登记，不能随着表格状态被隐藏。详细逐操作清单见 [CLI-COVERAGE.md](../CLI-COVERAGE.md)，使用方式见 [CLI README](../README.md#批量接入步骤-1029待验证)。
 
 | 本次批量范围 | 接入情况 | 状态 / 边界 |
 |---|---|---|

@@ -1,6 +1,6 @@
 # ZigFS Metadata Engine 设计与验证
 
-- 位置：[`pkg/metadata-engine`](../pkg/metadata-engine/README.md)
+- 位置：[`pkg/metadata-engine`](../README.md)
 - 工具链：Zig 0.17.0；package 版本 0.3.0；WAL / Snapshot 统一 v3，不兼容旧格式
 - 状态：已于 2026-11-18 接入 ZigFS，旧元数据存储已移除；目标平台验证仍待完成
 - 本文描述实际实现与待办；部署级验收仍需目标 NAS/Linux、磁盘空间故障和断电验证
@@ -31,10 +31,10 @@ ZigFS 已通过 `metadata/engine_repository.zig` 接入独立引擎，数据直�
 实时监控仅使用内存，历史监控采用每 60 秒批量保存的独立文件；详见接入记录。
 替换 repository 不会自动统一这些数据，也不会自动消除长版本历史的重写成本。
 
-参考：[原接口](../zigfs/src/ports/metadata_repository.zig)、
-[原契约](../zigfs/tests/metadata_repository_contract.zig)、
-[对象历史编码](../zigfs/src/metadata/object_history_payload.zig)、
-[现有备份规则](backup-and-recovery.md)。
+参考：[原接口](../../../zigfs/src/ports/metadata_repository.zig)、
+[原契约](../../../zigfs/tests/metadata_repository_contract.zig)、
+[对象历史编码](../../../zigfs/src/metadata/object_history_payload.zig)、
+[现有备份规则](../../../docs/backup-and-recovery.md)。
 
 ## 2. 独立包结构
 
@@ -338,7 +338,7 @@ rename 发布正式名字并同步父目录。成功输出可直接打开；中�
 备份、checkpoint 与 GC 共享快照锁；备份期间读写继续，但检查点推迟可能造成 WAL
 额度背压，覆盖旧值可能增加临时内存。恢复后必须废弃旧实例条件令牌，不能跨恢复沿用。
 此包的备份也不是完整 ZigFS 备份，详细接口与边界见
-[维护功能说明](../pkg/metadata-engine/bench/MAINTENANCE-VALIDATION.md)。
+[维护功能说明](../bench/MAINTENANCE-VALIDATION.md)。
 
 ## 11. 测试与性能验证
 
@@ -370,8 +370,8 @@ soak 重复完整的写入、读取、分页、快照和恢复流程，校验 ke
 和子进程峰值 RSS。失败立即非零退出。它用于可重复持续验证，不等同于长时间单进程
 混合负载、断电或容量极限认证。
 
-实测见 [v2 验证记录](../pkg/metadata-engine/bench/V2-VALIDATION.md)。
-扫描与快照优化的同机前后对照见 [性能优化记录](../pkg/metadata-engine/bench/PERFORMANCE.md)。未运行的目标平台和
+实测见 [v2 验证记录](../bench/V2-VALIDATION.md)。
+扫描与快照优化的同机前后对照见 [性能优化记录](../bench/PERFORMANCE.md)。未运行的目标平台和
 负载必须明确列出，不以开发机热缓存数值推断 NAS 的 QPS。
 
 ## 12. 当前完成度与剩余工作（2026-11-17 核对）
@@ -391,8 +391,8 @@ soak 重复完整的写入、读取、分页、快照和恢复流程，校验 ke
 
 源码路径均相对于 `pkg/metadata-engine`。维护功能补齐后 Debug/ReleaseSafe 各 73 项测试、34 个
 SIGKILL 边界通过（详见第 15 节）；新增持续混合模型、真实文件系统故障和备份恢复验证见
-[第四轮报告](../pkg/metadata-engine/bench/ROUND4-VALIDATION.md)。此前十万条多进程持续校验和百万条容量校验记录仍保留。
-详见 [验证记录](../pkg/metadata-engine/bench/V2-VALIDATION.md)。
+[第四轮报告](../bench/ROUND4-VALIDATION.md)。此前十万条多进程持续校验和百万条容量校验记录仍保留。
+详见 [验证记录](../bench/V2-VALIDATION.md)。
 
 ### 12.2 已完成的功能收尾
 
@@ -514,7 +514,7 @@ AVL 借用节点，覆盖更新复用键和节点。文件格式仍为 v2，未�
 不能称为所有维度提升；第二轮优先处理快照复制临界区和写入尾延迟。
 第一轮当时未输出 P99.9；第二轮已补齐并用带相同采样逻辑的第一轮构建重跑基线，不以 P99 或最大值代替。
 详细数据、45 项单元测试及恢复验证见
-[第一轮优化报告](../pkg/metadata-engine/bench/ROUND1-OPTIMIZATION.md)。
+[第一轮优化报告](../bench/ROUND1-OPTIMIZATION.md)。
 
 ### 14.3 第二轮：写入尾延迟
 
@@ -562,7 +562,7 @@ profile 引擎稳态持有分配仍约 377.1 MiB。
 162.20 ms 的最大更新延迟，热缓存读取 QPS 中位数下降 4.1%。不宣称所有指标均提升，
 也不把最大停顿当作已彻底解决。1 万、10 万、100 万及 1/8/32 客户端结果、逐步阶段样本、
 54 项单元与 22 个 SIGKILL 场景见
-[第二轮优化报告](../pkg/metadata-engine/bench/ROUND2-OPTIMIZATION.md)。
+[第二轮优化报告](../bench/ROUND2-OPTIMIZATION.md)。
 
 ### 14.4 第三轮：必要时再升级架构
 
@@ -585,7 +585,7 @@ Pebble 的冻结表和刷盘可作为维护架构参考，但其 Snapshot 是逻
 收益则保持现有结构；不因外部引擎采用某种结构就认定必须照搬。
 
 **第三轮实施结果（2026-11-17）：** 已按上述进入条件选定并实现“仅供 checkpoint 的
-固定读视图”，先形成[候选设计、所有权和故障矩阵](../pkg/metadata-engine/bench/ROUND3-DESIGN.md)。
+固定读视图”，先形成[候选设计、所有权和故障矩阵](../bench/ROUND3-DESIGN.md)。
 捕获只保存元信息和节点指针、固定 payload；首次覆盖延迟释放旧值，由视图结束时回收。
 单一视图由 checkpoint_mutex 管理完整生命周期，原子 pin 防止回收与覆盖竞争。
 节点仍为 64 B，格式仍为 v2，未引入公开 MVCC、冻结表或磁盘页索引。
@@ -600,7 +600,7 @@ P99.9 1.155 → 1.094 ms，单轮最大延迟中位数 70.3 → 43.1 ms，但仍
 长尾。10 万条 256 B 覆盖吞吐下降 9.1%，4 KiB 值补测则同时改善吞吐与尾延迟。
 由于对应的捕获停顿和临时分配收益明确，保留此方案，同时记录全部退步；不宣称全面加速。
 59 项 Debug/ReleaseSafe 测试、27 个 SIGKILL 场景及 60 秒混合模型通过，详见
-[第三轮优化报告](../pkg/metadata-engine/bench/ROUND3-OPTIMIZATION.md)。
+[第三轮优化报告](../bench/ROUND3-OPTIMIZATION.md)。
 
 ### 14.5 第四轮：长期行为、复杂事务与生产可靠性验证
 
@@ -633,7 +633,7 @@ P99.9 1.155 → 1.094 ms，单轮最大延迟中位数 70.3 → 43.1 ms，但仍
 停机全目录备份恢复、损坏快照和缺失 WAL 的拒绝检查通过。真实设备同步故障仍只有
 注入证据，不能等同于实测断电保证。未新增 tombstone 物理 GC，也未重新排名外部数据库。
 每项已运行用例均低于十分钟，长期正确性不以预测代替验证。详细指标、原始数据和复现命令见
-[第四轮验证报告](../pkg/metadata-engine/bench/ROUND4-VALIDATION.md)。
+[第四轮验证报告](../bench/ROUND4-VALIDATION.md)。
 
 ### 14.6 执行顺序与外部对照依据
 
@@ -641,8 +641,8 @@ P99.9 1.155 → 1.094 ms，单轮最大延迟中位数 70.3 → 43.1 ms，但仍
 WAL 无复制轮转 → 快照调度 → 再评估冻结表/写时复制。** 第四轮的相关短时验证随改动
 执行，长期与目标平台验证单独列出，不阻止先完成有证据支持的局部优化。
 
-当前对照见 [数据量、耗时和内存总览](../pkg/metadata-engine/bench/EXTERNAL-COMPARISON.md)
-及 [技术明细](../pkg/metadata-engine/bench/EXTERNAL-COMPARISON-DETAILS.md)。外部工具保持
+当前对照见 [数据量、耗时和内存总览](../bench/EXTERNAL-COMPARISON.md)
+及 [技术明细](../bench/EXTERNAL-COMPARISON-DETAILS.md)。外部工具保持
 独立 Go module，不向 ZigFS/Admin 添加依赖；保留源码、版本锁和原始结果。
 
 对照必须统一 key、payload、批量、并发和结果复制规则，区分关闭工作与重开工作。
@@ -664,7 +664,7 @@ bbolt 测试中止。这些状态是后续计划的依据，不因本节列出�
 在线备份使用固定视图而非复制正在变化的源目录；目标目录仅在完整同步后发布。
 验证覆盖空库、全删除、重复回收、额度释放、旧条件拒绝、OOM、并发写入/回收/备份、
 发布故障和新增 7 个 SIGKILL 边界。详细命令与结果见
-[维护功能验证](../pkg/metadata-engine/bench/MAINTENANCE-VALIDATION.md)。
+[维护功能验证](../bench/MAINTENANCE-VALIDATION.md)。
 此前四轮报告是当时实现的历史记录；其中“无物理 GC”“仅停机备份”由本节更新。
 
 
@@ -681,6 +681,6 @@ bbolt 测试中止。这些状态是后续计划的依据，不因本节列出�
 - 提供应用内 backupMetadata 导出在线元数据备份；引擎备份包含系统配置；完整 ZigFS 备份仍需对象、密钥、日志、事件队列和监控历史。
 - 运行中不确定引擎写入使健康状态变成 Not Ready；恢复失败不静默重建空库。
 
-运维与恢复步骤以 [备份与恢复](backup-and-recovery.md) 为准；前述四轮章节与报告保留当时历史状态。
+运维与恢复步骤以 [备份与恢复](../../../docs/backup-and-recovery.md) 为准；前述四轮章节与报告保留当时历史状态。
 
-本次接入的测试与实测记录见 [接入验证](metadata-engine-integration.md)。
+本次接入的测试与实测记录见 [接入验证](../../../zigfs/docs/metadata-engine-integration.md)。

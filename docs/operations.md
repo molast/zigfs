@@ -41,7 +41,7 @@ Network 支持保存 Public URL、寻址模式、可信代理和服务监听配�
 第二个 ZigFS 进程不能共享同一个数据根目录。
 
 对象删除、悬垂数据、过期 Multipart 和 16 分片 Scanner 的完整语义见
-[存储扫描与文件清理架构](storage-reclamation.md)。Admin Storage 页面可查看最近扫描
+[存储扫描与文件清理架构](../zigfs/docs/storage-reclamation.md)。Admin Storage 页面可查看最近扫描
 结果并触发一次完整 GC；不要手工删除物理数据文件。
 
 ## 监控与告警

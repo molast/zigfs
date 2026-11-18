@@ -5,7 +5,7 @@ import json, re, hashlib
 from pathlib import Path
 base = Path('zigfs-cli')
 source = json.loads((base / 'models/s3.json').read_text())
-doc = Path('docs/zigfs-zc-cli-rustfs-reference.md').read_text()
+doc = Path('zigfs-cli/docs/zigfs-zc-cli-rustfs-reference.md').read_text()
 rows = re.findall('^\\| `([A-Z][A-Za-z0-9]+)` \\| `(.*?)` \\| (单机规划|旧协议兼容) \\|$', doc, re.M)
 
 def kebab(s):

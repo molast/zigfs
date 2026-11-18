@@ -108,5 +108,5 @@ zig build test test-crash test-mixed -Doptimize=ReleaseSafe --summary all
 ## 后续计划
 
 重开与内存、写入尾延迟、条件性架构升级、长期与生产验证的四轮计划，统一维护在
-[设计文档第 14 节](../../../docs/zigfs-metadata-engine-design.md#14-四轮优化与验证计划)。
+[设计文档第 14 节](../docs/zigfs-metadata-engine-design.md#14-四轮优化与验证计划)。
 计划包括执行顺序、每轮验收标准以及 10 分钟测试上限；预测不能作为正确性或长期稳定性通过的证据。

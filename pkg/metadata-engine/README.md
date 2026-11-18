@@ -205,7 +205,7 @@ MVCC 或跨进程读写。tombstone 可显式物理回收，要求调用者采�
 只有一个快照，没有损坏快照自动回退。支持在线备份 API；手工复制现有库仍须停机复制完整目录。
 文件 sync 与 SIGKILL 验证不等于真实断电保证；Linux/NAS 文件系统仍需部署环境验证。
 
-详见 [设计文档](../../docs/zigfs-metadata-engine-design.md)。
+详见 [设计文档](docs/zigfs-metadata-engine-design.md)。
 
 外部对照专用 benchmark 可追加 `compare`（一次关闭/重开，跳过显式 checkpoint），或
 macOS 的 `compare-fullsync`（普通文件使用 F_FULLFSYNC）。这是测试参数，不改变引擎默认策略。

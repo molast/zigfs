@@ -2,7 +2,7 @@
 
 最新扩展验收 **81/81 场景组通过**。原先只验证 STANDARD 拒绝的 restore，现在增加了 GLACIER 写入、未恢复读取拒绝、恢复后字节比对、重复恢复及重启保留；还验证归档复制和 DEEP_ARCHIVE 恢复。原 28 个失败场景的所测路径已补齐，但这不是完整 AWS S3 兼容声明。
 
-证据：[最新后台验收 JSON](validation/zc-2026-11-18-backends.json)、[真实服务验收脚本](../zigfs-cli/tests/pending_validation.py)。保留 [首次 49/77](validation/zc-2026-11-18.json) 和 [协议阶段 77/77](validation/zc-2026-11-18-followup.json)；下方旧结论仅供追溯。
+证据：[最新后台验收 JSON](validation/zc-2026-11-18-backends.json)、[真实服务验收脚本](../tests/pending_validation.py)。保留 [首次 49/77](validation/zc-2026-11-18.json) 和 [协议阶段 77/77](validation/zc-2026-11-18-followup.json)；下方旧结论仅供追溯。
 
 ## 本轮实际行为
 
@@ -18,7 +18,7 @@
 | Inventory / Analytics / Metrics | 后台扫描生成真实 CSV 和 manifest 对象；持久化周期检查点；配置后等待并读取实际报表 | 本地固定报表 schema；只支持 Prefix 筛选、CSV、同 owner 目标；OptionalFields、自定义报表加密等不支持的配置拒绝。Metrics 为累计请求/错误数和对象/字节快照 |
 | Intelligent tiering | 按版本记录访问时间，扫描按 90/180 天规则切换逻辑归档层，恢复回热读；控制时钟的真实存储单元测试验证转换和内容 | 不迁移物理介质；支持 Prefix；未模拟 AWS 小对象计费/分层规则 |
 
-操作约定、输出位置和格式升级见 [本地 S3 扩展说明](api/s3-local-extensions.md)。Select 仍限未压缩默认 CSV 的 `SELECT * FROM S3Object`（16 MiB），torrent 为最多 16 MiB 的 trackerless 元数据；Requester 计费、全球加速、任意 ACL 和独立 PAB 四开关组合不在本地实现范围。
+操作约定、输出位置和格式升级见 [本地 S3 扩展说明](../../docs/api/s3-local-extensions.md)。Select 仍限未压缩默认 CSV 的 `SELECT * FROM S3Object`（16 MiB），torrent 为最多 16 MiB 的 trackerless 元数据；Requester 计费、全球加速、任意 ACL 和独立 PAB 四开关组合不在本地实现范围。
 
 ## 验证范围
 
@@ -70,7 +70,7 @@ CLI 单元测试 23/23；ZigFS 单元/契约测试 336/336；CLI smoke、alias �
 
 本轮执行了原三份文档中待验证命令的集中验收，结果为**部分通过，存在明确功能缺口，不能宣布步骤 10–29 全部完成**。新增验收有 77 个场景组：49 组通过、28 组未通过。一个场景组可包含多个命令；这些数字不是完整命令或参数覆盖率。
 
-机器可读结果见 [完整结果 JSON](validation/zc-2026-11-18.json)。测试代码见 [真实服务验收](../zigfs-cli/tests/pending_validation.py) 和 [独立 HTTP 协议/故障注入](../zigfs-cli/tests/pending_protocol_checks.py)。失败场景继续要求完整功能成功，因此当前新增验收脚本退出码为 1；没有把“不支持”改成“功能通过”。
+机器可读结果见 [完整结果 JSON](validation/zc-2026-11-18.json)。测试代码见 [真实服务验收](../tests/pending_validation.py) 和 [独立 HTTP 协议/故障注入](../tests/pending_protocol_checks.py)。失败场景继续要求完整功能成功，因此当前新增验收脚本退出码为 1；没有把“不支持”改成“功能通过”。
 
 ## 环境和已执行检查
 

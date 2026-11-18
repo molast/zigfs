@@ -258,6 +258,6 @@ DEBUGINFOD_URLS= python3 conformance/diagnostics_runtime.py \
   --seconds 1800 --core-max-mib 4096
 ```
 
-See `docs/zigfs-monitor-plan.md` for the actual duration, results, resource
+See `zigfs/docs/zigfs-monitor-plan.md` for the actual duration, results, resource
 observations and interrupted-run accounting. A stopped VM/container without a
 completed stress report cannot count as a passed long-duration run.

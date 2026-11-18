@@ -1,6 +1,6 @@
 # Multipart 逻辑发布与分片元数据
 
-实现依据：[Multipart 分片合并优化设计](../plans/zigfs_multipart_merge_optimization.md)。本次落实 P0：流式校验、分片元数据持久化、逻辑发布、幂等 Complete、Range、journal 恢复及引用安全。
+实现依据：[Multipart 分片合并优化设计](../../zigfs/docs/plans/zigfs_multipart_merge_optimization.md)。本次落实 P0：流式校验、分片元数据持久化、逻辑发布、幂等 Complete、Range、journal 恢复及引用安全。
 
 ## 上传与完成
 

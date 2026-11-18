@@ -27,7 +27,7 @@
 
 `storage` 在 V1 报告当前可见对象的逻辑字节数；`total` 和 `available` 在没有正式容量
 Backend 时为 `null`，不能把单个平台的文件系统调用结果冒充为可移植容量契约。
-文件清理和分片扫描语义见[存储扫描与文件清理架构](../storage-reclamation.md)。
+文件清理和分片扫描语义见[存储扫描与文件清理架构](../../zigfs/docs/storage-reclamation.md)。
 
 ## S3/Data API
 

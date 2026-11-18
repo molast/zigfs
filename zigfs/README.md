@@ -1,5 +1,7 @@
 # zigfs
 
+[服务端内部文档索引](docs/README.md)
+
 0.1 Release Candidate: `v0.1.0-rc.1` (service version: `0.1.0`).
 
 ZigFS data-plane service. This project owns the S3 API, object data, metadata,
@@ -123,7 +125,7 @@ are supported. Bucket Versioning, DeleteMarker, version-specific object operatio
 ListObjectVersions, and the declared Lifecycle expiration subset are also supported.
 The Lifecycle scanner interval is configured with `ZIGFS_S3_LIFECYCLE_SCAN_INTERVAL_SECONDS`.
 The same interval advances the storage scanner by one of 16 namespace partitions;
-see `../docs/storage-reclamation.md` for dangling data, incomplete MPU, and Trash/GC semantics.
+see `docs/storage-reclamation.md` for dangling data, incomplete MPU, and Trash/GC semantics.
 Management authentication and business routes are available under
 `/_admin/v1`; the Admin application is only a web client and does not own storage state.
 

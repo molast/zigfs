@@ -121,7 +121,7 @@ watch 检查点必须为真实文件路径；若确实要使用名称为 `-` 的
 | watch 服务端依赖 | 成功对象事件捕获、受权限保护的游标长轮询、过滤/有限重连/游标文件/JSON Lines | 待验证 |
 | 覆盖报告 | 纳入兼容入口，去除旧协议误标“复用步骤 01–09”；管理映射随 watch 增至 114 条 | 待验证 |
 
-watch 使用进程内有限回放，重启或过期返回显式错误；mirror --watch 是周期同步。详见 [对象事件游标契约](api/object-watch.md) 和 [覆盖清单](../zigfs-cli/CLI-COVERAGE.md)。S3 配置读改写需串行操作；匿名链接不代表已经验证公开可访问。原审计排除的多机/云端及无独立契约命令仍不在范围内。
+watch 使用进程内有限回放，重启或过期返回显式错误；mirror --watch 是周期同步。详见 [对象事件游标契约](../../docs/api/object-watch.md) 和 [覆盖清单](../CLI-COVERAGE.md)。S3 配置读改写需串行操作；匿名链接不代表已经验证公开可访问。原审计排除的多机/云端及无独立契约命令仍不在范围内。
 
 ## 原始审计记录（补全前）
 
@@ -130,7 +130,7 @@ watch 使用进程内有限回放，重启或过期返回显式错误；mirror -
 - 第 2.2.3 节的 96 项单机规划和 4 项旧协议共 100 项，均有 `s3api` 注册和本地模型。
 - Management 清单有 113 条映射；对照当前 `management.zig` 显式路由表的 100 条记录，未发现未映射的 method/path。额外映射来自 OpenAPI；这个数量不证明服务端实际都提供对应行为。
 - 另外核对第 2、2.1、3.9 节及步骤 10–29 的高层入口。第 3 节仅作上游参考、没有本项目协议的命令，不直接判定为必须补齐。
-- 源码依据：[CLI 注册与分派](../zigfs-cli/src/cli.zig)、[S3 映射](../zigfs-cli/src/catalog.zig)、[高层工作流](../zigfs-cli/src/workflows.zig)、[管理映射](../zigfs-cli/src/management_catalog.zig)、[扫描实现](../zigfs-cli/src/scan.zig)。
+- 源码依据：[CLI 注册与分派](../src/cli.zig)、[S3 映射](../src/catalog.zig)、[高层工作流](../src/workflows.zig)、[管理映射](../src/management_catalog.zig)、[扫描实现](../src/scan.zig)。
 
 ## 一、尚未注册的高层命令和兼容入口
 

@@ -111,5 +111,5 @@ SystemStore 的完整文档替换不依赖 missing 世代，物理 tombstone 回
 测试数量变化：移除了旧 KMS 配置格式的兼容测试及已删除 codec 的测试，新增系统元数据
 重启与备份集成测试。无旧配置迁移或读取回退。
 
-详细运行和恢复要求见 [备份与恢复](backup-and-recovery.md)，独立引擎语义见
-[库说明](../pkg/metadata-engine/README.md)。
+详细运行和恢复要求见 [备份与恢复](../../docs/backup-and-recovery.md)，独立引擎语义见
+[库说明](../../pkg/metadata-engine/README.md)。

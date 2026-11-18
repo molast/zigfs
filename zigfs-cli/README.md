@@ -1,6 +1,8 @@
 # ZigFS CLI
 
-> 2026-11-18 运行验证：新增 77 个场景组 49 通过、28 未通过；详细命令、后端缺口和剩余范围见 [集中运行报告](../docs/zigfs-zc-cli-validation.md)。下文 2026-11-17 的待验证状态保留为历史。未实现对象子资源现在明确拒绝，不能用 encryption update/annotation 等代替普通对象写入。
+[CLI 专属文档索引](docs/README.md)
+
+> 2026-11-18 运行验证：新增 77 个场景组 49 通过、28 未通过；详细命令、后端缺口和剩余范围见 [集中运行报告](docs/zigfs-zc-cli-validation.md)。下文 2026-11-17 的待验证状态保留为历史。未实现对象子资源现在明确拒绝，不能用 encryption update/annotation 等代替普通对象写入。
 
 `zc` is the ZigFS command-line client. It provides local connection aliases and a signed S3 protocol client.
 Bucket basics, paginated listings, single-object copy/move/delete, explicit batch deletion and multipart upload/resume/pipe are available. Recursive/multi-source transfers, unversioned bucket cleanup, presigned sharing and browser POST uploads are available; management workflows follow in later steps.
@@ -36,7 +38,7 @@ python3 tests/alias_validation.py
 python3 tests/s3api_integration.py
 ```
 
-The command design reference is in [`../docs/zigfs-zc-cli-rustfs-reference.md`](../docs/zigfs-zc-cli-rustfs-reference.md).
+The command design reference is in [`docs/zigfs-zc-cli-rustfs-reference.md`](docs/zigfs-zc-cli-rustfs-reference.md).
 
 ## Step 01: available commands
 
@@ -610,7 +612,7 @@ parts with bounded buffers; bytes stream directly from file ranges. `--part-conc
 and the shared multi-file transfer budget. Explicit values
 above the CPU/shared budget are rejected. Stdin remains sequential.
 
-Performance measurements and recovery evidence: [upload validation](../docs/validation/zc-upload-performance-2026-11-18.md).
+Performance measurements and recovery evidence: [upload validation](docs/validation/zc-upload-performance-2026-11-18.md).
 
 Connections are reused through an exclusive bounded pool. Each request resets its
 headers, callbacks and TLS options while retaining reusable TCP/TLS connections.
@@ -1049,7 +1051,7 @@ import 兼容仅含 Rules 的旧文件、完整请求的 LifecycleConfiguration 
 
 ## R01–R08 集中补全（待验证）
 
-八项已补写逻辑，逐项记录见 [集中静态审查清单](../docs/zigfs-zc-cli-static-review.md)。本轮未编译、运行测试、执行 CLI 或联调；现有二进制未重建。
+八项已补写逻辑，逐项记录见 [集中静态审查清单](docs/zigfs-zc-cli-static-review.md)。本轮未编译、运行测试、执行 CLI 或联调；现有二进制未重建。
 
 - `rm ALIAS/BUCKET/KEY --versions` 删除指定 Key 的版本和删除标记；加 `--recursive/-r` 按前缀。`rb ALIAS/BUCKET --force` 清理版本后删桶，存在未完成上传须另加 `--dangerous`。均要求 `--yes` 或 `--dry-run`。
 - 版本清理支持 `--endpoint`、`--region`、`--bucket-lookup`、`--ca-cert`、`--insecure`、`--timeout`、`--connect-timeout`、`--page-size 1..1000`、`--bypass-governance-retention`（别名 `--bypass`）。绕过仅传给对象删除，不绕过合规模式或 legal hold。该路径串行、首错停止，拒绝 include/exclude、并发、重试/限速、header、summary、continue-on-error、fail-empty 等普通 bulk 参数。

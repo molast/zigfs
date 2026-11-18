@@ -47,50 +47,50 @@
 
 模型 ListBuckets 的续页字段是 `ContinuationToken`。`modeled.executeInput` 的 more 判断只认 IsTruncated / NextToken / NextContinuationToken，映射也没有 ListBuckets 的 ContinuationToken。`du ALIAS --fallback` 在走服务扫描时通过这一分页器枚举 Bucket，可能只统计第一页并输出 `complete=true`。
 
-依据：[分页器](../zigfs-cli/src/modeled.zig)、[服务扫描](../zigfs-cli/src/scan.zig)、本地 ListBucketsOutput 模型。修复需按 operation 区分游标，不能把所有响应中的 ContinuationToken 当作续页字段——其他操作可能只是回显输入 token。
+依据：[分页器](../src/modeled.zig)、[服务扫描](../src/scan.zig)、本地 ListBucketsOutput 模型。修复需按 operation 区分游标，不能把所有响应中的 ContinuationToken 当作续页字段——其他操作可能只是回显输入 token。
 
 ### R02 — 中：历史删除专用路径没有接入通用参数
 
 `versions.execute` 直接拒绝所有 value options，且旗标白名单无治理绕过。`rm --versions` / `rb --force` 进入这一专用路径后，endpoint、region、CA、timeout、page-size 等不会按普通删除流程工作；治理保留历史对象也不能通过该高层路径显式传递绕过参数。普通 retention 的 bypass 修复不覆盖这里。
 
-依据：[历史删除](../zigfs-cli/src/versions.zig)、[CLI 分派](../zigfs-cli/src/cli.zig)。至少统一连接参数；其他批量控制须逐项接入或在该命令帮助明确拒绝，不应由通用帮助暗示可用。
+依据：[历史删除](../src/versions.zig)、[CLI 分派](../src/cli.zig)。至少统一连接参数；其他批量控制须逐项接入或在该命令帮助明确拒绝，不应由通用帮助暗示可用。
 
 ### R03 — 中：历史删除与 mirror 缺少部分完成结果
 
 历史删除循环已成功删除若干版本/中止若干分片后，后续失败直接返回该单次调用的错误，没有附上累计已完成数量和失败位置。mirror 同样在复制/删除中途失败时直接返回单次错误，最终 copied/removed 汇总只出现在全成功时。已有 bulk 的 summary 机制没有覆盖这两条独立执行路径。
 
-依据：[versions.execute](../zigfs-cli/src/versions.zig)、[scan.executeOnce](../zigfs-cli/src/scan.zig)。应保留单次错误及其退出码，同时报告已确认成功、失败阶段、尚未执行与可能未知的结果；不能声称失败即无修改。
+依据：[versions.execute](../src/versions.zig)、[scan.executeOnce](../src/scan.zig)。应保留单次错误及其退出码，同时报告已确认成功、失败阶段、尚未执行与可能未知的结果；不能声称失败即无修改。
 
 ### R04 — 高：分页和服务级扫描的临时内存没有完整释放/计量
 
 main 将进程 arena 传给 CLI；modeled 每页临时 arena 又使用该 allocator，页结果/token 等长期数据穿插分配到父 arena，子 arena 的 deinit 不能保证回收实际底层内存。每次请求的模型解析、传输缓冲等不计入 64 MiB 的结果字节计量，页数增长可能累积大量内存。service du 又在同一 allocator 上扫描所有 Bucket，未给每桶临时扫描设置独立释放生命周期，也没有整个服务扫描的累计对象/字节预算。
 
-依据：[入口 allocator](../zigfs-cli/src/main.zig)、[模型分页](../zigfs-cli/src/modeled.zig)、[service du](../zigfs-cli/src/scan.zig)。这是分配器所有权的静态风险，未做内存实测；需独立可释放的临时 allocator，并只复制必要的结果/游标/统计，明确预算是每桶还是整体。
+依据：[入口 allocator](../src/main.zig)、[模型分页](../src/modeled.zig)、[service du](../src/scan.zig)。这是分配器所有权的静态风险，未做内存实测；需独立可释放的临时 allocator，并只复制必要的结果/游标/统计，明确预算是每桶还是整体。
 
 ### R05 — 中：du 过滤在分片和服务范围不一致
 
 - `incomplete` 在 ListParts 之前用 size=0 调用 selected。带正数 min-size 时所有未完成上传被排除；max-size 判断也不是基于已上传分片总大小。
 - service du 为子 Bucket 重建参数时只遍历 r.values，重复 include/exclude 只剩最后一次值，未传递 r.repeated。单桶和服务级调用会得到不同筛选结果。
 
-依据：[scan.incomplete / usage](../zigfs-cli/src/scan.zig)。应先做不依赖大小的筛选，汇总分片再做大小筛选；跨子调用保留重复参数及其排除优先语义。
+依据：[scan.incomplete / usage](../src/scan.zig)。应先做不依赖大小的筛选，汇总分片再做大小筛选；跨子调用保留重复参数及其排除优先语义。
 
 ### R06 — 中：部分工作流静默忽略不适用参数
 
 `bucket version enable/suspend`、`bucket lock clear`、`object legalhold enable/disable` 使用 workflows 的 clean 后直接 executeInput。没有完整的 value-option 消费检查，executeInput 又不会逐一拒绝 r.values；例如 version enable 加未知 value option 仍可能发送启用请求。通知 add 使用 --file 时，也会静默忽略同时给出的 arn/events/prefix/suffix，而非按约定拒绝或合并。
 
-依据：[workflows.clean / execute](../zigfs-cli/src/workflows.zig)、[modeled.executeInput](../zigfs-cli/src/modeled.zig)、[notification](../zigfs-cli/src/convenience.zig)。需命令级参数白名单与组合规则，统一“未知参数拒绝、文件与短选项冲突可解释”，不能只校验参数名称是否可解析。
+依据：[workflows.clean / execute](../src/workflows.zig)、[modeled.executeInput](../src/modeled.zig)、[notification](../src/convenience.zig)。需命令级参数白名单与组合规则，统一“未知参数拒绝、文件与短选项冲突可解释”，不能只校验参数名称是否可解析。
 
 ### R07 — 中：扫描失败丢失原始错误码
 
 snapshot/incomplete 将底层所有非零响应转为 `error.ListFailed`，CLI 没有专门映射，最后变成通用退出码 1 和通用错误。权限拒绝 4、网络失败 3、不存在 5、取消 130 等信息丢失；find/tree/du/diff/mirror 的扫描阶段均可能受影响。
 
-依据：[scan](../zigfs-cli/src/scan.zig)、[CLI 错误映射](../zigfs-cli/src/cli.zig)。应保留底层结构化错误/退出码并补充阶段上下文，而不是仅抛无数据错误枚举。
+依据：[scan](../src/scan.zig)、[CLI 错误映射](../src/cli.zig)。应保留底层结构化错误/退出码并补充阶段上下文，而不是仅抛无数据错误枚举。
 
 ### R08 — 低：帮助和进度仍混有已过期表述
 
 browse.help 仍称 force/versioning 未支持；主文档步骤 08 的旧记录仍说 force 仅清未版本化桶、版本清理未开放，后续执行从步骤 10 开始。与当前 versions 分派和待验证批量交付状态不一致。历史验收记录可以保留，但需显式注明当时版本范围，并链接当前命令能力/限制，避免用户把旧限制当当前状态。
 
-依据：[browse.help](../zigfs-cli/src/browse.zig)、[主参考文档](zigfs-zc-cli-rustfs-reference.md)。
+依据：[browse.help](../src/browse.zig)、[主参考文档](zigfs-zc-cli-rustfs-reference.md)。
 
 ## 后续处理与验证边界
 
