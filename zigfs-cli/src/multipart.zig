@@ -15,7 +15,7 @@ pub fn isFlag(n: []const u8) bool {
     return eq(n, "--yes") or eq(n, "--dry-run") or eq(n, "--insecure") or eq(n, "--overwrite") or eq(n, "--resume");
 }
 pub fn isValueOption(n: []const u8) bool {
-    for ([_][]const u8{ "--if-match", "--if-none-match", "--upload-id", "--part-number", "--body", "--file", "--page-size", "--prefix", "--content-type", "--metadata", "--multipart-threshold", "--part-size", "--max-parts", "--state-file" }) |f| if (eq(n, f)) return true;
+    for ([_][]const u8{ "--if-match", "--if-none-match", "--upload-id", "--part-number", "--body", "--file", "--page-size", "--prefix", "--content-type", "--metadata", "--multipart-threshold", "--part-size", "--part-concurrency", "--max-parts", "--state-file" }) |f| if (eq(n, f)) return true;
     return api.isValueOption(n) and !eq(n, "--input-json") and !eq(n, "--output");
 }
 pub fn size(text: []const u8) !u64 {
@@ -241,7 +241,9 @@ pub fn execute(a: A, ctx: aliases.Context, action: []const u8, args: []const []c
 fn fileHash(a: A, io: Io, path: []const u8) ![]const u8 {
     const f = try Io.Dir.cwd().openFile(io, path, .{});
     defer f.close(io);
-    if ((try f.stat(io)).kind != .file) return error.InvalidInput;
+    const stat = try f.stat(io);
+    if (stat.kind != .file) return error.InvalidInput;
+    @import("progress.zig").zc_progress_stage("Verifying source", stat.size);
     var sha = std.crypto.hash.sha2.Sha256.init(.{});
     var buffer: [65536]u8 = undefined;
     var offset: u64 = 0;
@@ -250,6 +252,7 @@ fn fileHash(a: A, io: Io, path: []const u8) ![]const u8 {
         if (n == 0) break;
         sha.update(buffer[0..n]);
         offset += n;
+        @import("progress.zig").zc_progress_update(offset);
     }
     var digest: [32]u8 = undefined;
     sha.final(&digest);
@@ -258,6 +261,7 @@ fn fileHash(a: A, io: Io, path: []const u8) ![]const u8 {
 fn sourceInfo(a: A, io: Io, path: []const u8, part_size: u64, expected_length: u64) !struct { hash: []const u8, parts: [][]const u8 } {
     const file = try Io.Dir.cwd().openFile(io, path, .{});
     defer file.close(io);
+    @import("progress.zig").zc_progress_stage("Hashing source", expected_length);
     var whole = std.crypto.hash.sha2.Sha256.init(.{});
     var part = std.crypto.hash.sha2.Sha256.init(.{});
     var hashes: std.ArrayList([]const u8) = .empty;
@@ -271,6 +275,7 @@ fn sourceInfo(a: A, io: Io, path: []const u8, part_size: u64, expected_length: u
         part.update(buffer[0..n]);
         offset += n;
         part_bytes += n;
+        @import("progress.zig").zc_progress_update(offset);
         if (part_bytes == part_size) {
             var digest: [32]u8 = undefined;
             part.final(&digest);
@@ -302,11 +307,47 @@ fn pending(a: A, json: bool, state: V, path: ?[]const u8, cause: ?api.Output, ph
     const value = .{ .schema_version = 1, .type = "error", .status = "error", .@"error" = .{ .code = "MULTIPART_INCOMPLETE", .message = message, .phase = phase, .upload_id = str(state, "upload_id"), .state_file = path, .cause = detail } };
     return .{ .exit_code = if (cause) |c| c.exit_code else 1, .stderr = try std.fmt.allocPrint(a, "{s}\n", .{try std.json.Stringify.valueAlloc(a, value, .{ .whitespace = if (json) .minified else .indent_2 })}) };
 }
+// Each worker owns its arena. Only the coordinator publishes checkpoints, in
+// part-number order, after draining every in-flight request in the bounded wave.
+const PartWork = struct {
+    arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
+    ctx: aliases.Context,
+    config: ?[]const u8,
+    base: V,
+    args: []const []const u8,
+    source: []const u8,
+    number: u64,
+    offset: u64,
+    length: u64,
+    sha256: []const u8,
+    lanes: u32,
+    progress: ?*anyopaque,
+    reply: ?Reply = null,
+};
+
+fn uploadPartWorker(work: *PartWork) void {
+    @import("progress.zig").zc_progress_object_attach(work.progress, work.number);
+    defer @import("progress.zig").zc_progress_object_attach(null, 0);
+    work.reply = uploadFilePart(work) catch null;
+}
+
+fn uploadFilePart(work: *PartWork) !Reply {
+    const a = work.arena.allocator();
+    var input = try clone(a, work.base);
+    try integer(a, &input, "PartNumber", work.number);
+    var args: std.ArrayList([]const u8) = .empty;
+    try args.appendSlice(a, work.args);
+    try args.appendSlice(a, &.{ "--body", work.source });
+    return request(a, work.ctx, "upload-part", args.items, work.config, input, .{
+        .body_offset = work.offset,
+        .body_length = work.length,
+        .expected_body_sha256 = work.sha256,
+        .rate_limit_divisor = work.lanes,
+    });
+}
+
 pub fn autoUpload(a: A, ctx: aliases.Context, source: ?[]const u8, remote_path: []const u8, initial: []const []const u8, values: Map, flags: std.StringHashMapUnmanaged(void), metadata: V, config: ?[]const u8, json: bool, quiet: bool) anyerror!api.Output {
     const r = try remote(remote_path, false);
-    const part_size = if (values.get("--part-size")) |v| try size(v) else 16 * mib;
-    const max_parts = if (values.get("--max-parts")) |v| try size(v) else 10000;
-    if (part_size < 5 * mib or part_size > 5 * 1024 * mib or max_parts > 10000) return error.InvalidInput;
     if (source == null and (flags.contains("--resume") or values.contains("--state-file") or values.contains("--multipart-threshold"))) return error.InvalidInput;
     if (flags.contains("--overwrite") and !flags.contains("--yes")) return error.ConfirmationRequired;
     if (flags.contains("--overwrite") and values.contains("--if-none-match")) return error.InvalidInput;
@@ -319,7 +360,7 @@ pub fn autoUpload(a: A, ctx: aliases.Context, source: ?[]const u8, remote_path: 
     var it = values.iterator();
     while (it.next()) |e| {
         const n = e.key_ptr.*;
-        if (eq(n, "--content-type")) try put(a, &create, "ContentType", e.value_ptr.*) else if (eq(n, "--part-size") or eq(n, "--max-parts") or eq(n, "--multipart-threshold") or eq(n, "--state-file") or eq(n, "--if-match") or eq(n, "--if-none-match")) {} else if (!api.isValueOption(n) or eq(n, "--body") or eq(n, "--file")) return error.UnsupportedOperation;
+        if (eq(n, "--content-type")) try put(a, &create, "ContentType", e.value_ptr.*) else if (eq(n, "--part-size") or eq(n, "--part-concurrency") or eq(n, "--max-parts") or eq(n, "--multipart-threshold") or eq(n, "--state-file") or eq(n, "--if-match") or eq(n, "--if-none-match")) {} else if (!api.isValueOption(n) or eq(n, "--body") or eq(n, "--file")) return error.UnsupportedOperation;
     }
     if (metadata.object.count() > 0) try create.object.put(a, "Metadata", metadata);
     try api.validateInput(.@"create-multipart-upload", create);
@@ -329,6 +370,39 @@ pub fn autoUpload(a: A, ctx: aliases.Context, source: ?[]const u8, remote_path: 
         if (stat.kind != .file) return error.InvalidInput;
         break :blk stat.size;
     } else 0;
+    const max_parts = if (values.get("--max-parts")) |v| try size(v) else 10000;
+    const plan = try @import("upload_policy.zig").choose(length, max_parts);
+    var part_size = if (values.get("--part-size")) |v| try size(v) else plan.part_size;
+    // Resume must use the persisted layout, even after client defaults change.
+    // The checkpoint is re-read and validated under its exclusive lock below.
+    if (flags.contains("--resume") and !values.contains("--part-size")) {
+        const checkpoint = values.get("--state-file") orelse try std.fmt.allocPrint(a, "{s}.zc-upload.json", .{path.?});
+        const previous = Io.Dir.cwd().openFile(ctx.io, checkpoint, .{ .follow_symlinks = false }) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => return err,
+        };
+        if (previous) |file| {
+            defer file.close(ctx.io);
+            const stat = try file.stat(ctx.io);
+            if (stat.kind != .file or stat.size > 4 * mib) return error.InvalidInput;
+            if (@backingInt(stat.permissions) & 0o077 != 0) return error.InsecurePermissions;
+            const bytes = try a.alloc(u8, @intCast(stat.size));
+            if (try file.readPositionalAll(ctx.io, bytes, 0) != bytes.len) return error.InvalidInput;
+            const saved = (try std.json.parseFromSlice(V, a, bytes, .{})).value;
+            if (saved != .object) return error.InvalidInput;
+            part_size = try numeric(saved.object.get("identity") orelse return error.InvalidInput, "part_size");
+        }
+    }
+    if (part_size < 5 * mib or part_size > 5 * 1024 * mib) return error.InvalidInput;
+    const cpu_limit = std.Thread.getCpuCount() catch 1;
+    const shared_budget = if (ctx.policy) |policy|
+        (if (policy.part_lanes == 0) cpu_limit else policy.part_lanes)
+    else
+        cpu_limit;
+    const limit = @min(4, cpu_limit, shared_budget);
+    const requested_lanes = if (values.get("--part-concurrency")) |v| try size(v) else @min(plan.concurrency, limit);
+    if (requested_lanes > limit) return error.ConcurrencyLimit;
+    const lanes: usize = @intCast(requested_lanes);
     if (length > 5 * 1024 * 1024 * mib or (length + part_size - 1) / part_size > max_parts) return error.InvalidInput;
     if (flags.contains("--dry-run")) {
         try create.object.put(a, "dry_run", .{ .bool = true });
@@ -344,6 +418,7 @@ pub fn autoUpload(a: A, ctx: aliases.Context, source: ?[]const u8, remote_path: 
     defer if (lock) |f| f.close(ctx.io);
     var state: V = .{ .object = .{} };
     var exists = false;
+    var replace_completed = false;
     const conn = try aliases.connection(a, ctx, config, r.alias, .{ .endpoint = values.get("--endpoint"), .region = values.get("--region") });
     const source_info = if (path) |p| try sourceInfo(a, ctx.io, p, part_size, length) else null;
     const digest = if (source_info) |info| info.hash else "";
@@ -385,11 +460,28 @@ pub fn autoUpload(a: A, ctx: aliases.Context, source: ?[]const u8, remote_path: 
             const bytes = try a.alloc(u8, @intCast(stat.size));
             if (try f.readPositionalAll(ctx.io, bytes, 0) != bytes.len) return error.InvalidInput;
             state = (std.json.parseFromSlice(V, a, bytes, .{}) catch return error.InvalidInput).value;
-            if (!flags.contains("--resume")) return error.PathAlreadyExists;
             if (try numeric(state, "schema_version") != 1) return error.InvalidInput;
-            if (!eq(str(state, "fingerprint") orelse "", fingerprint)) return error.ResumeMismatch;
-            if (!eq(str(state, "phase") orelse "", "uploading")) return fail(a, json, "RESUME_UNSAFE", "checkpoint is creating/completing/completed; inspect remote outcome instead of automatically retrying", 6);
-            if (str(state, "upload_id") == null or state.object.get("parts") == null or state.object.get("parts").? != .array) return error.InvalidInput;
+            if (!flags.contains("--resume")) {
+                const previous_identity = state.object.get("identity") orelse V.null;
+                const previous_parts = state.object.get("parts") orelse V.null;
+                const reusable = !values.contains("--state-file") and
+                    eq(str(state, "phase") orelse "", "completed") and
+                    eq(str(previous_identity, "source") orelse "", path.?) and
+                    str(state, "upload_id") != null and previous_parts == .array;
+                if (!reusable) {
+                    return fail(a, json, "CHECKPOINT_EXISTS", "local multipart checkpoint already exists, not the remote object; use --resume for an uploading checkpoint or --state-file NEW_PATH for a new transfer", 6);
+                }
+                // Completion was acknowledged and durably recorded. Start a new
+                // upload under the same lock, atomically replacing only this
+                // default sidecar. Unknown outcomes and explicit files stay intact.
+                state = .{ .object = .{} };
+                exists = false;
+                replace_completed = true;
+            } else {
+                if (!eq(str(state, "fingerprint") orelse "", fingerprint)) return error.ResumeMismatch;
+                if (!eq(str(state, "phase") orelse "", "uploading")) return fail(a, json, "RESUME_UNSAFE", "checkpoint is creating/completing/completed; inspect remote outcome instead of automatically retrying", 6);
+                if (str(state, "upload_id") == null or state.object.get("parts") == null or state.object.get("parts").? != .array) return error.InvalidInput;
+            }
         }
     }
     if (!exists) {
@@ -398,7 +490,7 @@ pub fn autoUpload(a: A, ctx: aliases.Context, source: ?[]const u8, remote_path: 
         try state.object.put(a, "identity", identity);
         try put(a, &state, "phase", "creating");
         try state.object.put(a, "parts", .{ .array = std.array_list.Managed(V).init(a) });
-        if (state_path) |p| try save(a, ctx.io, p, state, false);
+        if (state_path) |p| try save(a, ctx.io, p, state, replace_completed);
         const created = request(a, ctx, "create-multipart-upload", wire.items, config, create, .{}) catch return pending(a, json, state, state_path, null, "create");
         if (created == .failed) return pending(a, json, state, state_path, created.failed, "create");
         try put(a, &state, "upload_id", str(created.ok.object.get("result").?, "UploadId") orelse return error.InvalidResponse);
@@ -438,6 +530,59 @@ pub fn autoUpload(a: A, ctx: aliases.Context, source: ?[]const u8, remote_path: 
             if (!found) return error.ResumeMismatch;
         }
     }
+    const progress = @import("progress.zig");
+    const object_progress = if (path != null)
+        progress.zc_progress_object_begin(length, @min(length, recorded.array.items.len * part_size), @max(1, (length + part_size - 1) / part_size))
+    else
+        null;
+    defer progress.zc_progress_object_end(object_progress);
+    if (path) |source_path| {
+        const part_count = @max(1, (length + part_size - 1) / part_size);
+        while (recorded.array.items.len < part_count) {
+            const first = recorded.array.items.len + 1;
+            const count: usize = @intCast(@min(lanes, part_count - first + 1));
+            var work: [4]PartWork = undefined;
+            for (work[0..count], 0..) |*item, index| {
+                const number = first + index;
+                const offset = (number - 1) * part_size;
+                item.* = .{
+                    .ctx = ctx,
+                    .config = config,
+                    .base = base,
+                    .args = wire.items,
+                    .source = source_path,
+                    .number = number,
+                    .offset = offset,
+                    .length = @min(part_size, length - offset),
+                    .sha256 = source_info.?.parts[number - 1],
+                    .lanes = @intCast(count),
+                    .progress = object_progress,
+                };
+            }
+            defer for (work[0..count]) |*item| item.arena.deinit();
+            var group: Io.Group = .init;
+            defer group.cancel(ctx.io);
+            for (work[0..count]) |*item| {
+                if (count == 1) {
+                    uploadPartWorker(item);
+                } else {
+                    group.concurrent(ctx.io, uploadPartWorker, .{item}) catch break;
+                }
+            }
+            // Await all workers before reading their arenas or allowing resume.
+            group.await(ctx.io) catch return error.Interrupted;
+            progress.zc_progress_object_attach(object_progress, 0);
+            for (work[0..count]) |*item| {
+                const uploaded = item.reply orelse return pending(a, json, state, state_path, null, "upload-part");
+                if (uploaded == .failed) return pending(a, json, state, state_path, uploaded.failed, "upload-part");
+                var part: V = .{ .object = .{} };
+                try integer(a, &part, "PartNumber", item.number);
+                try put(a, &part, "ETag", try a.dupe(u8, str(uploaded.ok.object.get("headers").?, "etag") orelse return error.InvalidResponse));
+                try recorded.array.append(part);
+                if (state_path) |checkpoint| try save(a, ctx.io, checkpoint, state, true);
+            }
+        }
+    }
     var part_number: u64 = recorded.array.items.len + 1;
     var pipe_file: ?Io.File = null;
     var pipe_path: ?[]const u8 = null;
@@ -450,9 +595,11 @@ pub fn autoUpload(a: A, ctx: aliases.Context, source: ?[]const u8, remote_path: 
         pipe_path = try std.fmt.allocPrint(a, "{s}/zc-pipe-{s}.part", .{ tmp, std.fmt.bytesToHex(random, .lower) });
         pipe_file = Io.Dir.cwd().createFile(ctx.io, pipe_path.?, .{ .read = true, .exclusive = true, .permissions = private_mode }) catch return pending(a, json, state, state_path, null, "stdin-temp-file");
     }
-    while (true) : (part_number += 1) {
+    defer @import("progress.zig").zc_progress_part(0, 0, 0, 0);
+    while (path == null) : (part_number += 1) {
         var count: u64 = 0;
         if (source == null) {
+            @import("progress.zig").zc_progress_stage("Reading stdin", 0);
             pipe_file.?.setLength(ctx.io, 0) catch return pending(a, json, state, state_path, null, "stdin-temp-file");
             var buffer: [65536]u8 = undefined;
             while (count < part_size) {
@@ -470,6 +617,7 @@ pub fn autoUpload(a: A, ctx: aliases.Context, source: ?[]const u8, remote_path: 
             if (offset >= length and part_number > 1) break;
             count = @min(part_size, length - offset);
         }
+        @import("progress.zig").zc_progress_part(part_number, if (path != null) @max(1, (length + part_size - 1) / part_size) else 0, (part_number - 1) * part_size, length);
         if (part_number > max_parts or (part_number - 1) * part_size + count > 5 * 1024 * 1024 * mib) return pending(a, json, state, state_path, null, "part-limit");
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
@@ -517,14 +665,18 @@ pub const help =
     \\Complete file: {"Parts":[{"PartNumber":1,"ETag":"..."}]} in ascending order.
     \\Complete may replace the destination; --yes acknowledges that.
     \\Use --if-none-match * for create-only or --if-match ETAG for conditional replacement.
-    \\put/cp: --multipart-threshold SIZE (default 64MiB) --part-size SIZE (16MiB)
+    \\put/cp: --multipart-threshold SIZE (default 16MiB) --part-size SIZE (automatic 8..128MiB, enlarged for part limits)
     \\  --max-parts N (10000) --resume --state-file FILE --overwrite --yes
     \\pipe OBJECT [--overwrite --yes] [--part-size SIZE]; stdin cannot resume.
     \\Sizes: bytes or KiB/MiB/GiB; parts 5MiB..5GiB; up to 10000/5TiB total.
+    \\File uploads use up to four concurrent parts; --part-concurrency 1..4 overrides this.
+    \\Concurrency is capped by available logical CPUs and the shared file-transfer budget.
     \\Automatic multipart defaults to If-None-Match: *; overwrite requires --overwrite --yes.
     \\Checkpoint defaults to SOURCE.zc-upload.json; keep it for resume/unknown outcomes.
     \\Resume checks file SHA256, layout, endpoint/identity/options and remote ETags/sizes.
-    \\Completing/creating/completed checkpoints are never automatically retried.
+    \\Resume never retries creating/completing/completed checkpoints.
+    \\A new upload may replace a completed default checkpoint for the same source.
+    \\Explicit --state-file and unfinished checkpoints are preserved; use a new path.
     \\Listings follow all pages up to 16MiB/10000 pages; excess fails without stdout.
     \\--dry-run validates locally; other connection options match s3api.
     \\Advanced encryption/tagging/checksum/copy-part options await later steps.

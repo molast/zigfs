@@ -184,7 +184,7 @@ fn parse(a: A, args: []const []const u8) !Options {
                 if (isValueOption(n)) o.explicit = true;
                 if (eq(n, "--include")) try o.include.append(a, value) else if (eq(n, "--exclude")) try o.exclude.append(a, value) else if (eq(n, "--concurrency")) {
                     const v = try multipart.size(value);
-                    if (v > 32) return error.InvalidInput;
+                    if (v > @min(32, std.Thread.getCpuCount() catch 1)) return error.ConcurrencyLimit;
                     o.concurrency = @intCast(v);
                 } else if (eq(n, "--page-size")) {
                     o.page_size = try multipart.size(value);
@@ -573,7 +573,7 @@ pub fn execute(a: A, ctx: aliases.Context, action: []const u8, args: []const []c
             option_index += 1;
         }
     }
-    var policy: aliases.RequestPolicy = .{ .retries_left = .init(o.retries - 1), .rate_limit = if (o.rate == 0) 0 else o.rate / (2 * o.concurrency), .initial_backoff = o.initial, .max_backoff = o.max };
+    var policy: aliases.RequestPolicy = .{ .part_lanes = @max(1, (std.Thread.getCpuCount() catch 1) / o.concurrency), .retries_left = .init(o.retries - 1), .rate_limit = if (o.rate == 0) 0 else o.rate / (2 * o.concurrency), .initial_backoff = o.initial, .max_backoff = o.max };
     var context = ctx;
     context.policy = &policy;
     zc_bulk_begin();
@@ -796,7 +796,8 @@ test "bulk glob and portable-path rejection" {
 }
 pub const help =
     \\Bulk cp/mv/rm: --recursive/-r, multiple source operands, --include/--exclude GLOB
-    \\--concurrency 1..32 --rate-limit BYTES|KiB|MiB|GiB --retry-attempts 1..5
+    \\--concurrency 1..min(32, available logical CPUs); defaults to 1 file at a time.
+    \\--rate-limit BYTES|KiB|MiB|GiB --retry-attempts 1..5
     \\--retry-initial-backoff-ms N --retry-max-backoff-ms N --continue-on-error
     \\--fail-empty --summary --portable-names --page-size 1..1000 --dry-run
     \\Targets are remote prefixes or existing local directories. Trailing source /

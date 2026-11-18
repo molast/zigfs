@@ -22,6 +22,7 @@ pub const Alias = struct {
 };
 pub const Config = struct { schema_version: u32 = 1, aliases: []const Alias = &.{} };
 pub const RequestPolicy = struct {
+    part_lanes: usize = 0,
     retries_left: std.atomic.Value(u32),
     rate_limit: u64 = 0,
     initial_backoff: u32 = 100,
@@ -31,7 +32,7 @@ pub const Context = struct { io: Io, env: *const std.process.Environ.Map, policy
 pub const Output = struct { json: []const u8, human: []const u8, raw: bool = false };
 
 pub fn isFlag(name: []const u8) bool {
-    for ([_][]const u8{ "--insecure", "--replace", "--force", "--include-credentials", "--acknowledge-credentials", "--long", "-l" }) |flag| if (eq(flag, name)) return true;
+    for ([_][]const u8{ "--insecure", "--skip-check", "--replace", "--force", "--include-credentials", "--acknowledge-credentials", "--long", "-l" }) |flag| if (eq(flag, name)) return true;
     return false;
 }
 pub fn isValueOption(name: []const u8) bool {
@@ -235,7 +236,7 @@ fn parseRequest(a: A, action: []const u8, args: []const []const u8) !Request {
             const name = if (split) |at| arg[0..at] else arg;
             const canonical = if (eq(name, "-o")) "--output" else if (eq(name, "-l")) "--long" else name;
             if (r.values.contains(canonical) or r.flags.contains(canonical)) return error.InvalidAliasInput;
-            const set_option = isValueOption(canonical) and !eq(canonical, "--output") or eq(canonical, "--insecure");
+            const set_option = isValueOption(canonical) and !eq(canonical, "--output") or eq(canonical, "--insecure") or eq(canonical, "--skip-check");
             const export_option = eq(canonical, "--output") or eq(canonical, "--force") or eq(canonical, "--include-credentials") or eq(canonical, "--acknowledge-credentials");
             if (!(eq(action, "set") and set_option or eq(action, "export") and export_option or eq(action, "import") and eq(canonical, "--replace") or eq(action, "list") and eq(canonical, "--long"))) return error.InvalidAliasInput;
             if (isFlag(canonical)) {
@@ -386,6 +387,32 @@ fn setAlias(a: A, ctx: Context, r: Request, json: bool) !Alias {
     return alias;
 }
 
+/// Verify before taking the configuration lock. Never follow redirects or echo
+/// server diagnostics, which can contain credentials or signed request details.
+fn verifyEndpoint(a: A, ctx: Context, alias: Alias) !void {
+    const wire = @import("wire.zig");
+    const xml = @import("xml.zig");
+    const reply = try wire.send(a, ctx, .{
+        .connection = alias,
+        .method = "GET",
+        .path = "/",
+        .query = &.{.{ .name = "max-buckets", .value = "1" }},
+    });
+    if (reply.transport == 42) return error.Interrupted;
+    if (reply.transport != 0) return error.EndpointUnreachable;
+    if (reply.status >= 500 or reply.status == 429) return error.EndpointUnavailable;
+    if (reply.status >= 300 and reply.status < 400) return error.EndpointRedirect;
+    const node = xml.parse(a, reply.body) catch return error.NotS3Endpoint;
+    if (reply.status == 200 and eq(node.name, "ListAllMyBucketsResult")) return;
+    if (!eq(node.name, "Error")) return error.NotS3Endpoint;
+    const code = xml.child(node, "Code") orelse return error.NotS3Endpoint;
+    for ([_][]const u8{ "InvalidAccessKeyId", "SignatureDoesNotMatch", "InvalidToken", "ExpiredToken", "TokenRefreshRequired" }) |invalid| {
+        if (eq(code, invalid)) return error.EndpointCredentialsRejected;
+    }
+    if (eq(code, "AccessDenied") or eq(code, "AllAccessDisabled")) return error.EndpointPermissionDenied;
+    return error.EndpointCheckFailed;
+}
+
 // Safe view excludes all three credential fields, including the access-key identifier.
 const PublicAlias = struct {
     name: []const u8,
@@ -423,7 +450,10 @@ pub fn execute(a: A, ctx: Context, action: []const u8, args: []const []const u8,
     // Validate inputs before creating a lock directory or reading existing credentials.
     var prepared: ?Alias = null;
     var imported: ?Config = null;
-    if (eq(action, "set")) prepared = try setAlias(a, ctx, r, json);
+    if (eq(action, "set")) {
+        prepared = try setAlias(a, ctx, r, json);
+        if (!r.flags.contains("--skip-check")) try verifyEndpoint(a, ctx, prepared.?);
+    }
     if ((eq(action, "list") and r.count != 0) or ((eq(action, "info") or eq(action, "remove") or eq(action, "import")) and r.count != 1)) return error.InvalidAliasInput;
     if (eq(action, "info") or eq(action, "remove")) try validName(r.positionals[0]);
     if (eq(action, "import")) {
@@ -473,6 +503,14 @@ pub fn execute(a: A, ctx: Context, action: []const u8, args: []const []const u8,
         const bytes = try encodeToml(a, next);
         if (bytes.len > max_bytes) return error.InvalidConfiguration;
         try save(ctx.io, path, bytes, true);
+        if (prepared != null) {
+            return payload(a, .{
+                .operation = action,
+                .name = r.positionals[0],
+                .count = @as(usize, 1),
+                .verification = if (r.flags.contains("--skip-check")) "skipped" else "verified",
+            });
+        }
         return payload(a, .{ .operation = action, .name = if (imported != null) @as(?[]const u8, null) else r.positionals[0], .count = if (imported) |incoming| incoming.aliases.len else @as(usize, 1) });
     }
     if (eq(action, "info")) {
@@ -514,7 +552,7 @@ pub fn execute(a: A, ctx: Context, action: []const u8, args: []const []const u8,
 }
 
 pub const help =
-    \\Local configuration commands (no network requests):
+    \\Alias configuration commands (set verifies S3 before saving):
     \\  alias set NAME ENDPOINT [ACCESS_KEY [SECRET_KEY]] [OPTIONS]
     \\  alias list [-l|--long]
     \\  alias info NAME
@@ -524,6 +562,7 @@ pub const help =
     \\  alias import FILE [--replace]
     \\
     \\Set options: --secret-key-from-env NAME | --secret-key-file FILE
+    \\  --skip-check  Save without connecting (offline or restricted credentials)
     \\  --session-token TOKEN  --region REGION  --signature v4
     \\  --bucket-lookup path|dns|auto (default path)  --insecure
     \\  --ca-cert FILE  --connect-timeout SECONDS (10)  --timeout SECONDS (300)
@@ -534,6 +573,9 @@ pub const help =
     \\or the complete ZC_ACCESS_KEY_ID/ZC_SECRET_ACCESS_KEY/ZC_SESSION_TOKEN group.
     \\An ACCESS_KEY without a secret source prompts only in a human POSIX terminal.
     \\JSON/noninteractive use requires explicit credentials. set replaces all fields.
+    \\A signed ListBuckets probe must succeed before saving; failures preserve the old alias.
+    \\AccessDenied means the probe lacks permission, not necessarily invalid credentials.
+    \\--skip-check explicitly bypasses verification; success then reports verification=skipped.
     \\Import validates all entries first; --replace replaces conflicting aliases,
     \\including credentials (redacted imports contain no usable credentials).
     \\Export omits credentials unless both confirmation flags are present.

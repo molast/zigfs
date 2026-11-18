@@ -31,6 +31,7 @@ zig-out/bin/zc --version
 zig build test
 python3 tests/cli_smoke.py
 python3 tests/alias_smoke.py
+python3 tests/alias_validation.py
 # Build the isolated-test server first: (cd ../zigfs && zig build)
 python3 tests/s3api_integration.py
 ```
@@ -48,7 +49,7 @@ zig-out/bin/zc help object copy
 zig-out/bin/zc cp --help --json
 ```
 
-Help, CLI version output and alias management are local. The step-03 `s3api`
+Help, CLI version output and alias inspection are local. `alias set` verifies the S3 endpoint before saving. The step-03 `s3api`
 operations below make signed network requests.
 `bucket` and `object` provide group help. Bucket list/create/stat/location/remove,
 object list/put/get/stat/show/head/copy and aliases `ls/mb/rb/put/get/cat/head/stat/cp`
@@ -65,7 +66,7 @@ removed; that name is reserved for bucket versioning.
 | `--format auto\|human\|json`, `--json` | Default auto currently produces human output; conflicting explicit formats fail |
 | `--config FILE` | Select the local alias configuration file |
 | `-H`, `--header NAME:VALUE` | Add a signed `x-amz-*` header to S3 commands; repeatable, before or after command names |
-| `--no-color`, `--no-progress` | Parsed and preserved; current commands emit neither colors nor progress |
+| `--no-color`, `--no-progress` | Disable terminal progress colors or the entire progress display |
 | `-q`, `--quiet` | Suppresses human success output, preserves JSON and errors |
 | `--debug` | Parsed and preserved for future handlers; no diagnostic events in offline help/version commands |
 | `--` | Stops option parsing; subsequent tokens are command names or operands |
@@ -89,6 +90,33 @@ The subprocess checks exercise the built binary, actual streams and exit codes;
 they require Python 3 and no server, credentials, or network. The Zig unit tests
 also cover parser behavior and structured output. Run from `zigfs-cli/`.
 
+## Terminal transfer progress
+
+Interactive commands display a progress bar on stderr: hashing, upload/download, bytes,
+percentage, speed, elapsed time and estimated remaining time. Multipart uploads
+show one whole-file progress bar and aggregate upload speed across workers, without
+part numbers. Their clock runs across parts rather than restarting for each request;
+resumed bytes count toward progress but not newly transferred speed. Source hashing,
+verification and completion remain visible as phases. Unknown sizes (such as stdin) display `?` instead
+of an invented percentage and use a moving indeterminate bar. A full byte count means transfer is awaiting server
+confirmation; green `Done` appears only after the command succeeds. The final summary
+shows transferred bytes and average speed over the command's displayed phases.
+
+Running progress is cyan, success green, and failure/cancellation red. `--no-color`,
+`NO_COLOR` and `TERM=dumb` disable colors. `--no-progress`, `--quiet`, JSON output and
+non-terminal stderr suppress progress. Downloaded bytes and structured output remain
+on stdout, separate from progress. Progress refreshes at most ten times per second;
+network stalls continue to show the waiting state through the transport callback.
+Multiple file transfers share one line showing the most recently updated file;
+parallel parts of one file share its aggregate progress. The final summary combines
+network bytes from all workers.
+
+```sh
+zc cp ./01.mp4 zigfs/molast/videos/01.mp4
+zc cp ./01.mp4 zigfs/molast/videos/01.mp4 --no-color
+zc get zigfs/molast/videos/01.mp4 ./01.mp4 --no-progress
+```
+
 ## Step 02: aliases and connection configuration
 
 ```sh
@@ -102,6 +130,14 @@ also cover parser behavior and structured output. Run from `zigfs-cli/`.
 ./zc --config ./test-config.toml alias import aliases.json
 ./zc alias remove remote
 ```
+
+`alias set` first sends a signed ListBuckets request (at most one bucket requested).
+Network/TLS errors, non-S3 responses, rejected credentials and redirects leave the existing
+alias unchanged. AccessDenied means the probe lacks permission, not necessarily invalid
+credentials. Use `--skip-check` for intentional offline setup or restricted credentials;
+the save result reports `verification: skipped` instead of `verified`. The configured
+CA, TLS, region, session token and timeouts apply to the probe. For ZigFS, use the S3
+port (default 9000), not the metrics port (9090).
 
 `alias set` replaces the complete entry, including settings and credentials; it
 is not a partial update. Positional AK/SK remain supported for compatibility, but
@@ -181,6 +217,9 @@ credential-source isolation, config-path precedence, permissions, deterministic
 exports, import rollback on conflicts/errors, locks, symlink protection and POSIX
 PTY prompt/cancellation. Run it against the installed binary with
 `python3 tests/alias_smoke.py ./zc` after `./build.sh`.
+`python3 tests/alias_validation.py ./zc` separately runs a local HTTP fixture to verify
+SigV4, endpoint errors, credential rejection, permission denial, timeouts, redirect
+refusal and preservation of existing aliases.
 
 ## Step 03: HTTP/SigV4 and the S3 protocol entry
 
@@ -301,7 +340,8 @@ to bind local ports. To verify the ReleaseSafe artifact:
 ```sh
 ./build.sh
 python3 tests/cli_smoke.py ./zc
-python3 tests/alias_smoke.py ./zc
+python3 tests/alias_smoke.py
+python3 tests/alias_validation.py ./zc
 python3 tests/s3api_integration.py ./zc ../zigfs/zig-out/bin/zigfs
 ```
 
@@ -559,13 +599,24 @@ with `items`, `pages` and `complete`. Repeated markers, malformed replies or exc
 These are explicit bounded-memory limits, distinct from the disk spool used by
 bucket/object listing. The raw s3api list operations return one page only.
 
-Regular-file `put` and local-to-remote `cp` switch to multipart at 64 MiB by default.
+Regular-file `put` and local-to-remote `cp` switch to multipart at 16 MiB by default.
+The CLI and Admin share the [client upload policy](../docs/client-upload-policy.md).
 `--multipart-threshold` changes the threshold; `--part-size`, `--max-parts`,
-`--state-file` or `--resume` explicitly select the multipart workflow.
-Sizes accept bytes or KiB/MiB/GiB. Defaults are 16 MiB parts and 10000 maximum parts.
+`--state-file`, `--part-concurrency` or `--resume` explicitly select the multipart workflow.
+Sizes accept bytes or KiB/MiB/GiB. Default parts are 8/16/32/64/128 MiB according to file size, enlarged as needed to stay within 10000 parts.
 Part size must be 5 MiB–5 GiB; source size is limited to 5 TiB and the chosen part
-count is checked before creating an upload. Uploads are sequential with bounded
-buffers, and part bytes stream directly from file ranges. Current automatic
+count is checked before creating an upload. Regular files use up to four concurrent
+parts with bounded buffers; bytes stream directly from file ranges. `--part-concurrency 1..4` selects fewer lanes. The default is 1/2/4 lanes according to file size, capped by available logical CPUs
+and the shared multi-file transfer budget. Explicit values
+above the CPU/shared budget are rejected. Stdin remains sequential.
+
+Performance measurements and recovery evidence: [upload validation](../docs/validation/zc-upload-performance-2026-11-18.md).
+
+Connections are reused through an exclusive bounded pool. Each request resets its
+headers, callbacks and TLS options while retaining reusable TCP/TLS connections.
+Workers are drained before checkpoint publication or returning failure. Only a
+confirmed contiguous prefix is recorded, so successful but unrecorded later parts
+can safely be reuploaded on resume. Source and per-part integrity checks are retained. Current automatic
 create metadata options are Content-Type and repeated --metadata; unsupported
 advanced options fail before creating an upload.
 
@@ -608,8 +659,13 @@ a crash/lost response during Create may leave an unknown pending upload;
 a lost Complete response may mean the final object already exists.
 Neither is blindly retried. Inspect multipart list/parts and stat/get (with a
 trusted expected SHA256) to resolve the outcome. Successful completion retains
-the `completed` checkpoint; use a different state file for a new transfer, or
-remove an old checkpoint only after confirming it is no longer needed.
+the `completed` checkpoint. A new upload without `--resume` can atomically replace
+that default sidecar for the same source, so deleting a remote object and uploading
+it again does not require manual checkpoint cleanup. This creates a new UploadId;
+it does not retry the old completion or permit overwriting an existing remote object.
+Explicit `--state-file` files and unfinished/uncertain checkpoints are preserved.
+Conflicts report `CHECKPOINT_EXISTS` (a local checkpoint, not a remote object);
+use `--resume` only for an uploading checkpoint, or choose a new `--state-file`.
 
 Failures report `MULTIPART_INCOMPLETE`, phase, known UploadId, checkpoint path and
 a sanitized cause. UploadPart, Create, Complete and Abort are not automatically
@@ -677,7 +733,10 @@ collisions are rejected. Local directory handles are pinned, symlinks refused,
 and files published atomically. Keep local trees stable during traversal and
 transfer; this does not provide a filesystem snapshot or transaction.
 
-`--concurrency 1..32` defaults to 1. Jobs run in waves; failure stops later waves
+`--concurrency 1..min(32, available logical CPUs)` defaults to 1; larger values are
+rejected before transfer. This controls files, while `--part-concurrency` controls
+parts within each file. Files share the CPU budget so nested concurrency cannot
+multiply beyond it. Jobs run in waves; failure stops later waves
 unless `--continue-on-error` is set, while already-running jobs finish. The latter
 does not turn failures into a successful exit. Ctrl+C stops scheduling and cancels
 HTTP, returning 130; interrupted mutations may already have taken effect.

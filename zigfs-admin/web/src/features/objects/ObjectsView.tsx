@@ -37,6 +37,7 @@ import {
   Upload,
   X,
 } from 'lucide-react'
+import { chooseUploadPlan } from './upload-policy'
 import { ApiError, type ApiClient } from '../../api/client'
 import { ActionMenu } from '../../components/ActionMenu'
 import { useConfirm } from '../../components/ConfirmProvider'
@@ -574,6 +575,25 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     for (const file of files) {
       const key = joinObjectPath(destinationPrefix, file.webkitRelativePath || file.name)
       try {
+        const plan = chooseUploadPlan(file.size)
+        if (!plan.multipart) {
+          const stopLoading = startLoading(file.name)
+          try {
+            const presigned = await api.presignObject('', bucket, key, 'PUT', 900)
+            await putPart(presigned.url, file, file.type, () => {}, () => {})
+            setCompletedUploads((current) => [{
+              uploadId: crypto.randomUUID(),
+              key,
+              fileName: file.name,
+              fileSize: file.size,
+              initiatedAt: new Date().toISOString(),
+              completedAt: new Date().toISOString(),
+            }, ...current])
+          } finally {
+            stopLoading()
+          }
+          continue
+        }
         const created = await api.createMultipartUpload(bucket, key, file.type || 'application/octet-stream')
         tasks.push({
           uploadId: created.upload_id,
@@ -595,6 +615,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         failures.push(`${file.name}: ${(reason as Error).message}`)
       }
     }
+    await load(true)
     setPendingFiles(failedFiles)
     if (failedFiles.length === 0) { setUploadDialogOpen(false); setTaskTab(null); setUploadsPanelOpen(true) }
     if (tasks.length > 0) setUploadTasks((current) => [...tasks, ...current])
@@ -686,7 +707,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         updateUploadTask(task.uploadId, { uploadedBytes: totalLoaded, completedParts: committedParts })
       }
       const pendingParts = Array.from({ length: partCount }, (_, index) => index + 1).filter(number => !completed.has(number))
-      await uploadPartsConcurrently(pendingParts, chooseUploadConcurrency(partSize), async (partNumber) => {
+      await uploadPartsConcurrently(pendingParts, chooseUploadConcurrency(selectedFile.size), async (partNumber) => {
         if (control.paused || control.stopped) throw abortError()
         const start = (partNumber - 1) * partSize
         const body = selectedFile.slice(start, Math.min(start + partSize, selectedFile.size))

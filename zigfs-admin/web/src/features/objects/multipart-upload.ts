@@ -1,8 +1,9 @@
+import { chooseUploadPlan, MAX_PARTS } from './upload-policy'
+export { MAX_PARTS } from './upload-policy'
 import { t } from '@/locales'
 import type { MultipartUpload } from '../../types/api'
 
 export const DEFAULT_PART_SIZE = 8 * 1024 * 1024
-export const MAX_PARTS = 10_000
 const STORAGE_KEY = 'zigfs.multipart-uploads.v1'
 
 export type UploadTaskStatus = 'paused' | 'uploading' | 'completing' | 'failed'
@@ -32,23 +33,15 @@ export interface PartProgress {
 type PersistedUploadTask = Omit<UploadTask, 'file' | 'status' | 'error'>
 
 export function choosePartSize(fileSize: number) {
-  const required = Math.ceil(fileSize / MAX_PARTS)
-  const oneMiB = 1024 * 1024
-  const preferred = fileSize >= 4 * 1024 * oneMiB ? 64 * oneMiB
-    : fileSize >= 256 * oneMiB ? 32 * oneMiB : DEFAULT_PART_SIZE
-  return Math.max(preferred, Math.ceil(required / oneMiB) * oneMiB)
+  return chooseUploadPlan(fileSize).partSize
 }
 
 export function chooseUploadConcurrency(
-  partSize: number,
-  logicalCores = typeof navigator === 'undefined' ? 8 : navigator.hardwareConcurrency,
+  fileSize: number,
+  logicalCores = typeof navigator === 'undefined' ? 1 : navigator.hardwareConcurrency,
 ) {
-  // This is a client-side scheduling hint, not a measure of server capacity.
-  // Keep the previously tested four-connection / 128 MiB ceilings and reduce
-  // parallelism on smaller clients. Missing CPU information retains four lanes.
-  const cores = Number.isFinite(logicalCores) && logicalCores >= 1 ? logicalCores : 8
-  const cpuLimit = Math.max(1, Math.floor(cores / 2))
-  return Math.max(1, Math.min(cpuLimit, 4, Math.floor(128 * 1024 * 1024 / partSize)))
+  const cores = Number.isFinite(logicalCores) && logicalCores >= 1 ? Math.floor(logicalCores) : 1
+  return Math.max(1, Math.min(cores, chooseUploadPlan(fileSize).concurrency))
 }
 
 export async function uploadPartsConcurrently(

@@ -39,7 +39,7 @@ pub fn isFlag(n: []const u8) bool {
 }
 pub fn isValueOption(n: []const u8) bool {
     inline for (fields) |f| if (eq(n, f[0])) return true;
-    for ([_][]const u8{ "--multipart-threshold", "--part-size", "--max-parts", "--state-file", "--metadata", "--metadata-directive", "--source-if-match", "--source-if-none-match", "--source-if-modified-since", "--source-if-unmodified-since", "--keys-file", "--file", "--checksum", "--checksum-sha256", "--offset", "--length", "--bytes", "--lines" }) |f| if (eq(n, f)) return true;
+    for ([_][]const u8{ "--multipart-threshold", "--part-size", "--part-concurrency", "--max-parts", "--state-file", "--metadata", "--metadata-directive", "--source-if-match", "--source-if-none-match", "--source-if-modified-since", "--source-if-unmodified-since", "--keys-file", "--file", "--checksum", "--checksum-sha256", "--offset", "--length", "--bytes", "--lines" }) |f| if (eq(n, f)) return true;
     return api.isValueOption(n) and !eq(n, "--body") and !eq(n, "--output") and !eq(n, "--input-json");
 }
 fn put(a: A, input: *V, key: []const u8, value: []const u8) !void {
@@ -113,19 +113,19 @@ pub fn executeAt(a: A, ctx: aliases.Context, action: []const u8, args: []const [
     const upload = eq(op, "object put");
     if (upload) {
         if (operands.items.len != 2) return error.InvalidInput;
-        const threshold = if (values.get("--multipart-threshold")) |v| try multipart.size(v) else 64 * 1024 * 1024;
+        const threshold = if (values.get("--multipart-threshold")) |v| try multipart.size(v) else @import("upload_policy.zig").threshold;
         const source_path = operands.items[0];
         if (!eq(source_path, "-")) {
             const stat_source = std.Io.Dir.cwd().statFile(ctx.io, source_path, .{}) catch |err| blk: {
                 if (!flags.contains("--dry-run")) return err;
                 break :blk null;
             };
-            if ((stat_source != null and stat_source.?.size >= threshold) or flags.contains("--resume") or values.contains("--part-size") or values.contains("--state-file") or values.contains("--max-parts"))
+            if ((stat_source != null and stat_source.?.size >= threshold) or flags.contains("--resume") or values.contains("--part-size") or values.contains("--part-concurrency") or values.contains("--state-file") or values.contains("--max-parts"))
                 return multipart.autoUpload(a, ctx, source_path, operands.items[1], pass.items, values, flags, metadata, config, json, quiet);
         }
     } else {
         if (flags.contains("--resume")) return error.InvalidInput;
-        for ([_][]const u8{ "--multipart-threshold", "--part-size", "--max-parts", "--state-file" }) |n| if (values.contains(n)) return error.InvalidInput;
+        for ([_][]const u8{ "--multipart-threshold", "--part-size", "--part-concurrency", "--max-parts", "--state-file" }) |n| if (values.contains(n)) return error.InvalidInput;
     }
 
     const download = eq(op, "object get");
@@ -238,7 +238,7 @@ pub const help =
     \\  --metadata-directive COPY|REPLACE; metadata/content options require REPLACE.
     \\Move verifies source and destination before deleting; not an atomic transaction.
     \\Avoid concurrent writes during moves: server has no conditional source deletion.
-    \\Automatic multipart: --multipart-threshold SIZE --part-size SIZE --max-parts N
+    \\Automatic multipart: --multipart-threshold SIZE --part-size SIZE --part-concurrency 1..4 --max-parts N
     \\--resume --state-file FILE; see zc multipart --help for checkpoints and limits.
     \\Version selection and other checksum algorithms await subsequent steps.
     \\

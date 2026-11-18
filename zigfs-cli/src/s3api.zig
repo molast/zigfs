@@ -279,6 +279,7 @@ fn writeBody(opaque_ctx: ?*anyopaque, buffer: [*]const u8, length: usize) callco
 }
 fn bodyHash(t: *Transfer) ![64]u8 {
     if (t.input == null) return signing.hash(t.bytes);
+    @import("progress.zig").zc_progress_stage("Hashing", t.read_end - t.read_start);
     var sha = std.crypto.hash.sha2.Sha256.init(.{});
     var buffer: [65536]u8 = undefined;
     var offset: u64 = t.read_start;
@@ -287,6 +288,7 @@ fn bodyHash(t: *Transfer) ![64]u8 {
         if (n == 0) break;
         sha.update(buffer[0..n]);
         offset += n;
+        @import("progress.zig").zc_progress_update(offset - t.read_start);
     }
     var digest: [32]u8 = undefined;
     sha.final(&digest);
@@ -354,7 +356,7 @@ pub fn execute(a: A, ctx: aliases.Context, operation: []const u8, args: []const 
 pub fn executeInput(a: A, ctx: aliases.Context, operation: []const u8, args: []const []const u8, config_path: ?[]const u8, json: bool, quiet: bool, supplied: ?Value) anyerror!Output {
     return executeTransfer(a, ctx, operation, args, config_path, json, quiet, supplied, .{});
 }
-pub const TransferOptions = struct { overwrite: bool = false, lines: ?u64 = null, verify_sha256: bool = false, expected_sha256: ?[]const u8 = null, body_offset: u64 = 0, body_length: ?u64 = null, expected_body_sha256: ?[]const u8 = null, output_dir: ?Io.Dir = null };
+pub const TransferOptions = struct { rate_limit_divisor: u32 = 1, overwrite: bool = false, lines: ?u64 = null, verify_sha256: bool = false, expected_sha256: ?[]const u8 = null, body_offset: u64 = 0, body_length: ?u64 = null, expected_body_sha256: ?[]const u8 = null, output_dir: ?Io.Dir = null };
 pub fn executeTransfer(a: A, ctx: aliases.Context, operation: []const u8, args: []const []const u8, config_path: ?[]const u8, json: bool, quiet: bool, supplied: ?Value, options: TransferOptions) anyerror!Output {
     const op = std.meta.stringToEnum(Operation, operation) orelse return error.UnsupportedOperation;
     const r = try parseArgs(a, args);
@@ -523,7 +525,7 @@ pub fn executeTransfer(a: A, ctx: aliases.Context, operation: []const u8, args: 
         var status: c_long = 0;
         const remaining = deadline - Io.Clock.awake.now(ctx.io).toMilliseconds();
         if (remaining <= 0) return failure(a, json, "NETWORK_ERROR", "request deadline exceeded", 3, 0, null, attempt - 1);
-        const result = zc_http(url, method, wire.items.ptr, wire.items.len, ca, @intFromBool(connection.insecure), @intCast(@min(remaining, @as(i64, connection.connect_timeout) * 1000)), @intCast(remaining), @intCast(if (ctx.policy) |p| p.rate_limit else 0), @intFromBool(eq(method, "PUT") or eq(method, "POST")), @intCast(body_size), if (eq(method, "PUT") or eq(method, "POST")) readBody else null, if (op == .@"get-object") writeBody else null, &transfer, header_buffer.ptr, header_buffer.len, &header_len, body_buffer.ptr, body_buffer.len, &body_len, &status);
+        const result = zc_http(url, method, wire.items.ptr, wire.items.len, ca, @intFromBool(connection.insecure), @intCast(@min(remaining, @as(i64, connection.connect_timeout) * 1000)), @intCast(remaining), @intCast(if (ctx.policy) |p| (if (p.rate_limit == 0) 0 else @max(1, p.rate_limit / options.rate_limit_divisor)) else 0), @intFromBool(eq(method, "PUT") or eq(method, "POST")), @intCast(body_size), if (eq(method, "PUT") or eq(method, "POST")) readBody else null, if (op == .@"get-object") writeBody else null, &transfer, header_buffer.ptr, header_buffer.len, &header_len, body_buffer.ptr, body_buffer.len, &body_len, &status);
         const request_id = safeId(responseHeader(header_buffer[0..header_len], "x-amz-request-id"), connection);
         if (result == 42) return failure(a, json, "INTERRUPTED", "interrupted; an in-flight mutation may have an unknown outcome", 130, status, request_id, attempt);
         const transient = inResult(result, &.{ 5, 6, 7, 18, 28, 52, 55, 56 }) or result == 0 and (status == 408 or status == 429 or status == 500 or status == 502 or status == 503 or status == 504);

@@ -5,9 +5,13 @@ import vm from 'node:vm'
 import ts from 'typescript'
 
 const source = readFileSync(new URL('../src/features/objects/multipart-upload.ts', import.meta.url), 'utf8')
+const policySource = readFileSync(new URL('../src/features/objects/upload-policy.ts', import.meta.url), 'utf8')
+const policy = {}
+vm.runInNewContext(ts.transpile(policySource, { module: ts.ModuleKind.CommonJS }), { exports: policy })
+const requireModule = name => name === './upload-policy' ? policy : { t: key => key }
 const exports = {}
 vm.runInNewContext(ts.transpile(source, { module: ts.ModuleKind.CommonJS }), {
-  exports, require: () => ({ t: key => key }),
+  exports, require: requireModule,
 })
 const { choosePartSize, chooseUploadConcurrency, inferPartSize, uploadPartsConcurrently } = exports
 const MiB = 1024 * 1024
@@ -21,24 +25,24 @@ const tick = () => new Promise(resolve => setImmediate(resolve))
 test('new uploads adapt sizing while old uploads keep their part boundaries', () => {
   assert.equal(choosePartSize(20 * MiB), 8 * MiB)
   assert.equal(choosePartSize(1024 * MiB), 32 * MiB)
-  assert.equal(choosePartSize(4 * 1024 * MiB), 64 * MiB)
+  assert.equal(choosePartSize(4 * 1024 * MiB), 32 * MiB)
   const huge = 5 * 1024 * 1024 * MiB
   assert.ok(Math.ceil(huge / choosePartSize(huge)) <= 10000)
-  assert.equal(chooseUploadConcurrency(32 * MiB), 4)
-  assert.equal(chooseUploadConcurrency(64 * MiB), 2)
-  assert.equal(chooseUploadConcurrency(512 * MiB), 1)
+  assert.equal(chooseUploadConcurrency(32 * MiB, 8), 2)
+  assert.equal(chooseUploadConcurrency(64 * MiB, 8), 2)
+  assert.equal(chooseUploadConcurrency(512 * MiB, 8), 4)
   assert.equal(inferPartSize({ parts: [] }, 1024 * MiB, 8 * MiB), 8 * MiB)
   assert.equal(inferPartSize({ parts: [{ size: 8 * MiB }] }, 1024 * MiB), 8 * MiB)
 })
 
 test('CPU hints reduce concurrency without exceeding the payload or connection limits', () => {
-  for (const [cores, expected] of [[1, 1], [2, 1], [4, 2], [6, 3], [8, 4], [32, 4]]) {
-    assert.equal(chooseUploadConcurrency(32 * MiB, cores), expected)
+  for (const [cores, expected] of [[1, 1], [2, 2], [4, 4], [6, 4], [8, 4], [32, 4]]) {
+    assert.equal(chooseUploadConcurrency(512 * MiB, cores), expected)
   }
   assert.equal(chooseUploadConcurrency(64 * MiB, 32), 2)
-  assert.equal(chooseUploadConcurrency(512 * MiB, 32), 1)
+  assert.equal(chooseUploadConcurrency(512 * MiB, 32), 4)
   for (const missing of [undefined, 0, -1, NaN, Infinity]) {
-    assert.equal(chooseUploadConcurrency(32 * MiB, missing), 4)
+    assert.equal(chooseUploadConcurrency(32 * MiB, missing), 1)
   }
 })
 
@@ -46,11 +50,11 @@ test('default CPU hint comes from the browser at upload time', () => {
   const browserExports = {}
   const navigator = { hardwareConcurrency: 4 }
   vm.runInNewContext(ts.transpile(source, { module: ts.ModuleKind.CommonJS }), {
-    exports: browserExports, navigator, require: () => ({ t: key => key }),
+    exports: browserExports, navigator, require: requireModule,
   })
   assert.equal(browserExports.chooseUploadConcurrency(32 * MiB), 2)
   navigator.hardwareConcurrency = 6
-  assert.equal(browserExports.chooseUploadConcurrency(32 * MiB), 3)
+  assert.equal(browserExports.chooseUploadConcurrency(32 * MiB), 2)
 })
 
 test('workers refill as each part finishes and never exceed the concurrency limit', async () => {
@@ -125,6 +129,8 @@ function uploadViewFixture() {
   const file = { size: task.fileSize, lastModified: 1, name: 'file', type: '', slice: (start, end) => ({ size: end - start }) }
   const context = {
     ...exports, performance, Map, Set, Date, Error,
+    // Worker lifecycle tests use three lanes; sizing/CPU policy is tested above.
+    chooseUploadConcurrency: () => 3,
     window: { setInterval: () => 1, clearInterval() {} },
     uploadControl: { current: null },
     setUploadSpeed() {}, setUploading() {}, setUploadProgress() {},
@@ -222,4 +228,38 @@ test('view aborts sibling requests after retries are exhausted and reports the o
   assert.equal(f.updates.at(-1).error, 'network exhausted')
   assert.equal(f.updates.at(-1).uploadedBytes, 8 * MiB)
   assert.equal(control.requests.size, 0)
+})
+
+test('small files use single PUT; threshold files create multipart tasks; failures stay retryable', async () => {
+  const view = readFileSync(new URL('../src/features/objects/ObjectsView.tsx', import.meta.url), 'utf8')
+  const start = view.indexOf('  async function beginUploads(')
+  const end = view.indexOf('  async function createPath(', start)
+  const calls = []
+  const completed = []
+  let failed = []
+  const context = {
+    ...exports, ...policy, Date, crypto: { randomUUID: () => 'single' }, bucket: 'test',
+    joinObjectPath: (_prefix, name) => name,
+    startLoading: () => () => {},
+    setCompletedUploads: update => completed.push(...update([])),
+    setPendingFiles: files => { failed = files },
+    setUploadDialogOpen() {}, setTaskTab() {}, setUploadsPanelOpen() {}, setUploadTasks() {},
+    load: async () => {}, notifyError() {}, t: key => key,
+    api: {
+      presignObject: async (...args) => { calls.push(['presign', ...args]); return { url: 'signed' } },
+      createMultipartUpload: async (...args) => { calls.push(['multipart', ...args]); return { upload_id: 'multi' } },
+    },
+    putPart: async (_url, body) => { calls.push(['put', body.size]) },
+    runUpload: async task => { calls.push(['run', task.partSize]) },
+  }
+  vm.runInNewContext(ts.transpile(view.slice(start, end), { target: ts.ScriptTarget.ES2022 }), context)
+  await context.beginUploads([{ name: 'small', size: 16 * MiB - 1 }, { name: 'large', size: 16 * MiB }], '')
+  assert.deepEqual(calls.map(call => call[0]), ['presign', 'put', 'multipart', 'run'])
+  assert.equal(calls.at(-1)[1], 8 * MiB)
+  assert.equal(completed.length, 1)
+  assert.equal(failed.length, 0)
+  context.putPart = async () => { throw new Error('upload denied') }
+  await context.beginUploads([{ name: 'failed', size: 1 }], '')
+  assert.equal(failed[0].name, 'failed')
+  assert.equal(completed.length, 1)
 })

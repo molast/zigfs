@@ -280,8 +280,8 @@ const global_help =
     \\  --json                     Equivalent to --format json
     \\  --config FILE              Override ZC_CONFIG_FILE / XDG / HOME config path
     \\  -H, --header NAME:VALUE     Add a signed x-amz-* header (S3 commands)
-    \\  --no-color                 Disable colors (currently no color output)
-    \\  --no-progress              Disable progress (currently no transfers)
+    \\  --no-color                 Disable terminal progress colors
+    \\  --no-progress              Disable terminal progress display
     \\  -q, --quiet                Suppress human success output; keep JSON/errors
     \\  --debug                    Enable diagnostics; never echo arguments/secrets
     \\  --                         End option parsing
@@ -315,7 +315,7 @@ fn helpText(allocator: std.mem.Allocator, entry_id: ?usize) ![]u8 {
         }
         try w.print("Example: zc {s} --help\n\n", .{entry.path});
     } else {
-        try w.writeAll("ZigFS CLI (zc)\nUsage: zc [OPTIONS] [COMMAND]\n       zc help [COMMAND [SUBCOMMAND]]\n\nAvailable: help, --version, alias set/list/info/remove/export/import, s3api\nAvailable: bucket list/create/stat/location/remove, object list/put/get/stat/show/head/copy, ls/mb/rb/put/get/cat/head/stat/cp\nAvailable: mv/rm, object remove-batch, multipart create/upload-part/parts/list/complete/abort, pipe\nAvailable: share, object share, share post, object post\nAvailable: version, tag, cors, retention, legalhold, ilm, event, quota, anonymous\nAvailable: find/tree/du/diff/mirror/watch/completions and admin command groups (pending validation)\ns3api performs signed HTTP requests; alias commands only manage local settings.\nUse --version for the CLI version; version manages bucket versioning.\nExamples: zc --version; zc bucket --help; zc help object copy\n\n");
+        try w.writeAll("ZigFS CLI (zc)\nUsage: zc [OPTIONS] [COMMAND]\n       zc help [COMMAND [SUBCOMMAND]]\n\nAvailable: help, --version, alias set/list/info/remove/export/import, s3api\nAvailable: bucket list/create/stat/location/remove, object list/put/get/stat/show/head/copy, ls/mb/rb/put/get/cat/head/stat/cp\nAvailable: mv/rm, object remove-batch, multipart create/upload-part/parts/list/complete/abort, pipe\nAvailable: share, object share, share post, object post\nAvailable: version, tag, cors, retention, legalhold, ilm, event, quota, anonymous\nAvailable: find/tree/du/diff/mirror/watch/completions and admin command groups (pending validation)\ns3api performs signed HTTP requests; alias set verifies S3 connectivity before saving local settings.\nUse --version for the CLI version; version manages bucket versioning.\nExamples: zc --version; zc bucket --help; zc help object copy\n\n");
     }
     try w.writeAll(global_help);
     return try allocator.dupe(u8, text.written());
@@ -406,10 +406,11 @@ fn executeWithContext(allocator: std.mem.Allocator, args: []const []const u8, co
                 error.AccessDenied, error.InsecurePermissions => 4,
                 error.UnsupportedOperation, error.UnsupportedSignature => 7,
                 error.Interrupted, error.Canceled, error.Cancelled => 130,
-                error.InvalidInput, error.ConflictingOptions, error.UnknownInputField, error.ConfirmationRequired, error.RawOutputConflict, error.InvalidHeader, error.DuplicateHeader, error.InvalidAliasInput, error.InvalidEndpoint, error.InvalidConfiguration, error.DuplicateAlias, error.IncompleteCredentials, error.CredentialsRequired, error.MissingHome => 2,
+                error.ConcurrencyLimit, error.InvalidInput, error.ConflictingOptions, error.UnknownInputField, error.ConfirmationRequired, error.RawOutputConflict, error.InvalidHeader, error.DuplicateHeader, error.InvalidAliasInput, error.InvalidEndpoint, error.InvalidConfiguration, error.DuplicateAlias, error.IncompleteCredentials, error.CredentialsRequired, error.MissingHome => 2,
                 else => 1,
             };
             const message = switch (err) {
+                error.ConcurrencyLimit => "requested concurrency exceeds available logical CPUs or the shared transfer budget; reduce --concurrency / --part-concurrency",
                 error.ResumeMismatch => "resume source, layout, identity or remote parts differ; upload was not completed",
                 error.InvalidResponse => "invalid server response, pagination, resume data or safety limit exceeded",
                 error.ScanLimitExceeded => "cumulative scan budget exceeded; no complete result available",
@@ -443,13 +444,21 @@ fn executeWithContext(allocator: std.mem.Allocator, args: []const []const u8, co
             const code: u8 = switch (err) {
                 error.AliasNotFound, error.FileNotFound => 5,
                 error.AliasConflict, error.PathAlreadyExists, error.WouldBlock => 6,
-                error.AccessDenied, error.InsecurePermissions => 4,
+                error.AccessDenied, error.InsecurePermissions, error.EndpointCredentialsRejected, error.EndpointPermissionDenied => 4,
+                error.EndpointUnreachable, error.EndpointUnavailable => 3,
                 error.Interrupted => 130,
                 error.UnsupportedSignature, error.PromptUnavailable => 7,
                 error.InvalidAliasInput, error.InvalidEndpoint, error.InvalidConfiguration, error.DuplicateAlias, error.IncompleteCredentials, error.CredentialsRequired, error.CredentialExportConfirmation, error.MissingHome, error.InvalidCertificate, error.SymLinkLoop => 2,
                 else => 1,
             };
             const message = switch (err) {
+                error.EndpointUnreachable => "cannot connect to endpoint (network, TLS or timeout); alias not saved",
+                error.EndpointUnavailable => "endpoint temporarily unavailable; alias not saved",
+                error.EndpointRedirect => "endpoint redirected the S3 probe; use the correct S3 endpoint; alias not saved",
+                error.NotS3Endpoint => "endpoint did not return a valid S3 response; check the S3 port (ZigFS default 9000, not metrics 9090); alias not saved",
+                error.EndpointCredentialsRejected => "S3 rejected the access key, signature or session token; alias not saved",
+                error.EndpointPermissionDenied => "S3 denied ListBuckets; credentials may be restricted, not invalid; alias not saved; use --skip-check to save without verification",
+                error.EndpointCheckFailed => "S3 endpoint verification failed; check endpoint, region and permissions; alias not saved",
                 error.AliasNotFound => "alias not found",
                 error.AliasConflict => "alias conflict; use --replace to replace existing entries",
                 error.PathAlreadyExists => "output or lock already exists; retry or explicitly select --force for export",
@@ -468,6 +477,7 @@ fn executeWithContext(allocator: std.mem.Allocator, args: []const []const u8, co
             };
             return failure(allocator, json, switch (code) {
                 2 => "USAGE_ERROR",
+                3 => "NETWORK_ERROR",
                 4 => "PERMISSION_DENIED",
                 5 => "NOT_FOUND",
                 6 => "CONFLICT",
@@ -498,7 +508,22 @@ fn executeWithContext(allocator: std.mem.Allocator, args: []const []const u8, co
 }
 
 pub fn run(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8, env: *const std.process.Environ.Map) !u8 {
+    const progress = @import("progress.zig");
+    const invocation = parse(args) catch null;
+    const enabled = if (invocation) |value|
+        value.command != .help and value.command != .version and
+            value.options.format != .json and !value.options.quiet and !value.options.no_progress
+    else
+        false;
+    const color = if (invocation) |value|
+        !value.options.no_color and env.get("NO_COLOR") == null and
+            !equal(env.get("TERM") orelse "", "dumb")
+    else
+        false;
+    progress.zc_progress_configure(@intFromBool(enabled), @intFromBool(color));
+    errdefer progress.zc_progress_finish(1);
     const response = try executeWithContext(allocator, args, .{ .io = io, .env = env });
+    progress.zc_progress_finish(response.exit_code);
     if (response.stdout.len != 0) try std.Io.File.stdout().writeStreamingAll(io, response.stdout);
     if (response.stderr.len != 0) try std.Io.File.stderr().writeStreamingAll(io, response.stderr);
     return response.exit_code;

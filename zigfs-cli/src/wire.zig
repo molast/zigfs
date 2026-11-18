@@ -91,6 +91,7 @@ pub fn send(a: A, ctx: aliases.Context, r: Request) !Reply {
         const stat = try t.source.?.stat(ctx.io);
         if (stat.kind != .file or stat.size > 5 * 1024 * 1024 * 1024 * 1024) return error.InvalidInput;
         t.size = stat.size;
+        @import("progress.zig").zc_progress_stage("Hashing", t.size);
         var buf: [65536]u8 = undefined;
         var offset: u64 = 0;
         while (offset < t.size) {
@@ -99,6 +100,7 @@ pub fn send(a: A, ctx: aliases.Context, r: Request) !Reply {
             hash.update(buf[0..n]);
             md5.update(buf[0..n]);
             offset += n;
+            @import("progress.zig").zc_progress_update(offset);
         }
     } else {
         hash.update(r.body);

@@ -1,0 +1,86 @@
+[
+  {
+    "size": 0,
+    "part_size": 8388608,
+    "concurrency": 1,
+    "multipart": false
+  },
+  {
+    "size": 1,
+    "part_size": 8388608,
+    "concurrency": 1,
+    "multipart": false
+  },
+  {
+    "size": 16777215,
+    "part_size": 8388608,
+    "concurrency": 1,
+    "multipart": false
+  },
+  {
+    "size": 16777216,
+    "part_size": 8388608,
+    "concurrency": 2,
+    "multipart": true
+  },
+  {
+    "size": 134217727,
+    "part_size": 8388608,
+    "concurrency": 2,
+    "multipart": true
+  },
+  {
+    "size": 134217728,
+    "part_size": 16777216,
+    "concurrency": 4,
+    "multipart": true
+  },
+  {
+    "size": 1073741823,
+    "part_size": 16777216,
+    "concurrency": 4,
+    "multipart": true
+  },
+  {
+    "size": 1073741824,
+    "part_size": 33554432,
+    "concurrency": 4,
+    "multipart": true
+  },
+  {
+    "size": 10737418239,
+    "part_size": 33554432,
+    "concurrency": 4,
+    "multipart": true
+  },
+  {
+    "size": 10737418240,
+    "part_size": 67108864,
+    "concurrency": 4,
+    "multipart": true
+  },
+  {
+    "size": 107374182399,
+    "part_size": 67108864,
+    "concurrency": 4,
+    "multipart": true
+  },
+  {
+    "size": 107374182400,
+    "part_size": 134217728,
+    "concurrency": 4,
+    "multipart": true
+  },
+  {
+    "size": 5497558138879,
+    "part_size": 550502400,
+    "concurrency": 4,
+    "multipart": true
+  },
+  {
+    "size": 5497558138880,
+    "part_size": 550502400,
+    "concurrency": 4,
+    "multipart": true
+  }
+]

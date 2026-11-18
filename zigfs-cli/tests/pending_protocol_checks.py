@@ -155,9 +155,9 @@ def verify(check, run, root, access, secret, launch):
     server = ThreadingHTTPServer(('127.0.0.1', 0), Fixture)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     endpoint = f'http://127.0.0.1:{server.server_port}'
-    run('alias set', 'fixture', endpoint, access, secret)
+    run('alias set', '--skip-check', 'fixture', endpoint, access, secret)
     # Deliberately dead default verifies that every phase obeys the override.
-    run('alias set', 'override', 'http://127.0.0.1:1', access, secret)
+    run('alias set', '--skip-check', 'override', 'http://127.0.0.1:1', access, secret)
 
     def reset(mode):
         Fixture.mode = mode

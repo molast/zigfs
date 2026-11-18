@@ -16,6 +16,9 @@ with tempfile.TemporaryDirectory(prefix='zc-alias-test-') as temp:
     secret, token = 'TEST_SECRET_quote"hash#back\\', 'TEST_SESSION_TOKEN'
 
     def run(*args, code=0, extra_env=None, raw=False):
+        args = list(args)
+        if 'alias' in args and args[args.index('alias') + 1:args.index('alias') + 2] == ['set']:
+            args.insert(args.index('alias') + 2, '--skip-check')
         proc = subprocess.run([str(binary), '--json', *map(str, args)], env=env | (extra_env or {}), capture_output=True, text=True, timeout=10)
         assert proc.returncode == code, (args, proc.returncode, proc.stdout, proc.stderr)
         assert not (proc.stdout if code else proc.stderr), (args, proc.stdout, proc.stderr)
@@ -55,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix='zc-alias-test-') as temp:
     for endpoint in ('ftp://example.test', 'https://user:pass@example.test', 'https://example.test/path', 'https://example.test?x=y', 'https://example.test#x', 'https://example.test:0'):
         run('alias', 'set', 'bad', endpoint, 'AK', secret, code=2)
     create('bad', '--signature', 'v2', code=7)
-    run('--', 'alias', 'set', 'literal', 'https://example.test', 'AK', '--literal-secret')
+    run('alias', 'set', '--', 'literal', 'https://example.test', 'AK', '--literal-secret')
     assert next(x for x in tomllib.loads(config.read_text())['aliases'] if x['name'] == 'literal')['secret_key'] == '--literal-secret'
     for opts in (('--timeout', '0'), ('--bucket-lookup', 'typo'), ('--connect-timeout', '99', '--timeout', '5'), ('--region', 'one', '--region', 'two')):
         create('bad', *opts, code=2)
@@ -133,7 +136,7 @@ with tempfile.TemporaryDirectory(prefix='zc-alias-test-') as temp:
         def terminal_set(name, input_bytes, expected):
             master, slave = pty.openpty()
             original = termios.tcgetattr(slave)
-            proc = subprocess.Popen([str(binary), 'alias', 'set', name, 'https://example.test', 'AK'],
+            proc = subprocess.Popen([str(binary), 'alias', 'set', '--skip-check', name, 'https://example.test', 'AK'],
                                     stdin=slave, stderr=slave, stdout=subprocess.PIPE, env=env)
             captured = b''
             try:

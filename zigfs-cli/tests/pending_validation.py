@@ -331,7 +331,7 @@ with tempfile.TemporaryDirectory(prefix='zc-pending-') as directory:
                     'Condition': {'StringEquals': {'aws:ResourceTag/team': 'storage'}}}]}
                 credential = run('admin access-key create', 'qa', '--file', file('abac-key.json', {
                     'policy_document': json.dumps(policy)}), '--yes')['data']['result']
-                run('alias set', 'abac-key', endpoint, credential['access_key'], credential['secret_key'])
+                run('alias set', '--skip-check', 'abac-key', endpoint, credential['access_key'], credential['secret_key'])
                 for status, expected in [('Enabled', 0), ('Disabled', 4), ('Enabled', 0)]:
                     api('put-bucket-abac', {'Bucket': bucket, 'AbacStatus': {'Status': status}}, '--yes')
                     content = cli(['cat', 'abac-key/' + bucket + '/folder/data.csv'], expected=expected, raw=True)

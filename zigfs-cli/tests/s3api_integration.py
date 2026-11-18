@@ -58,12 +58,18 @@ with tempfile.TemporaryDirectory(prefix='zc-s3api-') as tmp:
         assert SK.encode() not in p.stdout + p.stderr and AK.encode() not in p.stdout + p.stderr
         return value
     def alias(name, endpoint, *options, ak=AK, sk=SK):
-        cli(['--json', 'alias', 'set', name, endpoint, ak, sk, '--region', REGION, *options])
+        # Protocol fixtures expect only the operation under test; alias probes have their own suite.
+        cli(['--json', 'alias', 'set', '--skip-check', name, endpoint, ak, sk, '--region', REGION, *options])
     def call(op, fields=None, name='real', options=(), code=0, raw=False):
         source = root / 'request.json'
         source.write_text(json.dumps(fields or {}))
         args = ([] if raw else ['--json']) + ['s3api', op, name, '--input-json', str(source), *map(str, options)]
         return cli(args, code, raw)
+
+    over_cpu = (os.cpu_count() or 1) + 1
+    invalid_concurrency = cli(['--json', 'cp', 'missing-source', 'missing/target',
+                               '--concurrency', str(over_cpu)], code=2)
+    assert 'logical CPUs' in invalid_concurrency['error']['message']
 
     # Skeleton/help must not need config, credentials or a network service.
     skeleton = cli(['s3api', 'get-object', '--generate-input-skeleton'])
@@ -409,6 +415,39 @@ ZIGFS_SECRET_KEY={SK}
         assert cli(['cat', f'real/{bucket}/auto'], raw=True) == body.read_bytes()
 
         cli(['--json', 'put', str(body), f'real/{bucket}/auto', '--resume', '--part-size', '5MiB', '--state-file', str(auto_state)], code=6)
+        # A completed default checkpoint must not block re-upload after remote deletion.
+        repeat_source = root / 'repeat-upload.bin'
+        repeat_source.write_bytes(body.read_bytes())
+        repeat_remote = f'real/{bucket}/repeat-upload'
+        repeat_args = ['--json', 'cp', str(repeat_source), repeat_remote,
+                       '--multipart-threshold', '1MiB', '--part-size', '5MiB']
+        repeat_state = Path(str(repeat_source) + '.zc-upload.json')
+        cli(repeat_args)
+        first_upload = json.loads(repeat_state.read_text())['upload_id']
+        cli(['--json', 'rm', repeat_remote, '--yes'])
+        cli(['--json', 'stat', repeat_remote], code=5)
+        cli(repeat_args)
+        repeated = json.loads(repeat_state.read_text())
+        assert repeated['phase'] == 'completed' and repeated['upload_id'] != first_upload
+        assert cli(['cat', repeat_remote], raw=True) == repeat_source.read_bytes()
+        # Reuse does not grant overwrite permission: conditional Complete still protects the object.
+        cli(repeat_args, code=6)
+        assert json.loads(repeat_state.read_text())['phase'] == 'completing'
+        assert cli(['cat', repeat_remote], raw=True) == repeat_source.read_bytes()
+        for phase in ('creating', 'uploading', 'completing'):
+            protected_state = dict(repeated, phase=phase)
+            repeat_state.write_text(json.dumps(protected_state))
+            before = repeat_state.read_bytes()
+            blocked = cli(repeat_args, code=6)
+            assert blocked['error']['code'] == 'CHECKPOINT_EXISTS'
+            assert 'local multipart checkpoint' in blocked['error']['message']
+            assert repeat_state.read_bytes() == before
+        # An explicit checkpoint remains user-owned even after completion.
+        before = auto_state.read_bytes()
+        blocked = cli(['--json', 'put', str(body), f'real/{bucket}/auto', '--part-size', '5MiB',
+                       '--state-file', str(auto_state)], code=6)
+        assert blocked['error']['code'] == 'CHECKPOINT_EXISTS' and auto_state.read_bytes() == before
+
         zero_source = root / 'auto-zero-source'
         zero_source.write_bytes(b'')
         cli(['--json','put',str(zero_source),f'real/{bucket}/auto-zero','--part-size','5MiB','--overwrite','--yes'])
@@ -428,11 +467,32 @@ ZIGFS_SECRET_KEY={SK}
             mode = 'part2-lost'
             calls = []
             protocol_version = 'HTTP/1.1'
+            protocol_version = 'HTTP/1.1'
+            active_parts = 0
+            peak_parts = 0
+            active_lock = threading.Lock()
+            connections = []
             def log_message(self, *_): pass
             def handle(self):
                 try: super().handle()
                 except ConnectionResetError: pass
             def forward(self):
+                is_part = self.command == 'PUT' and 'partNumber=' in self.path
+                with UploadProxy.active_lock:
+                    UploadProxy.connections.append(self.client_address)
+                    if is_part:
+                        UploadProxy.active_parts += 1
+                        UploadProxy.peak_parts = max(UploadProxy.peak_parts, UploadProxy.active_parts)
+                try:
+                    if is_part:
+                        time.sleep(0.1)
+                    self.forward_request()
+                finally:
+                    with UploadProxy.active_lock:
+                        if is_part:
+                            UploadProxy.active_parts -= 1
+
+            def forward_request(self):
                 payload = self.rfile.read(int(self.headers.get('Content-Length', '0')))
                 UploadProxy.calls.append((self.command, self.path))
                 conn = http.client.HTTPConnection('127.0.0.1', port, timeout=15)
@@ -460,8 +520,11 @@ ZIGFS_SECRET_KEY={SK}
             resume_source = root / 'resume-source'
             resume_source.write_bytes(body.read_bytes())
             checkpoint = root / 'resume.json'
-            resume_args = ['--json', 'put', str(resume_source), f'recovery/{bucket}/resume', '--resume', '--part-size', '5MiB', '--state-file', str(checkpoint), '--overwrite', '--yes']
+            resume_args = ['--json', 'put', str(resume_source), f'recovery/{bucket}/resume', '--resume', '--part-size', '5MiB', '--part-concurrency', str(min(3, os.cpu_count() or 1)), '--state-file', str(checkpoint), '--overwrite', '--yes']
             cli(resume_args, code=3)
+            assert UploadProxy.peak_parts >= min(3, os.cpu_count() or 1)
+            assert UploadProxy.active_parts == 0
+            assert len(set(UploadProxy.connections)) < len(UploadProxy.connections)
             state = json.loads(checkpoint.read_text())
             assert state['phase'] == 'uploading' and len(state['parts']) == 1
             assert sum('partNumber=2' in p for m,p in UploadProxy.calls) == 1
@@ -493,7 +556,10 @@ ZIGFS_SECRET_KEY={SK}
             cli(['--json','multipart','upload-part',f'recovery/{bucket}/resume','--upload-id',state['upload_id'],'--part-number','1','--body',str(first),'--yes'])
             UploadProxy.mode = 'none'
             before_resume = len(UploadProxy.calls)
-            cli(resume_args)
+            restored_args = resume_args.copy()
+            option = restored_args.index('--part-size')
+            del restored_args[option:option + 2]
+            cli(restored_args)
             resumed = UploadProxy.calls[before_resume:]
             assert not any('partNumber=1' in p for m,p in resumed)
             assert any('partNumber=2' in p for m,p in resumed)  # Unacknowledged remote part is reuploaded.
@@ -581,6 +647,7 @@ ZIGFS_SECRET_KEY={SK}
         assert cleaned['data']['removed_bucket']
         cli(['--json','bucket','stat','real/zc-bulk'],code=5)
         exec(Path(__file__).with_name('share_checks.py').read_text(), globals())
+        exec(Path(__file__).with_name('progress_checks.py').read_text(), globals())
         print('PASS step 08: recursive and multi-source copy/move/remove, filters, collisions/traversal/symlink rejection, batch chunks, failure summaries and guarded cleanup.')
         print('PASS step 07: real conditional Complete, concurrent create/replace, automatic no-overwrite, lifecycle/pagination, pipe, lost-part recovery, policy/source mismatch protection and ambiguous Complete refusal.')
         print('PASS step 06: same-instance copy/move/delete, metadata, source/target conditions, confirmation, 1000-key batch and versioning guard.')
