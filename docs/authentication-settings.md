@@ -1,5 +1,9 @@
 # 会话与请求认证设置
 
+> 存储说明：`<namespace>:config/...` 表示 metadata-engine 的业务命名空间及记录键，
+> 实际数据位于 `data/.zigfs.sys/`；这些名称不是文件路径，不能单独移动或编辑。
+> BFF 自身的配置、日志正文、证书及密钥文件仍独立保存。
+
 入口：**System Setting → General → 会话与请求认证**。
 
 | 配置 | 默认值 | 可设置范围 | 作用 |
@@ -11,9 +15,9 @@
 
 ## 保存和重启
 
-保存后由 ZigFS 原子写入 `storage.data_root/.zigfs/config/authentication.json`，BFF 不访问数据目录。运行中的配置不变；重启 ZigFS 后统一应用到 HTTP 认证入口、用户登录及 S3 校验。页面显示待重启状态。如需取消待生效变更，将两个字段恢复为当前生效值后保存。
+保存后由 ZigFS 原子写入 `settings:config/authentication.json`，BFF 不访问数据目录。运行中的配置不变；重启 ZigFS 后统一应用到 HTTP 认证入口、用户登录及 S3 校验。页面显示待重启状态。如需取消待生效变更，将两个字段恢复为当前生效值后保存。
 
-启动时该文件覆盖 `.env` 的 `ZIGFS_ADMIN_SESSION_TTL_SECONDS` 和 `ZIGFS_S3_REQUEST_TIME_SKEW_SECONDS`；文件不存在则使用启动配置。文件损坏、非法或无法读取时启动失败，不静默回退。取消变更仍保留显式配置文件，不恢复为跟随 `.env`。
+启动时该记录覆盖 `.env` 的 `ZIGFS_ADMIN_SESSION_TTL_SECONDS` 和 `ZIGFS_S3_REQUEST_TIME_SKEW_SECONDS`；记录不存在则使用启动配置。记录损坏、非法或无法读取时启动失败，不静默回退。取消变更仍保留显式配置记录，不恢复为跟随 `.env`。
 
 ## 有效期的边界
 

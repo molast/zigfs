@@ -84,27 +84,25 @@ ZIGFS_ADMIN_SESSION_SECRET=oidc-test-only-session-secret-123456789
             assert updated['has_secret'] and updated['client_secret'] == '' and not updated['enabled']
             req('PATCH', path + '/keycloak', dict(provider, provider_id='renamed'), 400)
             req('PATCH', path + '/missing', dict(provider, provider_id='missing'), 404)
-            stored = root / 'data/.zigfs/system/oidc-providers.enc'
+            assert not (root / 'data/.zigfs/system/oidc-providers.enc').exists()
+            stored = root / 'data/.zigfs.sys/wal'
             assert provider['client_secret'].encode() not in stored.read_bytes()
             zig.terminate(); zig.wait(timeout=10)
             zig = start_zig()
             login()
             assert req('GET', path)['items'][0]['display_name'] == 'QA provider'
-            req('POST', '/users', dict(name='limited', password='limited-test-password', policies=[], enabled=True), 201)
+            req('POST', '/users', dict(name='limited', password='limited-test-password', policies=['diagnostics'], enabled=True), 201)
             req('POST', '/auth/logout', status=204)
             req('POST', '/auth/login', dict(username='limited', password='limited-test-password'))
             req('GET', path, status=403)
             req('POST', '/auth/logout', status=204)
             login()
-            before = stored.read_bytes()
-            stored.write_bytes(b'corrupted')
-            req('GET', path, status=503)
-            req('POST', path, provider, 503)
-            stored.write_bytes(before)
+            # Encrypted-payload corruption is covered by the OIDC store unit test;
+            # engine recovery corruption is covered by metadata_engine_recovery.py.
             req('DELETE', path + '/keycloak', status=204)
             assert req('GET', path)['items'] == []
             req('DELETE', path + '/keycloak', status=404)
-            print('PASS: OIDC CRUD, references, redaction, encryption, restart, corruption, 401/403/409')
+            print('PASS: OIDC CRUD, references, redaction, encryption, restart, 401/403/409')
         finally:
             for process in reversed(processes):
                 if process.poll() is None:

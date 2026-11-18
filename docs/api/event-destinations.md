@@ -1,5 +1,9 @@
 # Event Destinations — Webhook 与 MQTT 配置
 
+> 存储说明：`<namespace>:config/...` 表示 metadata-engine 的业务命名空间及记录键，
+> 实际数据位于 `data/.zigfs.sys/`；这些名称不是文件路径，不能单独移动或编辑。
+> BFF 自身的配置、日志正文、证书及密钥文件仍独立保存。
+
 控制台配置分组下的 Event Destinations 提供搜索、刷新、添加、编辑和删除；添加弹窗按 Kafka、MQTT、Webhook、NATS、Pulsar 的顺序以两列卡片展示；Webhook 和 MQTT 可点击，其余类型禁用。列表包含名称、类型、状态、来源、操作。状态“已配置”表示配置已经保存，不表示目标可达或正在推送。来源为 Console，暂不支持环境变量管理目标。
 
 已接入 Bucket 事件订阅和后台持久化队列，详见 [Bucket 事件订阅与投递](bucket-event-subscriptions.md)。保存配置不检测连通性；实际事件投递时才连接目标并读取证书。Kafka、NATS、Pulsar 暂未实现配置或投递能力。
@@ -28,7 +32,7 @@ POST 创建；PUT 替换单个目标配置，不覆盖其他目标。最多 100 
 
 GET/POST/PUT 响应将 `auth_token` 置为空串，通过 `has_auth_token` 表示是否设置。编辑时空 token 加 `has_auth_token=true` 保留原 token；新 token 替换原值；空 token 加 false 明确清除。UI 的“移除已保存的令牌”仅在保存表单后生效。
 
-ZigFS 使用部署主密钥通过 AES-256-GCM 加密整个配置，并原子写入 `data/.zigfs/config/event-destinations.enc`。重启后从文件恢复；备份时需同时保留部署主密钥。BFF 不访问数据目录。发送适配器会消费 TLS 配置；队列上限、目录及重连间隔通过统一目标策略接口提供，由公共事件运行时负责自动排队与重试。
+ZigFS 使用部署主密钥通过 AES-256-GCM 加密整个配置，并原子写入 `event_destination:config/event-destinations.enc`。重启后从引擎恢复；备份时需同时保留部署主密钥。BFF 不访问数据目录。发送适配器会消费 TLS 配置；队列上限、目录及重连间隔通过统一目标策略接口提供，由公共事件运行时负责自动排队与重试。
 
 验证：`python3 conformance/event_destinations.py` 使用临时目录和测试身份验证 CRUD、配置校验、Token 脱敏/保留/清除、重启恢复和非管理员拒绝；不会调用 Webhook 目标。
 

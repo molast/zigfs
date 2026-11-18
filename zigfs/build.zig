@@ -23,6 +23,33 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    const test_support = b.createModule(.{
+        .root_source_file = b.path("tests/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_support.addImport("zigfs", mod);
+    mod.addImport("test_support", test_support);
+
+    // Resources are embedded at compile time; deployed services need no resource directory.
+    const policies = [_][]const u8{
+        "consoleAdmin", "diagnostics", "KMSAuditor", "KMSKeyAdministrator",
+        "KMSKeyUser",   "readonly",    "readwrite",  "writeonly",
+    };
+    for (policies) |name| {
+        mod.addAnonymousImport(b.fmt("builtin_policy_{s}", .{name}), .{
+            .root_source_file = b.path(b.fmt("resources/policies/{s}.json", .{name})),
+        });
+    }
+    mod.addAnonymousImport("display_timezones", .{
+        .root_source_file = b.path("resources/display_timezones.txt"),
+    });
+
+    mod.addImport("metadata_engine", b.dependency("metadata_engine", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("metadata_engine"));
+
     mod.addCSourceFile(.{ .file = b.path("src/backend/host_metrics.c"), .flags = &.{"-std=c99"} });
     const build_info = b.addOptions();
     build_info.addOption(i64, "built_at", std.Io.Clock.real.now(b.graph.io).toSeconds());
@@ -62,7 +89,7 @@ pub fn build(b: *std.Build) void {
     const memory_probe = b.addExecutable(.{
         .name = "memory-diagnostic-probe",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/testing/memory_diagnostic_probe.zig"),
+            .root_source_file = b.path("tools/memory_diagnostic_probe.zig"),
             .target = target,
             .optimize = .debug,
             .error_tracing = true,
@@ -75,7 +102,7 @@ pub fn build(b: *std.Build) void {
     const thread_probe = b.addExecutable(.{
         .name = "thread-sanitizer-probe",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/testing/thread_sanitizer_probe.zig"),
+            .root_source_file = b.path("tools/thread_sanitizer_probe.zig"),
             .target = target,
             .optimize = .debug,
             .sanitize_thread = true,
@@ -96,7 +123,7 @@ pub fn build(b: *std.Build) void {
     const delivery_probe = b.addExecutable(.{
         .name = "event-delivery-probe",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/testing/event_delivery_probe.zig"),
+            .root_source_file = b.path("tools/event_delivery_probe.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -108,10 +135,13 @@ pub fn build(b: *std.Build) void {
 
     const mod_tests = b.addTest(.{ .root_module = mod });
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });
+    const support_tests = b.addTest(.{ .root_module = test_support });
     const run_mod_tests = b.addRunArtifact(mod_tests);
     const run_exe_tests = b.addRunArtifact(exe_tests);
+    const run_support_tests = b.addRunArtifact(support_tests);
 
     const test_step = b.step("test", "Run unit and contract tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_support_tests.step);
 }

@@ -1,3 +1,4 @@
+const SystemStore = @import("../metadata/system_store.zig").SystemStore;
 const std = @import("std");
 const Config = @import("../config.zig").Config;
 
@@ -20,51 +21,50 @@ pub const Settings = struct {
         config.s3_request_time_skew_seconds = self.request_time_skew_seconds;
     }
 };
-const path = ".zigfs/config/authentication.json";
+const path = "config/authentication.json";
 
 // Caller owns an arena. Management writes are serialized by policy_mutex.
-pub fn load(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, fallback: Settings) !Settings {
-    const bytes = root.readFileAlloc(io, path, a, .limited(1024)) catch |err| switch (err) {
-        error.FileNotFound => return fallback,
+pub fn load(a: std.mem.Allocator, root: SystemStore, io: std.Io, fallback: Settings) !Settings {
+    _ = io;
+    const bytes = root.read(a, path, 1024) catch |err| switch (err) {
+        error.NotFound => return fallback,
         else => return err,
     };
     const parsed = try std.json.parseFromSlice(Settings, a, bytes, .{});
     try parsed.value.validate();
     return parsed.value;
 }
-pub fn save(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, value: Settings) !void {
+pub fn save(a: std.mem.Allocator, root: SystemStore, io: std.Io, value: Settings) !void {
+    _ = io;
     try value.validate();
     const bytes = try std.json.Stringify.valueAlloc(a, value, .{});
-    try root.createDirPath(io, ".zigfs/config");
-    var file = try root.createFileAtomic(io, path, .{ .replace = true });
-    defer file.deinit(io);
-    try file.file.writeStreamingAll(io, bytes);
-    try file.file.sync(io);
-    try file.replace(io);
-    try @import("../metadata/durable.zig").syncParent(root, io, path);
+    try root.put(a, path, bytes);
 }
 test "authentication settings validate bounds and persist atomically" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata = SystemStore{ .repository = repository.interface() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const defaults = Settings.fromConfig(.{});
-    try std.testing.expect(defaults.eql(try load(a, tmp.dir, std.testing.io, defaults)));
+    try std.testing.expect(defaults.eql(try load(a, metadata, std.testing.io, defaults)));
     const value: Settings = .{ .admin_session_ttl_seconds = 3600, .request_time_skew_seconds = 60 };
-    try save(a, tmp.dir, std.testing.io, value);
+    try save(a, metadata, std.testing.io, value);
     for ([_]u64{ 0, 59, 86401, std.math.maxInt(u64) }) |bad| {
-        try std.testing.expectError(error.InvalidSessionLifetime, save(a, tmp.dir, std.testing.io, .{ .admin_session_ttl_seconds = bad, .request_time_skew_seconds = 60 }));
+        try std.testing.expectError(error.InvalidSessionLifetime, save(a, metadata, std.testing.io, .{ .admin_session_ttl_seconds = bad, .request_time_skew_seconds = 60 }));
     }
     for ([_]u64{ 0, 59, 3601, std.math.maxInt(u64) }) |bad| {
-        try std.testing.expectError(error.InvalidSignatureClockSkew, save(a, tmp.dir, std.testing.io, .{ .admin_session_ttl_seconds = 60, .request_time_skew_seconds = bad }));
+        try std.testing.expectError(error.InvalidSignatureClockSkew, save(a, metadata, std.testing.io, .{ .admin_session_ttl_seconds = 60, .request_time_skew_seconds = bad }));
     }
-    try std.testing.expect(value.eql(try load(a, tmp.dir, std.testing.io, defaults)));
+    try std.testing.expect(value.eql(try load(a, metadata, std.testing.io, defaults)));
     try (Settings{ .admin_session_ttl_seconds = 60, .request_time_skew_seconds = 60 }).validate();
     try (Settings{ .admin_session_ttl_seconds = 86400, .request_time_skew_seconds = 3600 }).validate();
     var config: Config = .{};
     value.apply(&config);
     try std.testing.expect(value.eql(Settings.fromConfig(config)));
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = path, .data = "{}" });
-    try std.testing.expectError(error.MissingField, load(a, tmp.dir, std.testing.io, defaults));
+    try metadata.put(std.testing.allocator, path, "{}");
+    try std.testing.expectError(error.MissingField, load(a, metadata, std.testing.io, defaults));
 }

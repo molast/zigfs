@@ -101,7 +101,7 @@ fn mapRepositoryError(err: repository_port.Error) credential_store_port.Error {
 }
 
 test "metadata credential store persists encrypted payload with CAS" {
-    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MemoryMetadataRepository = @import("test_support").memory_metadata_repository.MemoryMetadataRepository;
     var memory = MemoryMetadataRepository.init(std.testing.allocator);
     defer memory.deinit();
     var adapter = MetadataCredentialStore.init(memory.interface());

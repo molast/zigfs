@@ -241,10 +241,10 @@ pub fn serve(app: *Application) void {
         persistenceFailed(app);
         std.log.warn("Monitoring history could not be restored: {t}; collecting fresh samples", .{err});
     };
-    if (app.data_root) |root| {
+    if (app.metadata_repository != null) {
         app.policy_mutex.lockUncancelable(io);
         defer app.policy_mutex.unlock(io);
-        const rules = analysis.load(app.allocator, root, io) catch |err| blk: {
+        const rules = analysis.load(app.allocator, app.systemStore(), io) catch |err| blk: {
             std.log.warn("Monitoring rules unavailable: {t}; using defaults", .{err});
             break :blk analysis.defaults;
         };

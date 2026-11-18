@@ -53,11 +53,16 @@ RUN --mount=type=cache,id=zigfs-toolchains,target=/var/cache/zig-toolchains,shar
     && ln -s /opt/zig/zig /usr/local/bin/zig \
     && zig version \
     && rm -f /tmp/zig.tar
-COPY build.zig build.zig.zon ./
-COPY src ./src
+WORKDIR /src/zigfs
+COPY zigfs/build.zig zigfs/build.zig.zon ./
+COPY zigfs/src ./src
+COPY zigfs/resources ./resources
+COPY zigfs/tools ./tools
+COPY zigfs/tests ./tests
+COPY pkg/metadata-engine /src/pkg/metadata-engine
 # Published images must not inherit the builder/QEMU CPU extensions (e.g. ARM SVE).
 RUN --mount=type=cache,id=zigfs-global-${TARGETARCH}-${ZIG_VERSION},target=/root/.cache/zig,sharing=locked \
-    --mount=type=cache,id=zigfs-local-${TARGETARCH}-${ZIG_VERSION},target=/src/.zig-cache,sharing=locked \
+    --mount=type=cache,id=zigfs-local-${TARGETARCH}-${ZIG_VERSION},target=/src/zigfs/.zig-cache,sharing=locked \
     zig build -Doptimize=ReleaseSafe -Dcpu=baseline --prefix /out
 
 FROM alpine:latest AS runtime

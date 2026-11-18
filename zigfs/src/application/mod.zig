@@ -12,9 +12,7 @@ const CredentialMasterKey = @import("../backend/credential_master_key.zig").Mast
 const credential_master_key = @import("../backend/credential_master_key.zig");
 const LocalObjectDataStore = @import("../backend/local_object_data.zig").LocalObjectDataStore;
 const LocalMultipartDataStore = @import("../backend/local_multipart_data.zig").LocalMultipartDataStore;
-const LocalTransactionJournal = @import("../metadata/local_journal.zig").LocalTransactionJournal;
-const LocalRecoveryStore = @import("../metadata/local_recovery_store.zig").LocalRecoveryStore;
-const LocalMetadataRepository = @import("../metadata/local_repository.zig").LocalMetadataRepository;
+const EngineRepository = @import("../metadata/engine_repository.zig").EngineRepository;
 const MetadataBucketStore = @import("../metadata/bucket_store.zig").MetadataBucketStore;
 const MetadataCredentialStore = @import("../metadata/credential_store.zig").MetadataCredentialStore;
 const MetadataObjectStore = @import("../metadata/object_store.zig").MetadataObjectStore;
@@ -22,7 +20,6 @@ const MetadataDirectoryStore = @import("../metadata/directory_store.zig").Metada
 const MetadataMultipartStore = @import("../metadata/multipart_store.zig").MetadataMultipartStore;
 const index_module = @import("../metadata/index.zig");
 const recovery = @import("../metadata/recovery.zig");
-const local_layout = @import("../metadata/local_layout.zig");
 const multipart_domain = @import("../domain/multipart.zig");
 const MetadataRepository = @import("../ports/metadata_repository.zig").MetadataRepository;
 
@@ -97,9 +94,7 @@ pub const Application = struct {
     config: Config,
     local_storage: LocalStorageBackend,
     data_root: ?std.Io.Dir = null,
-    local_journal: ?LocalTransactionJournal = null,
-    local_recovery_store: ?LocalRecoveryStore = null,
-    local_repository: ?LocalMetadataRepository = null,
+    metadata_repository: ?EngineRepository = null,
     bucket_store: ?MetadataBucketStore = null,
     credential_store: ?MetadataCredentialStore = null,
     object_store: ?MetadataObjectStore = null,
@@ -312,7 +307,7 @@ pub const Application = struct {
         if (!migrated) self.loadAuditEvents();
         var legacy = if (!migrated) try self.queryAuditEvents("", 0, std.math.maxInt(usize), 0, null, null, null, .{}) else AuditEventPage{ .items = try self.allocator.alloc(AuditEvent, 0) };
         defer legacy.deinit(self.allocator);
-        self.audit_logger = .{ .kind = .audit, .root = root, .io = io, .allocator = self.allocator };
+        self.audit_logger = .{ .kind = .audit, .root = root, .system_store = self.systemStore(), .io = io, .allocator = self.allocator };
         const logger = &self.audit_logger.?;
         try logger.init();
         if (!migrated) {
@@ -341,6 +336,10 @@ pub const Application = struct {
         self.audit_events.clearRetainingCapacity();
     }
 
+    pub fn systemStore(self: *Application) @import("../metadata/system_store.zig").SystemStore {
+        return .{ .repository = if (self.metadata_repository) |*repository| repository.interface() else null };
+    }
+
     pub fn initialize(self: *Application, io: std.Io) !void {
         self.io = io;
         self.started_at_unix_seconds = std.Io.Clock.real.now(io).toSeconds();
@@ -348,19 +347,32 @@ pub const Application = struct {
         try storage.ensureReady(io);
 
         self.data_root = try std.Io.Dir.cwd().openDir(io, self.config.data_root, .{});
-        self.local_journal = LocalTransactionJournal.init(self.data_root.?, io);
-        self.local_recovery_store = LocalRecoveryStore.init(self.data_root.?, io);
-        self.local_repository = LocalMetadataRepository.init(
+        self.recovery_state.begin();
+        self.metadata_repository = EngineRepository.openWithInitialization(
+            self.allocator,
             self.data_root.?,
             io,
-            self.local_journal.?.interface(),
-        );
-        self.local_repository.?.reclamation_guard = &self.state_mutex;
-        self.bucket_store = MetadataBucketStore.init(self.local_repository.?.interface());
-        self.credential_store = MetadataCredentialStore.init(self.local_repository.?.interface());
-        self.object_store = MetadataObjectStore.init(self.local_repository.?.interface());
-        self.directory_store = MetadataDirectoryStore.init(self.local_repository.?.interface());
-        self.multipart_store = MetadataMultipartStore.init(self.local_repository.?.interface());
+            self.local_storage.fresh_metadata,
+        ) catch |err| {
+            self.recovery_state.markRequired(switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.CorruptRecord, error.UnsupportedFormat => error.CorruptRecord,
+                else => error.Unavailable,
+            });
+            if (!builtin.is_test) std.log.err("Metadata engine recovery failed: {t}", .{err});
+            return;
+        };
+        try self.metadata_repository.?.start();
+        const recovered_stats = self.metadata_repository.?.engine.stats();
+        self.recovery_report = .{
+            .committed_transactions = @intCast(recovered_stats.recovered_frames),
+            .orphan_temporaries_removed = recovered_stats.orphan_temporaries_removed,
+        };
+        self.bucket_store = MetadataBucketStore.init(self.metadata_repository.?.interface());
+        self.credential_store = MetadataCredentialStore.init(self.metadata_repository.?.interface());
+        self.object_store = MetadataObjectStore.init(self.metadata_repository.?.interface());
+        self.directory_store = MetadataDirectoryStore.init(self.metadata_repository.?.interface());
+        self.multipart_store = MetadataMultipartStore.init(self.metadata_repository.?.interface());
         self.local_object_data = LocalObjectDataStore.init(
             self.allocator,
             self.data_root.?,
@@ -368,7 +380,7 @@ pub const Application = struct {
             self.config.stream_buffer_size,
         );
         self.local_object_data.?.setFaultInjectorForTesting(self.fault_injector);
-        self.local_repository.?.setFaultInjectorForTesting(self.fault_injector);
+        self.metadata_repository.?.setFaultInjectorForTesting(self.fault_injector);
         self.local_multipart_data = LocalMultipartDataStore.init(
             self.allocator,
             self.data_root.?,
@@ -378,23 +390,6 @@ pub const Application = struct {
         self.local_multipart_data.?.setFaultInjectorForTesting(self.fault_injector);
         try self.initializeAuditLogging();
 
-        self.recovery_state.begin();
-        self.recovery_report = recovery.run(
-            self.allocator,
-            self.local_journal.?.interface(),
-            self.local_recovery_store.?.interface(),
-        ) catch |err| {
-            self.recovery_state.markRequired(err);
-            if (!builtin.is_test) {
-                std.log.err("ZigFS metadata recovery requires operator action: {t}", .{err});
-            }
-            return;
-        };
-        self.local_repository.?.markRecovered(self.allocator) catch |err| {
-            self.recovery_state.markRequired(if (err == error.OutOfMemory) error.OutOfMemory else error.CorruptRecord);
-            if (!builtin.is_test) std.log.err("ZigFS metadata maintenance boundary is invalid: {t}", .{err});
-            return;
-        };
         _ = self.local_object_data.?.interface().cleanupStaged() catch |err| {
             self.recovery_state.markRequired(error.Unavailable);
             if (!builtin.is_test) {
@@ -421,14 +416,14 @@ pub const Application = struct {
             }
             return;
         };
-        self.logger = .{ .root = self.data_root.?, .io = io, .allocator = self.allocator, .instance_id = self.config.api_address };
+        self.logger = .{ .root = self.data_root.?, .system_store = self.systemStore(), .io = io, .allocator = self.allocator, .instance_id = self.config.api_address };
         try self.logger.?.init();
-        self.kms = .{ .root = self.data_root.?, .io = io, .master = self.master_key.?.bytes, .allocator = self.allocator };
+        self.kms = .{ .root = self.data_root.?, .system_store = self.systemStore(), .io = io, .master = self.master_key.?.bytes, .allocator = self.allocator };
         self.local_multipart_data.?.master_key = self.master_key.?.bytes;
         self.local_object_data.?.master_key = self.master_key.?.bytes;
 
         var rebuilt_index = index_module.MetadataIndex.init(self.allocator);
-        rebuilt_index.rebuild(self.local_repository.?.interface()) catch |err| {
+        rebuilt_index.rebuild(self.metadata_repository.?.interface()) catch |err| {
             rebuilt_index.deinit();
             const recovery_error: recovery.Error = switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
@@ -442,16 +437,16 @@ pub const Application = struct {
             return;
         };
         self.metadata_index = rebuilt_index;
-        // Object tags are persisted as version-scoped sidecars. Validate them
+        // Object tags are version-scoped engine records. Validate them
         // before advertising readiness so malformed authorization context is
         // treated as recovery corruption instead of being ignored.
-        _ = object_tag_store.validateAll(self.allocator, self.data_root.?, io) catch |err| {
+        _ = object_tag_store.validateAll(self.allocator, self.systemStore(), io) catch |err| {
             self.recovery_state.markRequired(switch (err) {
                 error.InvalidTag => error.CorruptRecord,
                 error.OutOfMemory => error.OutOfMemory,
                 else => error.Unavailable,
             });
-            if (!builtin.is_test) std.log.err("ZigFS object tag sidecar validation failed: {t}", .{err});
+            if (!builtin.is_test) std.log.err("ZigFS object tag validation failed: {t}", .{err});
             return;
         };
         self.recovery_state.markReady();
@@ -484,9 +479,20 @@ pub const Application = struct {
         };
     }
 
-    pub fn runMetadataMaintenance(self: *Application) @import("../metadata/local_repository.zig").MaintenanceError!@import("../metadata/local_repository.zig").MaintenanceReport {
-        if (!self.recovery_state.isReady()) return error.RecoveryRequired;
-        return self.local_repository.?.maintain(self.allocator, self.config.metadata_maintenance_batch_size);
+    pub fn runMetadataMaintenance(self: *Application) @import("../metadata/engine_repository.zig").MaintenanceError!@import("../metadata/engine_repository.zig").MaintenanceReport {
+        if (!self.recoveryState().isReady()) return error.RecoveryRequired;
+        const io = self.io orelse return error.Unavailable;
+        // Business predicates are evaluated while this same mutex is held.
+        // GC cannot remove an observed tombstone between a read and its CAS.
+        self.state_mutex.lockUncancelable(io);
+        defer self.state_mutex.unlock(io);
+        return self.metadata_repository.?.collect();
+    }
+
+    /// Includes system documents. Objects, logs, history and keys need a full backup.
+    pub fn backupMetadata(self: *Application, parent: std.Io.Dir, name: []const u8) !void {
+        if (!self.recoveryState().isReady()) return error.RecoveryRequired;
+        _ = try self.metadata_repository.?.engine.backup(parent, name);
     }
 
     pub fn runStorageScanner(self: *Application) object_gc.Error!StorageScanReport {
@@ -608,10 +614,8 @@ pub const Application = struct {
         self.multipart_store = null;
         self.local_object_data = null;
         self.local_multipart_data = null;
-        if (self.local_repository) |*repository| repository.deinit();
-        self.local_repository = null;
-        self.local_recovery_store = null;
-        self.local_journal = null;
+        if (self.metadata_repository) |*repository| repository.deinit();
+        self.metadata_repository = null;
         if (self.kms) |*kms| {
             kms.deinit();
             self.kms = null;
@@ -628,8 +632,10 @@ pub const Application = struct {
         self.local_storage.deinit(io);
     }
 
+    /// Raw repository access. Production read/conditional-write decisions must
+    /// hold state_mutex, which also excludes physical tombstone collection.
     pub fn metadataRepository(self: *Application) ?MetadataRepository {
-        if (self.local_repository) |*repository| return repository.interface();
+        if (self.metadata_repository) |*repository| return repository.interface();
         return null;
     }
 
@@ -640,7 +646,7 @@ pub const Application = struct {
         self.fault_injector = injector;
         if (self.local_object_data) |*store| store.setFaultInjectorForTesting(injector);
         if (self.local_multipart_data) |*store| store.setFaultInjectorForTesting(injector);
-        if (self.local_repository) |*repository| repository.setFaultInjectorForTesting(injector);
+        if (self.metadata_repository) |*repository| repository.setFaultInjectorForTesting(injector);
     }
 
     pub fn metadataIndex(self: *Application) ?*index_module.MetadataIndex {
@@ -649,7 +655,7 @@ pub const Application = struct {
     }
 
     pub fn bucketService(self: *Application) ?bucket_service.BucketService {
-        if (!self.recovery_state.isReady()) return null;
+        if (!self.recoveryState().isReady()) return null;
         const io = self.io orelse return null;
         const store = if (self.bucket_store) |*bucket_store|
             bucket_store.interface()
@@ -669,7 +675,7 @@ pub const Application = struct {
     }
 
     pub fn objectService(self: *Application) ?object_service.ObjectService {
-        if (!self.recovery_state.isReady()) return null;
+        if (!self.recoveryState().isReady()) return null;
         const io = self.io orelse return null;
         const bucket_store = if (self.bucket_store) |*store|
             store.interface()
@@ -721,7 +727,7 @@ pub const Application = struct {
     }
 
     pub fn directoryService(self: *Application) ?directory_service.DirectoryService {
-        if (!self.recovery_state.isReady()) return null;
+        if (!self.recoveryState().isReady()) return null;
         const io = self.io orelse return null;
         const bucket_store = if (self.bucket_store) |*store| store.interface() else return null;
         const directory_store = if (self.directory_store) |*store| store.interface() else return null;
@@ -737,12 +743,12 @@ pub const Application = struct {
             .allocator = self.allocator,
             .buckets = self.bucketService() orelse return null,
             .objects = objects,
-            .data_root = self.data_root,
+            .system_store = self.systemStore(),
         };
     }
 
     pub fn credentialService(self: *Application) ?credential_service.CredentialService {
-        if (!self.recovery_state.isReady()) return null;
+        if (!self.recoveryState().isReady()) return null;
         const io = self.io orelse return null;
         const store = if (self.credential_store) |*credential_store|
             credential_store.interface()
@@ -767,13 +773,13 @@ pub const Application = struct {
         service.root_access_key = self.config.root_access_key;
         service.root_secret_key = self.config.root_secret_key;
         service.root_username = self.config.admin_username;
-        service.identity_root = self.data_root;
+        service.identity_store = self.systemStore();
         service.identity_mutex = &self.policy_mutex;
         return service;
     }
 
     pub fn multipartService(self: *Application) ?multipart_service.MultipartService {
-        if (!self.recovery_state.isReady()) return null;
+        if (!self.recoveryState().isReady()) return null;
         const io = self.io orelse return null;
         const bucket_store = if (self.bucket_store) |*store| store.interface() else return null;
         const multipart_store = if (self.multipart_store) |*store| store.interface() else return null;
@@ -794,7 +800,7 @@ pub const Application = struct {
     }
 
     pub fn objectListing(self: *Application) ?object_listing.ObjectListingService {
-        if (!self.recovery_state.isReady()) return null;
+        if (!self.recoveryState().isReady()) return null;
         const io = self.io orelse return null;
         const bucket_store = if (self.bucket_store) |*store|
             store.interface()
@@ -821,7 +827,7 @@ pub const Application = struct {
     }
 
     pub fn objectGc(self: *Application) ?object_gc.ObjectGcService {
-        if (!self.recovery_state.isReady()) return null;
+        if (!self.recoveryState().isReady()) return null;
         const io = self.io orelse return null;
         const object_store = if (self.object_store) |*store|
             store.interface()
@@ -847,6 +853,7 @@ pub const Application = struct {
             self.allocator,
             io,
             self.data_root orelse return null,
+            self.systemStore(),
             object_store,
             data_store,
             multipart_store,
@@ -859,7 +866,7 @@ pub const Application = struct {
     }
 
     pub fn managementService(self: *Application) ?management_service.ManagementService {
-        if (!self.recovery_state.isReady()) return null;
+        if (!self.recoveryState().isReady()) return null;
         const io = self.io orelse return null;
         const object_store = if (self.object_store) |*store| store.interface() else return null;
         const index = if (self.metadata_index) |*metadata_index| metadata_index else return null;
@@ -873,7 +880,11 @@ pub const Application = struct {
         );
     }
 
-    pub fn recoveryState(self: *const Application) *const recovery.State {
+    pub fn recoveryState(self: *Application) *const recovery.State {
+        const frozen: recovery.State = .{ .status = .recovery_required, .failure = .unavailable };
+        if (self.metadata_repository) |*repository| {
+            if (repository.engine.stats().recovery_required) return &frozen;
+        }
         return &self.recovery_state;
     }
 };
@@ -937,7 +948,7 @@ test "application becomes ready only after recovery and index rebuild" {
 
 test "multipart lifecycle streams concurrent parts completes and aborts without changing the object" {
     const object_data_port = @import("../ports/object_data_store.zig");
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1103,7 +1114,7 @@ test "multipart lifecycle streams concurrent parts completes and aborts without 
 test "completed multipart object survives restart and follows version reachability" {
     const object_domain = @import("../domain/object.zig");
     const multipart_data_port = @import("../ports/multipart_data_store.zig");
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const data_root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -1140,7 +1151,7 @@ test "completed multipart object survives restart and follows version reachabili
         version_id = object.version_id;
         try std.testing.expect(object.multipart_manifest == null);
         const maintenance = try writer.runMetadataMaintenance();
-        try std.testing.expectEqual(@as(usize, 1), maintenance.removed_multipart_tombstones);
+        try std.testing.expectEqual(@as(usize, 1), maintenance.removed_tombstones);
         try std.testing.expectError(error.NotFound, writer.metadataRepository().?.get(std.testing.allocator, .multipart, upload_id));
         try std.testing.expectError(error.NotFound, writer.local_multipart_data.?.interface().stat(part_location));
     }
@@ -1237,7 +1248,7 @@ test "multipart upload listing supports discovery delimiters and stable resume m
 
 test "startup recovery expires multipart metadata and part data" {
     const multipart_payload = @import("../metadata/multipart_payload.zig");
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1311,7 +1322,7 @@ test "startup recovery expires multipart metadata and part data" {
 }
 
 test "startup recovery removes part data left after multipart tombstone commit" {
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1364,12 +1375,12 @@ test "startup recovery removes part data left after multipart tombstone commit" 
     }, 0, 1, sink.interface()));
 }
 
-test "application stays alive but not ready when journal is corrupt" {
+test "application stays alive but not ready when engine WAL is corrupt" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.createDirPath(std.testing.io, "data/.zigfs/journal");
+    try tmp.dir.createDirPath(std.testing.io, "data/.zigfs.sys");
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "data/.zigfs/journal/corrupt.journal",
+        .sub_path = "data/.zigfs.sys/wal",
         .data = "corrupt",
     });
     const data_root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -1382,7 +1393,7 @@ test "application stays alive but not ready when journal is corrupt" {
     defer app.deinit(std.testing.io);
     try app.initialize(std.testing.io);
     try std.testing.expectEqual(recovery.Status.recovery_required, app.recoveryState().status);
-    try std.testing.expectEqual(recovery.Failure.corrupt_journal, app.recoveryState().failure);
+    try std.testing.expectEqual(recovery.Failure.corrupt_record, app.recoveryState().failure);
     try std.testing.expect(app.metadataIndex() == null);
     try std.testing.expect(app.bucketService() == null);
     try std.testing.expect(app.objectService() == null);
@@ -1409,13 +1420,8 @@ test "application stays alive but not ready when a committed record is corrupt" 
     );
     writer.deinit(std.testing.io);
 
-    const key_hash = local_layout.hashKey("bucket/corrupt.txt");
-    var record_path_buffer: [local_layout.max_path_length]u8 = undefined;
-    const record_path = try local_layout.recordPath(.object, key_hash, &record_path_buffer);
-    var test_path_buffer: [local_layout.max_path_length + 8]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&test_path_buffer, "data/{s}", .{record_path});
     try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = test_path,
+        .sub_path = "data/.zigfs.sys/wal",
         .data = "corrupt",
     });
 
@@ -1493,13 +1499,8 @@ test "credential secret stays encrypted and authentication state survives restar
         @memcpy(&secret_key, created.secret_key);
     }
 
-    const key_hash = local_layout.hashKey(&access_key);
-    var record_path_buffer: [local_layout.max_path_length]u8 = undefined;
-    const record_path = try local_layout.recordPath(.credential, key_hash, &record_path_buffer);
-    var test_path_buffer: [local_layout.max_path_length + 8]u8 = undefined;
-    const test_path = try std.fmt.bufPrint(&test_path_buffer, "data/{s}", .{record_path});
-    var record_buffer: [4096]u8 = undefined;
-    const record_bytes = try tmp.dir.readFile(std.testing.io, test_path, &record_buffer);
+    var record_buffer: [65536]u8 = undefined;
+    const record_bytes = try tmp.dir.readFile(std.testing.io, "data/.zigfs.sys/wal", &record_buffer);
     try std.testing.expect(std.mem.indexOf(u8, record_bytes, &secret_key) == null);
 
     var master_key_buffer: [credential_master_key.encoded_length + 1]u8 = undefined;
@@ -1562,7 +1563,7 @@ test "invalid bucket payload keeps a restarted application not ready" {
 }
 
 test "object service streams persists overwrites and tombstones across restarts" {
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
     const object_data_port = @import("../ports/object_data_store.zig");
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1697,7 +1698,7 @@ test "application restart removes only staged object data" {
 }
 
 test "object listing paginates metadata with a restart-stable bound token" {
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const data_root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -1787,7 +1788,7 @@ test "object listing paginates metadata with a restart-stable bound token" {
 }
 
 test "directories can be recreated after deletion and restart" {
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const data_root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -1847,7 +1848,7 @@ test "directories can be recreated after deletion and restart" {
 }
 
 test "directory deletion removes a same-key object marker from listings" {
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const data_root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -1892,7 +1893,7 @@ test "directory deletion removes a same-key object marker from listings" {
 }
 
 test "removing a delete marker restores the object to management listings" {
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
     const object_domain = @import("../domain/object.zig");
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1925,7 +1926,7 @@ test "removing a delete marker restores the object to management listings" {
 test "object gc retains current data and reclaims old deleted and orphan generations" {
     const id = @import("../common/id.zig");
     const object_data_port = @import("../ports/object_data_store.zig");
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const data_root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -2033,7 +2034,7 @@ test "object gc retains current data and reclaims old deleted and orphan generat
 
 test "object gc reports referenced data loss" {
     const object_data_port = @import("../ports/object_data_store.zig");
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const data_root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -2065,7 +2066,7 @@ test "object gc validates multipart reachability before deleting object orphans"
     const id = @import("../common/id.zig");
     const object_data_port = @import("../ports/object_data_store.zig");
     const multipart_data_port = @import("../ports/multipart_data_store.zig");
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const data_root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -2157,7 +2158,7 @@ test "storage scanner advances one partition per successful cycle" {
 }
 
 test "phase 8 crash checkpoints recover only complete object generations" {
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
     const cases = [_]struct {
         point: fault_injection.Point,
         skip_hits: usize = 0,
@@ -2181,22 +2182,12 @@ test "phase 8 crash checkpoints recover only complete object generations" {
             .orphan_generations = 1,
         },
         .{
-            .point = .journal_intent_persisted,
+            .point = .metadata_before_commit,
             .replacement_committed = false,
             .orphan_generations = 1,
         },
         .{
-            .point = .metadata_temporary_synced,
-            .replacement_committed = false,
-            .orphan_generations = 1,
-        },
-        .{
-            .point = .metadata_commit_persisted,
-            .replacement_committed = true,
-            .orphan_generations = 1,
-        },
-        .{
-            .point = .metadata_record_published,
+            .point = .metadata_after_commit,
             .replacement_committed = true,
             .orphan_generations = 1,
         },
@@ -2278,8 +2269,8 @@ test "phase 8 crash checkpoints recover only complete object generations" {
     }
 }
 
-test "phase 8 rebuild ignores corrupt disposable index snapshots" {
-    const test_streams = @import("../testing/streams.zig");
+test "application rebuilds business index from engine without index files" {
+    const test_streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const data_root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -2303,10 +2294,7 @@ test "phase 8 rebuild ignores corrupt disposable index snapshots" {
     writer.deinit(std.testing.io);
     writer_live = false;
 
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "data/.zigfs/indexes/corrupt.snapshot",
-        .data = "not-a-valid-index-snapshot",
-    });
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "data/.zigfs/indexes", .{}));
 
     var recovered = Application.initWithAllocator(config, std.testing.allocator);
     defer recovered.deinit(std.testing.io);
@@ -2324,7 +2312,7 @@ test "phase 8 rebuild ignores corrupt disposable index snapshots" {
 }
 
 test "phase 8 reports same-length object data checksum corruption after restart" {
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const data_root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -2442,7 +2430,7 @@ pub const oidc_auth = @import("oidc_auth.zig");
 pub const oidc_store = @import("oidc_store.zig");
 
 test "folder cleanup preserves valid data and uploads while reclaiming orphan data" {
-    const streams = @import("../testing/streams.zig");
+    const streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -2523,7 +2511,7 @@ test "folder cleanup preserves valid data and uploads while reclaiming orphan da
 }
 
 test "folder deletion removes unversioned children and legacy markers but refuses new live children during prune" {
-    const streams = @import("../testing/streams.zig");
+    const streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -2578,13 +2566,13 @@ test "folder cleanup repairs stale and missing indexes without removing healthy 
     // Corrupt authoritative payloads are never guessed to be disposable.
     const encoded = try @import("../metadata/object_key.zig").encode(std.testing.allocator, "repair-tests", "target/");
     defer std.testing.allocator.free(encoded);
-    _ = try app.local_repository.?.interface().put(std.testing.allocator, .directory, encoded, .{ .exact = updated }, "broken-directory-payload");
+    _ = try app.metadata_repository.?.interface().put(std.testing.allocator, .directory, encoded, .{ .exact = updated }, "broken-directory-payload");
     try std.testing.expectError(error.CorruptMetadata, folders.cleanup("repair-tests", "target/"));
     try std.testing.expectEqual(updated, app.metadata_index.?.directoryGeneration("repair-tests", "target/").?);
 }
 
 test "SSE-S3 multipart encryption snapshot survives default change and restart" {
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const data_root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -2670,7 +2658,7 @@ test "audit window and archives survive reload including repeated request IDs" {
 }
 
 test "multipart completion failures preserve resume state until durable termination" {
-    const streams = @import("../testing/streams.zig");
+    const streams = @import("test_support").streams;
     const cases = [_]struct {
         point: fault_injection.Point,
         skip_hits: usize = 0,
@@ -2680,10 +2668,10 @@ test "multipart completion failures preserve resume state until durable terminat
         .{ .point = .object_data_write },
         .{ .point = .object_stage_synced },
         .{ .point = .object_generation_published },
-        .{ .point = .metadata_temporary_synced },
-        .{ .point = .metadata_commit_persisted, .published = true },
-        .{ .point = .metadata_temporary_synced, .skip_hits = 1, .published = true },
-        .{ .point = .metadata_commit_persisted, .skip_hits = 1, .published = true, .terminated = true },
+        .{ .point = .metadata_before_commit },
+        .{ .point = .metadata_after_commit, .published = true },
+        .{ .point = .metadata_before_commit, .skip_hits = 1, .published = true },
+        .{ .point = .metadata_after_commit, .skip_hits = 1, .published = true, .terminated = true },
         .{ .point = .multipart_upload_cleanup, .published = true, .terminated = true },
     };
     for ([_]bool{ false, true }) |encrypted| {
@@ -2756,7 +2744,7 @@ test "multipart completion failures preserve resume state until durable terminat
 }
 
 test "multipart resume after restart adds remaining part and cleans unselected parts" {
-    const streams = @import("../testing/streams.zig");
+    const streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -2804,7 +2792,7 @@ test "multipart resume after restart adds remaining part and cleans unselected p
 }
 
 test "multipart rejects same-size corrupted data and allows repairing the part" {
-    const streams = @import("../testing/streams.zig");
+    const streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -2838,7 +2826,7 @@ test "multipart rejects same-size corrupted data and allows repairing the part" 
 }
 
 test "segmented completion is zero-copy and idempotent across restart" {
-    const streams = @import("../testing/streams.zig");
+    const streams = @import("test_support").streams;
     for ([_]bool{ false, true }) |encrypted| {
         var tmp = std.testing.tmpDir(.{});
         defer tmp.cleanup();
@@ -2909,7 +2897,7 @@ test "segmented completion is zero-copy and idempotent across restart" {
 }
 
 test "legacy parts without sidecars compose and pending cleanup survives restart" {
-    const streams = @import("../testing/streams.zig");
+    const streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -2952,7 +2940,7 @@ pub const auth_settings = @import("auth_settings.zig");
 pub const display_settings = @import("display_settings.zig");
 
 test "multipart conditional publication rejects stale generations and preserves pending parts" {
-    const streams = @import("../testing/streams.zig");
+    const streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try testDataRootPath(std.testing.allocator, &tmp);
@@ -2990,4 +2978,179 @@ test "multipart conditional publication rejects stale generations and preserves 
     defer completed.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u64, 9), completed.size);
     try std.testing.expectError(error.ConditionNotMet, multi.completeConditional("conditional-parts", "body", upload_id, parts, .missing));
+}
+
+test "engine maintenance allows business recreation and online metadata backup restores independently" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var backups = std.testing.tmpDir(.{});
+    defer backups.cleanup();
+    const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(data_root);
+    var app = Application.initWithAllocator(.{ .data_root = data_root, .metrics_enabled = false }, std.testing.allocator);
+    defer app.deinit(std.testing.io);
+    try app.initialize(std.testing.io);
+    const buckets = app.bucketService().?;
+    const created = try buckets.create("engine-backup", "owner-a");
+    created.deinit(std.testing.allocator);
+    try buckets.delete("engine-backup");
+    const maintained = try app.runMetadataMaintenance();
+    try std.testing.expect(maintained.removed_tombstones > 0);
+    try std.testing.expect(maintained.gc_epoch > 0);
+    const recreated = try buckets.create("engine-backup", "owner-a");
+    defer recreated.deinit(std.testing.allocator);
+    try app.backupMetadata(backups.dir, "metadata-copy");
+    const later = try buckets.create("after-backup", "owner-a");
+    defer later.deinit(std.testing.allocator);
+    var backup_dir = try backups.dir.openDir(std.testing.io, "metadata-copy", .{});
+    defer backup_dir.close(std.testing.io);
+    var engine = try @import("metadata_engine").Engine.open(std.testing.allocator, std.testing.io, backup_dir);
+    defer engine.deinit();
+    const record = try engine.interface().get(std.testing.allocator, .bucket, "engine-backup");
+    defer record.deinit(std.testing.allocator);
+    try std.testing.expectEqual(recreated.bucket.generation, record.generation);
+    try std.testing.expect(!record.tombstone);
+    try std.testing.expectError(error.NotFound, engine.interface().get(std.testing.allocator, .bucket, "after-backup"));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "data/metadata", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "data/.zigfs/journal", .{}));
+    _ = try tmp.dir.statFile(std.testing.io, "data/.zigfs.sys/wal", .{});
+}
+
+test "engine uncertain write makes application not ready until restart" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(data_root);
+    var app = Application.initWithAllocator(.{ .data_root = data_root, .metrics_enabled = false }, std.testing.allocator);
+    defer app.deinit(std.testing.io);
+    try app.initialize(std.testing.io);
+    app.metadata_repository.?.engine.test_fault = .short_write;
+    try std.testing.expectError(error.Unavailable, app.bucketService().?.create("failed-write", "owner-a"));
+    try std.testing.expectEqual(recovery.Status.recovery_required, app.recoveryState().status);
+    try std.testing.expect(app.bucketService() == null);
+    try std.testing.expect(app.objectListing() == null);
+    try std.testing.expectError(error.RecoveryRequired, app.runMetadataMaintenance());
+}
+
+test "missing engine directory in an initialized root never becomes an empty database" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data_root = try testDataRootPath(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(data_root);
+    const config: Config = .{ .data_root = data_root, .metrics_enabled = false };
+    var writer = Application.initWithAllocator(config, std.testing.allocator);
+    try writer.initialize(std.testing.io);
+    writer.deinit(std.testing.io);
+    try tmp.dir.deleteTree(std.testing.io, "data/.zigfs.sys");
+    var reader = Application.initWithAllocator(config, std.testing.allocator);
+    defer reader.deinit(std.testing.io);
+    try reader.initialize(std.testing.io);
+    try std.testing.expectEqual(recovery.Status.recovery_required, reader.recoveryState().status);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "data/.zigfs.sys/wal", .{}));
+}
+
+test "system metadata survives reopen and backup without configuration sidecars" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const policies = @import("policy_store.zig");
+    const identities = @import("identity_store.zig");
+    const instance = @import("instance_settings.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var backups = std.testing.tmpDir(.{});
+    defer backups.cleanup();
+    const data_root = try testDataRootPath(a, &tmp);
+    defer a.free(data_root);
+    const config: Config = .{ .data_root = data_root, .metrics_enabled = false };
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var original: ?@import("../ports/metadata_repository.zig").ScanResult = null;
+    defer if (original) |records| records.deinit(a);
+    {
+        var app = Application.initWithAllocator(config, a);
+        defer app.deinit(io);
+        try app.initialize(io);
+        const store = app.systemStore();
+        const bucket = try app.bucketService().?.create("bucket", "owner");
+        bucket.deinit(a);
+        var source = @import("test_support").streams.SliceSource.init("persisted-body");
+        const object = try app.objectService().?.put("bucket", "object", source.interface(), .{});
+        object.deinit(a);
+        try identities.save(store, io, a, .{ .users = &.{.{ .name = "engine-user" }} });
+        // Deliberately empty policies must not resurrect the built-in defaults.
+        try policies.save(store, io, a, &.{});
+        try role_store.save(store, io, scratch, .{});
+        try instance.save(scratch, store, io, .{ .service_name = "engine-instance" });
+        try region_settings.save(scratch, store, io, "cn-test-1");
+        try display_settings.save(scratch, store, io, .{ .timezone = "UTC" });
+        try listener_settings.save(scratch, store, io, "127.0.0.1:19000");
+        try auth_settings.save(scratch, store, io, auth_settings.Settings.fromConfig(config));
+        try @import("network_settings.zig").save(scratch, store, io, .{
+            .s3_public_endpoint = "https://storage.example.com",
+            .s3_virtual_hosted_style = true,
+        });
+        try @import("monitoring_analysis.zig").save(scratch, store, io, @import("monitoring_analysis.zig").defaults);
+        try @import("bucket_subscriptions.zig").save(scratch, store, io, @splat(1), .{});
+        try @import("resource_policy_store.zig").remove(scratch, store, io, @splat(1));
+        try object_tag_store.save(scratch, store, io, "bucket", "object", "null", .{
+            .tags = &.{.{ .key = "owner", .value = "engine-user" }},
+        });
+        try oidc_store.save(store, io, scratch, app.master_key.?.bytes, .{ .items = &.{.{
+            .provider_id = "engine-idp",
+            .client_id = "console",
+            .client_secret = "secret-only-in-encrypted-record",
+            .configuration_url = "https://idp.example/.well-known/openid-configuration",
+            .redirect_uri = "https://console.example/callback",
+        }} });
+        try @import("event_destinations.zig").save(store, io, scratch, app.master_key.?.bytes, .{});
+        try app.kms.?.save(scratch, .{ .address = "https://vault.invalid:8200", .token = "engine-kms-token" });
+        try app.logger.?.save(.{});
+        try app.audit_logger.?.save(.{ .output = "file", .directory = "audit-logs", .retention = "forever" });
+        original = try store.scan(a);
+        try std.testing.expect(original.?.records.len >= 17);
+        const reserved = try store.repository.?.scan(a, .system);
+        defer reserved.deinit(a);
+        try std.testing.expectEqual(@as(usize, 0), reserved.records.len);
+        for (@import("../metadata/system_store.zig").document_namespaces) |namespace| {
+            const records = try store.scanNamespace(a, namespace);
+            defer records.deinit(a);
+            try std.testing.expect(records.records.len > 0);
+        }
+        try app.backupMetadata(backups.dir, "system-copy");
+        try instance.save(scratch, store, io, .{ .service_name = "after-backup" });
+        try object_tag_store.remove(scratch, store, io, "bucket", "deleted", "v1");
+        _ = try app.runMetadataMaintenance();
+        try object_tag_store.save(scratch, store, io, "bucket", "deleted", "v1", .{});
+        try std.testing.expectError(error.FileNotFound, app.data_root.?.statFile(io, ".zigfs/config", .{}));
+        try std.testing.expectError(error.FileNotFound, app.data_root.?.statFile(io, ".zigfs/system/identities.json", .{}));
+    }
+    {
+        var app = Application.initWithAllocator(config, a);
+        defer app.deinit(io);
+        try app.initialize(io);
+        try std.testing.expect(app.recoveryState().isReady());
+        const store = app.systemStore();
+        const users = try identities.load(store, io, a);
+        defer users.deinit();
+        try std.testing.expectEqualStrings("engine-user", users.value.users[0].name);
+        const saved_policies = try policies.load(store, io, a);
+        defer saved_policies.deinit();
+        try std.testing.expectEqual(@as(usize, 0), saved_policies.value.len);
+        try std.testing.expectEqualStrings("after-backup", (try instance.load(scratch, store, io)).service_name);
+        const providers = try oidc_store.load(store, io, a, app.master_key.?.bytes);
+        defer providers.deinit();
+        try std.testing.expectEqualStrings("secret-only-in-encrypted-record", providers.value.items[0].client_secret);
+        try std.testing.expectEqualStrings("engine-user", (try object_tag_store.load(scratch, store, io, "bucket", "object", "null")).tags[0].value);
+    }
+    var backup_dir = try backups.dir.openDir(io, "system-copy", .{});
+    defer backup_dir.close(io);
+    var backup = try @import("metadata_engine").Engine.open(a, io, backup_dir);
+    defer backup.deinit();
+    for (original.?.records) |expected| {
+        const actual = try backup.interface().get(a, try @import("../metadata/system_store.zig").namespaceFor(expected.key), expected.key);
+        defer actual.deinit(a);
+        try std.testing.expectEqualStrings(expected.payload, actual.payload);
+        try std.testing.expectEqual(expected.generation, actual.generation);
+    }
 }

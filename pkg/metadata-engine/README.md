@@ -1,12 +1,26 @@
 # ZigFS Metadata Engine
 
-独立 Zig 0.17.0 package（0.2.0），与现有 ZigFS 运行逻辑隔离。
+独立 Zig 0.17.0 package（0.3.0），已通过适配器接入 ZigFS；仍可单独构建和测试。
 支持不透明 payload、条件更新、原子批量事务、FIFO/Group Commit、AVL 前缀分页、
 分段 WAL、后台快照、日志回收、资源限制、指标和离线检查。
 
 核心能力及 WAL 额度联动、清理失败自动重试已实现；Runtime Group Commit 强杀和
 单进程混合参考模型验证通过。目标 NAS/Linux 与性能对照仍待验证，详见设计文档第 12 节。
-开发阶段不做旧数据迁移，后续接入采用空数据根初始化并重建测试数据。
+开发阶段不做旧数据迁移，ZigFS 在数据根的 `.zigfs.sys/` 中初始化引擎，旧开发数据清空后重建。
+
+## 业务命名空间
+
+当前共有 19 个 namespace：保留 `system`（ID 1），核心 `bucket`、`object`、`multipart`、
+`credential`、`directory`（ID 2–6），以及 `identity`、`policy`、`role`、`bucket_policy`、
+`object_tag`、`oidc`、`settings`、`monitoring_settings`、`log_settings`、`audit_settings`、
+`event_destination`、`bucket_subscription`、`kms`（ID 7–19）。
+
+各分区拥有独立 HashMap/AVL 索引，同名键互不冲突；共享 WAL、快照和原子事务。
+这属于逻辑分区，不生成每业务独立文件。持久化 ID 只能追加，不可重排；所有遍历由
+`namespaces` / `namespace_count` 驱动。引擎文件格式仍为 v3；ZigFS 业务布局由数据根 v3 标记。
+
+`metadata-tool namespaces DIRECTORY` 只读输出每个 namespace 的记录数（包含 tombstone），
+需要独占目录锁，应在服务停机后使用。`inspect` 的 `namespace_records` 按 ID 减一索引。
 
 ## 构建与验证
 
@@ -224,7 +238,7 @@ RSS 包含这些副本和分配器缓存。当前 RSS 采样支持 macOS，其�
 但不能重建历史实测数据。测试源码、复现命令与 Markdown 汇总报告继续纳入版本管理。
 
 [第四轮报告](bench/ROUND4-VALIDATION.md)区分短时实测与未验证项目。
-持续模型现在支持键空间和值大小，覆盖六个命名空间，记录 Engine 分配、RSS、WAL、
+持续模型现在支持键空间和值大小，覆盖当前全部 19 个命名空间，记录 Engine 分配、RSS、WAL、
 快照和目录文件大小趋势。每个用例最多 540 秒负载，加有限关闭/校验时间，不超过十分钟。
 它始终在同一实例运行，最后停机、重开并逐条对照参考模型；不是靠反复重启隐藏增长。
 

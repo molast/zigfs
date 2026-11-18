@@ -65,13 +65,13 @@ test "GC all tombstones empty snapshot repeated epochs and atomic stale batch" {
     var opened = true;
     defer if (opened) engine.deinit();
     for (0..4) |epoch| {
-        var batch: [6]metadata.Mutation = undefined;
+        var batch: [metadata.namespace_count]metadata.Mutation = undefined;
         for (&batch, 1..) |*mutation, namespace| {
             mutation.* = .{ .record_type = @fromBackingInt(@intCast(namespace)), .key = "gone", .expected = .{ .missing_at = @intCast(epoch) }, .tombstone = true };
         }
         _ = try engine.commit(&batch);
         const result = try engine.collectTombstones();
-        try std.testing.expectEqual(@as(usize, 6), result.reclaimed);
+        try std.testing.expectEqual(@as(usize, metadata.namespace_count), result.reclaimed);
         try std.testing.expectEqual(@as(u48, @intCast(epoch + 1)), result.gc_epoch);
         try std.testing.expectEqual(@as(usize, 0), engine.stats().records);
         try std.testing.expectEqual(@as(usize, 0), engine.stats().live_bytes);
@@ -308,12 +308,12 @@ test "GC rebuilds multi namespace ordered indexes and retains exact live version
     var engine = try metadata.Engine.open(a, io, tmp.dir);
     var opened = true;
     defer if (opened) engine.deinit();
-    var keys: [120][16]u8 = undefined;
-    var mutations: [120]metadata.Mutation = undefined;
+    var keys: [metadata.namespace_count * 20][16]u8 = undefined;
+    var mutations: [metadata.namespace_count * 20]metadata.Mutation = undefined;
     for (&keys, &mutations, 0..) |*buffer, *mutation, index| {
-        const deleted = (index / 6) % 2 == 0;
+        const deleted = (index / metadata.namespace_count) % 2 == 0;
         mutation.* = .{
-            .record_type = @fromBackingInt(@intCast(index % 6 + 1)),
+            .record_type = @fromBackingInt(@intCast(index % metadata.namespace_count + 1)),
             .key = try std.fmt.bufPrint(buffer, "key-{d:0>4}", .{index}),
             .payload = if (deleted) "" else "live",
             .tombstone = deleted,
@@ -321,8 +321,8 @@ test "GC rebuilds multi namespace ordered indexes and retains exact live version
     }
     const generation = try engine.commit(&mutations);
     const result = try engine.collectTombstones();
-    try std.testing.expectEqual(@as(usize, 60), result.reclaimed);
-    for (1..7) |namespace| {
+    try std.testing.expectEqual(@as(usize, metadata.namespace_count * 10), result.reclaimed);
+    for (1..metadata.namespace_count + 1) |namespace| {
         const records = try engine.interface().scan(a, @fromBackingInt(@intCast(namespace)));
         defer records.deinit(a);
         try std.testing.expectEqual(@as(usize, 10), records.records.len);
@@ -334,7 +334,7 @@ test "GC rebuilds multi namespace ordered indexes and retains exact live version
             }
         }
     }
-    _ = try engine.interface().put(a, mutations[6].record_type, mutations[6].key, .{ .exact = generation }, "updated");
+    _ = try engine.interface().put(a, mutations[metadata.namespace_count].record_type, mutations[metadata.namespace_count].key, .{ .exact = generation }, "updated");
     engine.deinit();
     opened = false;
     var reopened = try metadata.Engine.open(a, io, tmp.dir);
@@ -345,7 +345,7 @@ test "GC rebuilds multi namespace ordered indexes and retains exact live version
         } else {
             const record = try reopened.interface().get(a, mutation.record_type, mutation.key);
             defer record.deinit(a);
-            try std.testing.expectEqualStrings(if (index == 6) "updated" else "live", record.payload);
+            try std.testing.expectEqualStrings(if (index == metadata.namespace_count) "updated" else "live", record.payload);
         }
     }
 }

@@ -17,12 +17,21 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import { Badge } from '@/components/ui/Badge'
 import { Switch } from '@/components/ui/switch'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription } from '@/components/ui/empty'
 import { InputGroup, InputGroupInput, InputGroupAddon, InputGroupButton } from '@/components/ui/input-group'
 import { formatBytes } from './multipart-upload'
 
 type Tag = { key: string; value: string }
 type Preview = { url: string; versionId?: string }
+
+function formatEtag(value: string | null | undefined): string {
+  const etag = value?.trim()
+  if (!etag) return '—'
+  if (etag.startsWith('"') && etag.endsWith('"')) return etag
+  return `"${etag}"`
+}
+
 interface Props {
   api: ApiClient
   bucket: string
@@ -279,11 +288,30 @@ export function ObjectDetailsSheet({ api, bucket, object, versionId, initialTags
         <Tabs defaultValue="information" className="object-details-tabs">
           <TabsList><TabsTrigger value="information">{t('objectDetails.information')}</TabsTrigger><TabsTrigger value="metadata">{t('objectDetails.metadata')}</TabsTrigger></TabsList>
           <TabsContent value="information">
-            <dl className="object-details-list">
-              {row(t('objectDetails.name'), <span className="object-details-copy"><span>{object.key}</span><Button variant="ghost" size="icon-xs" aria-label={t('objectDetails.copyName')} onClick={() => void copy(object.key)}><Copy /></Button></span>)}
+            <dl className="object-details-list object-details-information">
+              {row(t('objectDetails.name'), (
+                <span className="object-details-copy">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="object-details-path" tabIndex={0}>{object.key}</span>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-[min(32rem,calc(100vw-2rem))] break-all">
+                      {object.key}
+                    </TooltipContent>
+                  </Tooltip>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={t('objectDetails.copyName')}
+                    onClick={() => void copy(object.key)}
+                  >
+                    <Copy />
+                  </Button>
+                </span>
+              ))}
               {row(t('objects.size'), formatBytes(headers?.has('content-length') ? Number(headers.get('content-length')) : summary.size))}
               {row(t('objectDetails.contentType'), headLoading ? <Skeleton className="h-4 w-32" /> : contentType)}
-              {row('ETag', <code>{headers?.get('etag')?.replace(/^"|"$/g, '') || object.etag || '—'}</code>)}
+              {row('ETag', <code>{formatEtag(headers?.get('etag') || object.etag)}</code>)}
               {row(t('objects.modified'), formatDateTime(headers?.get('last-modified') || summary.last_modified))}
               {row(t('objectDetails.legalHold'), <Switch size="sm" checked={legalHold} disabled={!!busy || headLoading || !!headError} aria-label={t('objectDetails.legalHold')} onCheckedChange={enabled => void run('hold', async () => {
                 const result = await api.setObjectLegalHold(bucket, object.key, selectedVersionId, enabled)

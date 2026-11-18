@@ -1,3 +1,4 @@
+const SystemStore = @import("../metadata/system_store.zig").SystemStore;
 const std = @import("std");
 pub const Subscription = struct {
     id: []const u8,
@@ -31,12 +32,13 @@ fn validateStored(settings: Settings, legacy: bool) !void {
     }
 }
 fn path(a: std.mem.Allocator, bucket_id: [16]u8) ![]const u8 {
-    return std.fmt.allocPrint(a, ".zigfs/config/bucket-subscriptions/{s}.json", .{std.fmt.bytesToHex(bucket_id, .lower)});
+    return std.fmt.allocPrint(a, "config/bucket-subscriptions/{s}.json", .{std.fmt.bytesToHex(bucket_id, .lower)});
 }
 // Caller holds policy_mutex and supplies an arena. Bucket UUID prevents name reuse from inheriting rules.
-pub fn load(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, bucket_id: [16]u8) !Settings {
-    const bytes = root.readFileAlloc(io, try path(a, bucket_id), a, .limited(1024 * 1024)) catch |err| switch (err) {
-        error.FileNotFound => return .{},
+pub fn load(a: std.mem.Allocator, root: SystemStore, io: std.Io, bucket_id: [16]u8) !Settings {
+    _ = io;
+    const bytes = root.read(a, try path(a, bucket_id), 1024 * 1024) catch |err| switch (err) {
+        error.NotFound => return .{},
         else => return err,
     };
     const parsed = try std.json.parseFromSlice(Settings, a, bytes, .{ .allocate = .alloc_always });
@@ -58,53 +60,49 @@ pub fn load(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, bucket_id: [16]u
     try validate(result);
     return result;
 }
-pub fn save(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, bucket_id: [16]u8, value: Settings) !void {
+pub fn save(a: std.mem.Allocator, root: SystemStore, io: std.Io, bucket_id: [16]u8, value: Settings) !void {
+    _ = io;
     try validate(value);
     const filename = try path(a, bucket_id);
     const bytes = try std.json.Stringify.valueAlloc(a, value, .{});
-    try root.createDirPath(io, ".zigfs/config/bucket-subscriptions");
-    var file = try root.createFileAtomic(io, filename, .{ .replace = true });
-    defer file.deinit(io);
-    try file.file.writeStreamingAll(io, bytes);
-    try file.file.sync(io);
-    try file.replace(io);
-    try @import("../metadata/durable.zig").syncParent(root, io, filename);
+    try root.put(a, filename, bytes);
 }
 test "subscription configuration persists, isolates buckets and preserves data on invalid updates" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata = SystemStore{ .repository = repository.interface() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const id = @as([16]u8, @splat(1));
     const value: Settings = .{ .items = &.{.{ .id = "one", .prefix = "photos/", .suffix = ".png", .events = &.{ "PUT", "DELETE" } }} };
-    try save(a, tmp.dir, std.testing.io, id, value);
-    try std.testing.expectEqualStrings("photos/", (try load(a, tmp.dir, std.testing.io, id)).items[0].prefix);
-    try std.testing.expectEqual(@as(usize, 0), (try load(a, tmp.dir, std.testing.io, @as([16]u8, @splat(2)))).items.len);
-    try std.testing.expectError(error.InvalidEventSubscription, save(a, tmp.dir, std.testing.io, id, .{ .items = &.{.{ .id = "bad", .events = &.{"unknown"} }} }));
-    try std.testing.expectEqual(@as(usize, 1), (try load(a, tmp.dir, std.testing.io, id)).items.len);
-    try save(a, tmp.dir, std.testing.io, id, .{});
-    try std.testing.expectEqual(@as(usize, 0), (try load(a, tmp.dir, std.testing.io, id)).items.len);
+    try save(a, metadata, std.testing.io, id, value);
+    try std.testing.expectEqualStrings("photos/", (try load(a, metadata, std.testing.io, id)).items[0].prefix);
+    try std.testing.expectEqual(@as(usize, 0), (try load(a, metadata, std.testing.io, @as([16]u8, @splat(2)))).items.len);
+    try std.testing.expectError(error.InvalidEventSubscription, save(a, metadata, std.testing.io, id, .{ .items = &.{.{ .id = "bad", .events = &.{"unknown"} }} }));
+    try std.testing.expectEqual(@as(usize, 1), (try load(a, metadata, std.testing.io, id)).items.len);
+    try save(a, metadata, std.testing.io, id, .{});
+    try std.testing.expectEqual(@as(usize, 0), (try load(a, metadata, std.testing.io, id)).items.len);
 }
 
 test "retired replica rules are filtered on load and rejected on save" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata = SystemStore{ .repository = repository.interface() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const io = std.testing.io;
     const id = @as([16]u8, @splat(3));
-    try tmp.dir.createDirPath(io, ".zigfs/config/bucket-subscriptions");
     const filename = try path(a, id);
-    {
-        var file = try tmp.dir.createFile(io, filename, .{});
-        defer file.close(io);
-        try file.writeStreamingAll(io,
-            \\{"items":[{"id":"mixed","destination":"HTTP","prefix":"photos/","suffix":".jpg","events":["PUT","REPLICA","ILM"]},{"id":"retired","events":["REPLICA"]}]}
-        );
-    }
-    const result = try load(a, tmp.dir, io, id);
+    try metadata.put(a, filename,
+        \\{"items":[{"id":"mixed","destination":"HTTP","prefix":"photos/","suffix":".jpg","events":["PUT","REPLICA","ILM"]},{"id":"retired","events":["REPLICA"]}]}
+    );
+    const result = try load(a, metadata, io, id);
     try std.testing.expectEqual(@as(usize, 1), result.items.len);
     try std.testing.expectEqualStrings("HTTP", result.items[0].destination);
     try std.testing.expectEqualStrings("photos/", result.items[0].prefix);
@@ -112,8 +110,8 @@ test "retired replica rules are filtered on load and rejected on save" {
     try std.testing.expectEqual(@as(usize, 2), result.items[0].events.len);
     try std.testing.expectEqualStrings("PUT", result.items[0].events[0]);
     try std.testing.expectEqualStrings("ILM", result.items[0].events[1]);
-    try std.testing.expectError(error.InvalidEventSubscription, save(a, tmp.dir, io, id, .{ .items = &.{.{ .id = "bad", .events = &.{ "PUT", "REPLICA" } }} }));
-    try save(a, tmp.dir, io, id, result);
-    const bytes = try tmp.dir.readFileAlloc(io, filename, a, .limited(4096));
+    try std.testing.expectError(error.InvalidEventSubscription, save(a, metadata, io, id, .{ .items = &.{.{ .id = "bad", .events = &.{ "PUT", "REPLICA" } }} }));
+    try save(a, metadata, io, id, result);
+    const bytes = try metadata.read(a, filename, 4096);
     try std.testing.expect(std.mem.indexOf(u8, bytes, "REPLICA") == null);
 }

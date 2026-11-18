@@ -1,5 +1,9 @@
 # 网络配置 API
 
+> 存储说明：`<namespace>:config/...` 表示 metadata-engine 的业务命名空间及记录键，
+> 实际数据位于 `data/.zigfs.sys/`；这些名称不是文件路径，不能单独移动或编辑。
+> BFF 自身的配置、日志正文、证书及密钥文件仍独立保存。
+
 本页描述 Network 页面使用的管理接口。用户操作说明见 [网络配置](../network-settings.md)，部署示例见 [网络部署](../deployment/network.md)。
 
 完整路由契约见 [ZigFS Management OpenAPI](zigfs-management-v1.openapi.yaml) 和 [Admin BFF OpenAPI](admin-bff-v1.openapi.yaml)。
@@ -57,7 +61,7 @@ Content-Type: application/json
 
 这是整体替换接口，调用方应提交完整对象。`trusted_proxies` 省略时按空列表处理，会关闭信任；不要把省略字段理解为保持原值。
 
-持久化位置为 `storage.data_root/.zigfs/config/network.json`。没有保存文件时，Public URL 和寻址模式使用启动配置，可信代理为空。写入使用原子替换和同步。
+持久化位置为 `settings:config/network.json`。没有保存文件时，Public URL 和寻址模式使用启动配置，可信代理为空。写入使用引擎事务提交和 WAL 同步。
 
 ## 保存监听配置
 
@@ -94,7 +98,7 @@ Authorization: Bearer <management-session-token>
 }
 ```
 
-直接调用不协调 BFF 上游，需要调用方自行处理连接配置。ZigFS 持久化位置为 `storage.data_root/.zigfs/config/listener.json`；BFF 文件由 `ZIGFS_ADMIN_CONFIG` 指定。
+直接调用不协调 BFF 上游，需要调用方自行处理连接配置。ZigFS 持久化位置为 `settings:config/listener.json`；BFF 文件由 `ZIGFS_ADMIN_CONFIG` 指定。
 
 ### 协调与失败语义
 

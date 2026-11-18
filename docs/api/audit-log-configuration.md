@@ -1,12 +1,16 @@
 # Independent audit log configuration
 
+> 存储说明：`<namespace>:config/...` 表示 metadata-engine 的业务命名空间及记录键，
+> 实际数据位于 `data/.zigfs.sys/`；这些名称不是文件路径，不能单独移动或编辑。
+> BFF 自身的配置、日志正文、证书及密钥文件仍独立保存。
+
 System Settings has one **Logs** entry in its vertical navigation. Inside that
 page, horizontal **System logs** / **Audit logs** tabs switch between the forms. Both reuse the same base, retention and access form. Audit has no
 output selector: the server only accepts `output=file`.
 
 | Concern | System logs | Audit logs |
 | --- | --- | --- |
-| Configuration | `data/.zigfs/config/log_config.json` | `data/.zigfs/config/audit_log_config.json` |
+| Configuration | `log_settings:config/log_config.json` | `audit_settings:config/audit_log_config.json` |
 | Default directory | `data/logs/` | `data/audit-logs/` |
 | Owned files | `zigfs-*.log` | `audit-*.log` |
 | Output | console / file / both | file only |

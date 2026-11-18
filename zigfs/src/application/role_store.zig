@@ -1,5 +1,5 @@
+const SystemStore = @import("../metadata/system_store.zig").SystemStore;
 const std = @import("std");
-const durable = @import("../metadata/durable.zig");
 const iam = @import("../auth/iam_policy.zig");
 const identities = @import("identity_store.zig");
 
@@ -48,7 +48,7 @@ pub const Snapshot = struct {
     roles: []const Role = &.{},
     sessions: []const Session = &.{},
 };
-pub const path = ".zigfs/system/roles.json";
+pub const path = "system/roles.json";
 pub const default_account_id = "000000000000";
 
 pub fn validName(name: []const u8) bool {
@@ -120,9 +120,9 @@ pub fn validate(a: std.mem.Allocator, role: Role, snapshot: Snapshot, policies: 
         if (!found) return error.PolicyNotFound;
     }
 }
-pub fn load(root: std.Io.Dir, io: std.Io, a: std.mem.Allocator) !std.json.Parsed(Snapshot) {
-    const bytes = root.readFileAlloc(io, path, a, .limited(16 * 1024 * 1024)) catch |err| switch (err) {
-        error.FileNotFound => return std.json.parseFromSlice(Snapshot, a, "{\"accounts\":[{\"id\":\"000000000000\",\"name\":\"default\",\"enabled\":true,\"updated_at\":0}]}", .{ .allocate = .alloc_always }),
+pub fn load(root: SystemStore, io: std.Io, a: std.mem.Allocator) !std.json.Parsed(Snapshot) {
+    const bytes = root.read(a, path, 16 * 1024 * 1024) catch |err| switch (err) {
+        error.NotFound => return std.json.parseFromSlice(Snapshot, a, "{\"accounts\":[{\"id\":\"000000000000\",\"name\":\"default\",\"enabled\":true,\"updated_at\":0}]}", .{ .allocate = .alloc_always }),
         else => return err,
     };
     defer a.free(bytes);
@@ -170,17 +170,12 @@ pub fn load(root: std.Io.Dir, io: std.Io, a: std.mem.Allocator) !std.json.Parsed
     if (migrated) try save(root, io, a, parsed.value);
     return parsed;
 }
-pub fn save(root: std.Io.Dir, io: std.Io, a: std.mem.Allocator, snapshot: Snapshot) !void {
+pub fn save(root: SystemStore, io: std.Io, a: std.mem.Allocator, snapshot: Snapshot) !void {
+    _ = io;
     if (snapshot.accounts.len > 16 or snapshot.organizations.len > 10000 or snapshot.roles.len > 10000 or snapshot.sessions.len > 100000) return error.RoleLimit;
     const bytes = try std.json.Stringify.valueAlloc(a, snapshot, .{});
     defer a.free(bytes);
-    try root.createDirPath(io, ".zigfs/system");
-    var atomic = try root.createFileAtomic(io, path, .{ .replace = true });
-    defer atomic.deinit(io);
-    try atomic.file.writeStreamingAll(io, bytes);
-    try atomic.file.sync(io);
-    try atomic.replace(io);
-    try durable.syncParent(root, io, path);
+    try root.put(a, path, bytes);
 }
 pub fn canAssume(a: std.mem.Allocator, role: Role, principal: iam.Context, action: []const u8, resource: []const u8) !bool {
     _ = try std.json.parseFromSlice(std.json.Value, a, role.trust_policy, .{});
@@ -211,25 +206,29 @@ test "role sessions report active state and references" {
 test "role store rejects duplicate IDs, orphan sessions, and corrupt JSON" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata = SystemStore{ .repository = repository.interface() };
     const a = std.testing.allocator;
     const io = std.testing.io;
-    try tmp.dir.createDirPath(io, ".zigfs/system");
-    try tmp.dir.writeFile(io, .{ .sub_path = path, .data = "{\"accounts\":[{\"id\":\"000000000000\"},{\"id\":\"000000000000\"}]}" });
-    try std.testing.expectError(error.DuplicateRoleReference, load(tmp.dir, io, a));
-    try tmp.dir.writeFile(io, .{ .sub_path = path, .data = "{\"accounts\":[{\"id\":\"000000000000\"}],\"roles\":[],\"sessions\":[{\"access_key\":\"AKIA\",\"role_id\":\"missing\",\"session_name\":\"s\",\"subject_id\":\"x\",\"expires_at\":1}]}" });
-    try std.testing.expectError(error.InvalidRoleReference, load(tmp.dir, io, a));
-    try tmp.dir.writeFile(io, .{ .sub_path = path, .data = "not json" });
-    try std.testing.expectError(error.SyntaxError, load(tmp.dir, io, a));
+    try metadata.put(std.testing.allocator, path, "{\"accounts\":[{\"id\":\"000000000000\"},{\"id\":\"000000000000\"}]}");
+    try std.testing.expectError(error.DuplicateRoleReference, load(metadata, io, a));
+    try metadata.put(std.testing.allocator, path, "{\"accounts\":[{\"id\":\"000000000000\"}],\"roles\":[],\"sessions\":[{\"access_key\":\"AKIA\",\"role_id\":\"missing\",\"session_name\":\"s\",\"subject_id\":\"x\",\"expires_at\":1}]}");
+    try std.testing.expectError(error.InvalidRoleReference, load(metadata, io, a));
+    try metadata.put(std.testing.allocator, path, "not json");
+    try std.testing.expectError(error.SyntaxError, load(metadata, io, a));
 }
 
 test "revoked legacy sessions remain readable after their role was deleted" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata = SystemStore{ .repository = repository.interface() };
     const a = std.testing.allocator;
     const io = std.testing.io;
-    try tmp.dir.createDirPath(io, ".zigfs/system");
-    try save(tmp.dir, io, a, .{ .sessions = &.{.{ .access_key = "AKIA1234567890123456", .role_id = "deleted-role", .session_name = "console", .subject_id = "deleted-role:console", .expires_at = 1, .revoked = true }} });
-    const loaded = try load(tmp.dir, io, a);
+    try save(metadata, io, a, .{ .sessions = &.{.{ .access_key = "AKIA1234567890123456", .role_id = "deleted-role", .session_name = "console", .subject_id = "deleted-role:console", .expires_at = 1, .revoked = true }} });
+    const loaded = try load(metadata, io, a);
     defer loaded.deinit();
     try std.testing.expectEqual(@as(usize, 1), loaded.value.sessions.len);
     try std.testing.expect(loaded.value.sessions[0].revoked);

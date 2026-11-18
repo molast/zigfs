@@ -159,7 +159,7 @@ ZIGFS_ADMIN_SESSION_SECRET=phase7-isolated-session-secret-000000000000
                 try: s3.put_object(Bucket=bucket,Key='not-started',Body=b'no',ServerSideEncryption='aws:kms')
                 except ClientError as error: assert error.response['ResponseMetadata']['HTTPStatusCode']==503
                 else: raise AssertionError('unstarted KMS accepted write')
-                stored_config = root/'data'/'.zigfs'/'config'/'kms_config.json'/'xl.meta'
+                stored_config = root / 'data/.zigfs.sys/wal'
                 stored_bytes = stored_config.read_bytes()
                 started = api('settings/kms/start', {}, 'POST')
                 assert started['state']=='running' and started['healthy']
@@ -245,13 +245,8 @@ ZIGFS_ADMIN_SESSION_SECRET=phase7-isolated-session-secret-000000000000
             print('PASS restart, retained backend profiles, KV2 version pinning and bucket defaults', flush=True)
             assert (root/'data'/'test'/'test-key.key').stat().st_mode & 0o777 == 0o600
             assert len(base64.b64decode(json.loads((root/'data'/'test'/'test-key.key').read_text())['encrypted_key_material'])) == 32
-            config_bytes=(root/'data'/'.zigfs'/'config'/'kms_config.json'/'xl.meta').read_bytes()
-            assert config_bytes[:4] == b'ZFKM'
-            assert int.from_bytes(config_bytes[6:8], 'little') == 2
-            assert b'ciphertext' not in config_bytes and b'nonce' not in config_bytes
-            assert not (root/'data'/'.zigfs'/'config'/'kms_config.json'/'profiles').exists()
-            import hashlib
-            assert hashlib.sha256(config_bytes[44:]).digest() == config_bytes[12:44]
+            assert not (root / 'data/.zigfs/config/kms_config.json').exists()
+            assert (root / 'data/.zigfs.sys/wal').is_file()
             probe=json.loads((root/'data'/'test'/'zigfs-internal-kms-probe.key').read_text())
             assert probe['format_version']==1 and probe['key_id']=='zigfs-internal-kms-probe'
             assert probe['algorithm']=='AES_256' and probe['usage']=='EncryptDecrypt'

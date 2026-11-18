@@ -106,7 +106,7 @@ fn writeFrame(
 }
 
 test "encrypted stream emits an authenticated empty frame" {
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
     const key = @as([@sizeOf(secret_box.Key)]u8, @splat(0x37));
     var source = test_streams.SliceSource.init("");
     var sink = test_streams.CollectingSink.init(std.testing.allocator);

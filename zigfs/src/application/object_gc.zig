@@ -34,6 +34,7 @@ pub const ObjectGcService = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     data_root: std.Io.Dir,
+    system_store: @import("../metadata/system_store.zig").SystemStore,
     object_store: object_store_port.ObjectStore,
     data_store: data_store_port.ObjectDataStore,
     multipart_store: multipart_store_port.MultipartStore,
@@ -47,6 +48,7 @@ pub const ObjectGcService = struct {
         allocator: std.mem.Allocator,
         io: std.Io,
         data_root: std.Io.Dir,
+        system_store: @import("../metadata/system_store.zig").SystemStore,
         object_store: object_store_port.ObjectStore,
         data_store: data_store_port.ObjectDataStore,
         multipart_store: multipart_store_port.MultipartStore,
@@ -60,6 +62,7 @@ pub const ObjectGcService = struct {
             .allocator = allocator,
             .io = io,
             .data_root = data_root,
+            .system_store = system_store,
             .object_store = object_store,
             .data_store = data_store,
             .multipart_store = multipart_store,
@@ -109,7 +112,7 @@ pub const ObjectGcService = struct {
             return err;
         };
         self.state_mutex.unlock(self.io);
-        _ = object_tags.pruneOrphans(self.allocator, self.data_root, self.io, &live_tags) catch |err| return switch (err) {
+        _ = object_tags.pruneOrphans(self.allocator, self.system_store, self.io, &live_tags) catch |err| return switch (err) {
             error.InvalidTag => error.CorruptMetadata,
             error.OutOfMemory => error.OutOfMemory,
             else => error.Unavailable,
@@ -223,7 +226,7 @@ pub const ObjectGcService = struct {
             return err;
         };
         self.state_mutex.unlock(self.io);
-        _ = object_tags.pruneOrphans(self.allocator, self.data_root, self.io, &live_tags) catch |err| return switch (err) {
+        _ = object_tags.pruneOrphans(self.allocator, self.system_store, self.io, &live_tags) catch |err| return switch (err) {
             error.InvalidTag => error.CorruptMetadata,
             error.OutOfMemory => error.OutOfMemory,
             else => error.Unavailable,

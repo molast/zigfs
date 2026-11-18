@@ -1,5 +1,9 @@
 # Runtime log configuration
 
+> 存储说明：`<namespace>:config/...` 表示 metadata-engine 的业务命名空间及记录键，
+> 实际数据位于 `data/.zigfs.sys/`；这些名称不是文件路径，不能单独移动或编辑。
+> BFF 自身的配置、日志正文、证书及密钥文件仍独立保存。
+
 ZigFS owns runtime log configuration. Admin calls the BFF, which forwards to the
 Management API; it never reads or writes the data directory directly.
 
@@ -40,7 +44,7 @@ with a converted range of 1 byte through 1 TiB.
 ## Persistence and paths
 
 Configuration is atomically written with mode `0600` to
-`data/.zigfs/config/log_config.json` and restored at startup. Saving takes effect
+`log_settings:config/log_config.json` and restored at startup. Saving takes effect
 without restarting. Invalid stored configuration causes initialization to fail
 instead of silently discarding it.
 
@@ -111,7 +115,7 @@ Startup warnings and failures remain diagnostic logs and follow the logging pipe
 ## Independent audit settings
 
 `GET/PUT /_admin/v1/settings/audit-logs` (BFF: `/api/v1/settings/audit-logs`)
-uses a separate config file `data/.zigfs/config/audit_log_config.json` and an
+uses a separate engine record `audit_settings:config/audit_log_config.json` and an
 independent logging service. `/query` and `/download` have the same bounded
 content response as runtime logs but read only audit files. System Settings
 provides one **Logs** navigation item with **System logs** and **Audit logs**

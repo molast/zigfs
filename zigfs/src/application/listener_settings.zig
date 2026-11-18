@@ -1,6 +1,7 @@
+const SystemStore = @import("../metadata/system_store.zig").SystemStore;
 const std = @import("std");
 pub const Settings = struct { api_address: []const u8 };
-const path = ".zigfs/config/listener.json";
+const path = "config/listener.json";
 pub fn validate(value: []const u8) !std.Io.net.IpAddress {
     if (value.len > 128) return error.InvalidListenAddress;
     const address = std.Io.net.IpAddress.parseLiteral(value) catch return error.InvalidListenAddress;
@@ -12,25 +13,21 @@ pub fn validate(value: []const u8) !std.Io.net.IpAddress {
     return address;
 }
 // Uses a request/startup arena.
-pub fn load(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, fallback: []const u8) ![]const u8 {
-    const bytes = root.readFileAlloc(io, path, a, .limited(1024)) catch |err| switch (err) {
-        error.FileNotFound => return fallback,
+pub fn load(a: std.mem.Allocator, root: SystemStore, io: std.Io, fallback: []const u8) ![]const u8 {
+    _ = io;
+    const bytes = root.read(a, path, 1024) catch |err| switch (err) {
+        error.NotFound => return fallback,
         else => return err,
     };
     const parsed = try std.json.parseFromSlice(Settings, a, bytes, .{ .allocate = .alloc_always });
     _ = try validate(parsed.value.api_address);
     return parsed.value.api_address;
 }
-pub fn save(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, address: []const u8) !void {
+pub fn save(a: std.mem.Allocator, root: SystemStore, io: std.Io, address: []const u8) !void {
+    _ = io;
     _ = try validate(address);
     const bytes = try std.json.Stringify.valueAlloc(a, Settings{ .api_address = address }, .{});
-    try root.createDirPath(io, ".zigfs/config");
-    var file = try root.createFileAtomic(io, path, .{ .replace = true });
-    defer file.deinit(io);
-    try file.file.writeStreamingAll(io, bytes);
-    try file.file.sync(io);
-    try file.replace(io);
-    try @import("../metadata/durable.zig").syncParent(root, io, path);
+    try root.put(a, path, bytes);
 }
 test "listener values require literal addresses and nonzero ports" {
     _ = try validate("0.0.0.0:9000");

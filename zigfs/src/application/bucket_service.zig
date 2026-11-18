@@ -438,7 +438,7 @@ fn mapIndexError(err: index_module.Error) Error {
 }
 
 test "bucket service supports idempotent create head list delete and recreate" {
-    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MemoryMetadataRepository = @import("test_support").memory_metadata_repository.MemoryMetadataRepository;
     const MetadataBucketStore = @import("../metadata/bucket_store.zig").MetadataBucketStore;
     var memory = MemoryMetadataRepository.init(std.testing.allocator);
     defer memory.deinit();
@@ -492,7 +492,7 @@ test "bucket service supports idempotent create head list delete and recreate" {
 }
 
 test "bucket service rejects invalid names and non-empty delete" {
-    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MemoryMetadataRepository = @import("test_support").memory_metadata_repository.MemoryMetadataRepository;
     const MetadataBucketStore = @import("../metadata/bucket_store.zig").MetadataBucketStore;
     var memory = MemoryMetadataRepository.init(std.testing.allocator);
     defer memory.deinit();
@@ -525,7 +525,7 @@ test "bucket service rejects invalid names and non-empty delete" {
 }
 
 test "bucket service requires versioning and prevents disabling object locking" {
-    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MemoryMetadataRepository = @import("test_support").memory_metadata_repository.MemoryMetadataRepository;
     const MetadataBucketStore = @import("../metadata/bucket_store.zig").MetadataBucketStore;
     var memory = MemoryMetadataRepository.init(std.testing.allocator);
     defer memory.deinit();

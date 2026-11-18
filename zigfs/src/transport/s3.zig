@@ -109,7 +109,7 @@ pub fn serveRequest(
         const io = application.io orelse return respondError(request, allocator, .service_unavailable, request_id);
         application.policy_mutex.lockUncancelable(io);
         defer application.policy_mutex.unlock(io);
-        break :network @import("../application/network_settings.zig").load(network_arena.allocator(), application.data_root orelse return respondError(request, allocator, .service_unavailable, request_id), io, application.config) catch return respondError(request, allocator, .service_unavailable, request_id);
+        break :network @import("../application/network_settings.zig").load(network_arena.allocator(), application.systemStore(), io, application.config) catch return respondError(request, allocator, .service_unavailable, request_id);
     };
     const host = if (network.s3_virtual_hosted_style)
         singleHeader(headers.items, "host") catch {
@@ -480,9 +480,9 @@ fn appendRoleOrganizationContext(a: std.mem.Allocator, app: *Application, owner:
     if (!std.mem.startsWith(u8, owner, "role:")) return;
     const suffix = owner["role:".len..];
     const split = std.mem.indexOfScalar(u8, suffix, ':') orelse return;
-    const root = app.data_root orelse return;
+    _ = app.metadata_repository orelse return;
     const io = app.io orelse return;
-    const loaded = @import("../application/role_store.zig").load(root, io, a) catch return;
+    const loaded = @import("../application/role_store.zig").load(app.systemStore(), io, a) catch return;
     const role = @import("../application/role_store.zig").findRole(loaded.value, suffix[0..split]) orelse return;
     if (role.organization_id.len == 0) return;
     const org = @import("../application/role_store.zig").findOrganization(loaded.value, role.organization_id) orelse return;
@@ -688,9 +688,9 @@ fn augmentExistingObjectTags(a: std.mem.Allocator, app: *Application, bucket: []
     const item = lease.metadata();
     var version_buffer: [32]u8 = undefined;
     const version_text = item.version_id.write(&version_buffer);
-    const root = app.data_root orelse return base;
+    _ = app.metadata_repository orelse return base;
     const io = app.io orelse return error.Unavailable;
-    const tags = object_tags.load(a, root, io, bucket, object, version_text) catch return base;
+    const tags = object_tags.load(a, app.systemStore(), io, bucket, object, version_text) catch return base;
     var entries: std.ArrayList(iam.Entry) = .empty;
     try entries.appendSlice(a, base.entries);
     for (tags.tags) |tag| try entries.append(a, .{ .key = try std.fmt.allocPrint(a, "s3:ExistingObjectTag/{s}", .{tag.key}), .value = try a.dupe(u8, tag.value) });
@@ -719,11 +719,11 @@ fn resourceContext(a: std.mem.Allocator, app: *Application, bucket_name: ?[]cons
         }
     }
     const io = app.io orelse return error.Unavailable;
-    const root = app.data_root orelse return error.Unavailable;
+    _ = app.metadata_repository orelse return error.Unavailable;
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
     ctx.entries = try entries.toOwnedSlice(a);
-    if (try resource_policies.load(a, root, io, bucket.id)) |record| {
+    if (try resource_policies.load(a, app.systemStore(), io, bucket.id)) |record| {
         if (record.value.deleted) return ctx;
         ctx.resource_document = record.value.document;
         ctx.principal_bindings = record.value.bindings;
@@ -744,7 +744,7 @@ fn serveObjectTagging(request: *std.http.Server.Request, app: *Application, pars
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const root = app.data_root orelse return respondError(request, app.allocator, .service_unavailable, request_id);
+    _ = app.metadata_repository orelse return respondError(request, app.allocator, .service_unavailable, request_id);
     const io = app.io orelse return respondError(request, app.allocator, .service_unavailable, request_id);
     var version_buffer: [32]u8 = undefined;
     const version = object.version_id.write(&version_buffer);
@@ -754,7 +754,7 @@ fn serveObjectTagging(request: *std.http.Server.Request, app: *Application, pars
         // concurrent tag mutations and prevents lost updates.
         app.state_mutex.lockUncancelable(io);
         defer app.state_mutex.unlock(io);
-        const record = object_tags.load(a, root, io, bucket_name, object_name, version) catch return respondError(request, app.allocator, .service_unavailable, request_id);
+        const record = object_tags.load(a, app.systemStore(), io, bucket_name, object_name, version) catch return respondError(request, app.allocator, .service_unavailable, request_id);
         var xml: std.Io.Writer.Allocating = .init(app.allocator);
         defer xml.deinit();
         try xml.writer.writeAll("<Tagging xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><TagSet>");
@@ -771,7 +771,7 @@ fn serveObjectTagging(request: *std.http.Server.Request, app: *Application, pars
     if (parsed.operation == .delete_object_tagging) {
         app.state_mutex.lockUncancelable(io);
         defer app.state_mutex.unlock(io);
-        object_tags.remove(a, root, io, bucket_name, object_name, version) catch return respondError(request, app.allocator, .service_unavailable, request_id);
+        object_tags.remove(a, app.systemStore(), io, bucket_name, object_name, version) catch return respondError(request, app.allocator, .service_unavailable, request_id);
         return respondEmpty(request, .no_content, request_id, &.{});
     }
     var tags: std.ArrayList(object_tags.Tag) = .empty;
@@ -791,7 +791,7 @@ fn serveObjectTagging(request: *std.http.Server.Request, app: *Application, pars
     }
     app.state_mutex.lockUncancelable(io);
     defer app.state_mutex.unlock(io);
-    object_tags.save(a, root, io, bucket_name, object_name, version, .{ .tags = tags.items }) catch |err| return respondError(request, app.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
+    object_tags.save(a, app.systemStore(), io, bucket_name, object_name, version, .{ .tags = tags.items }) catch |err| return respondError(request, app.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
     return respondEmpty(request, .no_content, request_id, &.{});
 }
 
@@ -884,7 +884,7 @@ fn serveBucketPolicy(request: *std.http.Server.Request, app: *Application, parse
     const bucket = ensureBucketOwner(app, parsed.bucket.?, access) catch |err| return respondError(request, app.allocator, mapBucketError(err), request_id);
     defer bucket.deinit(app.allocator);
     const io = app.io orelse return respondError(request, app.allocator, .service_unavailable, request_id);
-    const root = app.data_root orelse return respondError(request, app.allocator, .service_unavailable, request_id);
+    _ = app.metadata_repository orelse return respondError(request, app.allocator, .service_unavailable, request_id);
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -901,22 +901,22 @@ fn serveBucketPolicy(request: *std.http.Server.Request, app: *Application, parse
     defer app.policy_mutex.unlock(io);
     switch (parsed.operation) {
         .get_bucket_policy => {
-            const record = (resource_policies.load(a, root, io, bucket.id) catch return respondError(request, app.allocator, .service_unavailable, request_id)) orelse return respondError(request, app.allocator, .no_such_bucket_policy, request_id);
+            const record = (resource_policies.load(a, app.systemStore(), io, bucket.id) catch return respondError(request, app.allocator, .service_unavailable, request_id)) orelse return respondError(request, app.allocator, .no_such_bucket_policy, request_id);
             if (record.value.deleted) return respondError(request, app.allocator, .no_such_bucket_policy, request_id);
             try request.respond(record.value.document, .{ .status = .ok, .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }} });
             return .ok;
         },
         .put_bucket_policy => {
             const identities = @import("../application/identity_store.zig");
-            const snapshot = identities.load(root, io, a) catch return respondError(request, app.allocator, .service_unavailable, request_id);
+            const snapshot = identities.load(app.systemStore(), io, a) catch return respondError(request, app.allocator, .service_unavailable, request_id);
             defer snapshot.deinit();
-            const role_snapshot = @import("../application/role_store.zig").load(root, io, a) catch return respondError(request, app.allocator, .service_unavailable, request_id);
+            const role_snapshot = @import("../application/role_store.zig").load(app.systemStore(), io, a) catch return respondError(request, app.allocator, .service_unavailable, request_id);
             defer role_snapshot.deinit();
             const record = resource_policies.prepareWithRoles(a, body, bucket.name, snapshot.value, role_snapshot.value) catch return respondError(request, app.allocator, .malformed_policy, request_id);
             const buckets = app.bucketService() orelse return respondError(request, app.allocator, .service_unavailable, request_id);
             const custom_bucket = buckets.setAccessPolicy(bucket.name, .custom) catch return respondError(request, app.allocator, .service_unavailable, request_id);
             custom_bucket.deinit(app.allocator);
-            resource_policies.save(a, root, io, bucket.id, record) catch return respondError(request, app.allocator, .service_unavailable, request_id);
+            resource_policies.save(a, app.systemStore(), io, bucket.id, record) catch return respondError(request, app.allocator, .service_unavailable, request_id);
         },
         .delete_bucket_policy => {
             if (bucket.access_policy == .custom) {
@@ -924,7 +924,7 @@ fn serveBucketPolicy(request: *std.http.Server.Request, app: *Application, parse
                 const private_bucket = buckets.setAccessPolicy(bucket.name, .private) catch return respondError(request, app.allocator, .service_unavailable, request_id);
                 private_bucket.deinit(app.allocator);
             }
-            resource_policies.remove(a, root, io, bucket.id) catch return respondError(request, app.allocator, .service_unavailable, request_id);
+            resource_policies.remove(a, app.systemStore(), io, bucket.id) catch return respondError(request, app.allocator, .service_unavailable, request_id);
         },
         else => unreachable,
     }
@@ -1792,10 +1792,10 @@ fn servePutObject(
         var tags: std.ArrayList(object_tags.Tag) = .empty;
         defer tags.deinit(application.allocator);
         parseTagHeader(application.allocator, raw_tags, &tags) catch |err| return respondError(request, application.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
-        const root = application.data_root orelse return respondError(request, application.allocator, .service_unavailable, request_id);
+        _ = application.metadata_repository orelse return respondError(request, application.allocator, .service_unavailable, request_id);
         const io = application.io orelse return respondError(request, application.allocator, .service_unavailable, request_id);
         var version_buffer: [object_domain.VersionId.encoded_length]u8 = undefined;
-        object_tags.save(application.allocator, root, io, bucket_name, key, object.version_id.write(&version_buffer), .{ .tags = tags.items }) catch |err| return respondError(request, application.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
+        object_tags.save(application.allocator, application.systemStore(), io, bucket_name, key, object.version_id.write(&version_buffer), .{ .tags = tags.items }) catch |err| return respondError(request, application.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
     }
     var etag_buffer: [34]u8 = undefined;
     const etag = formatEtag(object.etag_md5, &etag_buffer);
@@ -2011,10 +2011,10 @@ fn servePostPolicyUpload(
         var tags: std.ArrayList(object_tags.Tag) = .empty;
         defer tags.deinit(application.allocator);
         parseTagHeader(application.allocator, raw_tags, &tags) catch |err| return respondError(request, application.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
-        const root = application.data_root orelse return respondError(request, application.allocator, .service_unavailable, request_id);
+        _ = application.metadata_repository orelse return respondError(request, application.allocator, .service_unavailable, request_id);
         const io = application.io orelse return respondError(request, application.allocator, .service_unavailable, request_id);
         var version_buffer: [object_domain.VersionId.encoded_length]u8 = undefined;
-        object_tags.save(application.allocator, root, io, parsed.bucket.?, expanded_key, object.version_id.write(&version_buffer), .{ .tags = tags.items }) catch |err| return respondError(request, application.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
+        object_tags.save(application.allocator, application.systemStore(), io, parsed.bucket.?, expanded_key, object.version_id.write(&version_buffer), .{ .tags = tags.items }) catch |err| return respondError(request, application.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
     }
     form.finish() catch {
         return respondError(request, application.allocator, .invalid_request, request_id);
@@ -2449,15 +2449,15 @@ fn serveCopyObject(
     var copied_tags: std.ArrayList(object_tags.Tag) = .empty;
     defer copied_tags.deinit(application.allocator);
     if (tagging_directive == null or std.ascii.eqlIgnoreCase(tagging_directive.?, "COPY")) {
-        const root = application.data_root orelse return respondError(request, application.allocator, .service_unavailable, request_id);
+        _ = application.metadata_repository orelse return respondError(request, application.allocator, .service_unavailable, request_id);
         const io = application.io orelse return respondError(request, application.allocator, .service_unavailable, request_id);
         var source_version_buffer: [object_domain.VersionId.encoded_length]u8 = undefined;
-        const record = object_tags.load(application.allocator, root, io, source.bucket, source.key, source_object.version_id.write(&source_version_buffer)) catch return respondError(request, application.allocator, .service_unavailable, request_id);
+        const record = object_tags.load(application.allocator, application.systemStore(), io, source.bucket, source.key, source_object.version_id.write(&source_version_buffer)) catch return respondError(request, application.allocator, .service_unavailable, request_id);
         for (record.tags) |tag| try copied_tags.append(application.allocator, .{ .key = try application.allocator.dupe(u8, tag.key), .value = try application.allocator.dupe(u8, tag.value) });
     } else if (singleHeader(headers, "x-amz-tagging") catch null) |raw_tags| {
         parseTagHeader(application.allocator, raw_tags, &copied_tags) catch |err| return respondError(request, application.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
     }
-    const tag_root = application.data_root orelse return respondError(request, application.allocator, .service_unavailable, request_id);
+    const tag_root = application.systemStore();
     const tag_io = application.io orelse return respondError(request, application.allocator, .service_unavailable, request_id);
     var target_tag_version_buffer: [object_domain.VersionId.encoded_length]u8 = undefined;
     object_tags.save(application.allocator, tag_root, tag_io, target_bucket_name, target_key, object.version_id.write(&target_tag_version_buffer), .{ .tags = copied_tags.items }) catch |err| return respondError(request, application.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
@@ -2701,10 +2701,10 @@ fn serveDeleteObject(
         return respondError(request, application.allocator, mapObjectError(err), request_id);
     };
     if (tag_version) |version| {
-        if (application.data_root) |root| {
+        if (application.metadata_repository != null) {
             if (application.io) |io| {
                 var tag_version_buffer: [object_domain.VersionId.encoded_length]u8 = undefined;
-                object_tags.remove(application.allocator, root, io, bucket_name, key, version.write(&tag_version_buffer)) catch {};
+                object_tags.remove(application.allocator, application.systemStore(), io, bucket_name, key, version.write(&tag_version_buffer)) catch {};
             }
         }
     }
@@ -2764,9 +2764,9 @@ fn serveCreateMultipartUpload(
         var tags: std.ArrayList(object_tags.Tag) = .empty;
         defer tags.deinit(application.allocator);
         parseTagHeader(application.allocator, raw_tags, &tags) catch |err| return respondError(request, application.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
-        const root = application.data_root orelse return respondError(request, application.allocator, .service_unavailable, request_id);
+        _ = application.metadata_repository orelse return respondError(request, application.allocator, .service_unavailable, request_id);
         const io = application.io orelse return respondError(request, application.allocator, .service_unavailable, request_id);
-        object_tags.save(application.allocator, root, io, parsed.bucket.?, parsed.key.?, upload_id, .{ .tags = tags.items }) catch |err| return respondError(request, application.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
+        object_tags.save(application.allocator, application.systemStore(), io, parsed.bucket.?, parsed.key.?, upload_id, .{ .tags = tags.items }) catch |err| return respondError(request, application.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
     }
     var xml: std.Io.Writer.Allocating = .init(application.allocator);
     defer xml.deinit();
@@ -3125,12 +3125,12 @@ fn serveCompleteMultipartUpload(
     };
     defer object.deinit(application.allocator);
     if (upload_config != null and application.data_root != null and application.io != null) {
-        const root = application.data_root.?;
+        _ = application.metadata_repository.?;
         const io = application.io.?;
-        const pending = object_tags.load(application.allocator, root, io, parsed.bucket.?, parsed.key.?, upload_id) catch object_tags.Record{};
+        const pending = object_tags.load(application.allocator, application.systemStore(), io, parsed.bucket.?, parsed.key.?, upload_id) catch object_tags.Record{};
         var version_buffer: [object_domain.VersionId.encoded_length]u8 = undefined;
-        object_tags.save(application.allocator, root, io, parsed.bucket.?, parsed.key.?, object.version_id.write(&version_buffer), pending) catch |err| return respondError(request, application.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
-        object_tags.remove(application.allocator, root, io, parsed.bucket.?, parsed.key.?, upload_id) catch {};
+        object_tags.save(application.allocator, application.systemStore(), io, parsed.bucket.?, parsed.key.?, object.version_id.write(&version_buffer), pending) catch |err| return respondError(request, application.allocator, if (err == error.TooManyTags or err == error.InvalidTag or err == error.DuplicateTag) .invalid_request else .service_unavailable, request_id);
+        object_tags.remove(application.allocator, application.systemStore(), io, parsed.bucket.?, parsed.key.?, upload_id) catch {};
     }
     var etag_buffer: [40]u8 = undefined;
     const etag = formatObjectEtag(&object, &etag_buffer);

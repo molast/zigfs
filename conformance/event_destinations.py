@@ -70,7 +70,7 @@ ZIGFS_DATA_ROOT={root}/data
             token = login()
             assert api('event-destinations')['items'] == []
             reject(lambda: api('event-destinations',bearer=''),401)
-            api('users',{'name':'reader','password':'reader-password','policies':['readonly']})
+            api('users',{'name':'reader','password':'reader-password','policies':['diagnostics']})
             reader = login('reader','reader-password')
             reject(lambda: api('event-destinations',bearer=reader),403)
             value = {'name':'WEBHOOK_1','type':'webhook','endpoint':'http://127.0.0.1:1/events','auth_token':'test-webhook-secret','queue_limit':1000,'queue_directory':'events/WEBHOOK_1','client_certificate':'certs/client.crt','client_key':'certs/client.key','client_ca':'certs/ca.crt','skip_tls_verify':False,'comment':'Configuration only'}
@@ -85,7 +85,8 @@ ZIGFS_DATA_ROOT={root}/data
             reject(lambda: api('event-destinations/WEBHOOK_1',{**created,'client_key':''},'PUT'),400)
             updated = api('event-destinations/WEBHOOK_1',{**created,'comment':'Updated'},'PUT')
             assert updated['has_auth_token'] and updated['comment'] == 'Updated'
-            saved = root/'data/.zigfs/config/event-destinations.enc'
+            assert not (root / 'data/.zigfs/config/event-destinations.enc').exists()
+            saved = root / 'data/.zigfs.sys/wal'
             assert b'test-webhook-secret' not in saved.read_bytes()
             mqtt_value = {'name':'MQTT_1','type':'mqtt','broker':'tcp://127.0.0.1:1','topic':'bucket/events','qos':2,'username':'publisher','password':'mqtt-private-password','reconnect_interval':'5s','keep_alive_interval':'30s','queue_directory':'events/MQTT_1','queue_limit':1000,'tls_policy':'strict','tls_ca':'certs/ca.pem','tls_client_certificate':'certs/client.pem','tls_client_key':'certs/client.key','trust_leaf_as_ca':False,'websocket_path_allowlist':'/mqtt,/ws','comment':'MQTT configuration only'}
             mqtt = api('event-destinations',mqtt_value)

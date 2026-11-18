@@ -76,9 +76,9 @@ build_fs_image() {
     build_args+=(--build-arg "ZIG_TOOLCHAIN_SHA256=${ZIG_TOOLCHAIN_SHA256}")
   fi
   if ((${#build_args[@]} > 0)); then
-    docker build "${build_args[@]}" --tag "zigfs:${LOCAL_IMAGE_TAG}" "${FS_DIR}"
+    docker build "${build_args[@]}" --file "${FS_DIR}/Dockerfile" --tag "zigfs:${LOCAL_IMAGE_TAG}" "${ROOT_DIR}"
   else
-    docker build --tag "zigfs:${LOCAL_IMAGE_TAG}" "${FS_DIR}"
+    docker build --file "${FS_DIR}/Dockerfile" --tag "zigfs:${LOCAL_IMAGE_TAG}" "${ROOT_DIR}"
   fi
 }
 

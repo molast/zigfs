@@ -602,7 +602,21 @@ pub const MetadataIndex = struct {
         record: repository_port.Record,
     ) Error!void {
         switch (record_type) {
-            .system => {},
+            .system,
+            .identity,
+            .policy,
+            .role,
+            .bucket_policy,
+            .object_tag,
+            .oidc,
+            .settings,
+            .monitoring_settings,
+            .log_settings,
+            .audit_settings,
+            .event_destination,
+            .bucket_subscription,
+            .kms,
+            => {},
             .bucket => {
                 const decoded = bucket_payload.decode(record.payload) catch {
                     return error.CorruptRecord;
@@ -920,20 +934,7 @@ test "object record keys preserve nested object keys" {
     try std.testing.expectEqualStrings("/2026/a.jpg", parsed.key);
 }
 
-const LocalTransactionJournal = @import("local_journal.zig").LocalTransactionJournal;
-const LocalMetadataRepository = @import("local_repository.zig").LocalMetadataRepository;
-
-fn createTestLayout(root: std.Io.Dir) !void {
-    try root.createDirPath(std.testing.io, ".zigfs/system/configuration/records");
-    try root.createDirPath(std.testing.io, ".zigfs/system/credentials");
-    try root.createDirPath(std.testing.io, ".zigfs/journal");
-    try root.createDirPath(std.testing.io, ".zigfs/indexes");
-    try root.createDirPath(std.testing.io, ".zigfs/tmp");
-    try root.createDirPath(std.testing.io, "metadata/buckets");
-    try root.createDirPath(std.testing.io, "metadata/objects");
-    try root.createDirPath(std.testing.io, "metadata/directories");
-    try root.createDirPath(std.testing.io, "metadata/multipart");
-}
+const EngineRepository = @import("engine_repository.zig").EngineRepository;
 
 fn putTestBucket(
     repository: repository_port.MetadataRepository,
@@ -1012,10 +1013,9 @@ fn putTestMultipart(repository: repository_port.MetadataRepository) ![]const u8 
 test "index rebuild skips tombstones and list objects is stable" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try createTestLayout(tmp.dir);
 
-    var journal = LocalTransactionJournal.init(tmp.dir, std.testing.io);
-    var local = LocalMetadataRepository.init(tmp.dir, std.testing.io, journal.interface());
+    var local = try EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer local.deinit();
     const repository = local.interface();
     _ = try putTestBucket(repository, "photos", 1);
     _ = try putTestBucket(repository, "videos", 3);
@@ -1064,10 +1064,6 @@ test "index rebuild skips tombstones and list objects is stable" {
         test_credential_payload,
     );
 
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = ".zigfs/indexes/snapshot.index",
-        .data = "an index is never a fact source",
-    });
     var index = MetadataIndex.init(std.testing.allocator);
     defer index.deinit();
     try index.rebuild(repository);
@@ -1129,7 +1125,6 @@ test "index rebuild skips tombstones and list objects is stable" {
     try std.testing.expectEqualStrings("dir/b.jpg", search_page_two.objects[0]);
     try std.testing.expect(search_page_two.next_start_after == null);
 
-    try tmp.dir.deleteFile(std.testing.io, ".zigfs/indexes/snapshot.index");
     try index.rebuild(repository);
     try std.testing.expect(index.containsObject("photos", "z.txt"));
 }
@@ -1137,9 +1132,8 @@ test "index rebuild skips tombstones and list objects is stable" {
 test "index rejects invalid or mismatched bucket payloads" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try createTestLayout(tmp.dir);
-    var journal = LocalTransactionJournal.init(tmp.dir, std.testing.io);
-    var local = LocalMetadataRepository.init(tmp.dir, std.testing.io, journal.interface());
+    var local = try EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer local.deinit();
     const repository = local.interface();
     _ = try repository.put(
         std.testing.allocator,
@@ -1180,9 +1174,8 @@ test "index rejects invalid or mismatched bucket payloads" {
 test "index rejects an object record without a bucket component" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try createTestLayout(tmp.dir);
-    var journal = LocalTransactionJournal.init(tmp.dir, std.testing.io);
-    var local = LocalMetadataRepository.init(tmp.dir, std.testing.io, journal.interface());
+    var local = try EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer local.deinit();
     _ = try local.interface().put(
         std.testing.allocator,
         .object,
@@ -1198,9 +1191,8 @@ test "index rejects an object record without a bucket component" {
 test "index rejects invalid object payload and object without a bucket" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try createTestLayout(tmp.dir);
-    var journal = LocalTransactionJournal.init(tmp.dir, std.testing.io);
-    var local = LocalMetadataRepository.init(tmp.dir, std.testing.io, journal.interface());
+    var local = try EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer local.deinit();
     const repository = local.interface();
     _ = try putTestBucket(repository, "project-assets", 1);
     _ = try repository.put(

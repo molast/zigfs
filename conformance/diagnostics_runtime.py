@@ -112,7 +112,7 @@ def main():
                 evidence.append(work/'symbols/report.json')
                 tool('snapshot.py',['--pid',processes[0].pid,'--binary',args.zig_bin.resolve(),'--monitor',base+'/api/v1/monitoring','--output',work/'before'])
                 evidence.append(work/'before/report.json')
-            result=subprocess.run(['python3',str(root/'tools/diagnostics/stress.py'),'--targets',str(target),'--output',str(work/'stress'),'--seconds',str(args.seconds),'--monitor',base+'/api/v1/monitoring'],env=env)
+            result=subprocess.run(['python3',str(root/'zigfs/bench/stress.py'),'--targets',str(target),'--output',str(work/'stress'),'--seconds',str(args.seconds),'--monitor',base+'/api/v1/monitoring'],env=env)
             if result.returncode: raise RuntimeError('Stress failed; inspect stress/report.json')
             report=json.loads((work/'stress/report.json').read_text())
             assert report['passed'] and report['elapsed_seconds']>=args.seconds and report['sample_count']>=2

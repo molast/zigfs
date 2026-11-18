@@ -418,7 +418,7 @@ Sanitizer 通常用于调试构建或专项测试构建，不应默认在生产�
 
 # 12. 独立性能测试报告
 
-本功能不属于实时监控页面，不接入任何竞品比较。`tools/monitoring/benchmark.py` 针对一个 ZigFS 实例执行签名 S3 请求，输出独立 JSON 报告。
+本功能不属于实时监控页面，不接入任何竞品比较。`zigfs/bench/benchmark.py` 针对一个 ZigFS 实例执行签名 S3 请求，输出独立 JSON 报告。
 
 - 请求序列：PUT、GET（验证完整载荷）、HEAD、LIST、DELETE。
 - 参数：对象大小 1 B–16 MiB、对象数量 1–10000、并发 1–128。
@@ -851,7 +851,7 @@ python3 tools/monitoring/capture.py --pid <zigfs-pid> --kind threads --output /t
 ```
 
 ```sh
-python3 tools/monitoring/benchmark.py --targets /tmp/zigfs-target.json --output /tmp/zigfs-report-new.json --size 65536 --count 100 --concurrency 4
+python3 zigfs/bench/benchmark.py --targets /tmp/zigfs-target.json --output /tmp/zigfs-report-new.json --size 65536 --count 100 --concurrency 4
 ```
 
 压测会向指定实例写入随机独立测试 bucket；应使用测试实例或明确预留测试容量。报告不进入实时监控，也不自动把客户端耗时归因到服务端。
@@ -906,7 +906,7 @@ macOS ARM64 上各检测阳性对照与正常对照均已实测。当前 Zig 没
 - `tools/diagnostics/snapshot.py`：进程可执行文件核对、OS 内存映射、可选 BFF 样本、同一运行的前后差值。
 - `tools/diagnostics/dump.py`：原生 crash/attach core，支持 stack / modified-memory / full 三种格式范围。
 - `tools/diagnostics/symbolize.py`：不启动目标进程的离线符号解析；不匹配的二进制直接拒绝。
-- `tools/diagnostics/stress.py`：有界持续读写与采样；中断、请求失败、内容不一致、采样失败或清理失败均非零退出。
+- `zigfs/bench/stress.py`：有界持续读写与采样；中断、请求失败、内容不一致、采样失败或清理失败均非零退出。
 - `tools/diagnostics/report.py`：JSON/Markdown 综合报告；原始 core 不复制到汇总目录。
 - `conformance/diagnostics_runtime.py`：临时 ZigFS/BFF、随机测试凭据、全流程串联；core 捕获位于压测区间之外。
 

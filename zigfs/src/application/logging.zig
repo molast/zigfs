@@ -1,7 +1,7 @@
 const std = @import("std");
 const durable = @import("../metadata/durable.zig");
-pub const config_path = ".zigfs/config/log_config.json";
-pub const audit_config_path = ".zigfs/config/audit_log_config.json";
+pub const config_path = "config/log_config.json";
+pub const audit_config_path = "config/audit_log_config.json";
 pub const Config = ConfigType(false);
 pub const AuditConfig = ConfigType(true);
 pub fn auditConfig(value: AuditConfig) Config {
@@ -41,7 +41,7 @@ pub fn validate(c: Config) !void {
     if (c.directory.len == 0 or c.directory.len > 512 or std.fs.path.isAbsolute(c.directory)) return error.InvalidLogDirectory;
     var parts = std.mem.splitScalar(u8, c.directory, '/');
     while (parts.next()) |part| {
-        if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..") or std.mem.eql(u8, part, ".zigfs")) return error.InvalidLogDirectory;
+        if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..") or (std.mem.eql(u8, part, ".zigfs") or std.mem.eql(u8, part, ".zigfs.sys"))) return error.InvalidLogDirectory;
         for (part) |ch| if (!std.ascii.isAlphanumeric(ch) and ch != '-' and ch != '_' and ch != '.') return error.InvalidLogDirectory;
     }
 }
@@ -55,6 +55,7 @@ pub const Diagnostic = struct {
 pub const Service = struct {
     kind: enum { system, audit } = .system,
     root: std.Io.Dir,
+    system_store: @import("../metadata/system_store.zig").SystemStore,
     instance_id: []const u8 = "local",
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -71,8 +72,8 @@ pub const Service = struct {
         return if (self.kind == .audit) audit_config_path else config_path;
     }
     pub fn init(self: *Service) !void {
-        const bytes = self.root.readFileAlloc(self.io, self.configPath(), self.allocator, .limited(16384)) catch |err| {
-            if (err == error.FileNotFound) return;
+        const bytes = self.system_store.read(self.allocator, self.configPath(), 16384) catch |err| {
+            if (err == error.NotFound) return;
             return err;
         };
         defer self.allocator.free(bytes);
@@ -130,14 +131,7 @@ pub const Service = struct {
         defer self.allocator.free(bytes);
         const parsed = try std.json.parseFromSlice(Config, self.allocator, bytes, .{ .allocate = .alloc_always });
         errdefer parsed.deinit();
-        try self.root.createDirPath(self.io, ".zigfs/config");
-        var atomic = try self.root.createFileAtomic(self.io, self.configPath(), .{ .replace = true });
-        defer atomic.deinit(self.io);
-        try atomic.file.setPermissions(self.io, .fromMode(0o600));
-        try atomic.file.writeStreamingAll(self.io, bytes);
-        try atomic.file.sync(self.io);
-        try atomic.replace(self.io);
-        try durable.syncParent(self.root, self.io, self.configPath());
+        try self.system_store.put(self.allocator, self.configPath(), bytes);
         if (self.active_file) |file| file.close(self.io);
         self.active_file = null;
         self.active_bytes = 0;
@@ -471,17 +465,20 @@ pub fn logFn(comptime level: std.log.Level, comptime scope: @EnumLiteral(), comp
 test "log configuration validates confinement and file sizes" {
     try validate(.{});
     try std.testing.expectEqual(@as(u64, 1280), try maxBytes(.{ .maxSize = "1.25", .sizeUnit = "KiB" }));
-    for ([_][]const u8{ "../logs", "/tmp/logs", "a/../b", ".zigfs/logs", "a//b" }) |path| try std.testing.expectError(error.InvalidLogDirectory, validate(.{ .directory = path }));
+    for ([_][]const u8{ "../logs", "/tmp/logs", "a/../b", ".zigfs/logs", ".zigfs.sys", "a//b" }) |path| try std.testing.expectError(error.InvalidLogDirectory, validate(.{ .directory = path }));
     try std.testing.expectError(error.InvalidLogConfig, validate(.{ .maxSize = "nan" }));
 }
 
 test "log settings persist, filter, rotate and gate downloads" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata: @import("../metadata/system_store.zig").SystemStore = .{ .repository = repository.interface() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var service: Service = .{ .root = tmp.dir, .io = std.testing.io, .allocator = std.testing.allocator };
+    var service: Service = .{ .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .allocator = std.testing.allocator };
     defer service.deinit();
     try service.init();
     try service.save(.{ .output = "file", .maxSize = "0.1", .sizeUnit = "KiB", .directory = "nested/logs" });
@@ -507,7 +504,7 @@ test "log settings persist, filter, rotate and gate downloads" {
     try service.save(.{ .output = "file", .level = "off", .downloads = "disabled", .retention = "forever" });
     try service.emit("error", "test", "suppressed");
     try std.testing.expectError(error.LogDownloadsDisabled, service.query(a, true));
-    var restored: Service = .{ .root = tmp.dir, .io = std.testing.io, .allocator = std.testing.allocator };
+    var restored: Service = .{ .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .allocator = std.testing.allocator };
     defer restored.deinit();
     try restored.init();
     const saved = try restored.snapshot(a);
@@ -520,10 +517,13 @@ test "log settings persist, filter, rotate and gate downloads" {
 test "system logs schema, mixed formats and explicit time bounds" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata: @import("../metadata/system_store.zig").SystemStore = .{ .repository = repository.interface() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var service: Service = .{ .root = tmp.dir, .io = std.testing.io, .allocator = std.testing.allocator, .instance_id = "test-node" };
+    var service: Service = .{ .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .allocator = std.testing.allocator, .instance_id = "test-node" };
     defer service.deinit();
     try service.save(.{ .output = "file" });
     try service.emit("error", "kms", "backend failed request_id=req-test error=Unavailable");
@@ -553,10 +553,13 @@ noinline fn diagnosticTestFailure() error{DiagnosticTestFailure}!void {
 test "caught errors persist an actual return trace and source in JSON and text" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata: @import("../metadata/system_store.zig").SystemStore = .{ .repository = repository.interface() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var service: Service = .{ .root = tmp.dir, .io = std.testing.io, .allocator = std.testing.allocator };
+    var service: Service = .{ .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .allocator = std.testing.allocator };
     defer service.deinit();
     active = &service;
     defer active = null;
@@ -580,12 +583,15 @@ test "caught errors persist an actual return trace and source in JSON and text" 
 test "audit settings and files are isolated from system settings in a shared directory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata: @import("../metadata/system_store.zig").SystemStore = .{ .repository = repository.interface() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var system: Service = .{ .root = tmp.dir, .io = std.testing.io, .allocator = std.testing.allocator };
+    var system: Service = .{ .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .allocator = std.testing.allocator };
     defer system.deinit();
-    var audit: Service = .{ .kind = .audit, .root = tmp.dir, .io = std.testing.io, .allocator = std.testing.allocator };
+    var audit: Service = .{ .kind = .audit, .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .allocator = std.testing.allocator };
     defer audit.deinit();
     try system.save(.{ .directory = "shared", .output = "file" });
     try audit.save(.{ .directory = "shared", .output = "file", .format = "text", .retention = "forever", .downloads = "disabled" });
@@ -609,7 +615,7 @@ test "audit settings and files are isolated from system settings in a shared dir
     try std.testing.expectEqualStrings("info", config.value.level);
     try std.testing.expectEqualStrings("text", config.value.format);
     try std.testing.expectEqualStrings("file", config.value.output);
-    var restored: Service = .{ .kind = .audit, .root = tmp.dir, .io = std.testing.io, .allocator = std.testing.allocator };
+    var restored: Service = .{ .kind = .audit, .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .allocator = std.testing.allocator };
     defer restored.deinit();
     try restored.init();
     const restored_config = try restored.snapshot(a);

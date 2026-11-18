@@ -68,7 +68,7 @@ def main():
             result = results[0]
     report = {'platform': platform.platform(), 'single_process': True,
               'slots_per_namespace': args.slots, 'payload_bytes': args.payload,
-              'namespaces': 6, 'result': result, 'engine_samples': telemetry,
+              'namespaces': result['namespace_count'], 'result': result, 'engine_samples': telemetry,
               'rss_samples': samples,
               'peak_sampled_rss_kib': max((s['rss_kib'] for s in samples), default=0)}
     rendered = json.dumps(report, indent=2) + '\n'

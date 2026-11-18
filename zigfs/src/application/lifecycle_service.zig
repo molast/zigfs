@@ -54,7 +54,7 @@ pub const LifecycleService = struct {
     allocator: std.mem.Allocator,
     buckets: BucketService,
     objects: ObjectService,
-    data_root: ?std.Io.Dir = null,
+    system_store: ?@import("../metadata/system_store.zig").SystemStore = null,
 
     pub fn scan(self: LifecycleService, now: i64) Error!Report {
         var report: Report = .{};
@@ -83,7 +83,7 @@ pub const LifecycleService = struct {
                     if (!entry.is_delete_marker) {
                         for (configuration.rules) |rule| {
                             if (!rule.enabled or rule.tags.len == 0 or !std.mem.startsWith(u8, entry.key, rule.prefix)) continue;
-                            const root = self.data_root orelse return error.ObjectFailure;
+                            const root = self.system_store orelse return error.ObjectFailure;
                             var version_buffer: [32]u8 = undefined;
                             self.objects.state_mutex.lockUncancelable(self.objects.io);
                             defer self.objects.state_mutex.unlock(self.objects.io);
@@ -392,14 +392,14 @@ test "lifecycle parser supports current noncurrent and marker expiration" {
 }
 
 test "lifecycle scanner expires noncurrent versions and sole delete markers" {
-    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MemoryMetadataRepository = @import("test_support").memory_metadata_repository.MemoryMetadataRepository;
     const MetadataBucketStore = @import("../metadata/bucket_store.zig").MetadataBucketStore;
     const MetadataObjectStore = @import("../metadata/object_store.zig").MetadataObjectStore;
     const LocalObjectDataStore = @import("../backend/local_object_data.zig").LocalObjectDataStore;
     const MetadataIndex = @import("../metadata/index.zig").MetadataIndex;
     const ObjectLockPool = @import("object_lock_pool.zig").ObjectLockPool;
     const streaming = @import("../common/streaming.zig");
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -445,7 +445,7 @@ test "lifecycle scanner expires noncurrent versions and sole delete markers" {
         &object_locks,
         null,
     );
-    const scanner: LifecycleService = .{ .allocator = std.testing.allocator, .buckets = buckets, .objects = objects, .data_root = tmp.dir };
+    const scanner: LifecycleService = .{ .allocator = std.testing.allocator, .buckets = buckets, .objects = objects, .system_store = .{ .repository = memory.interface() } };
 
     var first_source = test_streams.SliceSource.init("first");
     const first = try objects.put("lifecycle-data", "history/file.txt", first_source.interface(), .{});
@@ -525,7 +525,7 @@ test "lifecycle scanner expires noncurrent versions and sole delete markers" {
         defer object.deinit(std.testing.allocator);
         newest_time = @max(newest_time, object.last_modified_unix_seconds);
         if (!std.mem.eql(u8, key, "tagged/missing")) {
-            try object_tags.save(std.testing.allocator, tmp.dir, std.testing.io, "lifecycle-data", key, object.version_id.write(&tag_version), .{ .tags = &.{
+            try object_tags.save(std.testing.allocator, .{ .repository = memory.interface() }, std.testing.io, "lifecycle-data", key, object.version_id.write(&tag_version), .{ .tags = &.{
                 .{ .key = "expire", .value = if (std.mem.eql(u8, key, "tagged/wrong")) "no" else "yes" },
                 .{ .key = "empty", .value = "" },
             } });

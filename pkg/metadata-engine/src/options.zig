@@ -21,6 +21,9 @@ pub const Options = struct {
 };
 
 pub const Stats = struct {
+    namespace_count: usize = @import("types.zig").namespace_count,
+    /// Indexed by persisted namespace ID minus one; includes tombstones.
+    namespace_records: [@import("types.zig").namespace_count]usize = @splat(0),
     phases: PhaseStats = .{},
     generation: u64 = 0,
     /// Persistent absence fence; increments only when tombstones are reclaimed.

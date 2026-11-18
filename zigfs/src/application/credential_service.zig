@@ -179,7 +179,7 @@ pub const CredentialService = struct {
     root_access_key: []const u8 = "",
     root_secret_key: []const u8 = "",
     root_username: []const u8 = "admin",
-    identity_root: ?std.Io.Dir = null,
+    identity_store: ?@import("../metadata/system_store.zig").SystemStore = null,
     identity_mutex: ?*@import("observed_mutex.zig").Mutex = null,
 
     pub fn init(
@@ -378,7 +378,7 @@ pub const CredentialService = struct {
         };
         if (std.mem.startsWith(u8, credential.owner, "user:")) {
             const identities = @import("identity_store.zig");
-            const root = self.identity_root orelse return error.Unavailable;
+            const root = self.identity_store orelse return error.Unavailable;
             const snapshot = identities.load(root, self.io, self.allocator) catch return error.Unavailable;
             defer snapshot.deinit();
             const index = identities.find(snapshot.value.users, credential.owner["user:".len..]) orelse return error.CredentialDisabled;
@@ -402,7 +402,7 @@ pub const CredentialService = struct {
             }
         } else if (std.mem.startsWith(u8, credential.owner, "oidc:")) {
             const oidc = @import("oidc_auth.zig");
-            const root = self.identity_root orelse return error.Unavailable;
+            const root = self.identity_store orelse return error.Unavailable;
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
             const a = arena.allocator();
@@ -411,7 +411,7 @@ pub const CredentialService = struct {
             inherited_documents = oidc.documents(self.allocator, root, self.io, session) catch return error.Unavailable;
         } else if (std.mem.startsWith(u8, credential.owner, "role:")) {
             const role_store = @import("role_store.zig");
-            const root = self.identity_root orelse return error.Unavailable;
+            const root = self.identity_store orelse return error.Unavailable;
             const snapshot = role_store.load(root, self.io, self.allocator) catch return error.Unavailable;
             defer snapshot.deinit();
             const suffix = credential.owner["role:".len..];
@@ -724,7 +724,7 @@ fn mapIndexError(err: index_module.Error) Error {
 }
 
 test "credential service encrypts persists disables and deletes access keys" {
-    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MemoryMetadataRepository = @import("test_support").memory_metadata_repository.MemoryMetadataRepository;
     const MetadataCredentialStore = @import("../metadata/credential_store.zig").MetadataCredentialStore;
     var memory = MemoryMetadataRepository.init(std.testing.allocator);
     defer memory.deinit();
@@ -767,7 +767,7 @@ test "credential service encrypts persists disables and deletes access keys" {
 }
 
 test "credential service persists temporary token lists secrets and rejects expiry" {
-    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MemoryMetadataRepository = @import("test_support").memory_metadata_repository.MemoryMetadataRepository;
     const MetadataCredentialStore = @import("../metadata/credential_store.zig").MetadataCredentialStore;
     var memory = MemoryMetadataRepository.init(std.testing.allocator);
     defer memory.deinit();
@@ -824,7 +824,7 @@ test "credential service persists temporary token lists secrets and rejects expi
 
 test "managed user credentials require an enabled existing identity and fail closed" {
     const identities = @import("identity_store.zig");
-    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MemoryMetadataRepository = @import("test_support").memory_metadata_repository.MemoryMetadataRepository;
     const MetadataCredentialStore = @import("../metadata/credential_store.zig").MetadataCredentialStore;
     const a = std.testing.allocator;
     const io = std.testing.io;
@@ -840,23 +840,23 @@ test "managed user credentials require an enabled existing identity and fail clo
     var identity_mutex: @import("observed_mutex.zig").Mutex = .init;
     const master_key = @as([@sizeOf(secret_box.Key)]u8, @splat(0x42));
     var service = CredentialService.init(a, io, adapter.interface(), &index, &mutex, &master_key);
-    service.identity_root = tmp.dir;
+    service.identity_store = .{ .repository = memory.interface() };
     service.identity_mutex = &identity_mutex;
     var created = try service.create("user:alice", .read_only);
     defer created.deinit(a);
     try std.testing.expectError(error.CredentialDisabled, service.resolveForAuth(created.credential.access_key));
-    try identities.save(tmp.dir, io, a, .{ .users = &.{.{ .name = "alice" }} });
+    try identities.save(service.identity_store.?, io, a, .{ .users = &.{.{ .name = "alice" }} });
     {
         var auth = try service.resolveForAuth(created.credential.access_key);
         defer auth.deinit(a);
         try std.testing.expectEqualStrings("user:alice", auth.owner);
         try std.testing.expect(!auth.policy.allows(.put_object));
     }
-    try identities.save(tmp.dir, io, a, .{ .users = &.{.{ .name = "alice", .enabled = false }} });
+    try identities.save(service.identity_store.?, io, a, .{ .users = &.{.{ .name = "alice", .enabled = false }} });
     try std.testing.expectError(error.CredentialDisabled, service.resolveForAuth(created.credential.access_key));
-    try identities.save(tmp.dir, io, a, .{});
+    try identities.save(service.identity_store.?, io, a, .{});
     try std.testing.expectError(error.CredentialDisabled, service.resolveForAuth(created.credential.access_key));
-    try tmp.dir.writeFile(io, .{ .sub_path = identities.path, .data = "invalid json" });
+    try service.identity_store.?.put(a, identities.path, "invalid json");
     try std.testing.expectError(error.Unavailable, service.resolveForAuth(created.credential.access_key));
     // Legacy admin credentials remain independent of the identity store.
     var admin = try service.create("alice", .all);
@@ -867,7 +867,7 @@ test "managed user credentials require an enabled existing identity and fail clo
 }
 
 test "custom access keys persist metadata reject duplicates and validate absolute expiry" {
-    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MemoryMetadataRepository = @import("test_support").memory_metadata_repository.MemoryMetadataRepository;
     const MetadataCredentialStore = @import("../metadata/credential_store.zig").MetadataCredentialStore;
     const a = std.testing.allocator;
     var memory = MemoryMetadataRepository.init(a);

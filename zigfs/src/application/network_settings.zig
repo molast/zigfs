@@ -1,3 +1,4 @@
+const SystemStore = @import("../metadata/system_store.zig").SystemStore;
 const std = @import("std");
 const Config = @import("../config.zig").Config;
 pub const Settings = struct {
@@ -5,11 +6,12 @@ pub const Settings = struct {
     s3_virtual_hosted_style: bool,
     trusted_proxies: []const []const u8 = &.{},
 };
-const path = ".zigfs/config/network.json";
+const path = "config/network.json";
 // Callers hold policy_mutex and use a request arena.
-pub fn load(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, config: Config) !Settings {
-    const bytes = root.readFileAlloc(io, path, a, .limited(8192)) catch |err| switch (err) {
-        error.FileNotFound => return .{ .s3_public_endpoint = config.s3_public_endpoint, .s3_virtual_hosted_style = config.s3_virtual_hosted_style },
+pub fn load(a: std.mem.Allocator, root: SystemStore, io: std.Io, config: Config) !Settings {
+    _ = io;
+    const bytes = root.read(a, path, 8192) catch |err| switch (err) {
+        error.NotFound => return .{ .s3_public_endpoint = config.s3_public_endpoint, .s3_virtual_hosted_style = config.s3_virtual_hosted_style },
         else => return err,
     };
     const parsed = try std.json.parseFromSlice(Settings, a, bytes, .{ .allocate = .alloc_always });
@@ -38,16 +40,11 @@ pub fn validate(value: Settings) !void {
         return error.InvalidVirtualHostedEndpoint;
     }
 }
-pub fn save(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, value: Settings) !void {
+pub fn save(a: std.mem.Allocator, root: SystemStore, io: std.Io, value: Settings) !void {
+    _ = io;
     try validate(value);
     const bytes = try std.json.Stringify.valueAlloc(a, value, .{});
-    try root.createDirPath(io, ".zigfs/config");
-    var atomic = try root.createFileAtomic(io, path, .{ .replace = true });
-    defer atomic.deinit(io);
-    try atomic.file.writeStreamingAll(io, bytes);
-    try atomic.file.sync(io);
-    try atomic.replace(io);
-    try @import("../metadata/durable.zig").syncParent(root, io, path);
+    try root.put(a, path, bytes);
 }
 test "network endpoint validation" {
     try validate(.{ .s3_public_endpoint = "https://s3.example.com", .s3_virtual_hosted_style = true });
@@ -58,18 +55,21 @@ test "network endpoint validation" {
 test "network settings persist and startup defaults remain fallback" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata = SystemStore{ .repository = repository.interface() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const fallback = try load(a, tmp.dir, std.testing.io, .{});
+    const fallback = try load(a, metadata, std.testing.io, .{});
     try std.testing.expectEqualStrings("http://127.0.0.1:9000", fallback.s3_public_endpoint);
     const value: Settings = .{ .s3_public_endpoint = "https://storage.example.com", .s3_virtual_hosted_style = true };
-    try save(a, tmp.dir, std.testing.io, value);
-    const loaded = try load(a, tmp.dir, std.testing.io, .{});
+    try save(a, metadata, std.testing.io, value);
+    const loaded = try load(a, metadata, std.testing.io, .{});
     try std.testing.expectEqualStrings(value.s3_public_endpoint, loaded.s3_public_endpoint);
     try std.testing.expect(loaded.s3_virtual_hosted_style);
-    try std.testing.expectError(error.InvalidPublicEndpoint, save(a, tmp.dir, std.testing.io, .{ .s3_public_endpoint = "file:///tmp", .s3_virtual_hosted_style = false }));
-    const unchanged = try load(a, tmp.dir, std.testing.io, .{});
+    try std.testing.expectError(error.InvalidPublicEndpoint, save(a, metadata, std.testing.io, .{ .s3_public_endpoint = "file:///tmp", .s3_virtual_hosted_style = false }));
+    const unchanged = try load(a, metadata, std.testing.io, .{});
     try std.testing.expectEqualStrings(value.s3_public_endpoint, unchanged.s3_public_endpoint);
 }
 

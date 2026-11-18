@@ -233,7 +233,7 @@ fn testValue() object_store_port.Value {
 }
 
 test "metadata object store owns encoding CAS tombstones and corruption checks" {
-    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MemoryMetadataRepository = @import("test_support").memory_metadata_repository.MemoryMetadataRepository;
     var memory = MemoryMetadataRepository.init(std.testing.allocator);
     defer memory.deinit();
     var adapter = MetadataObjectStore.init(memory.interface());

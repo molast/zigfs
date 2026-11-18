@@ -1,5 +1,9 @@
 # 实例信息
 
+> 存储说明：`<namespace>:config/...` 表示 metadata-engine 的业务命名空间及记录键，
+> 实际数据位于 `data/.zigfs.sys/`；这些名称不是文件路径，不能单独移动或编辑。
+> BFF 自身的配置、日志正文、证书及密钥文件仍独立保存。
+
 入口为 **System Setting → General → Instance Information**。本页描述已接入的实例信息；Region 编辑见 [S3 Region 设置](region-settings.md)；安全参数见 [会话与请求认证](authentication-settings.md)；显示偏好见 [时区与日期显示偏好](display-settings.md)。
 
 | 字段 | 来源 | 是否可编辑 |
@@ -14,7 +18,7 @@
 
 名称不能为空，最多 128 个 UTF-8 字节，不能包含控制字符；描述最多 4096 个 UTF-8 字节，允许换行、回车和制表符。前端逐项显示校验错误；后端再次校验，非法更新不会替换已有配置。
 
-配置由 ZigFS 原子保存到 `storage.data_root/.zigfs/config/instance.json`，重启后保留。没有文件时返回默认值，损坏或读取失败不会静默恢复默认值。BFF 不读取数据目录。
+配置由 ZigFS 原子保存到 `settings:config/instance.json`，重启后保留。没有记录时返回默认值，损坏或读取失败不会静默恢复默认值。BFF 不读取数据目录。
 
 实例 ID 来自现有的 `.zigfs/format.meta`，同一数据目录重启后不变；启动时间每次进程启动重新记录。页面按实例显示偏好显示后端时间，不使用浏览器时钟反推启动时间。运行时长为最近一次读取的快照，点击“刷新配置”更新。
 

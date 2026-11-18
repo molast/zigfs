@@ -399,7 +399,7 @@ fn serveListBuckets(
     defer result.deinit(application.allocator);
 
     const io = application.io orelse return respondNotReady(request, request_id);
-    const root = application.data_root orelse return respondNotReady(request, request_id);
+    const root = application.systemStore();
     application.policy_mutex.lockUncancelable(io);
     defer application.policy_mutex.unlock(io);
 
@@ -421,7 +421,7 @@ fn serveListBuckets(
 
 fn bucketVisibleToCaller(
     a: std.mem.Allocator,
-    root: std.Io.Dir,
+    root: @import("../metadata/system_store.zig").SystemStore,
     io: std.Io,
     caller: management_auth.Principal,
     bucket_name: []const u8,
@@ -1883,7 +1883,7 @@ fn serveSettings(
     var network_arena = std.heap.ArenaAllocator.init(application.allocator);
     defer network_arena.deinit();
     const network = readNetworkSettings(network_arena.allocator(), application) catch return respondNotReady(request, request_id);
-    const pending = try @import("../application/listener_settings.zig").load(network_arena.allocator(), application.data_root.?, application.io.?, config.api_address);
+    const pending = try @import("../application/listener_settings.zig").load(network_arena.allocator(), application.systemStore(), application.io.?, config.api_address);
     return respondJson(request, request_id, .ok, .{
         .pending_api_address = pending,
         .api_restart_required = !std.mem.eql(u8, pending, config.api_address),
@@ -2580,7 +2580,7 @@ test "management directory delete query decodes a trailing slash key" {
 
 fn servePolicies(request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8, audit_context: *AuditContext) !std.http.Status {
     const store = @import("../application/policy_store.zig");
-    const root = app.data_root orelse return respondNotReady(request, request_id);
+    _ = app.metadata_repository orelse return respondNotReady(request, request_id);
     const io = app.io orelse return respondNotReady(request, request_id);
     const collection = std.mem.eql(u8, route_path, api_prefix ++ "/policies");
     const method = request.head.method;
@@ -2597,7 +2597,7 @@ fn servePolicies(request: *std.http.Server.Request, app: *Application, request_i
     }
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    const loaded = store.load(root, io, app.allocator) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot read policy storage");
+    const loaded = store.load(app.systemStore(), io, app.allocator) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot read policy storage");
     defer loaded.deinit();
     var index: ?usize = null;
     const lookup = if (input) |parsed| parsed.value.name else name;
@@ -2617,15 +2617,15 @@ fn servePolicies(request: *std.http.Server.Request, app: *Application, request_i
     if (method != .POST and index == null) return respondError(request, request_id, .not_found, "PolicyNotFound", "policy does not exist");
     if (method == .DELETE) {
         const identities = @import("../application/identity_store.zig");
-        const attached = identities.load(root, io, app.allocator) catch return respondError(request, request_id, .service_unavailable, "IdentityStorageUnavailable", "cannot check policy attachments");
+        const attached = identities.load(app.systemStore(), io, app.allocator) catch return respondError(request, request_id, .service_unavailable, "IdentityStorageUnavailable", "cannot check policy attachments");
         defer attached.deinit();
         if (identities.policyInUse(attached.value, name)) return respondError(request, request_id, .conflict, "PolicyInUse", "detach this policy from users and groups before deleting it");
-        const roles = role_store.load(root, io, app.allocator) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot check role policy attachments");
+        const roles = role_store.load(app.systemStore(), io, app.allocator) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot check role policy attachments");
         defer roles.deinit();
         if (role_store.policyInUse(roles.value, name)) return respondError(request, request_id, .conflict, "PolicyInUse", "detach this policy from roles before deleting it");
         const oidc = @import("../application/oidc_store.zig");
         const key = if (app.master_key) |k| k.bytes else return respondNotReady(request, request_id);
-        const providers = oidc.load(root, io, app.allocator, key) catch return respondError(request, request_id, .service_unavailable, "OidcStorageUnavailable", "cannot check provider policy references");
+        const providers = oidc.load(app.systemStore(), io, app.allocator, key) catch return respondError(request, request_id, .service_unavailable, "OidcStorageUnavailable", "cannot check provider policy references");
         defer providers.deinit();
         for (providers.value.items) |provider| {
             var names = std.mem.splitScalar(u8, provider.role_policy, ',');
@@ -2640,14 +2640,14 @@ fn servePolicies(request: *std.http.Server.Request, app: *Application, request_i
         } else try items.append(app.allocator, policy);
     }
     if (method == .POST) try items.append(app.allocator, input.?.value);
-    store.save(root, io, app.allocator, items.items) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot save policy storage");
+    store.save(app.systemStore(), io, app.allocator, items.items) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot save policy storage");
     audit(app, request_id, "mutate_policy", lookup, @tagName(method));
     if (method == .DELETE) return respondNoContent(request, request_id);
     return respondJson(request, request_id, if (method == .POST) .created else .ok, input.?.value);
 }
 
 fn serveRoles(comptime organization: bool, request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8) !std.http.Status {
-    const root = app.data_root orelse return respondNotReady(request, request_id);
+    _ = app.metadata_repository orelse return respondNotReady(request, request_id);
     const io = app.io orelse return respondNotReady(request, request_id);
     const method = request.head.method;
     var arena = std.heap.ArenaAllocator.init(app.allocator);
@@ -2658,7 +2658,7 @@ fn serveRoles(comptime organization: bool, request: *std.http.Server.Request, ap
     const raw_name = if (collection) null else decodeComponent(a, route_path[prefix.len + 1 ..], false) catch return respondError(request, request_id, .bad_request, "InvalidName", "invalid role or organization name");
     if (!collection and (raw_name == null or !role_store.validName(raw_name.?))) return respondError(request, request_id, .bad_request, "InvalidName", "invalid role or organization name");
     if (method == .GET) {
-        const loaded = role_store.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot read roles");
+        const loaded = role_store.load(app.systemStore(), io, a) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot read roles");
         if (collection) return respondJson(request, request_id, .ok, if (organization) .{ .items = loaded.value.organizations } else .{ .items = loaded.value.roles });
         if (organization) for (loaded.value.organizations) |item| if (std.mem.eql(u8, item.name, raw_name.?)) return respondJson(request, request_id, .ok, item);
         if (!organization) for (loaded.value.roles) |item| if (std.mem.eql(u8, item.name, raw_name.?)) return respondJson(request, request_id, .ok, item);
@@ -2667,7 +2667,7 @@ fn serveRoles(comptime organization: bool, request: *std.http.Server.Request, ap
     if (method != .POST and method != .PATCH and method != .DELETE) return respondMethodNotAllowed(request, request_id, "GET, POST, PATCH, DELETE");
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    const loaded = role_store.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot read roles");
+    const loaded = role_store.load(app.systemStore(), io, a) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot read roles");
     var snapshot = loaded.value;
     if (method == .PATCH) {
         if (collection) return respondError(request, request_id, .bad_request, "InvalidName", "PATCH must target one role or organization");
@@ -2684,13 +2684,13 @@ fn serveRoles(comptime organization: bool, request: *std.http.Server.Request, ap
             }
             if (!found) return respondError(request, request_id, .not_found, "OrganizationNotFound", "organization does not exist");
             snapshot.organizations = items.items;
-            try role_store.save(root, io, a, snapshot);
+            try role_store.save(app.systemStore(), io, a, snapshot);
             return respondJson(request, request_id, .ok, items.items[items.items.len - 1]);
         }
         const input = (try parseJsonBody(role_store.Role, request, a, request_id) orelse return .bad_request).value;
         var items: std.ArrayList(role_store.Role) = .empty;
         var found = false;
-        const policies = try @import("../application/policy_store.zig").load(root, io, a);
+        const policies = try @import("../application/policy_store.zig").load(app.systemStore(), io, a);
         for (snapshot.roles) |item| {
             if (std.mem.eql(u8, item.name, raw_name.?)) {
                 found = true;
@@ -2701,7 +2701,7 @@ fn serveRoles(comptime organization: bool, request: *std.http.Server.Request, ap
         }
         if (!found) return respondError(request, request_id, .not_found, "RoleNotFound", "role does not exist");
         snapshot.roles = items.items;
-        try role_store.save(root, io, a, snapshot);
+        try role_store.save(app.systemStore(), io, a, snapshot);
         return respondJson(request, request_id, .ok, items.items[items.items.len - 1]);
     }
     if (method == .DELETE) {
@@ -2728,7 +2728,7 @@ fn serveRoles(comptime organization: bool, request: *std.http.Server.Request, ap
             for (snapshot.sessions) |session| if (!std.mem.eql(u8, session.role_id, role.id)) try sessions.append(a, session);
             snapshot.sessions = sessions.items;
         }
-        try role_store.save(root, io, a, snapshot);
+        try role_store.save(app.systemStore(), io, a, snapshot);
         return respondNoContent(request, request_id);
     }
     if (!collection) return respondError(request, request_id, .bad_request, "InvalidName", "POST must target a collection");
@@ -2748,14 +2748,14 @@ fn serveRoles(comptime organization: bool, request: *std.http.Server.Request, ap
         if (!role_store.validName(value.name)) return respondError(request, request_id, .bad_request, "InvalidName", "invalid role name");
         const id = if (value.id.len > 0) value.id else try @import("../application/identity_store.zig").newId(a, io);
         for (snapshot.roles) |item| if (std.mem.eql(u8, item.name, value.name)) return respondError(request, request_id, .conflict, "AlreadyExists", "role already exists");
-        const policies = try @import("../application/policy_store.zig").load(root, io, a);
+        const policies = try @import("../application/policy_store.zig").load(app.systemStore(), io, a);
         try role_store.validate(a, .{ .id = id, .name = value.name, .organization_id = value.organization_id, .enabled = value.enabled, .max_session_seconds = value.max_session_seconds, .trust_policy = value.trust_policy, .policies = value.policies, .permissions_boundary = value.permissions_boundary, .tags_json = value.tags_json }, snapshot, policies.value);
         var items: std.ArrayList(role_store.Role) = .empty;
         try items.appendSlice(a, snapshot.roles);
         try items.append(a, .{ .id = id, .name = value.name, .organization_id = value.organization_id, .enabled = value.enabled, .max_session_seconds = value.max_session_seconds, .trust_policy = value.trust_policy, .policies = value.policies, .permissions_boundary = value.permissions_boundary, .tags_json = value.tags_json });
         snapshot.roles = items.items;
     }
-    try role_store.save(root, io, a, snapshot);
+    try role_store.save(app.systemStore(), io, a, snapshot);
     return respondJson(request, request_id, .created, if (organization) snapshot.organizations[snapshot.organizations.len - 1] else snapshot.roles[snapshot.roles.len - 1]);
 }
 
@@ -2772,7 +2772,7 @@ const AssumeRoleInput = struct {
 
 fn serveAssumeRole(request: *std.http.Server.Request, app: *Application, request_id: []const u8, caller: management_auth.Principal, caller_context: @import("../auth/iam_policy.zig").Context) !std.http.Status {
     if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
-    const root = app.data_root orelse return respondNotReady(request, request_id);
+    _ = app.metadata_repository orelse return respondNotReady(request, request_id);
     const io = app.io orelse return respondNotReady(request, request_id);
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
@@ -2782,7 +2782,7 @@ fn serveAssumeRole(request: *std.http.Server.Request, app: *Application, request
     if (!role_store.validName(input.session_name) or input.session_name.len > 64) return respondError(request, request_id, .bad_request, "InvalidSessionName", "session name is invalid");
     if ((input.external_id != null and !role_store.validSessionAttribute(input.external_id.?, 1024)) or (input.source_identity != null and !role_store.validSessionAttribute(input.source_identity.?, 128)) or !role_store.validTagsJson(input.session_tags_json) or !role_store.validTagsJson(input.transitive_tag_keys_json)) return respondError(request, request_id, .bad_request, "InvalidSessionAttributes", "invalid external id, source identity, or session tags");
     if (input.session_policy) |policy| _ = @import("../auth/iam_policy.zig").validateDocument(a, policy, .session) catch return respondError(request, request_id, .bad_request, "InvalidSessionPolicy", "invalid session policy");
-    const loaded = role_store.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot read roles");
+    const loaded = role_store.load(app.systemStore(), io, a) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot read roles");
     if (caller.federated) return respondError(request, request_id, .forbidden, "AccessDenied", "OIDC identities use web-identity credentials rather than local user role trust");
     const role = role_store.findRole(loaded.value, input.role_id) orelse return respondError(request, request_id, .not_found, "RoleNotFound", "role does not exist");
     if (!role.enabled) return respondError(request, request_id, .forbidden, "RoleDisabled", "role is disabled");
@@ -2825,7 +2825,7 @@ fn serveAssumeRole(request: *std.http.Server.Request, app: *Application, request
     try sessions.append(a, .{ .access_key = result.credential.access_key, .role_id = role.id, .session_name = input.session_name, .subject_id = try std.fmt.allocPrint(a, "{s}:{s}", .{ role.id, input.session_name }), .expires_at = now + @as(i64, @intCast(input.duration_seconds)), .source_identity = input.source_identity, .external_id = input.external_id, .session_tags_json = input.session_tags_json, .transitive_tag_keys_json = input.transitive_tag_keys_json, .session_policy = input.session_policy });
     var snapshot = loaded.value;
     snapshot.sessions = sessions.items;
-    role_store.save(root, io, a, snapshot) catch {
+    role_store.save(app.systemStore(), io, a, snapshot) catch {
         _ = credentials.delete(result.credential.access_key) catch {};
         return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot persist role session");
     };
@@ -2833,14 +2833,14 @@ fn serveAssumeRole(request: *std.http.Server.Request, app: *Application, request
 }
 
 fn serveRoleSessions(request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8) !std.http.Status {
-    const root = app.data_root orelse return respondNotReady(request, request_id);
+    _ = app.metadata_repository orelse return respondNotReady(request, request_id);
     const io = app.io orelse return respondNotReady(request, request_id);
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    const loaded = role_store.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot read roles");
+    const loaded = role_store.load(app.systemStore(), io, a) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot read roles");
     if (std.mem.eql(u8, route_path, api_prefix ++ "/role-sessions")) {
         if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
         return respondJson(request, request_id, .ok, .{ .items = loaded.value.sessions });
@@ -2864,7 +2864,7 @@ fn serveRoleSessions(request: *std.http.Server.Request, app: *Application, reque
     if (!found) return respondError(request, request_id, .not_found, "RoleSessionNotFound", "role session does not exist");
     var snapshot = loaded.value;
     snapshot.sessions = sessions.items;
-    role_store.save(root, io, a, snapshot) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot persist role session");
+    role_store.save(app.systemStore(), io, a, snapshot) catch return respondError(request, request_id, .service_unavailable, "RoleStorageUnavailable", "cannot persist role session");
     return respondNoContent(request, request_id);
 }
 
@@ -2874,7 +2874,7 @@ fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, a
     const T = if (is_group) store.Group else store.User;
     const Input = if (is_group) store.Group else store.UserInput;
     const prefix = api_prefix ++ (if (is_group) "/groups" else "/users");
-    const root = app.data_root orelse return respondNotReady(request, request_id);
+    _ = app.metadata_repository orelse return respondNotReady(request, request_id);
     const io = app.io orelse return respondNotReady(request, request_id);
     const method = request.head.method;
     const collection = std.mem.eql(u8, prefix, route_path);
@@ -2904,7 +2904,7 @@ fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, a
     }
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    const loaded = store.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "IdentityStorageUnavailable", "cannot read identity storage");
+    const loaded = store.load(app.systemStore(), io, a) catch return respondError(request, request_id, .service_unavailable, "IdentityStorageUnavailable", "cannot read identity storage");
     const items = if (is_group) loaded.value.groups else loaded.value.users;
     const lookup = if (input) |value| value.name else name;
     if (lookup.len > 0) try audit_context.setResource(.{ .type = if (is_group) "group" else "user", .name = lookup });
@@ -2947,7 +2947,7 @@ fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, a
         for (keys.credentials) |key| if (std.mem.eql(u8, key.credential.owner, owner)) return respondError(request, request_id, .conflict, "UserAccessKeysExist", "delete the user's access keys before deleting the user");
     }
     if (input) |value| {
-        const available = policies.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot read policy storage");
+        const available = policies.load(app.systemStore(), io, a) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot read policy storage");
         store.validate(value, loaded.value, available.value) catch |err| return respondError(request, request_id, .bad_request, @errorName(err), switch (err) {
             error.PolicyNotFound => "a selected policy no longer exists; refresh and retry",
             error.UserNotFound => "a selected user no longer exists; refresh and retry",
@@ -2993,7 +2993,7 @@ fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, a
         if (method == .POST) try next.append(a, prepared.?);
         if (is_group) snapshot.groups = next.items else snapshot.users = next.items;
     }
-    store.save(root, io, a, snapshot) catch |err| return respondError(request, request_id, if (err == error.IdentityLimit) .bad_request else .service_unavailable, @errorName(err), "cannot save identities");
+    store.save(app.systemStore(), io, a, snapshot) catch |err| return respondError(request, request_id, if (err == error.IdentityLimit) .bad_request else .service_unavailable, @errorName(err), "cannot save identities");
     audit(app, request_id, if (is_group) "mutate_group" else "mutate_user", lookup, @tagName(method));
     if (method == .DELETE) return respondNoContent(request, request_id);
     if (is_group) return respondJson(request, request_id, if (method == .POST) .created else .ok, prepared.?);
@@ -3003,7 +3003,7 @@ fn serveIdentities(comptime is_group: bool, request: *std.http.Server.Request, a
 // Lock identity changes through the scoped operation; credential ownership is immutable.
 fn serveUserAccessKeys(request: *std.http.Server.Request, app: *Application, request_id: []const u8, path: []const u8) !std.http.Status {
     const identities = @import("../application/identity_store.zig");
-    const root = app.data_root orelse return respondNotReady(request, request_id);
+    _ = app.metadata_repository orelse return respondNotReady(request, request_id);
     const io = app.io orelse return respondNotReady(request, request_id);
     const service = app.credentialService() orelse return respondNotReady(request, request_id);
     var arena = std.heap.ArenaAllocator.init(app.allocator);
@@ -3019,7 +3019,7 @@ fn serveUserAccessKeys(request: *std.http.Server.Request, app: *Application, req
     if (raw_key != null and method != .PATCH and method != .DELETE) return respondMethodNotAllowed(request, request_id, "PATCH, DELETE");
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    const snapshot = identities.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "IdentityStorageUnavailable", "cannot read users");
+    const snapshot = identities.load(app.systemStore(), io, a) catch return respondError(request, request_id, .service_unavailable, "IdentityStorageUnavailable", "cannot read users");
     const index = identities.find(snapshot.value.users, name) orelse return respondError(request, request_id, .not_found, "IdentityNotFound", "user does not exist");
     const owner = try std.fmt.allocPrint(a, "user:{s}", .{name});
     if (method == .POST) {
@@ -3062,13 +3062,13 @@ fn serveBucketResourcePolicy(request: *std.http.Server.Request, app: *Applicatio
     const bucket = buckets.head(name) catch |err| return respondBucketError(request, request_id, err);
     defer bucket.deinit(app.allocator);
     const io = app.io orelse return respondNotReady(request, request_id);
-    const root = app.data_root orelse return respondNotReady(request, request_id);
+    _ = app.metadata_repository orelse return respondNotReady(request, request_id);
     const Input = struct { document: []const u8 };
     const input = if (method == .PUT) (try parseJsonBody(Input, request, a, request_id) orelse return .bad_request).value else Input{ .document = "" };
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
     if (method == .GET) {
-        const record = store.load(a, root, io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot read bucket policy");
+        const record = store.load(a, app.systemStore(), io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot read bucket policy");
         return respondJson(request, request_id, .ok, .{ .document = if (record) |value| if (value.value.deleted) "" else value.value.document else "" });
     }
     if (method == .DELETE) {
@@ -3076,14 +3076,14 @@ fn serveBucketResourcePolicy(request: *std.http.Server.Request, app: *Applicatio
             const private_bucket = buckets.setAccessPolicy(name, .private) catch |err| return respondBucketError(request, request_id, err);
             private_bucket.deinit(app.allocator);
         }
-        store.remove(a, root, io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot delete bucket policy");
+        store.remove(a, app.systemStore(), io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot delete bucket policy");
         return respondNoContent(request, request_id);
     }
-    const snapshot = identities.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "IdentityStorageUnavailable", "cannot resolve policy principals");
+    const snapshot = identities.load(app.systemStore(), io, a) catch return respondError(request, request_id, .service_unavailable, "IdentityStorageUnavailable", "cannot resolve policy principals");
     const prepared = store.prepare(a, input.document, bucket.name, snapshot.value) catch |err| return respondError(request, request_id, .bad_request, @errorName(err), "invalid bucket policy, resource or principal");
     const custom_bucket = buckets.setAccessPolicy(name, .custom) catch |err| return respondBucketError(request, request_id, err);
     custom_bucket.deinit(app.allocator);
-    store.save(a, root, io, bucket.id, prepared) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot save bucket policy");
+    store.save(a, app.systemStore(), io, bucket.id, prepared) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot save bucket policy");
     audit(app, request_id, "put_bucket_policy", name, "updated");
     return respondJson(request, request_id, .ok, input);
 }
@@ -3091,7 +3091,7 @@ fn serveBucketResourcePolicy(request: *std.http.Server.Request, app: *Applicatio
 fn serveOidc(request: *std.http.Server.Request, app: *Application, request_id: []const u8, route_path: []const u8, caller: management_auth.Principal) !std.http.Status {
     if (!caller.is_root) return respondError(request, request_id, .forbidden, "AccessDenied", "only the deployment administrator may configure OIDC");
     const store = @import("../application/oidc_store.zig");
-    const root = app.data_root orelse return respondNotReady(request, request_id);
+    _ = app.metadata_repository orelse return respondNotReady(request, request_id);
     const io = app.io orelse return respondNotReady(request, request_id);
     const key = if (app.master_key) |k| k.bytes else return respondNotReady(request, request_id);
     var arena = std.heap.ArenaAllocator.init(app.allocator);
@@ -3103,7 +3103,7 @@ fn serveOidc(request: *std.http.Server.Request, app: *Application, request_id: [
     if (!collection and !store.validId(id)) return respondError(request, request_id, .bad_request, "InvalidProvider", "invalid provider ID");
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    const loaded = store.load(root, io, a, key) catch return respondError(request, request_id, .service_unavailable, "OidcStorageUnavailable", "cannot read OIDC configuration");
+    const loaded = store.load(app.systemStore(), io, a, key) catch return respondError(request, request_id, .service_unavailable, "OidcStorageUnavailable", "cannot read OIDC configuration");
     const method = request.head.method;
     if (method == .GET and collection) {
         var items: std.ArrayList(store.Provider) = .empty;
@@ -3133,7 +3133,7 @@ fn serveOidc(request: *std.http.Server.Request, app: *Application, request_id: [
         if (!std.mem.eql(u8, value.provider_id, lookup)) return respondError(request, request_id, .bad_request, "InvalidProvider", "provider ID cannot be changed");
         store.validate(value) catch return respondError(request, request_id, .bad_request, "InvalidProvider", "check provider ID, client credentials, URLs and openid scope");
         const policies = @import("../application/policy_store.zig");
-        const policy_list = policies.load(root, io, a) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot validate policy references");
+        const policy_list = policies.load(app.systemStore(), io, a) catch return respondError(request, request_id, .service_unavailable, "PolicyStorageUnavailable", "cannot validate policy references");
         var names = std.mem.splitScalar(u8, value.role_policy, ',');
         while (names.next()) |raw| {
             const name = std.mem.trim(u8, raw, " \t");
@@ -3146,7 +3146,7 @@ fn serveOidc(request: *std.http.Server.Request, app: *Application, request_id: [
         }
         try items.append(a, value);
     }
-    store.save(root, io, a, key, .{ .items = items.items, .flows = loaded.value.flows, .sessions = loaded.value.sessions }) catch return respondError(request, request_id, .service_unavailable, "OidcStorageUnavailable", "cannot persist OIDC configuration");
+    store.save(app.systemStore(), io, a, key, .{ .items = items.items, .flows = loaded.value.flows, .sessions = loaded.value.sessions }) catch return respondError(request, request_id, .service_unavailable, "OidcStorageUnavailable", "cannot persist OIDC configuration");
     audit(app, request_id, "mutate_oidc_provider", lookup, @tagName(method));
     if (method == .DELETE) return respondNoContent(request, request_id);
     return respondJson(request, request_id, if (method == .POST) .created else .ok, input.?.redacted());
@@ -3155,7 +3155,7 @@ fn serveOidc(request: *std.http.Server.Request, app: *Application, request_id: [
 pub fn serveOidcAuth(request: *std.http.Server.Request, app: *Application, request_id: []const u8, audit_context: *AuditContext) !std.http.Status {
     const oidc = @import("../application/oidc_auth.zig");
     const store = @import("../application/oidc_store.zig");
-    const root = app.data_root orelse return respondNotReady(request, request_id);
+    _ = app.metadata_repository orelse return respondNotReady(request, request_id);
     const io = app.io orelse return respondNotReady(request, request_id);
     const key = if (app.master_key) |k| k.bytes else return respondNotReady(request, request_id);
     var arena = std.heap.ArenaAllocator.init(app.allocator);
@@ -3165,7 +3165,7 @@ pub fn serveOidcAuth(request: *std.http.Server.Request, app: *Application, reque
     if (std.mem.eql(u8, path, api_prefix ++ "/auth/oidc/providers") and request.head.method == .GET) {
         app.policy_mutex.lockUncancelable(io);
         defer app.policy_mutex.unlock(io);
-        const loaded = store.load(root, io, a, key) catch return respondError(request, request_id, .service_unavailable, "OidcUnavailable", "OIDC configuration unavailable");
+        const loaded = store.load(app.systemStore(), io, a, key) catch return respondError(request, request_id, .service_unavailable, "OidcUnavailable", "OIDC configuration unavailable");
         const Public = struct { provider_id: []const u8, display_name: []const u8 };
         var items: std.ArrayList(Public) = .empty;
         for (loaded.value.items) |p| if (p.enabled and p.redirect_uri.len > 0) {
@@ -3404,7 +3404,7 @@ fn readNetworkSettings(a: std.mem.Allocator, app: *Application) !@import("../app
     const io = app.io orelse return error.Unavailable;
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    return @import("../application/network_settings.zig").load(a, app.data_root orelse return error.Unavailable, io, app.config);
+    return @import("../application/network_settings.zig").load(a, app.systemStore(), io, app.config);
 }
 fn serveNetworkSettings(request: *std.http.Server.Request, app: *Application, request_id: []const u8) !std.http.Status {
     const store = @import("../application/network_settings.zig");
@@ -3417,7 +3417,7 @@ fn serveNetworkSettings(request: *std.http.Server.Request, app: *Application, re
     const io = app.io orelse return respondNotReady(request, request_id);
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    store.save(a, app.data_root orelse return respondNotReady(request, request_id), io, input.value) catch return respondError(request, request_id, .service_unavailable, "NetworkSettingsUnavailable", "cannot persist network configuration");
+    store.save(a, app.systemStore(), io, input.value) catch return respondError(request, request_id, .service_unavailable, "NetworkSettingsUnavailable", "cannot persist network configuration");
     return respondJson(request, request_id, .ok, input.value);
 }
 
@@ -3450,7 +3450,7 @@ fn serveListenerSettings(request: *std.http.Server.Request, app: *Application, r
         var probe = probe_address.listen(io, .{ .reuse_address = true }) catch return respondError(request, request_id, .conflict, "ListenAddressUnavailable", "listener address is unavailable");
         probe.deinit(io);
     }
-    store.save(a, app.data_root orelse return respondNotReady(request, request_id), io, input.value.api_address) catch return respondError(request, request_id, .service_unavailable, "ListenerSettingsUnavailable", "cannot persist listener configuration");
+    store.save(a, app.systemStore(), io, input.value.api_address) catch return respondError(request, request_id, .service_unavailable, "ListenerSettingsUnavailable", "cannot persist listener configuration");
     return respondJson(request, request_id, .ok, input.value);
 }
 
@@ -3461,16 +3461,16 @@ fn serveInstanceSettings(request: *std.http.Server.Request, app: *Application, r
     defer arena.deinit();
     const a = arena.allocator();
     const io = app.io orelse return respondNotReady(request, request_id);
-    const root = app.data_root orelse return respondNotReady(request, request_id);
+    _ = app.metadata_repository orelse return respondNotReady(request, request_id);
     const id = app.local_storage.instanceId() orelse return respondNotReady(request, request_id);
     const Input = struct { service_name: []const u8, description: []const u8 };
     const input = if (request.head.method == .PUT) (try parseJsonBody(Input, request, a, request_id) orelse return .bad_request).value else null;
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    const value: store.Settings = if (input) |v| .{ .service_name = v.service_name, .description = v.description } else store.load(a, root, io) catch return respondError(request, request_id, .service_unavailable, "InstanceSettingsUnavailable", "cannot read instance settings");
+    const value: store.Settings = if (input) |v| .{ .service_name = v.service_name, .description = v.description } else store.load(a, app.systemStore(), io) catch return respondError(request, request_id, .service_unavailable, "InstanceSettingsUnavailable", "cannot read instance settings");
     if (input != null) {
         store.validate(value) catch |err| return respondError(request, request_id, .bad_request, @errorName(err), "invalid instance settings");
-        store.save(a, root, io, value) catch return respondError(request, request_id, .service_unavailable, "InstanceSettingsUnavailable", "cannot save instance settings");
+        store.save(a, app.systemStore(), io, value) catch return respondError(request, request_id, .service_unavailable, "InstanceSettingsUnavailable", "cannot save instance settings");
     }
     const hex = std.fmt.bytesToHex(id, .lower);
     const instance_id = try std.fmt.allocPrint(a, "{s}-{s}-{s}-{s}-{s}", .{ hex[0..8], hex[8..12], hex[12..16], hex[16..20], hex[20..32] });
@@ -3490,14 +3490,14 @@ fn serveRegionSettings(request: *std.http.Server.Request, app: *Application, req
     defer arena.deinit();
     const a = arena.allocator();
     const io = app.io orelse return respondNotReady(request, request_id);
-    const root = app.data_root orelse return respondNotReady(request, request_id);
+    _ = app.metadata_repository orelse return respondNotReady(request, request_id);
     const input = if (request.head.method == .PUT) (try parseJsonBody(store.Settings, request, a, request_id) orelse return .bad_request).value else null;
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    const pending = if (input) |value| value.s3_region else store.load(a, root, io, app.config.s3_region) catch return respondError(request, request_id, .service_unavailable, "RegionSettingsUnavailable", "cannot read region settings");
+    const pending = if (input) |value| value.s3_region else store.load(a, app.systemStore(), io, app.config.s3_region) catch return respondError(request, request_id, .service_unavailable, "RegionSettingsUnavailable", "cannot read region settings");
     if (input != null) {
         store.validate(pending) catch return respondError(request, request_id, .bad_request, "InvalidRegion", "invalid S3 region");
-        store.save(a, root, io, pending) catch return respondError(request, request_id, .service_unavailable, "RegionSettingsUnavailable", "cannot save region settings");
+        store.save(a, app.systemStore(), io, pending) catch return respondError(request, request_id, .service_unavailable, "RegionSettingsUnavailable", "cannot save region settings");
     }
     return respondJson(request, request_id, .ok, .{
         .s3_region = app.config.s3_region,
@@ -3513,7 +3513,7 @@ fn serveAuthenticationSettings(request: *std.http.Server.Request, app: *Applicat
     defer arena.deinit();
     const a = arena.allocator();
     const io = app.io orelse return respondNotReady(request, request_id);
-    const root = app.data_root orelse return respondNotReady(request, request_id);
+    _ = app.metadata_repository orelse return respondNotReady(request, request_id);
     const input: ?store.Settings = if (request.head.method == .PUT) input: {
         const Raw = struct { admin_session_ttl_seconds: std.json.Value, request_time_skew_seconds: std.json.Value };
         const raw = (try parseJsonBody(Raw, request, a, request_id) orelse return .bad_request).value;
@@ -3526,10 +3526,10 @@ fn serveAuthenticationSettings(request: *std.http.Server.Request, app: *Applicat
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
     const current = store.Settings.fromConfig(app.config);
-    const pending = input orelse (store.load(a, root, io, current) catch return respondError(request, request_id, .service_unavailable, "AuthenticationSettingsUnavailable", "cannot read authentication settings"));
+    const pending = input orelse (store.load(a, app.systemStore(), io, current) catch return respondError(request, request_id, .service_unavailable, "AuthenticationSettingsUnavailable", "cannot read authentication settings"));
     if (input != null) {
         pending.validate() catch |err| return respondError(request, request_id, .bad_request, @errorName(err), "invalid authentication settings");
-        store.save(a, root, io, pending) catch return respondError(request, request_id, .service_unavailable, "AuthenticationSettingsUnavailable", "cannot save authentication settings");
+        store.save(a, app.systemStore(), io, pending) catch return respondError(request, request_id, .service_unavailable, "AuthenticationSettingsUnavailable", "cannot save authentication settings");
     }
     return respondJson(request, request_id, .ok, .{ .current = current, .pending = pending, .restart_required = !current.eql(pending) });
 }
@@ -3541,15 +3541,15 @@ fn serveDisplaySettings(request: *std.http.Server.Request, app: *Application, re
     defer arena.deinit();
     const a = arena.allocator();
     const io = app.io orelse return respondNotReady(request, request_id);
-    const root = app.data_root orelse return respondNotReady(request, request_id);
+    _ = app.metadata_repository orelse return respondNotReady(request, request_id);
     const Input = struct { timezone: []const u8, date_format: []const u8 };
     const input = if (request.head.method == .PUT) (try parseJsonBody(Input, request, a, request_id) orelse return .bad_request).value else null;
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    const value: store.Settings = if (input) |v| .{ .timezone = v.timezone, .date_format = v.date_format } else store.load(a, root, io) catch return respondError(request, request_id, .service_unavailable, "DisplaySettingsUnavailable", "cannot read display settings");
+    const value: store.Settings = if (input) |v| .{ .timezone = v.timezone, .date_format = v.date_format } else store.load(a, app.systemStore(), io) catch return respondError(request, request_id, .service_unavailable, "DisplaySettingsUnavailable", "cannot read display settings");
     if (input != null) {
         store.validate(value) catch |err| return respondError(request, request_id, .bad_request, @errorName(err), "invalid display settings");
-        store.save(a, root, io, value) catch return respondError(request, request_id, .service_unavailable, "DisplaySettingsUnavailable", "cannot save display settings");
+        store.save(a, app.systemStore(), io, value) catch return respondError(request, request_id, .service_unavailable, "DisplaySettingsUnavailable", "cannot save display settings");
     }
     var zones: std.ArrayList([]const u8) = .empty;
     var iterator = std.mem.tokenizeScalar(u8, store.timezones, '\n');
@@ -3568,15 +3568,15 @@ fn serveBucketSubscriptions(request: *std.http.Server.Request, app: *Application
     const bucket = service.head(name) catch |err| return respondBucketError(request, request_id, err);
     defer bucket.deinit(app.allocator);
     const io = app.io orelse return respondNotReady(request, request_id);
-    const root = app.data_root orelse return respondNotReady(request, request_id);
+    _ = app.metadata_repository orelse return respondNotReady(request, request_id);
     if (request.head.method == .PUT) {
         const input = try parseJsonBody(store.Settings, request, a, request_id) orelse return .bad_request;
         store.validate(input.value) catch return respondError(request, request_id, .bad_request, "InvalidEventSubscription", "invalid event subscription");
         app.policy_mutex.lockUncancelable(io);
         defer app.policy_mutex.unlock(io);
-        const configured = @import("../application/event_destinations.zig").load(root, io, a, (app.master_key orelse return respondNotReady(request, request_id)).bytes) catch return respondError(request, request_id, .service_unavailable, "DestinationStorageUnavailable", "cannot read destinations");
+        const configured = @import("../application/event_destinations.zig").load(app.systemStore(), io, a, (app.master_key orelse return respondNotReady(request, request_id)).bytes) catch return respondError(request, request_id, .service_unavailable, "DestinationStorageUnavailable", "cannot read destinations");
         defer configured.deinit();
-        const previous = store.load(a, root, io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot read subscriptions");
+        const previous = store.load(a, app.systemStore(), io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot read subscriptions");
         for (input.value.items) |rule| {
             var found = false;
             if (rule.destination.len == 0) {
@@ -3593,13 +3593,13 @@ fn serveBucketSubscriptions(request: *std.http.Server.Request, app: *Application
             }
             if (!found) return respondError(request, request_id, .bad_request, "InvalidEventDestination", "select an existing event destination");
         }
-        store.save(a, root, io, bucket.id, input.value) catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot persist subscriptions");
+        store.save(a, app.systemStore(), io, bucket.id, input.value) catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot persist subscriptions");
         audit(app, request_id, "update_bucket_event_subscriptions", name, "updated");
         return respondJson(request, request_id, .ok, input.value);
     }
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    const value = store.load(a, root, io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot load subscriptions");
+    const value = store.load(a, app.systemStore(), io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot load subscriptions");
     return respondJson(request, request_id, .ok, value);
 }
 
@@ -3625,7 +3625,7 @@ fn serveEventDestinations(request: *std.http.Server.Request, app: *Application, 
     }
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    const loaded = store.load(root, io, a, key) catch return respondError(request, request_id, .service_unavailable, "DestinationStorageUnavailable", "cannot read event destinations");
+    const loaded = store.load(app.systemStore(), io, a, key) catch return respondError(request, request_id, .service_unavailable, "DestinationStorageUnavailable", "cannot read event destinations");
     defer loaded.deinit();
     if (method == .GET) {
         var redacted: std.ArrayList(store.Destination) = .empty;
@@ -3664,7 +3664,7 @@ fn serveEventDestinations(request: *std.http.Server.Request, app: *Application, 
         const buckets = (app.bucketService() orelse return respondNotReady(request, request_id)).list() catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot check subscriptions");
         defer buckets.deinit(app.allocator);
         for (buckets.buckets) |bucket| {
-            const rules = @import("../application/bucket_subscriptions.zig").load(a, root, io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot check subscriptions");
+            const rules = @import("../application/bucket_subscriptions.zig").load(a, app.systemStore(), io, bucket.id) catch return respondError(request, request_id, .service_unavailable, "SubscriptionStorageUnavailable", "cannot check subscriptions");
             for (rules.items) |rule| if (std.mem.eql(u8, rule.destination, name)) return respondError(request, request_id, .conflict, "EventDestinationInUse", "remove bucket subscriptions before deleting destination");
         }
     }
@@ -3677,7 +3677,7 @@ fn serveEventDestinations(request: *std.http.Server.Request, app: *Application, 
         input.?.has_password = false;
         try items.append(a, input.?);
     }
-    store.save(root, io, a, key, .{ .items = items.items }) catch return respondError(request, request_id, .service_unavailable, "DestinationStorageUnavailable", "cannot persist event destinations");
+    store.save(app.systemStore(), io, a, key, .{ .items = items.items }) catch return respondError(request, request_id, .service_unavailable, "DestinationStorageUnavailable", "cannot persist event destinations");
     if (method == .DELETE) return respondJson(request, request_id, .ok, .{ .deleted = true });
     return respondJson(request, request_id, if (method == .POST) .created else .ok, input.?.redacted());
 }
@@ -3732,7 +3732,7 @@ fn serveMonitoringDiagnostics(request: *std.http.Server.Request, app: *Applicati
             module.validate(rules) catch return respondError(request, request_id, .bad_request, "InvalidMonitoringRules", "Invalid thresholds, durations or rule identifiers");
             app.policy_mutex.lockUncancelable(io);
             defer app.policy_mutex.unlock(io);
-            module.save(app.allocator, app.data_root orelse return respondNotReady(request, request_id), io, rules) catch return respondError(request, request_id, .service_unavailable, "MonitoringRulesUnavailable", "Could not persist monitoring rules");
+            module.save(app.allocator, app.systemStore(), io, rules) catch return respondError(request, request_id, .service_unavailable, "MonitoringRulesUnavailable", "Could not persist monitoring rules");
             app.monitor.mutex.lockUncancelable(io);
             app.monitor.alert_engine.reset(rules);
             app.monitor.mutex.unlock(io);

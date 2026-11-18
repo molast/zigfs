@@ -139,7 +139,6 @@ ZIGFS_DATA_ROOT={root}/data
             reject(lambda: api('auth/sts-login', credentials, bearer=''), 401)
             reject(lambda: api('auth/session', bearer=session['token']), 401)
             reject(lambda: s3('GET', '/role-check/test.txt', key=issued['access_key'], password=issued['secret_key'], extra=extra), 403)
-            legacy_session = api('role-sessions')['items'][0]
             api('role-sessions/' + issued['access_key'], method='DELETE')
             assert not api('role-sessions')['items']
             reject(lambda: api('role-sessions/' + issued['access_key'], method='DELETE'), 404)
@@ -147,19 +146,14 @@ ZIGFS_DATA_ROOT={root}/data
             reject(lambda: api('auth/sts-login', credentials, bearer=''), 401)
             api('roles/reader', method='DELETE')
             assert not api('roles')['items']
-            # Reproduce an old server deleting the role but retaining revoked sessions.
+            # Deleted roles/sessions remain deleted after reopening the engine.
             stop()
-            store = root / 'data/.zigfs/system/roles.json'
-            snapshot = json.loads(store.read_text())
-            snapshot['sessions'] = [legacy_session]
-            store.write_text(json.dumps(snapshot))
+            assert not (root / 'data/.zigfs/system/roles.json').exists()
             start()
             token = login('file-root', 'file-root-password')
             assert not api('roles')['items']
-            assert api('role-sessions')['items'][0]['revoked']
-            reject(lambda: api('auth/sts-login', credentials, bearer=''), 401)
-            api('role-sessions/' + issued['access_key'], method='DELETE')
             assert not api('role-sessions')['items']
+            reject(lambda: api('auth/sts-login', credentials, bearer=''), 401)
             print('PASS: role create/update, duration, disabled role, STS login, read-only S3, revoke and delete')
         finally:
             stop()

@@ -130,17 +130,11 @@ fn serveMetadataMaintenance(application: *Application) void {
             logging.reportFailure(.storage, err, @errorReturnTrace(), @src(), "ZigFS metadata maintenance failed (unresolved commits require restart recovery): {t}", .{err});
             continue;
         };
-        // Drain a backlog without waiting a full idle interval between batches.
-        if (report.has_more) delay_seconds = 1;
-        if (report.removed_journal_files != 0 or report.removed_tombstones != 0) {
-            std.log.scoped(.storage).info("ZigFS metadata maintenance checkpoint={d} journal_removed={d} tombstones_removed={d} multipart_tombstones_removed={d} journal_scanned={d} metadata_scanned={d} has_more={} duration_ms={d}", .{
+        if (report.removed_tombstones != 0) {
+            std.log.scoped(.storage).info("Metadata maintenance checkpoint={d} epoch={d} tombstones_removed={d} duration_ms={d}", .{
                 report.checkpoint_generation,
-                report.removed_journal_files,
+                report.gc_epoch,
                 report.removed_tombstones,
-                report.removed_multipart_tombstones,
-                report.scanned_journal_entries,
-                report.scanned_metadata_entries,
-                report.has_more,
                 started.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds(),
             });
         }
@@ -569,10 +563,10 @@ fn serveManagementSession(
     if (!principal.hasConsoleAccess(a)) return management.respondError(request, current_request_id, .forbidden, "ConsoleAccessDenied", "current identity has no console page permissions");
     const display_store = @import("../application/display_settings.zig");
     const display: ?display_store.Settings = display: {
-        const root = context.application.data_root orelse break :display null;
+        _ = context.application.metadata_repository orelse break :display null;
         context.application.policy_mutex.lockUncancelable(context.io);
         defer context.application.policy_mutex.unlock(context.io);
-        break :display display_store.load(a, root, context.io) catch null;
+        break :display display_store.load(a, context.application.systemStore(), context.io) catch null;
     };
     const credential_claims = management_session.validateCredential(context.config.admin_session_secret, token, std.Io.Clock.real.now(context.io).toSeconds());
     const response_body = try std.json.Stringify.valueAlloc(a, .{ .authenticated = true, .account_enabled = principal.account_enabled, .auth_source = if (principal.is_root) "deployment" else if (principal.federated) "oidc" else if (credential_claims != null) "sts" else "local", .root_access_key = if (principal.is_root and context.config.root_access_key.len > 0) context.config.root_access_key else null, .session_access_key = if (credential_claims) |claims| claims.access_key else null, .display_preferences = display, .federated = principal.federated, .display_name = principal.display_name, .email = principal.email, .refreshable = principal.refreshable, .username = principal.username, .subject_id = principal.id, .is_root = principal.is_root, .expires_at = principal.expires_at, .capabilities = principal.capabilities(a), .policies = principal.policy_names }, .{});
@@ -3828,7 +3822,7 @@ test "S3 HTTP serves the complete multipart lifecycle and stable errors" {
 }
 
 test "S3 HTTP interrupted uploads do not publish and canceled downloads release leases" {
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -4513,11 +4507,11 @@ test "S3 HTTP accepts signed POST policies and does not publish failed uploads" 
 
 fn resolveRequestOrigin(a: std.mem.Allocator, app: *Application, request: *std.http.Server.Request, peer: std.Io.net.IpAddress) !@import("trusted_proxy.zig").Origin {
     const io = app.io orelse return .{ .peer = peer };
-    const root = app.data_root orelse return .{ .peer = peer };
+    _ = app.metadata_repository orelse return .{ .peer = peer };
     const network = network: {
         app.policy_mutex.lockUncancelable(io);
         defer app.policy_mutex.unlock(io);
-        break :network try @import("../application/network_settings.zig").load(a, root, io, app.config);
+        break :network try @import("../application/network_settings.zig").load(a, app.systemStore(), io, app.config);
     };
     var headers: std.ArrayList(sigv4.Header) = .empty;
     var it = request.iterateHeaders();

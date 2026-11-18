@@ -30,15 +30,14 @@ Network 支持保存 Public URL、寻址模式、可信代理和服务监听配�
 
 `ZIGFS_DATA_ROOT` 是 ZigFS 唯一事实来源：
 
-- `metadata/` 保存版本化 Bucket/Object/Multipart/Credential 记录。
-- `.zigfs/journal/` 保存 Intent、Commit 和 Abort。
-- `objects/` 保存按 Data Generation 分代的数据文件。
-- `.zigfs/system/` 保存格式、实例身份和 Credential Master Key。
-- `.zigfs/indexes/` 在 V1 是可丢弃的加速层，启动始终从 Metadata Repository 重建。
-- `.zigfs/trash/` 保存 GC 已从 namespace 原子移出、等待最终物理删除的数据；启动时
-  会继续清理未完成的 Trash。
+- `.zigfs.sys/` 保存 metadata-engine 的 WAL、快照和引擎锁，直接位于数据根下。
+- `objects/` 和 `multipart/` 保存对象及上传分片实体。
+- `.zigfs/format.meta` 保存数据根格式和实例身份；`.zigfs/system/` 等目录保存密钥与业务配置。
+- 业务查询索引在启动时从引擎重建，不再创建旧 `.zigfs/indexes/`。
+- `.zigfs/trash/` 保存 GC 已移出命名空间的待删除数据，启动继续清理。
 
-不要手工编辑或删除 `metadata/`、`.zigfs/journal/`、`.zigfs/system/` 或 `objects/`。
+不要手工编辑 `.zigfs.sys/`、密钥或对象文件。旧开发库不兼容，停止实例并清空专用数据根后重建。
+完整备份与元数据在线备份的边界见 [备份与恢复](backup-and-recovery.md)。
 第二个 ZigFS 进程不能共享同一个数据根目录。
 
 对象删除、悬垂数据、过期 Multipart 和 16 分片 Scanner 的完整语义见
@@ -74,17 +73,17 @@ Prometheus 只连接独立 Metrics Listener。至少监控 `zigfs_ready`、请�
 
 ## Managed policy documents
 
-ZigFS owns the policy collection at `<data_root>/.zigfs/system/policies.json`.
+ZigFS owns the policy collection in metadata-engine (`policy` namespace, key `system/policies.json`).
 On first access, an absent collection is seeded atomically from the eight JSON
-documents embedded from `zigfs/src/application/policies/`. An existing collection,
+documents embedded from `zigfs/resources/policies/`. An existing collection,
 including an empty one, is never reseeded: edits and deletions survive restart.
-Include this file in data-root backups. Do not delete it to clear policies; use
+Include the engine in backups. Do not edit engine files to clear policies; use
 the authenticated Management API instead.
 
 Admin forwards list/get/create/update/delete through `/api/v1/policies` to
 `/_admin/v1/policies`. POST creates; PATCH updates a named policy; DELETE removes
-it. Names cannot be changed and duplicates return 409. Writes use a mutex,
-temporary file, fsync, atomic replacement, and parent-directory sync. Documents
+it. Names cannot be changed and duplicates return 409. Writes use a business mutex and
+the shared metadata-engine durable commit queue. Documents
 are limited to 256 KiB and the collection to 16 MiB. Concurrent updates use
 last-write-wins semantics.
 
@@ -105,9 +104,9 @@ UTF-8 bytes. A user/group can have up to 1024 unique policy assignments, and a
 group up to 1024 unique members. References must exist in ZigFS.
 
 ZigFS persists both collections atomically in
-`<data_root>/.zigfs/system/identities.json`, with a limit of 10,000 users and
-10,000 groups and 16 MiB total. Include this file and `policies.json` together
-in backups. An absent file starts empty; a corrupt file returns a storage error
+metadata-engine (`identity` namespace, key `system/identities.json`), with a limit of 10,000 users and
+10,000 groups and 16 MiB total. Both collections are included in engine backups.
+An absent record starts empty; a corrupt record returns a storage error
 and is never replaced with an empty collection. Writes and policy-reference
 checks use the same mutex as policy management and last-write-wins semantics.
 Deleting a user removes its group memberships in the same atomic replacement;

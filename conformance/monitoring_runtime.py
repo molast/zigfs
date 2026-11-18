@@ -143,7 +143,7 @@ try:
         wait_alert('normal')
         target=work/'benchmark-target.json'
         target.write_text(json.dumps([dict(name='ZigFS',endpoint=env['ZIGFS_ENDPOINT'],access_key_env='ZIGFS_ACCESS_KEY',secret_key_env='ZIGFS_SECRET_KEY',version=restarted['version'])]))
-        subprocess.run(['python3',str(root/'tools/monitoring/benchmark.py'),'--targets',str(target),'--output',str(work/'benchmark.json'),'--size','4096','--count','8','--concurrency','2'],env=env,check=True)
+        subprocess.run(['python3',str(root/'zigfs/bench/benchmark.py'),'--targets',str(target),'--output',str(work/'benchmark.json'),'--size','4096','--count','8','--concurrency','2'],env=env,check=True)
         report=json.loads((work/'benchmark.json').read_text())
         assert all(row['successes']==8 and row['errors']==0 for row in report['targets'][0]['operations'])
         assert not report['targets'][0]['cleanup_errors']

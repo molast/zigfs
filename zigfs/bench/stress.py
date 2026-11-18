@@ -11,11 +11,21 @@ import signal
 import threading
 import time
 import urllib.request
-from common import directory, manifest, write_json
 
-spec = importlib.util.spec_from_file_location('zigfs_benchmark', pathlib.Path(__file__).resolve().parents[1] / 'monitoring/benchmark.py')
-benchmark = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(benchmark)
+
+def load_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# Resolve shared helpers from this file, so invocation does not depend on cwd.
+benchmark = load_module('zigfs_benchmark', pathlib.Path(__file__).with_name('benchmark.py'))
+artifacts = load_module(
+    'zigfs_diagnostic_artifacts',
+    pathlib.Path(__file__).resolve().parents[2] / 'tools/diagnostics/common.py',
+)
 BOUNDS = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000]
 
 
@@ -29,7 +39,7 @@ def percentile(histogram, count, quantile):
 
 
 def run(target, output, seconds=1800, concurrency=4, size=65536, pause=0.1, monitor=None, cookie=None, interval=10):
-    output = directory(output)
+    output = artifacts.directory(output)
     client = benchmark.S3(target)
     bucket = 'zigfs-stress-' + secrets.token_hex(8)
     stop = threading.Event()
@@ -115,14 +125,14 @@ def run(target, output, seconds=1800, concurrency=4, size=65536, pause=0.1, moni
                    p99_ms=percentile(row['histogram'], row['successes'], .99),
                    successful_requests_per_second=row['successes']/max(workload_elapsed,.001))
     passed = not (fatal or interrupted.is_set() or cleanup_errors or errors) and workload_elapsed >= seconds and all(row['successes'] for row in totals.values())
-    report = manifest('stress', passed=passed, requested_seconds=seconds, elapsed_seconds=workload_elapsed,
+    report = artifacts.manifest('stress', passed=passed, requested_seconds=seconds, elapsed_seconds=workload_elapsed,
                       interrupted=interrupted.is_set(), fatal=fatal, concurrency=concurrency, size=size, pause_seconds=pause,
                       operations=totals, errors=errors, cleanup_errors=cleanup_errors,
                       sample_count=len(samples), sample_errors=sum('error' in row for row in samples),
                       telemetry_requested=bool(monitor), bucket=bucket,
                       scope='Client-side sustained S3 integrity test; percentiles are histogram upper bounds; not proof of leak absence')
     if monitor and (not samples or report['sample_errors'] or not all(row.get('latest') for row in samples)): report['passed']=False
-    write_json(output/'report.json',report)
+    artifacts.write_json(output/'report.json',report)
     return report
 
 

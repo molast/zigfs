@@ -1,6 +1,6 @@
+const SystemStore = @import("../metadata/system_store.zig").SystemStore;
 const std = @import("std");
 const box = @import("../auth/secret_box.zig");
-const durable = @import("../metadata/durable.zig");
 
 pub const Provider = struct {
     provider_id: []const u8,
@@ -67,7 +67,7 @@ pub const Snapshot = struct {
     flows: []const Flow = &.{},
     sessions: []const Session = &.{},
 };
-pub const path = ".zigfs/system/oidc-providers.enc";
+pub const path = "system/oidc-providers.enc";
 
 pub fn validId(id: []const u8) bool {
     if (id.len == 0 or id.len > 128) return false;
@@ -89,9 +89,10 @@ pub fn validate(p: Provider) !void {
     while (scopes.next()) |scope| if (std.mem.eql(u8, std.mem.trim(u8, scope, " \t"), "openid")) return;
     return error.MissingOpenIdScope;
 }
-pub fn load(root: std.Io.Dir, io: std.Io, a: std.mem.Allocator, key: box.Key) !std.json.Parsed(Snapshot) {
-    const data = root.readFileAlloc(io, path, a, .limited(4 * 1024 * 1024)) catch |err| switch (err) {
-        error.FileNotFound => return std.json.parseFromSlice(Snapshot, a, "{}", .{}),
+pub fn load(root: SystemStore, io: std.Io, a: std.mem.Allocator, key: box.Key) !std.json.Parsed(Snapshot) {
+    _ = io;
+    const data = root.read(a, path, 4 * 1024 * 1024) catch |err| switch (err) {
+        error.NotFound => return std.json.parseFromSlice(Snapshot, a, "{}", .{}),
         else => return err,
     };
     defer a.free(data);
@@ -110,7 +111,7 @@ pub fn load(root: std.Io.Dir, io: std.Io, a: std.mem.Allocator, key: box.Key) !s
     }
     return parsed;
 }
-pub fn save(root: std.Io.Dir, io: std.Io, a: std.mem.Allocator, key: box.Key, snapshot: Snapshot) !void {
+pub fn save(root: SystemStore, io: std.Io, a: std.mem.Allocator, key: box.Key, snapshot: Snapshot) !void {
     if (snapshot.items.len > 128 or snapshot.flows.len > 256 or snapshot.sessions.len > 4096) return error.ProviderLimit;
     const plain = try std.json.Stringify.valueAlloc(a, snapshot, .{});
     defer {
@@ -120,15 +121,9 @@ pub fn save(root: std.Io.Dir, io: std.Io, a: std.mem.Allocator, key: box.Key, sn
     if (plain.len > 4 * 1024 * 1024 - 28) return error.ProviderLimit;
     const sealed = try box.seal(a, io, key, path, plain);
     defer sealed.deinit(a);
-    try root.createDirPath(io, ".zigfs/system");
-    var atomic = try root.createFileAtomic(io, path, .{ .replace = true });
-    defer atomic.deinit(io);
-    try atomic.file.writeStreamingAll(io, &sealed.nonce);
-    try atomic.file.writeStreamingAll(io, &sealed.tag);
-    try atomic.file.writeStreamingAll(io, sealed.ciphertext);
-    try atomic.file.sync(io);
-    try atomic.replace(io);
-    try durable.syncParent(root, io, path);
+    const encoded = try std.mem.concat(a, u8, &.{ &sealed.nonce, &sealed.tag, sealed.ciphertext });
+    defer a.free(encoded);
+    try root.put(a, path, encoded);
 }
 
 test "OIDC configuration encrypts secrets and survives reload; corruption fails closed" {
@@ -136,21 +131,24 @@ test "OIDC configuration encrypts secrets and survives reload; corruption fails 
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata = SystemStore{ .repository = repository.interface() };
     const key: box.Key = @splat(42);
     const p: Provider = .{ .provider_id = "test", .client_id = "console", .client_secret = "test-secret-never-return", .configuration_url = "https://idp.example/.well-known/openid-configuration", .redirect_uri = "https://console.example/callback" };
     try validate(p);
-    try save(tmp.dir, io, a, key, .{ .items = &.{p} });
-    const bytes = try tmp.dir.readFileAlloc(io, path, a, .limited(100000));
+    try save(metadata, io, a, key, .{ .items = &.{p} });
+    const bytes = try metadata.read(a, path, 100000);
     defer a.free(bytes);
     try std.testing.expect(std.mem.indexOf(u8, bytes, p.client_secret) == null);
-    const loaded = try load(tmp.dir, io, a, key);
+    const loaded = try load(metadata, io, a, key);
     defer loaded.deinit();
     try std.testing.expectEqualStrings(p.client_secret, loaded.value.items[0].client_secret);
     try std.testing.expectEqualStrings("", loaded.value.items[0].redacted().client_secret);
     try std.testing.expect(loaded.value.items[0].redacted().has_secret);
-    try std.testing.expectError(error.AuthenticationFailed, load(tmp.dir, io, a, @splat(43)));
-    try tmp.dir.writeFile(io, .{ .sub_path = path, .data = "broken" });
-    try std.testing.expectError(error.InvalidOidcStorage, load(tmp.dir, io, a, key));
+    try std.testing.expectError(error.AuthenticationFailed, load(metadata, io, a, @splat(43)));
+    try metadata.put(std.testing.allocator, path, "broken");
+    try std.testing.expectError(error.InvalidOidcStorage, load(metadata, io, a, key));
 }
 test "OIDC validation rejects invalid names, URLs and scopes" {
     var p: Provider = .{ .provider_id = "../test", .client_id = "client", .client_secret = "secret", .configuration_url = "https://idp.example/config", .dynamic_redirect = true, .redirect_uri = "https://console.example" };
@@ -168,23 +166,26 @@ test "OIDC recovery rejects duplicate IDs and failed save preserves last snapsho
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata = SystemStore{ .repository = repository.interface() };
     const key: box.Key = @splat(42);
     const p: Provider = .{ .provider_id = "provider", .client_id = "client", .client_secret = "secret", .configuration_url = "https://idp.example/config", .dynamic_redirect = true, .redirect_uri = "https://console.example" };
-    try save(tmp.dir, io, a, key, .{ .items = &.{ p, p } });
-    try std.testing.expectError(error.DuplicateProvider, load(tmp.dir, io, a, key));
-    try save(tmp.dir, io, a, key, .{ .items = &.{p} });
+    try save(metadata, io, a, key, .{ .items = &.{ p, p } });
+    try std.testing.expectError(error.DuplicateProvider, load(metadata, io, a, key));
+    try save(metadata, io, a, key, .{ .items = &.{p} });
     const too_many = try a.alloc(Provider, 129);
     defer a.free(too_many);
     @memset(too_many, p);
-    try std.testing.expectError(error.ProviderLimit, save(tmp.dir, io, a, key, .{ .items = too_many }));
-    const snapshot = try load(tmp.dir, io, a, key);
+    try std.testing.expectError(error.ProviderLimit, save(metadata, io, a, key, .{ .items = too_many }));
+    const snapshot = try load(metadata, io, a, key);
     defer snapshot.deinit();
     try std.testing.expectEqual(@as(usize, 1), snapshot.value.items.len);
 }
 
 /// Startup reconciliation. Environment-owned entries are read-only through the API;
 /// removing them from the environment revokes their sessions by removing the provider.
-pub fn importEnvironment(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, key: box.Key, raw: []const u8) !void {
+pub fn importEnvironment(a: std.mem.Allocator, root: SystemStore, io: std.Io, key: box.Key, raw: []const u8) !void {
     if (raw.len > 1024 * 1024) return error.InvalidProvider;
     const incoming = try std.json.parseFromSlice([]Provider, a, raw, .{});
     defer incoming.deinit();
@@ -238,27 +239,30 @@ test "OIDC environment import preserves revisions and rejects conflicting source
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata = SystemStore{ .repository = repository.interface() };
     const key: box.Key = @splat(42);
     const raw =
         \\[{"provider_id":"env","client_id":"console","client_secret":"secret","configuration_url":"https://id.example/.well-known/openid-configuration","redirect_uri":"https://console.example/callback"}]
     ;
-    try importEnvironment(a, tmp.dir, io, key, raw);
-    const first = try load(tmp.dir, io, a, key);
+    try importEnvironment(a, metadata, io, key, raw);
+    const first = try load(metadata, io, a, key);
     defer first.deinit();
     try std.testing.expect(first.value.items[0].environment_managed);
-    try importEnvironment(a, tmp.dir, io, key, raw);
-    const second = try load(tmp.dir, io, a, key);
+    try importEnvironment(a, metadata, io, key, raw);
+    const second = try load(metadata, io, a, key);
     defer second.deinit();
     try std.testing.expectEqualStrings(first.value.items[0].revision, second.value.items[0].revision);
-    try importEnvironment(a, tmp.dir, io, key, "[]");
-    const removed = try load(tmp.dir, io, a, key);
+    try importEnvironment(a, metadata, io, key, "[]");
+    const removed = try load(metadata, io, a, key);
     defer removed.deinit();
     try std.testing.expectEqual(@as(usize, 0), removed.value.items.len);
     var local = first.value.items[0];
     local.environment_managed = false;
-    try save(tmp.dir, io, a, key, .{ .items = &.{local} });
-    try std.testing.expectError(error.DuplicateProvider, importEnvironment(a, tmp.dir, io, key, raw));
-    const preserved = try load(tmp.dir, io, a, key);
+    try save(metadata, io, a, key, .{ .items = &.{local} });
+    try std.testing.expectError(error.DuplicateProvider, importEnvironment(a, metadata, io, key, raw));
+    const preserved = try load(metadata, io, a, key);
     defer preserved.deinit();
     try std.testing.expect(!preserved.value.items[0].environment_managed);
 }

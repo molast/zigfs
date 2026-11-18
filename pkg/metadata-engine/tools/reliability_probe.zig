@@ -24,13 +24,13 @@ pub fn main(init: std.process.Init) !void {
     var engine = try metadata.Engine.open(allocator, init.io, root);
     defer engine.deinit();
     if (std.mem.eql(u8, mode, "seed")) {
-        for (1..7) |namespace| {
+        for (1..metadata.namespace_count + 1) |namespace| {
             const kind: metadata.Type = @fromBackingInt(@intCast(namespace));
             _ = try engine.interface().put(allocator, kind, "acknowledged", .missing, "before-checkpoint");
             _ = try engine.interface().tombstone(allocator, kind, "deleted", .missing);
         }
         try engine.checkpoint();
-        var mutations: [6]metadata.Mutation = undefined;
+        var mutations: [metadata.namespace_count]metadata.Mutation = undefined;
         for (&mutations, 1..) |*mutation, namespace| {
             mutation.* = .{ .record_type = @fromBackingInt(@intCast(namespace)), .key = "tail", .payload = "after-checkpoint" };
         }
@@ -76,7 +76,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn verify(engine: *metadata.Engine) !void {
-    for (1..7) |namespace| {
+    for (1..metadata.namespace_count + 1) |namespace| {
         const kind: metadata.Type = @fromBackingInt(@intCast(namespace));
         const old = try engine.interface().get(allocator, kind, "acknowledged");
         defer old.deinit(allocator);
@@ -86,6 +86,6 @@ fn verify(engine: *metadata.Engine) !void {
         defer deleted.deinit(allocator);
         if (!std.mem.eql(u8, old.payload, "before-checkpoint") or
             !std.mem.eql(u8, tail.payload, "after-checkpoint") or
-            tail.generation != 13 or !deleted.tombstone) return error.ValidationFailed;
+            tail.generation != metadata.namespace_count * 2 + 1 or !deleted.tombstone) return error.ValidationFailed;
     }
 }

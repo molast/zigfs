@@ -1,6 +1,6 @@
+const SystemStore = @import("../metadata/system_store.zig").SystemStore;
 const std = @import("std");
 const box = @import("../auth/secret_box.zig");
-const durable = @import("../metadata/durable.zig");
 
 pub const Destination = struct {
     name: []const u8,
@@ -41,7 +41,7 @@ pub const Destination = struct {
     }
 };
 pub const Snapshot = struct { version: u32 = 1, items: []const Destination = &.{} };
-pub const path = ".zigfs/config/event-destinations.enc";
+pub const path = "config/event-destinations.enc";
 
 pub fn validName(name: []const u8) bool {
     if (name.len == 0 or name.len > 128) return false;
@@ -114,9 +114,10 @@ fn validateSnapshot(snapshot: Snapshot) !void {
     }
 }
 // Caller serializes configuration mutations with policy_mutex.
-pub fn load(root: std.Io.Dir, io: std.Io, a: std.mem.Allocator, key: box.Key) !std.json.Parsed(Snapshot) {
-    const data = root.readFileAlloc(io, path, a, .limited(2 * 1024 * 1024)) catch |err| switch (err) {
-        error.FileNotFound => return std.json.parseFromSlice(Snapshot, a, "{}", .{}),
+pub fn load(root: SystemStore, io: std.Io, a: std.mem.Allocator, key: box.Key) !std.json.Parsed(Snapshot) {
+    _ = io;
+    const data = root.read(a, path, 2 * 1024 * 1024) catch |err| switch (err) {
+        error.NotFound => return std.json.parseFromSlice(Snapshot, a, "{}", .{}),
         else => return err,
     };
     defer a.free(data);
@@ -131,7 +132,7 @@ pub fn load(root: std.Io.Dir, io: std.Io, a: std.mem.Allocator, key: box.Key) !s
     try validateSnapshot(parsed.value);
     return parsed;
 }
-pub fn save(root: std.Io.Dir, io: std.Io, a: std.mem.Allocator, key: box.Key, snapshot: Snapshot) !void {
+pub fn save(root: SystemStore, io: std.Io, a: std.mem.Allocator, key: box.Key, snapshot: Snapshot) !void {
     try validateSnapshot(snapshot);
     const plain = try std.json.Stringify.valueAlloc(a, snapshot, .{});
     defer {
@@ -141,41 +142,38 @@ pub fn save(root: std.Io.Dir, io: std.Io, a: std.mem.Allocator, key: box.Key, sn
     if (plain.len > 2 * 1024 * 1024 - 28) return error.DestinationLimit;
     const sealed = try box.seal(a, io, key, path, plain);
     defer sealed.deinit(a);
-    try root.createDirPath(io, ".zigfs/config");
-    var atomic = try root.createFileAtomic(io, path, .{ .replace = true });
-    defer atomic.deinit(io);
-    try atomic.file.writeStreamingAll(io, &sealed.nonce);
-    try atomic.file.writeStreamingAll(io, &sealed.tag);
-    try atomic.file.writeStreamingAll(io, sealed.ciphertext);
-    try atomic.file.sync(io);
-    try atomic.replace(io);
-    try durable.syncParent(root, io, path);
+    const encoded = try std.mem.concat(a, u8, &.{ &sealed.nonce, &sealed.tag, sealed.ciphertext });
+    defer a.free(encoded);
+    try root.put(a, path, encoded);
 }
 
 test "webhook configuration survives reload with encrypted token and rejects invalid replacement" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata = SystemStore{ .repository = repository.interface() };
     const a = std.testing.allocator;
     const io = std.testing.io;
     const key: box.Key = @splat(42);
     const item: Destination = .{ .name = "WEBHOOK_1", .endpoint = "https://example.test/events", .auth_token = "test-token-never-return" };
-    try save(tmp.dir, io, a, key, .{ .items = &.{item} });
-    const bytes = try tmp.dir.readFileAlloc(io, path, a, .limited(4096));
+    try save(metadata, io, a, key, .{ .items = &.{item} });
+    const bytes = try metadata.read(a, path, 4096);
     defer a.free(bytes);
     try std.testing.expect(std.mem.indexOf(u8, bytes, item.auth_token) == null);
-    const loaded = try load(tmp.dir, io, a, key);
+    const loaded = try load(metadata, io, a, key);
     defer loaded.deinit();
     try std.testing.expectEqualStrings(item.auth_token, loaded.value.items[0].auth_token);
     try std.testing.expectEqualStrings("", loaded.value.items[0].redacted().auth_token);
     try std.testing.expect(loaded.value.items[0].redacted().has_auth_token);
     var invalid = item;
     invalid.endpoint = "ws://example.test/events";
-    try std.testing.expectError(error.InvalidWebhookEndpoint, save(tmp.dir, io, a, key, .{ .items = &.{invalid} }));
-    const preserved = try load(tmp.dir, io, a, key);
+    try std.testing.expectError(error.InvalidWebhookEndpoint, save(metadata, io, a, key, .{ .items = &.{invalid} }));
+    const preserved = try load(metadata, io, a, key);
     defer preserved.deinit();
     try std.testing.expectEqualStrings(item.endpoint, preserved.value.items[0].endpoint);
-    try save(tmp.dir, io, a, key, .{});
-    const empty = try load(tmp.dir, io, a, key);
+    try save(metadata, io, a, key, .{});
+    const empty = try load(metadata, io, a, key);
     defer empty.deinit();
     try std.testing.expectEqual(@as(usize, 0), empty.value.items.len);
 }
@@ -195,19 +193,22 @@ test "webhook configuration rejects traversal, credentials in URL and partial TL
 test "MQTT configuration encrypts and redacts password while preserving webhook settings" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata = SystemStore{ .repository = repository.interface() };
     const a = std.testing.allocator;
     const io = std.testing.io;
     const key: box.Key = @splat(9);
     const mqtt: Destination = .{ .name = "MQTT_1", .type = "mqtt", .broker = "tcp://localhost:1883", .topic = "bucket/events", .qos = 2, .username = "test", .password = "mqtt-secret-test", .websocket_path_allowlist = "/mqtt,/ws" };
     const webhook: Destination = .{ .name = "WEBHOOK_1", .endpoint = "https://example.test/events" };
-    try save(tmp.dir, io, a, key, .{ .items = &.{ mqtt, webhook } });
-    const loaded = try load(tmp.dir, io, a, key);
+    try save(metadata, io, a, key, .{ .items = &.{ mqtt, webhook } });
+    const loaded = try load(metadata, io, a, key);
     defer loaded.deinit();
     try std.testing.expectEqualStrings(mqtt.password, loaded.value.items[0].password);
     try std.testing.expectEqualStrings("", loaded.value.items[0].redacted().password);
     try std.testing.expect(loaded.value.items[0].redacted().has_password);
     try std.testing.expectEqualStrings(webhook.endpoint, loaded.value.items[1].endpoint);
-    const bytes = try tmp.dir.readFileAlloc(io, path, a, .limited(16384));
+    const bytes = try metadata.read(a, path, 16384);
     defer a.free(bytes);
     try std.testing.expect(std.mem.indexOf(u8, bytes, mqtt.password) == null);
     var invalid = mqtt;

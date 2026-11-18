@@ -27,7 +27,7 @@ dev-data/
 tmp/
 *.log
 *.pid
-benchmarks/reports/
+/zigfs/bench/results/
 compatibility/reports/
 /pkg/metadata-engine/bench/results/
 

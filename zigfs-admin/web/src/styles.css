@@ -1993,9 +1993,30 @@ html[data-theme="dark"], .dark {
 .object-details-list > div:last-child { border-bottom: 0; }
 .object-details-list dt { color: var(--text-muted); overflow-wrap: anywhere; }
 .object-details-list dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.object-details-copy { display: flex; align-items: center; gap: 8px; }
-.object-details-copy > span { min-width: 0; }
-.object-details-copy .ui-button { flex-shrink: 0; }
+.object-details-information dd {
+  display: grid;
+  justify-items: end;
+  text-align: right;
+}
+
+.object-details-copy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.object-details-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.object-details-copy .ui-button {
+  flex-shrink: 0;
+}
 .object-details-link { display: flex; flex-direction: column; gap: 14px; }
 .object-details-link h3 { margin: 0; font-size: 14px; font-weight: 600; }
 .object-details-duration { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; }

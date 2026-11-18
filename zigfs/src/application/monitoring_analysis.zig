@@ -1,3 +1,4 @@
+const SystemStore = @import("../metadata/system_store.zig").SystemStore;
 const std = @import("std");
 const Point = @import("monitoring.zig").Point;
 
@@ -154,9 +155,10 @@ fn ratio(value: ?f64, total: ?f64) ?f64 {
     return value.? / total.? * 100;
 }
 
-pub fn load(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io) !Rules {
-    const bytes = root.readFileAlloc(io, ".zigfs/monitoring/rules.json", a, .limited(8192)) catch |err| switch (err) {
-        error.FileNotFound => return defaults,
+pub fn load(a: std.mem.Allocator, root: SystemStore, io: std.Io) !Rules {
+    _ = io;
+    const bytes = root.read(a, "config/monitoring-rules.json", 8192) catch |err| switch (err) {
+        error.NotFound => return defaults,
         else => return err,
     };
     defer a.free(bytes);
@@ -165,17 +167,12 @@ pub fn load(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io) !Rules {
     try validate(parsed.value);
     return parsed.value;
 }
-pub fn save(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, rules: Rules) !void {
+pub fn save(a: std.mem.Allocator, root: SystemStore, io: std.Io, rules: Rules) !void {
+    _ = io;
     try validate(rules);
     const bytes = try std.json.Stringify.valueAlloc(a, rules, .{});
     defer a.free(bytes);
-    try root.createDirPath(io, ".zigfs/monitoring");
-    var file = try root.createFileAtomic(io, ".zigfs/monitoring/rules.json", .{ .replace = true });
-    defer file.deinit(io);
-    try file.file.writeStreamingAll(io, bytes);
-    try file.file.sync(io);
-    try file.replace(io);
-    try @import("../metadata/durable.zig").syncParent(root, io, ".zigfs/monitoring/rules.json");
+    try root.put(a, "config/monitoring-rules.json", bytes);
 }
 
 test "growth requires five minutes of contiguous same-run evidence" {

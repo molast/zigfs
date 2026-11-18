@@ -1,82 +1,73 @@
 # 备份与恢复
 
-## 备份边界
+## 当前存储布局
 
-ZigFS 不使用 SQLite 或外部元数据数据库。`ZIGFS_DATA_ROOT` 下的 Metadata、Journal、
-Object Data、格式信息、实例身份和 Master Key 共同组成一个一致性备份单元，不能只
-备份 `objects/` 或只备份 `metadata/`。
+ZigFS 使用独立的 `pkg/metadata-engine` 作为唯一元数据仓库。默认路径为
+`data/.zigfs.sys/`；修改 `ZIGFS_DATA_ROOT` 后位于对应根目录下的 `.zigfs.sys/`。
+该目录直接保存 `LOCK`、`wal`、`snapshot` 和必要的 `wal-*.segment`，没有 metadata 子目录。
+Bucket、Object、Directory、Multipart、Credential 和系统业务记录都进入引擎。
 
-## 推荐流程
+身份、策略、角色/会话、标签、OIDC 及系统配置也进入引擎的 13 个业务命名空间。
+对象内容仍在 `objects/`、`multipart/`；密钥文件、日志、事件队列和监控历史独立保存。`.zigfs/format.meta` 保存数据根格式和实例身份，当前主版本为 3；引擎文件头为 v3。旧数据根 v1/v2（含统一 system 布局）拒绝打开，不提供迁移。
+旧 `.record`、Intent/Commit/Abort journal、generation.meta 和旧检查点实现已移除。
 
-1. 停止写入并确认 `/health/ready` 可访问，最好停止 ZigFS 以得到静态目录快照。
-2. 将整个 `data_root` 复制到独立介质，保留文件权限、时间和稀疏文件属性。
-3. 对副本做离线校验，并记录 ZigFS 版本、配置摘要、备份时间和存储容量。
-4. 将副本恢复到新的数据目录，先以隔离端口启动并确认 `/health/ready`。
-5. 用 S3 Head/Get、List 和管理只读接口核对 Bucket/Object 数量、大小和 checksum，
-   验证无误后再切换流量。
+## 完整 ZigFS 备份
 
-Release Candidate 升级前后的具体命令和回滚边界见
-[V1 升级运行手册](release/upgrade-v1.md) 与 [V1 回滚运行手册](release/rollback-v1.md)。
+1. 停止 ZigFS，确保没有请求或后台任务继续写入。
+2. 将整个 `ZIGFS_DATA_ROOT` 复制到独立备份目录，保留权限和稀疏文件属性。
+3. 记录版本、配置摘要、备份时间，并验证副本能在隔离端口启动。
+4. 用 S3 Head/Get、List 和管理接口核对桶、对象、版本、大小和校验值，再切换流量。
 
-示例（停止服务后执行，目标路径必须是专用目录）：
+必须包含 `.zigfs.sys/`、对象内容、密钥、日志/事件队列与监控历史、`.zigfs/format.meta` 和
+`.zigfs/system/credential-master.key`。仅复制元数据不能恢复对象内容；仅复制对象不能
+恢复桶、版本、凭证和元数据引用。密钥丢失会使凭证 Secret 无法解密。
+不要在运行中逐文件复制整个源目录，普通复制不提供跨元数据与对象文件的一致性。
 
-```bash
-rsync -a --delete data/ /backup/zigfs/$(date +%Y%m%d-%H%M%S)/
-```
+## 在线元数据备份
 
-备份工具不应跳过 `.zigfs/system/credential-master.key`。该密钥丢失时，Credential
-Secret 无法解密，即使 Object Data 仍在也不能恢复鉴权。
+应用内可调用 `Application.backupMetadata(parent, name)`，导出一个新的、可独立打开的
+元数据引擎目录。引擎固定捕获时视图，随后允许源库写入；同步 snapshot、同边界空 WAL、
+LOCK 和临时目录后，才发布正式目录。已有目标不会被覆盖。备份失败不冻结源库。
 
-## 恢复语义
+该接口包含身份、策略、标签和系统配置等全部引擎记录，不包含对象内容、密钥文件、
+监控历史、事件队列和日志，不能当作完整 ZigFS 备份。
+没有新增 HTTP 管理接口，也不能用离线工具绕过正在运行的引擎锁发起在线备份。
+目标存储慢时会推迟检查点，可能出现 WAL 额度背压和固定旧值的临时内存增加。
+进程强杀可能留下 `.metadata-backup-*` 临时目录，确认无人使用后可清理，不作为完成备份。
 
-- 启动会校验格式文件、实例锁、Master Key、Journal 和全部已提交 Metadata。
-- 未完成 Intent 会按 Journal 规则补全或回滚；暂存文件会被清理。
-- 启用元数据维护后，`.zigfs/journal/checkpoint.meta` 标记已稳定落盘的恢复边界。
-  仅重放检查点之后的事务；检查点之前的日志允许在分批回收期间只剩部分事务阶段。
-  检查点包含校验和及实例身份，缺失、损坏或与 generation/实例不匹配时拒绝恢复。
-- `.zigfs/indexes/` 删除或内容损坏不会影响事实数据，启动会全量重建。
-- 缺失或 checksum 错误的 Object Data 不会被静默替换；对应 GET 返回 `CorruptData`，
-  GC 也会报告引用数据丢失。
-- 不支持跨版本自动迁移未知主版本。恢复到新版本前必须先阅读对应 ADR 和发布说明。
+完整恢复必须协调元数据与实体数据；恢复后废弃旧实例的条件写入令牌。新引擎输出目录可
+用 `pkg/metadata-engine/zig-out/bin/metadata-tool inspect BACKUP` 离线验证。
 
-## 不可恢复情况
+## 恢复与损坏处理
 
-如果 Metadata 或 Journal 本身损坏，服务会保持进程存活但 Not Ready。保留原始目录，
-不要删除记录、Journal 或 Master Key 试图绕过恢复；使用最近的完整备份，之后再通过
-S3/API 校验增量数据。
+启动先校验数据根格式与独占实例锁，再由引擎校验 snapshot/WAL、重放完整事务、处理
+最后一个不完整 WAL 尾帧，随后重建 ZigFS 业务索引，验证密钥、标签与对象引用。
+缺段、校验和错误、未知文件格式不会被跳过，也不会自动初始化成空库。
+引擎恢复失败时应用保持 Not Ready；运行中不确定写入冻结引擎，健康检查也进入 Not Ready，
+应排查 I/O 后重启恢复。Object Data 丢失或校验错误继续报告 CorruptData，不静默替换。
 
-## 元数据自动维护与兼容性
+旧开发数据不迁移、不兼容。升级时停止旧实例并清空其专用开发数据根，重新创建身份、
+桶和对象；不要只删除元数据而继续沿用旧对象和系统状态。程序不会在启动时自动删除旧库。
+对必须保留的数据，应使用匹配旧版本的完整备份和旧程序，不能直接打开新格式或清除格式标记。
 
-服务在启动恢复与数据引用检查完成后执行一次维护，运行期间默认每 60 秒执行一轮。
-每轮最多分别访问 1000 个 journal 目录条目和 1000 个元数据目录条目，活跃文件也计入预算。
-各目录保留内存扫描游标，元数据类型之间轮流扫描；未完成时下一轮等待 1 秒继续。
-可通过 `storage.metadata_maintenance_*` 调整周期和预算。活跃 record 只在锁外读取固定长度头部；
-删除候选在业务状态锁及仓库提交锁下重新校验完整记录，保护同名重建的条件写入。
-预算限制扫描条目数，不是毫秒耗时上限。高写入负载仍需结合维护吞吐监测积压。
+## 元数据维护
 
-首次维护先同步检查点，再原子设置 `format.meta` 的 required-feature flag bit 0，
-同步完成后才允许删除历史状态。原版解析器会因 `UnsupportedFlags` 拒绝该目录；
-不可清除标志以强制降级。检查点已发布但格式标志尚未设置的中断状态可由新版本继续完成。
+引擎 Runtime 处理 FIFO/Group Commit、WAL 额度背压与后台检查点，关闭时先排空并停止
+Runtime，再销毁引擎及其目录。业务对象数据仍先持久化，再提交元数据引用。
 
-必须将检查点、格式文件、generation 和对象/元数据一并备份。检查点不是元数据快照，
-不能用它恢复丢失的有效 record。不要在服务仍进行写入或后台维护时用普通逐文件复制
-代替一致性快照；停机备份最简单。
+ZigFS 在启动恢复完成后及默认每 60 秒执行物理 tombstone 回收；周期由
+`ZIGFS_METADATA_MAINTENANCE_INTERVAL_SECONDS` 控制。旧的目录扫描批量参数
+`ZIGFS_METADATA_MAINTENANCE_BATCH_SIZE` 已移除。回收是全量、阻塞式维护，不承诺毫秒级停顿。
 
-回收范围包括 multipart、object、directory、bucket、credential、system 的仓库 tombstone。
-对象历史中的 S3 delete marker 不是仓库 tombstone，不会被此流程删除。有效对象、对象版本和
-它们引用的实体数据继续由原有引用图与 GC 管理。
+回收与业务读取/条件写入共用状态锁。适配器在此保护下把业务 missing 转成当前
+missing_at 世代，避免回收穿过业务判断。旧 exact 不匹配已经回收的记录，同名重建使用
+更高 generation。引擎回收世代随快照持久化；普通 checkpoint 不改变业务记录。
+适配器调用者必须遵循状态锁约定，不可绕过应用直接并发启动物理回收。
 
-启动时获得数据根独占锁后，在启动任何写入器前清理保留内部目录中的原子写入临时文件。
-当前标准库的临时文件名为 16 位小写十六进制；清理限定在 `atomic_cleanup.zig` 的目录白名单，
-不递归删除对象数据、不跟随文件条目的符号链接，也不在线删除可能仍在写入的临时文件。
-
-日志会报告 checkpoint generation、各类标记回收总数、multipart 子计数、journal/metadata
-扫描数、是否仍需续扫及耗时。
-如果一次元数据提交发生不确定失败，本进程停止推进检查点，后台报告 `RecoveryRequired`；
-应先排查 I/O 故障，再正常重启走恢复流程。输入大小验证和内存分配尽量在写入意图日志前完成；
-已成功持久化 abort 且同步删除临时 record 的失败不会暂停维护。abort 或清理失败、提交后
-发布失败仍需要恢复。普通条件冲突不阻止维护。
-维护失败不会删除检查点之后的日志，也不会直接删除对象或分片实体。
+回收范围包括全部 19 个命名空间的仓库 tombstone；对象历史中的 S3 delete marker 是有效
+payload，不会被当作 tombstone 回收。旧 WAL 仅在快照覆盖后清理，实体对象仍由引用图 GC
+管理。回收日志输出 checkpoint generation、gc_epoch、回收数和耗时。
+内存、容量、回收停顿仍需在目标 NAS/Linux 和真实负载上验证。
 
 ## multipart 实体目录
 

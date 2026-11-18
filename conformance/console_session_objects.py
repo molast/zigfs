@@ -161,7 +161,7 @@ ZIGFS_ADMIN_SESSION_SECRET=isolated-log-test-secret-000000000000000000
             assert consume(sign('GET'))[0] == b'console without access keys'
             consume(sign('DELETE', 'copy.txt'), 'DELETE')
             request('users', {'name': 'console-admin', 'password': 'console-user-password', 'policies': ['consoleAdmin']})
-            request('users', {'name': 'reader', 'password': 'console-user-password', 'policies': ['readonly']})
+            request('users', {'name': 'reader', 'password': 'console-user-password', 'policies': ['readonly', 'KMSAuditor']})
             token = request('auth/login', {'username': 'console-admin', 'password': 'console-user-password'}, authenticated=False)['token']
             try:
                 request('users/console-admin', method='DELETE')

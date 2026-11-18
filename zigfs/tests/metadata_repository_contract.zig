@@ -1,5 +1,5 @@
 const std = @import("std");
-const repository_port = @import("metadata_repository.zig");
+const repository_port = @import("zigfs").ports.metadata_repository;
 
 pub fn run(repository: repository_port.MetadataRepository) !void {
     try std.testing.expectError(
@@ -53,7 +53,7 @@ pub fn run(repository: repository_port.MetadataRepository) !void {
 
     var last_generation = second_generation;
     const separated_types = [_]struct {
-        record_type: @import("../metadata/record.zig").Type,
+        record_type: @import("zigfs").metadata.record.Type,
         payload: []const u8,
     }{
         .{ .record_type = .system, .payload = "system-value" },

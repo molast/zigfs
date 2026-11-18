@@ -74,7 +74,7 @@ fn mapRepositoryError(err: repository_port.Error) directory_store_port.Error {
 }
 
 test "directory store recreates tombstones with generation checks" {
-    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MemoryMetadataRepository = @import("test_support").memory_metadata_repository.MemoryMetadataRepository;
     var repository = MemoryMetadataRepository.init(std.testing.allocator);
     defer repository.deinit();
     var adapter = MetadataDirectoryStore.init(repository.interface());

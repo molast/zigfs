@@ -11,6 +11,7 @@ pub const LocalStorageBackend = struct {
     root_path: []const u8,
     lock_file: ?std.Io.File = null,
     persistent_instance_id: ?id.Uuid = null,
+    fresh_metadata: bool = false,
 
     pub fn init(root_path: []const u8) LocalStorageBackend {
         return .{ .root_path = root_path };
@@ -62,25 +63,18 @@ pub const LocalStorageBackend = struct {
 
         _ = @import("../metadata/atomic_cleanup.zig").run(root, io) catch return error.StorageNotWritable;
         const format_metadata = try format.loadOrCreate(root, io);
-        try root.createDirPath(io, ".zigfs/system/credentials");
-        try root.createDirPath(io, ".zigfs/system/configuration");
-        try root.createDirPath(io, ".zigfs/system/configuration/records");
-        try root.createDirPath(io, ".zigfs/journal");
-        try root.createDirPath(io, ".zigfs/indexes");
         try root.createDirPath(io, ".zigfs/tmp");
         root.deleteTree(io, ".zigfs/trash") catch return error.StorageNotWritable;
         try root.createDirPath(io, ".zigfs/trash/objects");
         try root.createDirPath(io, ".zigfs/trash/multipart");
-        try root.createDirPath(io, "metadata/buckets");
-        try root.createDirPath(io, "metadata/objects");
-        try root.createDirPath(io, "metadata/directories");
-        try root.createDirPath(io, "metadata/multipart");
+        try root.createDirPath(io, ".zigfs.sys");
         try root.createDirPath(io, "multipart");
         try root.createDirPath(io, "objects");
         try probeWritable(root, io);
 
         self.lock_file = lock_file;
         self.persistent_instance_id = format_metadata.instance_id;
+        self.fresh_metadata = format_metadata.newly_created;
     }
 
     fn probeWritable(root: std.Io.Dir, io: std.Io) error{StorageNotWritable}!void {
@@ -129,7 +123,7 @@ test "local backend reopens after lock owner exits" {
     try std.testing.expectEqualSlices(u8, &original_id, &second.instanceId().?);
 }
 
-test "local backend creates phase 2b metadata layout" {
+test "local backend creates engine metadata layout" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -138,15 +132,10 @@ test "local backend creates phase 2b metadata layout" {
     defer backend.deinit(std.testing.io);
 
     const required_directories = [_][]const u8{
-        "data/.zigfs/system/configuration/records",
-        "data/.zigfs/system/credentials",
-        "data/.zigfs/journal",
+        "data/.zigfs.sys",
         "data/.zigfs/tmp",
         "data/.zigfs/trash/objects",
         "data/.zigfs/trash/multipart",
-        "data/metadata/buckets",
-        "data/metadata/objects",
-        "data/metadata/multipart",
         "data/multipart",
     };
     for (required_directories) |path| {

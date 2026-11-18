@@ -30,11 +30,8 @@ pub const Config = struct {
 };
 pub const Envelope = @import("../domain/kms.zig").Envelope;
 pub const Status = struct { configured: bool, healthy: bool = false, healthChecked: bool = false, state: []const u8 = "unconfigured", errorMessage: []const u8 = "", config: Config, tokenConfigured: bool = false, staticSecretKeyConfigured: bool = false };
-const config_dir = ".zigfs/config/kms_config.json";
-pub const current_path = config_dir ++ "/xl.meta";
-const config_file = @import("kms_config_file.zig");
+pub const current_path = "config/kms.enc";
 const probe_key_id = "zigfs-internal-kms-probe";
-const EncryptedConfig = struct { version: u8 = 1, nonce: box.Nonce, tag: box.Tag, ciphertext: []const u8 };
 const LegacyLocalKey = struct { version: u8 = 1, key: []const u8 };
 pub const LocalKeyVersion = struct { version: u64, encrypted_key_material: []const u8 };
 pub const LocalKey = struct {
@@ -61,6 +58,7 @@ const Stored = struct { enabled: bool = false, profile: []const u8, config: Conf
 const CacheEntry = struct { key: box.Key, expires: i64, version: u64 = 0 };
 pub const Service = struct {
     root: std.Io.Dir,
+    system_store: @import("../metadata/system_store.zig").SystemStore,
     io: std.Io,
     master: box.Key,
     allow_insecure_dev_defaults: bool = false,
@@ -84,61 +82,36 @@ pub const Service = struct {
         self.cache = .empty;
     }
     fn read(self: *Service, a: std.mem.Allocator, path: []const u8) ![]u8 {
-        const bytes = try self.root.readFileAlloc(self.io, path, a, .limited(128 * 1024 + 44));
+        const bytes = self.system_store.read(a, path, 128 * 1024 + 44) catch |err| switch (err) {
+            error.NotFound => return error.FileNotFound,
+            else => return err,
+        };
         defer a.free(bytes);
-        if (std.mem.startsWith(u8, path, config_dir ++ "/")) {
-            const payload = if (std.mem.endsWith(u8, path, "/xl.meta")) try config_file.decode(bytes) else bytes;
-            if (std.mem.endsWith(u8, path, "/xl.meta") and std.mem.readInt(u16, bytes[6..8], .little) == 2) {
-                if (payload.len < 28) return error.InvalidKmsStore;
-                return box.open(a, self.master, path, payload[0..12].*, payload[12..28].*, payload[28..]);
-            }
-            const parsed = try std.json.parseFromSlice(EncryptedConfig, a, payload, .{});
-            defer parsed.deinit();
-            if (parsed.value.version != 1) return error.InvalidKmsStore;
-            const ciphertext = try a.alloc(u8, try std.base64.standard.Decoder.calcSizeForSlice(parsed.value.ciphertext));
-            defer a.free(ciphertext);
-            try std.base64.standard.Decoder.decode(ciphertext, parsed.value.ciphertext);
-            return box.open(a, self.master, path, parsed.value.nonce, parsed.value.tag, ciphertext);
-        }
         if (bytes.len < 28) return error.InvalidKmsStore;
         return box.open(a, self.master, path, bytes[0..12].*, bytes[12..28].*, bytes[28..]);
     }
+
     pub fn write(self: *Service, a: std.mem.Allocator, path: []const u8, bytes: []const u8) !void {
         const sealed = try box.seal(a, self.io, self.master, path, bytes);
         defer sealed.deinit(a);
-        var atomic = try self.root.createFileAtomic(self.io, path, .{ .replace = true });
-        defer atomic.deinit(self.io);
         const encoded = try std.mem.concat(a, u8, &.{ &sealed.nonce, &sealed.tag, sealed.ciphertext });
         defer a.free(encoded);
-        try atomic.file.writeStreamingAll(self.io, try config_file.encode(a, encoded));
-        try atomic.file.sync(self.io);
-        try atomic.replace(self.io);
-        try durable.syncParent(self.root, self.io, path);
+        try self.system_store.put(a, path, encoded);
     }
+
     pub fn current(self: *Service, a: std.mem.Allocator) !Stored {
-        const bytes = self.read(a, current_path) catch |err| switch (err) {
-            error.FileNotFound => self.read(a, config_dir ++ "/current.json") catch |old_err| switch (old_err) {
-                error.FileNotFound => try self.read(a, ".zigfs/kms/current"),
-                else => return old_err,
-            },
-            else => return err,
-        };
+        const bytes = try self.read(a, current_path);
+        defer a.free(bytes);
         return (try std.json.parseFromSlice(Stored, a, bytes, .{ .allocate = .alloc_always })).value;
     }
+
     fn readProfile(self: *Service, a: std.mem.Allocator, profile: [32]u8) ![]u8 {
         const stored = try self.current(a);
         if (std.mem.eql(u8, stored.profile, &profile)) return std.json.Stringify.valueAlloc(a, stored.config, .{});
         for (stored.history) |entry| {
             if (std.mem.eql(u8, entry.profile, &profile)) return std.json.Stringify.valueAlloc(a, entry.config, .{});
         }
-        const path = try std.fmt.allocPrint(a, config_dir ++ "/profiles/{s}/xl.meta", .{profile});
-        return self.read(a, path) catch |err| switch (err) {
-            error.FileNotFound => self.read(a, try std.fmt.allocPrint(a, config_dir ++ "/profiles/{s}.json", .{profile})) catch |old_err| switch (old_err) {
-                error.FileNotFound => self.read(a, try std.fmt.allocPrint(a, ".zigfs/kms/profiles/{s}", .{profile})),
-                else => return old_err,
-            },
-            else => return err,
-        };
+        return error.FileNotFound;
     }
     pub fn localDirectory(self: *Service, path: []const u8, create: bool) !std.Io.Dir {
         if (try dataRelativePath(path)) |relative_path| {
@@ -255,7 +228,6 @@ pub const Service = struct {
         var stored = try self.current(a);
         if (stored.enabled == enabled) return;
         stored.enabled = enabled;
-        self.root.createDirPath(self.io, config_dir) catch return error.KmsPersistenceFailed;
         self.write(a, current_path, try std.json.Stringify.valueAlloc(a, stored, .{})) catch return error.KmsPersistenceFailed;
     }
     fn startLocked(self: *Service, a: std.mem.Allocator) !void {
@@ -363,7 +335,6 @@ pub const Service = struct {
         if ((std.mem.eql(u8, config.backend, "vault") or std.mem.eql(u8, config.backend, "vault-kv2")) and
             !self.allow_insecure_dev_defaults and !std.mem.startsWith(u8, config.address, "https://")) return error.KmsVaultHttpsRequired;
         const profile = std.fmt.bytesToHex(try id.randomV4(self.io), .lower);
-        self.root.createDirPath(self.io, config_dir) catch return error.KmsPersistenceFailed;
         const bytes = try std.json.Stringify.valueAlloc(a, Stored{ .profile = &profile, .config = config, .history = history, .key_metadata = key_metadata }, .{});
         self.write(a, current_path, bytes) catch return error.KmsPersistenceFailed;
         self.health = null;
@@ -621,10 +592,13 @@ fn dupeZ(a: std.mem.Allocator, value: []const u8) ![:0]u8 {
 test "KMS profiles survive configuration changes and bind envelopes to objects" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata: @import("../metadata/system_store.zig").SystemStore = .{ .repository = repository.interface() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var service: Service = .{ .root = tmp.dir, .io = std.testing.io, .master = @splat(0x55), .allocator = std.testing.allocator };
+    var service: Service = .{ .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .master = @splat(0x55), .allocator = std.testing.allocator };
     defer service.deinit();
     const secret = try base64(a, &@as(box.Key, @splat(0x11)));
     const config: Config = .{ .backend = "static", .staticSecretKey = secret, .defaultKey = "one" };
@@ -654,11 +628,11 @@ test "KMS profiles survive configuration changes and bind envelopes to objects" 
     const next_envelope = try service.wrap(a, "", "object-a", dek);
     try std.testing.expectEqualStrings("two", next_envelope.key());
     try std.testing.expectEqual(dek, try service.unwrap(a, envelope, "object-a"));
-    var restarted: Service = .{ .root = tmp.dir, .io = std.testing.io, .master = @splat(0x55), .allocator = std.testing.allocator };
+    var restarted: Service = .{ .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .master = @splat(0x55), .allocator = std.testing.allocator };
     defer restarted.deinit();
     try restarted.verify(a);
     try std.testing.expectEqual(dek, try restarted.unwrap(a, envelope, "object-a"));
-    const bytes = try tmp.dir.readFileAlloc(std.testing.io, current_path, a, .limited(65536));
+    const bytes = try metadata.read(a, current_path, 65536);
     try std.testing.expect(std.mem.indexOf(u8, bytes, next.staticSecretKey) == null);
     next.staticSecretKey = "";
     try restarted.save(a, next);
@@ -750,7 +724,7 @@ fn dataRelativePath(path: []const u8) !?[]const u8 {
     const relative_path = path[6..];
     var parts = std.mem.tokenizeScalar(u8, relative_path, '/');
     while (parts.next()) |part| {
-        if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..") or std.mem.eql(u8, part, ".zigfs") or std.mem.indexOfScalar(u8, part, '\\') != null) return error.InvalidKmsConfig;
+        if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..") or (std.mem.eql(u8, part, ".zigfs") or std.mem.eql(u8, part, ".zigfs.sys")) or std.mem.indexOfScalar(u8, part, '\\') != null) return error.InvalidKmsConfig;
     }
     return relative_path;
 }
@@ -758,16 +732,18 @@ fn dataRelativePath(path: []const u8) !?[]const u8 {
 test "logical data path stores JSON keys and encrypted configuration inside the data root" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata: @import("../metadata/system_store.zig").SystemStore = .{ .repository = repository.interface() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var service: Service = .{ .root = tmp.dir, .io = std.testing.io, .master = @splat(0x44), .allocator = std.testing.allocator };
+    var service: Service = .{ .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .master = @splat(0x44), .allocator = std.testing.allocator };
     defer service.deinit();
     try service.save(a, .{ .backend = "local", .localKeyDirectory = "/data/test", .defaultKey = "test-key" });
     try service.verify(a);
     try std.testing.expect((try service.status(a)).healthy);
     try std.testing.expectError(error.FileNotFound, tmp.dir.readFileAlloc(std.testing.io, "test/test-key.key", a, .limited(4096)));
-    try std.testing.expectError(error.FileNotFound, tmp.dir.openDir(std.testing.io, config_dir ++ "/profiles", .{}));
     _ = try service.wrap(a, "", "first-object", @splat(0x12));
     const key_json = try tmp.dir.readFileAlloc(std.testing.io, "test/test-key.key", a, .limited(4096));
     const key = try std.json.parseFromSlice(LocalKey, a, key_json, .{});
@@ -787,76 +763,33 @@ test "logical data path stores JSON keys and encrypted configuration inside the 
     const old_json = try std.json.Stringify.valueAlloc(a, LegacyLocalKey{ .key = try base64(a, &@as(box.Key, @splat(0x24))) }, .{});
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "test/old-json.json", .data = old_json });
     try std.testing.expectEqual(@as(box.Key, @splat(0x24)), try service.localKey(a, .{ .backend = "local", .localKeyDirectory = "/data/test" }, "old-json", true));
-    const config_json = try tmp.dir.readFileAlloc(std.testing.io, current_path, a, .limited(65536));
-    _ = try config_file.decode(config_json);
-    try std.testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, config_json[6..8], .little));
+    const config_json = try metadata.read(a, current_path, 65536);
+    try std.testing.expect(config_json.len > 28);
     try std.testing.expect(std.mem.indexOf(u8, config_json, "ciphertext") == null);
     try std.testing.expect(std.mem.indexOf(u8, config_json, "localKeyDirectory") == null);
     const dek: box.Key = @splat(0x12);
     const wrapped = try service.wrap(a, "", "object", dek);
-    var restarted: Service = .{ .root = tmp.dir, .io = std.testing.io, .master = @splat(0x44), .allocator = std.testing.allocator };
+    var restarted: Service = .{ .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .master = @splat(0x44), .allocator = std.testing.allocator };
     defer restarted.deinit();
     try restarted.verify(a);
     try std.testing.expectEqual(dek, try restarted.unwrap(a, wrapped, "object"));
-    for ([_][]const u8{ "/data/../outside", "/data/test/../../outside", "/data/.zigfs/config" }) |path| {
+    for ([_][]const u8{ "/data/../outside", "/data/test/../../outside", "/data/.zigfs/config", "/data/.zigfs.sys" }) |path| {
         try std.testing.expectError(error.InvalidKmsConfig, validate(.{ .backend = "local", .localKeyDirectory = path }));
     }
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "test/legacy.key", .data = &@as(box.Key, @splat(0x23)) });
     try std.testing.expectEqual(@as(box.Key, @splat(0x23)), try service.localKey(a, .{ .backend = "local", .localKeyDirectory = "/data/test" }, "legacy", false));
 }
 
-test "legacy encrypted profiles remain usable after saving to the new config directory" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var service: Service = .{ .root = tmp.dir, .io = std.testing.io, .master = @splat(0x44), .allocator = std.testing.allocator };
-    defer service.deinit();
-    const profile = "0123456789abcdef0123456789abcdef";
-    const config: Config = .{ .backend = "static", .staticSecretKey = try base64(a, &@as(box.Key, @splat(0x11))) };
-    try tmp.dir.createDirPath(std.testing.io, ".zigfs/kms/profiles");
-    const paths = [_][]const u8{ ".zigfs/kms/current", ".zigfs/kms/profiles/" ++ profile };
-    for (paths, 0..) |path, index| {
-        const plaintext = if (index == 0) try std.json.Stringify.valueAlloc(a, Stored{ .profile = profile, .config = config }, .{}) else try std.json.Stringify.valueAlloc(a, config, .{});
-        const sealed = try box.seal(a, std.testing.io, service.master, path, plaintext);
-        const bytes = try std.mem.concat(a, u8, &.{ &sealed.nonce, &sealed.tag, sealed.ciphertext });
-        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = path, .data = bytes });
-    }
-    const dek: box.Key = @splat(0x33);
-    try service.verify(a);
-    const envelope = try service.wrap(a, "", "old-object", dek);
-    try service.save(a, config);
-    try service.verify(a);
-    try std.testing.expectEqual(dek, try service.unwrap(a, envelope, "old-object"));
-    try service.verify(a);
-    try std.testing.expect((try service.status(a)).healthy);
-}
-
-test "legacy JSON xl.meta envelope remains readable" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var service: Service = .{ .root = tmp.dir, .io = std.testing.io, .master = @splat(0x44), .allocator = std.testing.allocator };
-    defer service.deinit();
-    const sealed = try box.seal(a, std.testing.io, service.master, current_path, "legacy-config");
-    const payload = try std.json.Stringify.valueAlloc(a, EncryptedConfig{ .nonce = sealed.nonce, .tag = sealed.tag, .ciphertext = try base64(a, sealed.ciphertext) }, .{});
-    const bytes = try config_file.encode(a, payload);
-    std.mem.writeInt(u16, bytes[6..8], 1, .little);
-    try tmp.dir.createDirPath(std.testing.io, config_dir);
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = current_path, .data = bytes });
-    try std.testing.expectEqualStrings("legacy-config", try service.read(a, current_path));
-}
-
 test "saving offline Vault configuration only validates configuration and HTTPS policy" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata: @import("../metadata/system_store.zig").SystemStore = .{ .repository = repository.interface() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var service: Service = .{ .root = tmp.dir, .io = std.testing.io, .master = @splat(0x44), .allocator = std.testing.allocator };
+    var service: Service = .{ .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .master = @splat(0x44), .allocator = std.testing.allocator };
     defer service.deinit();
     for ([_][]const u8{ "vault", "vault-kv2" }) |backend| {
         var config: Config = .{ .backend = backend, .address = "https://vault.invalid:8200", .token = "offline-token" };
@@ -875,10 +808,13 @@ test "saving offline Vault configuration only validates configuration and HTTPS 
 test "managed local keys rotate without losing old objects and support deletion recovery" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata: @import("../metadata/system_store.zig").SystemStore = .{ .repository = repository.interface() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var service: Service = .{ .root = tmp.dir, .io = std.testing.io, .master = @splat(0x66), .allocator = std.testing.allocator };
+    var service: Service = .{ .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .master = @splat(0x66), .allocator = std.testing.allocator };
     defer service.deinit();
     try service.save(a, .{ .backend = "local", .localKeyDirectory = "/data/keys", .localCacheEnabled = true });
     try std.testing.expectError(error.KmsNotRunning, service.listKeys(a));
@@ -916,10 +852,13 @@ test "managed local keys rotate without losing old objects and support deletion 
 test "KMS restores persisted startup intent and reports failed automatic startup" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata: @import("../metadata/system_store.zig").SystemStore = .{ .repository = repository.interface() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var service: Service = .{ .root = tmp.dir, .io = std.testing.io, .master = @splat(0x42), .allocator = std.testing.allocator };
+    var service: Service = .{ .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .master = @splat(0x42), .allocator = std.testing.allocator };
     defer service.deinit();
     try service.restore(a);
     try std.testing.expect(!(try service.status(a)).configured);
@@ -928,7 +867,7 @@ test "KMS restores persisted startup intent and reports failed automatic startup
     try service.restore(a);
     try std.testing.expectEqualStrings("configured", (try service.status(a)).state);
     try service.verify(a);
-    var restarted: Service = .{ .root = tmp.dir, .io = std.testing.io, .master = @splat(0x42), .allocator = std.testing.allocator };
+    var restarted: Service = .{ .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .master = @splat(0x42), .allocator = std.testing.allocator };
     defer restarted.deinit();
     try restarted.restore(a);
     try std.testing.expectEqualStrings("running", (try restarted.status(a)).state);
@@ -942,14 +881,14 @@ test "KMS restores persisted startup intent and reports failed automatic startup
     try restarted.restore(a);
     try std.testing.expectEqualStrings("running", (try restarted.status(a)).state);
     try restarted.stop(a);
-    var stopped: Service = .{ .root = tmp.dir, .io = std.testing.io, .master = @splat(0x42), .allocator = std.testing.allocator };
+    var stopped: Service = .{ .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .master = @splat(0x42), .allocator = std.testing.allocator };
     defer stopped.deinit();
     try stopped.restore(a);
     try std.testing.expectEqualStrings("configured", (try stopped.status(a)).state);
     try std.testing.expectError(error.KmsNotRunning, stopped.requireRunning());
     try stopped.verify(a);
     try stopped.save(a, config);
-    var reconfigured: Service = .{ .root = tmp.dir, .io = std.testing.io, .master = @splat(0x42), .allocator = std.testing.allocator };
+    var reconfigured: Service = .{ .root = tmp.dir, .system_store = metadata, .io = std.testing.io, .master = @splat(0x42), .allocator = std.testing.allocator };
     defer reconfigured.deinit();
     try reconfigured.restore(a);
     try std.testing.expectEqualStrings("configured", (try reconfigured.status(a)).state);

@@ -1,7 +1,7 @@
 const std = @import("std");
-const metadata_record = @import("../metadata/record.zig");
-const repository_payload = @import("../metadata/repository_payload.zig");
-const repository_port = @import("../ports/metadata_repository.zig");
+const metadata_record = @import("zigfs").metadata.record;
+const repository_payload = @import("zigfs").metadata.repository_payload;
+const repository_port = @import("zigfs").ports.metadata_repository;
 
 pub const MemoryMetadataRepository = struct {
     allocator: std.mem.Allocator,
@@ -182,7 +182,7 @@ fn lessThanRecord(_: void, left: repository_port.Record, right: repository_port.
 }
 
 test "memory repository passes shared contract" {
-    const contract = @import("../ports/metadata_repository_contract.zig");
+    const contract = @import("metadata_repository_contract.zig");
     var repository = MemoryMetadataRepository.init(std.testing.allocator);
     defer repository.deinit();
     try contract.run(repository.interface());

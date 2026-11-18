@@ -114,23 +114,23 @@ pub fn resolve(a: std.mem.Allocator, app: *Application, token: []const u8, now: 
     if (std.mem.startsWith(u8, token, "o1.")) {
         if (token.len != 67) return null;
         const io = app.io orelse return error.Unavailable;
-        const root = app.data_root orelse return error.Unavailable;
+        _ = app.metadata_repository orelse return error.Unavailable;
         app.policy_mutex.lockUncancelable(io);
         defer app.policy_mutex.unlock(io);
         const oidc = @import("../application/oidc_auth.zig");
-        const identity = (try oidc.resolve(a, root, io, app.master_key.?.bytes, try oidc.digest(a, token), now)) orelse return null;
-        return .{ .id = identity.subject_id, .federated = true, .display_name = identity.display_name, .email = identity.email, .refreshable = identity.refresh_token.len > 0, .username = identity.username, .expires_at = identity.expires_at, .policy_names = identity.policies, .documents = try oidc.documents(a, root, io, identity) };
+        const identity = (try oidc.resolve(a, app.systemStore(), io, app.master_key.?.bytes, try oidc.digest(a, token), now)) orelse return null;
+        return .{ .id = identity.subject_id, .federated = true, .display_name = identity.display_name, .email = identity.email, .refreshable = identity.refresh_token.len > 0, .username = identity.username, .expires_at = identity.expires_at, .policy_names = identity.policies, .documents = try oidc.documents(a, app.systemStore(), io, identity) };
     }
     const claims = session.validateUser(app.config.admin_session_secret, token, now) orelse return null;
     const io = app.io orelse return error.Unavailable;
-    const root = app.data_root orelse return error.Unavailable;
+    _ = app.metadata_repository orelse return error.Unavailable;
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    const snapshot = try identities.load(root, io, a);
+    const snapshot = try identities.load(app.systemStore(), io, a);
     for (snapshot.value.users) |user| {
         if (!std.mem.eql(u8, user.id, &claims.subject)) continue;
         if (!user.enabled or user.auth_version != claims.version) return null;
-        const loaded = try policies.load(root, io, a);
+        const loaded = try policies.load(app.systemStore(), io, a);
         return .{ .id = user.id, .username = user.name, .account_enabled = user.enabled, .expires_at = claims.expires_at, .policy_names = try identities.policyNamesForUser(a, user, snapshot.value), .documents = try identities.documentsForUser(a, user, snapshot.value, loaded.value) };
     }
     return null;
@@ -139,10 +139,10 @@ pub fn resolve(a: std.mem.Allocator, app: *Application, token: []const u8, now: 
 pub fn authenticateUser(a: std.mem.Allocator, app: *Application, username: []const u8, password: []const u8, now: i64) !?session.UserToken {
     if (password.len > 1024 or !identities.validName(username)) return null;
     const io = app.io orelse return error.Unavailable;
-    const root = app.data_root orelse return error.Unavailable;
+    _ = app.metadata_repository orelse return error.Unavailable;
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    const snapshot = try identities.load(root, io, a);
+    const snapshot = try identities.load(app.systemStore(), io, a);
     const index = identities.find(snapshot.value.users, username) orelse return null;
     const user = snapshot.value.users[index];
     if (!user.enabled) return null;
@@ -229,7 +229,7 @@ test "event destination configuration requires management authority" {
 }
 
 test "diagnostics capabilities match resource and do not grant administration" {
-    const document = @embedFile("../application/policies/diagnostics.json");
+    const document = @embedFile("builtin_policy_diagnostics");
     const principal: Principal = .{ .id = "diagnostic", .username = "diagnostic", .expires_at = 0, .documents = &.{document} };
     const caps = principal.capabilities(std.testing.allocator);
     try std.testing.expect(caps.server_info and caps.console_log and caps.sts);
@@ -288,12 +288,12 @@ test "capability resources agree with routes and preserve scoped policy denies" 
 }
 
 fn credentialPolicyNames(a: std.mem.Allocator, app: *Application, owner: []const u8, now: i64) ![]const []const u8 {
-    const root = app.data_root orelse return &.{};
+    _ = app.metadata_repository orelse return &.{};
     const io = app.io orelse return &.{};
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
     if (std.mem.startsWith(u8, owner, "user:")) {
-        const snapshot = try identities.load(root, io, a);
+        const snapshot = try identities.load(app.systemStore(), io, a);
         const index = identities.find(snapshot.value.users, owner[5..]) orelse return &.{};
         return identities.policyNamesForUser(a, snapshot.value.users[index], snapshot.value);
     }
@@ -301,12 +301,12 @@ fn credentialPolicyNames(a: std.mem.Allocator, app: *Application, owner: []const
         const store = @import("../application/role_store.zig");
         const suffix = owner[5..];
         const end = std.mem.indexOfScalar(u8, suffix, ':') orelse return &.{};
-        const snapshot = try store.load(root, io, a);
+        const snapshot = try store.load(app.systemStore(), io, a);
         const role = store.findRole(snapshot.value, suffix[0..end]) orelse return &.{};
         return role.policies;
     }
     if (std.mem.startsWith(u8, owner, "oidc:")) {
-        const identity = (try @import("../application/oidc_auth.zig").resolve(a, root, io, app.master_key.?.bytes, owner[5..], now)) orelse return &.{};
+        const identity = (try @import("../application/oidc_auth.zig").resolve(a, app.systemStore(), io, app.master_key.?.bytes, owner[5..], now)) orelse return &.{};
         return identity.policies;
     }
     return &.{};

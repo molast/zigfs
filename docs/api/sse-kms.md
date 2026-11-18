@@ -73,7 +73,7 @@ cache defaults off. Revocation at Vault takes effect after any cached key expire
 - Save/reset start disabled and become available after form interaction.
   After saving, all configuration fields remain editable, including the backend
   selector. Switching backends only changes the draft; clicking **Reconfigure KMS**
-  validates and atomically updates the existing `xl.meta`. Reset restores the current configuration.
+  validates and atomically updates the existing engine record. Reset restores the current configuration.
   Successful saves reset the action buttons; failed saves retain the editable draft.
   Status refresh remains available. There is no UI delete entry.
 
@@ -107,22 +107,16 @@ full access; this does not introduce an AWS KMS API or separate key-policy servi
 
 ## Persistence and deployment
 
-Configuration and historical profiles are encrypted/authenticated with the ZigFS
-server master key under `.zigfs/config/kms_config.json/` (`kms_config.json` is a directory).
-A single `xl.meta` contains the current configuration and immutable historical
-profiles. No separate profile directory is created. Local enable-time checks
-create only the probe key; data keys are created on the first encryption request.
-Existing data keys must be retained for decryption.
-The file contains a binary AES-GCM envelope (12-byte nonce, 16-byte tag, raw ciphertext)
-inside a ZigFS binary metadata container: `ZFKM` magic, little-endian version and
-flags (u16 each), payload length (u32), SHA-256 checksum (32 bytes), then payload. Flags 2 identifies the binary envelope; legacy flags 1 JSON envelopes remain readable.
-This follows the directory/object-metadata layout illustrated by RustFS, but is
-not byte-compatible with RustFS XL2 erasure metadata.
-Legacy binary configuration/profiles under `.zigfs/kms/` remain readable; new saves
-use the new directory. Earlier encrypted `current.json`/profile files and simple `.json` key files
-remain readable. Legacy raw 32-byte `.key` files also remain readable. Each object retains its original profile;
-profiles are immutable and are not removed when switching backends. Back up these
-files together with the existing master key, metadata, and object storage.
+Configuration, historical profiles, and remote key management metadata are stored in
+metadata-engine's `kms` namespace under `config/kms.enc`, inside `data/.zigfs.sys/`.
+The payload uses AES-GCM (12-byte nonce, 16-byte tag, ciphertext), authenticated with
+the record key and encrypted using the server master key. Engine WAL/snapshot framing
+provides persistence and checksums; the separate `xl.meta` container is removed.
+No legacy configuration files are imported. Historical profiles remain in the same
+record when switching backends, allowing existing objects to retain their original profile.
+Local key material remains in its configured directory; existing local key formats are
+unchanged. Back up the engine, master key, local key files, and object data together.
+Local enable-time checks create only the probe key; data keys are created on first use.
 Historical Vault endpoints/tokens, KV versions, Transit key versions, and local
 key files must remain available to read older objects. Updating the current
 configuration does not rewrite historical profiles or rotate existing objects.
@@ -149,7 +143,7 @@ Vault deployment, policies, key configuration and certificate chain.
 
 ### Validation and activation
 
-Saving or reconfiguring KMS only validates the configuration and writes xl.meta;
+Saving or reconfiguring KMS only validates the configuration and commits the engine record;
 it does not contact Vault or create local keys. GET status is also network-free.
 Vault Transit and KV2 require HTTPS unless the ZigFS process was started with
 `ZIGFS_KMS_ALLOW_INSECURE_DEV_DEFAULTS=true` (development only).
@@ -164,7 +158,7 @@ After saving, the overview shows Configured and unknown health. **Start KMS** op
 a confirmation dialog. Cancel sends no request; Confirm calls
 `POST /api/v1/settings/kms/start` through the BFF to ZigFS
 `POST /_admin/v1/settings/kms/start` (management authority required).
-The startup intent is saved inside xl.meta, then the saved backend/default key is
+The startup intent is saved inside the engine record, then the saved backend/default key is
 verified. Unsaved form changes are not submitted. A successful check reports Running; failure reports Error
 with a sanitized, persistent-in-process error detail and an error toast.
 Refresh reads that state without making another provider request. Saving another
@@ -180,13 +174,13 @@ SSE-S3 and unencrypted objects are unaffected.
 The running overview exposes Restart KMS (repeats the start check), Clear Cache,
 and Stop KMS. Stop clears cached material and blocks SSE-KMS reads/writes until
 the next successful start. Start and Stop atomically persist the enabled flag in the existing encrypted
-xl.meta. Clear Cache does not change that flag. These actions do not delete persisted keys.
+the engine record. Clear Cache does not change that flag. These actions do not delete persisted keys.
 The BFF forwards `POST settings/kms/stop` and `POST settings/kms/clear-cache`.
 
 While running, `GET settings/kms/keys` lists metadata only; the UI paginates at
 20 rows. `POST settings/kms/keys` accepts an optional display name, description
 and `setAsDefault`; generated key IDs are independent of display names.
-The default-key update writes the existing xl.meta and keeps KMS running.
+The default-key update writes the existing engine record and keeps KMS running.
 Static mode provides read-only details. Local, Vault Transit and Vault KV2 support
 creation, rotation, marking PendingDeletion, cancelling deletion, and immediate
 deletion via `POST settings/kms/keys/action`.
@@ -197,7 +191,7 @@ Earlier 60-byte local envelopes use version 1, so old objects remain readable.
 Vault KV2 rotation uses check-and-set and retains Vault versions; Transit uses
 its native rotate API. Provider retention policies must retain versions needed
 by objects. Vault display names and lifecycle state are recorded inside encrypted
-xl.meta; pending deletion is enforced by ZigFS, not by unrelated Vault clients.
+the engine record; pending deletion is enforced by ZigFS, not by unrelated Vault clients.
 The seven-day deletion date is metadata only; automatic deletion is not scheduled.
 Immediate deletion accepts enabled or pending-deletion keys, destroys all key versions, and
 retains a non-secret tombstone to prevent accidental regeneration. Restore is
@@ -209,7 +203,7 @@ Object-only Vault tokens may successfully start KMS but cannot manage keys.
 Existing-object rekey/rewrap jobs are not implemented; the UI explicitly shows
 this capability as unavailable. Rotation itself preserves the old key versions.
 
-Older configuration files without an enabled flag default to not started; start
+A configuration record without an enabled flag defaults to not started; start
 KMS once to record the intended state. Failed startup retains the enabled flag
 for retry on the next ZigFS restart. Saving/reconfiguring resets the flag to false.
 

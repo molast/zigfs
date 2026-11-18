@@ -5,20 +5,8 @@ pub const Point = enum {
     object_data_write,
     object_stage_synced,
     object_generation_published,
-    journal_intent_persisted,
-    metadata_temporary_synced,
-    metadata_commit_persisted,
-    metadata_record_published,
-    checkpoint_written,
-    checkpoint_synced,
-    checkpoint_published,
-    checkpoint_durable,
-    checkpoint_format_enabled,
-    metadata_journal_pruned,
-    metadata_tombstone_pruned,
-    metadata_tombstone_observed,
-    metadata_precommit_failed,
-    metadata_abort_failed,
+    metadata_before_commit,
+    metadata_after_commit,
 };
 
 pub const Injector = struct {
@@ -61,7 +49,7 @@ pub const FailOnce = struct {
 test "fail once injector targets one checkpoint after optional skipped hits" {
     var injector = FailOnce.init(.object_data_write, 1);
     const interface = injector.interface();
-    try std.testing.expect(!interface.trigger(.metadata_commit_persisted));
+    try std.testing.expect(!interface.trigger(.metadata_after_commit));
     try std.testing.expect(!interface.trigger(.object_data_write));
     try std.testing.expect(interface.trigger(.object_data_write));
     try std.testing.expect(!interface.trigger(.object_data_write));

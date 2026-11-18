@@ -1,5 +1,9 @@
 # ZigFS 配置
 
+> 存储说明：`<namespace>:config/...` 表示 metadata-engine 的业务命名空间及记录键，
+> 实际数据位于 `data/.zigfs.sys/`；这些名称不是文件路径，不能单独移动或编辑。
+> BFF 自身的配置、日志正文、证书及密钥文件仍独立保存。
+
 ZigFS 使用 `.env` 配置，并在代码中维护完整默认值。控制台 General 页面的操作入口和生效总表见 [常规设置](general-settings.md)。
 
 ## 加载顺序
@@ -8,7 +12,7 @@ ZigFS 使用 `.env` 配置，并在代码中维护完整默认值。控制台 Ge
 内置默认值 -> .env -> 进程环境变量 -> 命令行 -> 对应的持久化配置覆盖
 ```
 
-默认查找当前工作目录的 `.env`。文件不存在时使用默认值；如果使用 `--env-file <path>` 显式指定，则文件缺失或格式错误会阻止启动。
+默认查找当前工作目录的 `.env`。记录不存在时使用默认值；如果使用 `--env-file <path>` 显式指定，则文件缺失或格式错误会阻止启动。
 
 ## Root 登录与 S3 密钥
 
@@ -30,33 +34,33 @@ BFF 支持 `ZIGFS_ADMIN_LISTEN`、`ZIGFS_ENDPOINT`、`ZIGFS_WEB_ROOT`、`ZIGFS_U
 ## 实例展示配置
 
 常规设置中的服务名称、实例描述由 ZigFS 保存在
-`${ZIGFS_DATA_ROOT}/.zigfs/config/instance.json`，保存即时生效，重启后保留。
-该文件不修改 S3 签名或实例 ID，详见 [实例信息](instance-settings.md)。
+`settings:config/instance.json`，保存即时生效，重启后保留。
+该配置不修改 S3 签名或实例 ID，详见 [实例信息](instance-settings.md)。
 
 ## 控制台保存的认证配置
 
-`${ZIGFS_DATA_ROOT}/.zigfs/config/authentication.json` 保存会话有效期和签名时间偏差，
+`settings:config/authentication.json` 保存会话有效期和签名时间偏差，
 下次启动时覆盖 `ZIGFS_ADMIN_SESSION_TTL_SECONDS` 和 `ZIGFS_S3_REQUEST_TIME_SKEW_SECONDS`。
 已签发会话保留原到期时间。详见 [会话与请求认证](authentication-settings.md)。
 
 ## 控制台保存的显示偏好
 
-`${ZIGFS_DATA_ROOT}/.zigfs/config/display.json` 保存控制台显示时区和日期格式，
+`settings:config/display.json` 保存控制台显示时区和日期格式，
 保存后立即生效，不改变服务端 UTC 时间戳或系统时钟。详见 [显示偏好](display-settings.md)。
 
 ## 控制台保存的 Region
 
-常规设置中的 Region 保存到 `${ZIGFS_DATA_ROOT}/.zigfs/config/region.json`。
+常规设置中的 Region 保存到 `settings:config/region.json`。
 下次启动时覆盖 `ZIGFS_S3_REGION`，保存后不会改变正在运行的签名校验。
 操作步骤、取消待生效变更和客户端影响见 [S3 Region](region-settings.md)。
 
 ## 控制台保存的网络配置
 
 System Setting → Network 保存的设置不会回写 `.env`。S3 监听地址保存在
-`${ZIGFS_DATA_ROOT}/.zigfs/config/listener.json`，在下一次启动绑定前覆盖 `ZIGFS_API_ADDRESS`。
-Public URL、寻址模式和可信代理保存在 `.zigfs/config/network.json`，即时生效并在重启后保留；
+`settings:config/listener.json`，在下一次启动绑定前覆盖 `ZIGFS_API_ADDRESS`。
+Public URL、寻址模式和可信代理保存在 `settings:config/network.json`，即时生效并在重启后保留；
 其中的 Public URL 和寻址模式优先于 `ZIGFS_S3_PUBLIC_ENDPOINT`、`ZIGFS_S3_VIRTUAL_HOSTED_STYLE`。
-覆盖文件不存在时使用启动配置。
+覆盖记录不存在时使用启动配置。
 
 Go BFF 的独立配置文件由 `ZIGFS_ADMIN_CONFIG` 指定，默认位于系统用户配置目录下的
 `zigfs-admin/listener.json`。保存的 Admin 监听地址和 ZigFS 上游候选地址优先于
@@ -96,8 +100,7 @@ ZIGFS_ADMIN_SESSION_TTL_SECONDS=28800
 | `ZIGFS_METRICS_ADDRESS` | `127.0.0.1:9090` | string | Prometheus Metrics 监听地址 |
 | `ZIGFS_DATA_ROOT` | `data` | string | ZigFS 独占数据根目录 |
 | `ZIGFS_STREAM_BUFFER_SIZE` | `65536` | integer | Object 流式 I/O 缓冲区，允许 4096 至 1048576 bytes |
-| `ZIGFS_METADATA_MAINTENANCE_INTERVAL_SECONDS` | `60` | integer | 元数据检查点与历史回收周期，允许 1 至 3600 秒；目录扫描尚未完成时下一轮间隔缩短到 1 秒 |
-| `ZIGFS_METADATA_MAINTENANCE_BATCH_SIZE` | `1000` | integer | 每轮分别最多访问多少个 journal 目录条目和元数据目录条目，允许 1 至 10000；活跃文件也占预算，游标跨批次续扫；不是毫秒耗时上限 |
+| `ZIGFS_METADATA_MAINTENANCE_INTERVAL_SECONDS` | `60` | integer | 元数据物理 tombstone 回收周期，允许 1 至 3600 秒；全量回收持业务状态锁，引擎 WAL 检查点另由 Runtime 自动调度 |
 | `ZIGFS_S3_REGION` | `us-east-1` | string | Signature V4 Credential Scope 和 CreateBucket LocationConstraint 所属 Region |
 | `ZIGFS_S3_PUBLIC_ENDPOINT` | `http://127.0.0.1:9000` | string | 客户端访问的 S3 authority；不能包含路径、凭证或 Query |
 | `ZIGFS_S3_VIRTUAL_HOSTED_STYLE` | `false` | bool | 是否接受 `<bucket>.<public_endpoint authority>/<key>`；关闭时仅使用 Path-style |

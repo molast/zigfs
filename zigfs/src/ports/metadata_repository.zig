@@ -19,26 +19,8 @@ pub const ExpectedGeneration = union(enum) {
     exact: u64,
 };
 
-pub const Record = struct {
-    key: []u8,
-    generation: u64,
-    tombstone: bool,
-    payload: []u8,
-
-    pub fn deinit(self: Record, allocator: std.mem.Allocator) void {
-        allocator.free(self.key);
-        allocator.free(self.payload);
-    }
-};
-
-pub const ScanResult = struct {
-    records: []Record,
-
-    pub fn deinit(self: ScanResult, allocator: std.mem.Allocator) void {
-        for (self.records) |item| item.deinit(allocator);
-        allocator.free(self.records);
-    }
-};
+pub const Record = @import("metadata_engine").Record;
+pub const ScanResult = @import("metadata_engine").repository.ScanResult;
 
 pub const MetadataRepository = struct {
     context: *anyopaque,

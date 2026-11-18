@@ -1,5 +1,9 @@
 # 网络配置
 
+> 存储说明：`<namespace>:config/...` 表示 metadata-engine 的业务命名空间及记录键，
+> 实际数据位于 `data/.zigfs.sys/`；这些名称不是文件路径，不能单独移动或编辑。
+> BFF 自身的配置、日志正文、证书及密钥文件仍独立保存。
+
 Network 页面用于设置 ZigFS 的访问地址、S3 寻址方式、可信代理及服务监听地址。
 入口为 **System Setting → Network**。修改这些设置需要具有 `admin:*` 权限的管理会话；内置 `consoleAdmin` 策略包含该权限。
 
@@ -121,16 +125,16 @@ S3 端口改变不会自动修改 Public URL、DNS、容器端口映射或代理
 
 下表的 `data` 指 `ZIGFS_DATA_ROOT`，不是固定目录名。
 
-| 文件 | 内容 | 管理进程 |
+| 存储记录/文件 | 内容 | 管理进程 |
 |---|---|---|
-| `data/.zigfs/config/network.json` | Public URL、寻址模式、可信代理 | ZigFS |
-| `data/.zigfs/config/listener.json` | 下一次启动的 S3 监听地址 | ZigFS |
+| `settings:config/network.json` | Public URL、寻址模式、可信代理 | ZigFS |
+| `settings:config/listener.json` | 下一次启动的 S3 监听地址 | ZigFS |
 | `ZIGFS_ADMIN_CONFIG` 指定的文件 | Admin 监听地址及 ZigFS 上游候选地址 | BFF |
 
 优先级如下：
 
 - ZigFS 启动默认值、`.env`、进程环境变量和命令行先确定基础配置；持久化的监听覆盖值在启动绑定前应用。
-- `network.json` 中的 Public URL 和寻址模式优先于对应 `.env` 值；没有该文件时使用启动配置。
+- `network.json` 中的 Public URL 和寻址模式优先于对应 `.env` 值；没有该记录时使用启动配置。
 - BFF 保存值优先于 `ZIGFS_ADMIN_LISTEN`、`ZIGFS_ENDPOINT`；没有保存文件时使用环境变量及内置默认值。
 - 老版本 `network.json` 未包含可信代理字段时，按空列表处理。
 
@@ -158,12 +162,13 @@ export ZIGFS_ADMIN_CONFIG=/var/lib/zigfs-admin/listener.json
 
 ### 无法通过页面恢复时
 
-1. 保留当前配置副本，停止需要恢复的进程。
-2. 恢复该进程的部署默认配置，确认地址可用。
-3. 将对应覆盖文件移动到备份位置：恢复 S3 监听使用 `listener.json`；恢复公开访问和代理配置使用 `network.json`；恢复 BFF 使用 `ZIGFS_ADMIN_CONFIG` 对应文件。
+1. 先尝试直连当前 ZigFS 管理地址，通过认证接口修改网络/监听配置；监听地址在重启后生效。
+2. BFF 上游配置错误时，停止 BFF，备份并修复 `ZIGFS_ADMIN_CONFIG` 文件后重启 BFF。
+3. 引擎中的配置记录损坏且无法通过 API 修复时，停止服务并按完整备份流程恢复一致的数据根。
+   当前没有单记录离线修复命令，不能靠移动 `listener.json` 或删除引擎目录重置网络设置。
 4. 重启并检查 `/health/ready`，随后重新登录后台核对配置。
 
-恢复网络配置不需要删除 Bucket、对象、密钥或其他元数据。无法读取或解析的配置文件不会被静默忽略，应修复文件或按上述流程恢复。
+恢复网络配置不需要删除 Bucket、对象、密钥或其他元数据。无法读取或解析的配置文件不会被静默忽略，应通过管理接口修复或按备份流程恢复。
 
 ## 当前范围
 

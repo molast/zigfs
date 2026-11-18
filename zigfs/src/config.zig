@@ -13,7 +13,6 @@ pub const Config = struct {
     data_root: []const u8 = "data",
     stream_buffer_size: usize = 64 * 1024,
     metadata_maintenance_interval_seconds: u64 = 60,
-    metadata_maintenance_batch_size: usize = 1000,
     api_address: []const u8 = "0.0.0.0:9000",
     monitoring_interval_seconds: u64 = 1,
     metrics_enabled: bool = true,
@@ -64,7 +63,6 @@ pub const Config = struct {
         data_root: ?[]const u8 = null,
         stream_buffer_size: ?[]const u8 = null,
         metadata_maintenance_interval_seconds: ?[]const u8 = null,
-        metadata_maintenance_batch_size: ?[]const u8 = null,
         api_address: ?[]const u8 = null,
         monitoring_interval_seconds: ?[]const u8 = null,
         metrics_enabled: ?[]const u8 = null,
@@ -90,7 +88,6 @@ pub const Config = struct {
             .data_root = map.get("ZIGFS_DATA_ROOT"),
             .stream_buffer_size = map.get("ZIGFS_STREAM_BUFFER_SIZE"),
             .metadata_maintenance_interval_seconds = map.get("ZIGFS_METADATA_MAINTENANCE_INTERVAL_SECONDS"),
-            .metadata_maintenance_batch_size = map.get("ZIGFS_METADATA_MAINTENANCE_BATCH_SIZE"),
             .api_address = map.get("ZIGFS_API_ADDRESS"),
             .monitoring_interval_seconds = map.get("ZIGFS_MONITORING_INTERVAL_SECONDS"),
             .metrics_enabled = map.get("ZIGFS_METRICS_ENABLED"),
@@ -116,7 +113,6 @@ pub const Config = struct {
         if (environment.data_root) |value| try self.applyValue("ZIGFS_DATA_ROOT", value);
         if (environment.stream_buffer_size) |value| try self.applyValue("ZIGFS_STREAM_BUFFER_SIZE", value);
         if (environment.metadata_maintenance_interval_seconds) |value| try self.applyValue("ZIGFS_METADATA_MAINTENANCE_INTERVAL_SECONDS", value);
-        if (environment.metadata_maintenance_batch_size) |value| try self.applyValue("ZIGFS_METADATA_MAINTENANCE_BATCH_SIZE", value);
         if (environment.api_address) |value| try self.applyValue("ZIGFS_API_ADDRESS", value);
         if (environment.monitoring_interval_seconds) |value| try self.applyValue("ZIGFS_MONITORING_INTERVAL_SECONDS", value);
         if (environment.metrics_enabled) |value| try self.applyValue("ZIGFS_METRICS_ENABLED", value);
@@ -181,10 +177,6 @@ pub const Config = struct {
         }
         if (std.mem.eql(u8, key, "ZIGFS_METADATA_MAINTENANCE_INTERVAL_SECONDS")) {
             self.metadata_maintenance_interval_seconds = std.fmt.parseInt(u64, value, 10) catch return error.InvalidEnv;
-            return;
-        }
-        if (std.mem.eql(u8, key, "ZIGFS_METADATA_MAINTENANCE_BATCH_SIZE")) {
-            self.metadata_maintenance_batch_size = std.fmt.parseInt(usize, value, 10) catch return error.InvalidEnv;
             return;
         }
         if (std.mem.eql(u8, key, "ZIGFS_API_ADDRESS")) {
@@ -348,9 +340,7 @@ pub const Config = struct {
         if (self.stream_buffer_size < min_stream_buffer_size or
             self.stream_buffer_size > max_stream_buffer_size or
             self.metadata_maintenance_interval_seconds < 1 or
-            self.metadata_maintenance_interval_seconds > 3600 or
-            self.metadata_maintenance_batch_size < 1 or
-            self.metadata_maintenance_batch_size > 10000)
+            self.metadata_maintenance_interval_seconds > 3600)
         {
             return error.InvalidStorageConfig;
         }
@@ -496,16 +486,9 @@ test "metadata maintenance settings parse and reject unsafe bounds" {
     var config: Config = .{};
     try config.applyEnv(
         \\ZIGFS_METADATA_MAINTENANCE_INTERVAL_SECONDS=5
-        \\ZIGFS_METADATA_MAINTENANCE_BATCH_SIZE=250
     );
     try std.testing.expectEqual(@as(u64, 5), config.metadata_maintenance_interval_seconds);
-    try std.testing.expectEqual(@as(usize, 250), config.metadata_maintenance_batch_size);
     try config.validate();
-    config.metadata_maintenance_batch_size = 0;
-    try std.testing.expectError(error.InvalidStorageConfig, config.validate());
-    config.metadata_maintenance_batch_size = 10001;
-    try std.testing.expectError(error.InvalidStorageConfig, config.validate());
-    config.metadata_maintenance_batch_size = 1000;
     config.metadata_maintenance_interval_seconds = 0;
     try std.testing.expectError(error.InvalidStorageConfig, config.validate());
     config.metadata_maintenance_interval_seconds = 3601;

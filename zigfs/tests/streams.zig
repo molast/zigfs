@@ -1,5 +1,5 @@
 const std = @import("std");
-const byte_stream = @import("../ports/byte_stream.zig");
+const byte_stream = @import("zigfs").ports.byte_stream;
 
 pub const SliceSource = struct {
     bytes: []const u8,

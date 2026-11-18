@@ -1,3 +1,5 @@
+pub const namespaces = @import("types.zig").namespaces;
+pub const namespace_count = @import("types.zig").namespace_count;
 pub const Type = @import("types.zig").Type;
 pub const repository = @import("repository.zig");
 pub const MetadataRepository = repository.MetadataRepository;

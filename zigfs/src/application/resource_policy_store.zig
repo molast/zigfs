@@ -1,5 +1,5 @@
+const SystemStore = @import("../metadata/system_store.zig").SystemStore;
 const std = @import("std");
-const durable = @import("../metadata/durable.zig");
 const identities = @import("identity_store.zig");
 const roles = @import("role_store.zig");
 const iam = @import("../auth/iam_policy.zig");
@@ -11,15 +11,16 @@ pub const Record = struct {
     bindings: []const iam.PrincipalBinding = &.{},
 };
 
-// Files are keyed by immutable bucket IDs, never reusable bucket names.
+// Records use immutable bucket IDs, never reusable bucket names.
 fn path(a: std.mem.Allocator, bucket_id: [16]u8) ![]u8 {
-    return std.fmt.allocPrint(a, ".zigfs/system/bucket-policies/{s}.json", .{std.fmt.bytesToHex(bucket_id, .lower)});
+    return std.fmt.allocPrint(a, "system/bucket-policies/{s}.json", .{std.fmt.bytesToHex(bucket_id, .lower)});
 }
-pub fn load(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, bucket_id: [16]u8) !?std.json.Parsed(Record) {
+pub fn load(a: std.mem.Allocator, root: SystemStore, io: std.Io, bucket_id: [16]u8) !?std.json.Parsed(Record) {
+    _ = io;
     const filename = try path(a, bucket_id);
     defer a.free(filename);
-    const bytes = root.readFileAlloc(io, filename, a, .limited(512 * 1024)) catch |err| switch (err) {
-        error.FileNotFound => return null,
+    const bytes = root.read(a, filename, 512 * 1024) catch |err| switch (err) {
+        error.NotFound => return null,
         else => return err,
     };
     defer a.free(bytes);
@@ -28,20 +29,15 @@ pub fn load(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, bucket_id: [16]u
     if (parsed.value.version != 1) return error.InvalidPolicyVersion;
     return parsed;
 }
-pub fn save(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, bucket_id: [16]u8, record: Record) !void {
+pub fn save(a: std.mem.Allocator, root: SystemStore, io: std.Io, bucket_id: [16]u8, record: Record) !void {
+    _ = io;
     const filename = try path(a, bucket_id);
     defer a.free(filename);
     const bytes = try std.json.Stringify.valueAlloc(a, record, .{});
     defer a.free(bytes);
-    try root.createDirPath(io, ".zigfs/system/bucket-policies");
-    var atomic = try root.createFileAtomic(io, filename, .{ .replace = true });
-    defer atomic.deinit(io);
-    try atomic.file.writeStreamingAll(io, bytes);
-    try atomic.file.sync(io);
-    try atomic.replace(io);
-    try durable.syncParent(root, io, filename);
+    try root.put(a, filename, bytes);
 }
-pub fn remove(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, bucket_id: [16]u8) !void {
+pub fn remove(a: std.mem.Allocator, root: SystemStore, io: std.Io, bucket_id: [16]u8) !void {
     // An empty statement set is an atomic, durable tombstone. It cannot race a
     // concurrent replace into resurrecting the previous grant.
     try save(a, root, io, bucket_id, .{ .deleted = true, .document = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" });

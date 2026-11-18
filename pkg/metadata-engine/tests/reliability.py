@@ -43,7 +43,9 @@ def backup_test(probe_binary, tool, temporary):
     before = digest(restored)
     inspected = json.loads(run(tool, 'inspect', restored))
     assert digest(restored) == before
-    assert inspected['generation'] == 13 and inspected['records'] == 18
+    namespace_count = inspected['namespace_count']
+    assert inspected['generation'] == namespace_count * 2 + 1
+    assert inspected['records'] == namespace_count * 3
     verified = probe(probe_binary, 'verify', restored)
     assert verified['verified'] and verified['write_after_recovery']
     assert digest(source) == saved and digest(backup) == saved
@@ -64,7 +66,7 @@ def backup_test(probe_binary, tool, temporary):
         assert result.returncode != 0 and 'CorruptRecord' in result.stderr
         assert digest(damaged) == damaged_hash
         rejected.append(kind)
-    return {'status': 'passed', 'namespaces': 6, 'records': 18,
+    return {'status': 'passed', 'namespaces': namespace_count, 'records': namespace_count * 3,
             'snapshot_plus_wal': True, 'inspect_unchanged': True,
             'source_and_backup_unchanged': True, 'restored': verified,
             'damaged_backups_rejected_without_modification': rejected}

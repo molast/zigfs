@@ -9,7 +9,7 @@ import {
   emptyPayloadHash,
   sha256Hex,
   signRequest,
-} from '../conformance/typescript/sigv4.ts'
+} from '../../conformance/typescript/sigv4.ts'
 import { redactCommand } from './report.mjs'
 
 const execFileAsync = promisify(execFile)

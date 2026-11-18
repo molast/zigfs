@@ -79,7 +79,8 @@ ZIGFS_ADMIN_SESSION_SECRET=isolated-log-test-secret-000000000000000000
             assert defaults['directory'] == 'logs' and defaults['maxSize'] == '100'
             rejected(lambda: request('settings/logs', authenticated=False), [401, 403])
             saved = save(output='file', directory='logs/nested', maxSize='0.5', sizeUnit='KiB', retention='forever')
-            assert json.loads((root / 'data/.zigfs/config/log_config.json').read_text()) == saved
+            assert not (root / 'data/.zigfs/config/log_config.json').exists()
+            assert (root / 'data/.zigfs.sys/wal').is_file()
             for _ in range(12):
                 save(level='info')
             directory = root / 'data/logs/nested'
@@ -201,7 +202,7 @@ ZIGFS_ADMIN_SESSION_SECRET=isolated-log-test-secret-000000000000000000
             saved_system = request('settings/logs')
             saved_audit = save_audit(directory='audit/custom', maxSize='0.5', sizeUnit='KiB', format='text', downloads='disabled', range='1h')
             assert request('settings/logs') == saved_system
-            assert json.loads((root / 'data/.zigfs/config/audit_log_config.json').read_text()) == saved_audit
+            assert not (root / 'data/.zigfs/config/audit_log_config.json').exists()
             rejected(lambda: request('settings/audit-logs/download'), [403])
             save(output='console', level='off')
             for _ in range(5): request('system')

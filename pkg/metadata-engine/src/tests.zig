@@ -252,7 +252,7 @@ test "all namespaces survive snapshot and repeated overwrite" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var engine = try Engine.open(a, io, tmp.dir);
-    for ([_]@import("types.zig").Type{ .system, .bucket, .object, .multipart, .credential, .directory }) |record_type| {
+    for (@import("types.zig").namespaces) |record_type| {
         _ = try engine.interface().put(a, record_type, "same-key", .missing, @tagName(record_type));
     }
     for (0..20) |_| {
@@ -262,7 +262,7 @@ test "all namespaces survive snapshot and repeated overwrite" {
     engine.deinit();
     var reopened = try Engine.open(a, io, tmp.dir);
     defer reopened.deinit();
-    for ([_]@import("types.zig").Type{ .system, .bucket, .object, .multipart, .credential, .directory }) |record_type| {
+    for (@import("types.zig").namespaces) |record_type| {
         const record = try reopened.interface().get(a, record_type, "same-key");
         defer record.deinit(a);
         try std.testing.expectEqualStrings(@tagName(record_type), record.payload);

@@ -6,13 +6,7 @@ const durable = @import("durable.zig");
 // metadata has this name. Never recurse into object data or arbitrary sidecars.
 pub const directories = [_][]const u8{
     ".zigfs",
-    ".zigfs/journal",
     ".zigfs/system",
-    ".zigfs/system/configuration",
-    ".zigfs/config",
-    ".zigfs/config/kms_config.json",
-    ".zigfs/system/object-tags",
-    ".zigfs/system/bucket-policies",
     ".zigfs/system/audit-archive",
 };
 

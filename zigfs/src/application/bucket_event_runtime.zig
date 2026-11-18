@@ -37,14 +37,14 @@ pub fn captureEvent(app: *App, event: notifications.Event) !void {
     const a = arena.allocator();
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    const rules = try subscriptions.load(a, root, io, event.bucket_id);
+    const rules = try subscriptions.load(a, app.systemStore(), io, event.bucket_id);
     var any = false;
     for (rules.items) |rule| if (matches(rule, event)) {
         any = true;
         break;
     };
     if (!any) return;
-    const configured = try destinations.load(root, io, a, (app.master_key orelse return).bytes);
+    const configured = try destinations.load(app.systemStore(), io, a, (app.master_key orelse return).bytes);
     defer configured.deinit();
     const uuid = try @import("../common/id.zig").randomV4(io);
     const id = try std.fmt.allocPrint(a, "evt_{s}", .{std.fmt.bytesToHex(uuid, .lower)});
@@ -138,12 +138,12 @@ fn configurationHash(a: std.mem.Allocator, value: destinations.Destination) ![]c
 /// lock is held while a remote endpoint is contacted.
 pub fn dispatchOnce(app: *App) !void {
     const io = app.io orelse return;
-    const root = app.data_root orelse return;
+    _ = app.metadata_repository orelse return;
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     app.policy_mutex.lockUncancelable(io);
-    const configured = destinations.load(root, io, a, (app.master_key orelse {
+    const configured = destinations.load(app.systemStore(), io, a, (app.master_key orelse {
         app.policy_mutex.unlock(io);
         return;
     }).bytes) catch |err| {
@@ -270,7 +270,7 @@ fn scanAlertsWithLimits(app: *App, version_limit: usize, folder_limit: usize, si
         const enabled = blk: {
             app.policy_mutex.lockUncancelable(io);
             defer app.policy_mutex.unlock(io);
-            const rules = try subscriptions.load(a, root, io, bucket.id);
+            const rules = try subscriptions.load(a, app.systemStore(), io, bucket.id);
             for (rules.items) |rule| {
                 if (rule.destination.len == 0) continue;
                 for (rule.events) |category| if (std.mem.eql(u8, category, "SCANNER")) break :blk true;
@@ -374,14 +374,14 @@ test "scanner crossings persist and resume below threshold while outbox deduplic
     defer arena.deinit();
     const scratch = arena.allocator();
     const target: destinations.Destination = .{ .name = "HTTP", .generation_id = "generation-one", .endpoint = "http://127.0.0.1:1" };
-    try destinations.save(tmp.dir, io, scratch, app.master_key.?.bytes, .{ .items = &.{target} });
-    try subscriptions.save(scratch, tmp.dir, io, bucket.bucket.id, .{ .items = &.{
+    try destinations.save(app.systemStore(), io, scratch, app.master_key.?.bytes, .{ .items = &.{target} });
+    try subscriptions.save(scratch, app.systemStore(), io, bucket.bucket.id, .{ .items = &.{
         .{ .id = "one", .destination = "HTTP", .events = &.{"SCANNER"} },
         .{ .id = "two", .destination = "HTTP", .events = &.{"SCANNER"} },
     } });
     var version: @import("../domain/object.zig").VersionId = undefined;
     for (0..3) |_| {
-        var source = @import("../testing/streams.zig").SliceSource.init("body");
+        var source = @import("test_support").streams.SliceSource.init("body");
         const object = try app.objectService().?.put("event-test", "photos/a.jpg", source.interface(), .{});
         version = object.version_id;
         object.deinit(a);
@@ -393,7 +393,7 @@ test "scanner crossings persist and resume below threshold while outbox deduplic
     try std.testing.expectEqual(@as(usize, 1), try count(tmp.dir, io, queue));
     _ = try app.objectService().?.deleteVersion("event-test", "photos/a.jpg", version);
     try scanAlertsWithLimits(&app, 2, 10000, std.math.maxInt(u64));
-    var source = @import("../testing/streams.zig").SliceSource.init("body");
+    var source = @import("test_support").streams.SliceSource.init("body");
     (try app.objectService().?.put("event-test", "photos/a.jpg", source.interface(), .{})).deinit(a);
     try scanAlertsWithLimits(&app, 2, 10000, std.math.maxInt(u64));
     try std.testing.expectEqual(@as(usize, 2), try count(tmp.dir, io, queue));
@@ -412,7 +412,7 @@ test "scanner crossings persist and resume below threshold while outbox deduplic
     // A recreated destination must never receive the previous destination's records.
     var replacement = target;
     replacement.generation_id = "generation-two";
-    try destinations.save(tmp.dir, io, scratch, app.master_key.?.bytes, .{ .items = &.{replacement} });
+    try destinations.save(app.systemStore(), io, scratch, app.master_key.?.bytes, .{ .items = &.{replacement} });
     try dispatchOnce(&app);
     try std.testing.expectEqual(@as(usize, 0), try count(tmp.dir, io, queue));
 }
@@ -443,7 +443,7 @@ test "object creation and lifecycle deletion emit distinct events after successf
     var recorder: Recorder = .{};
     var objects = app.objectService().?;
     objects.event_sink = .{ .context = &recorder, .emit_fn = Recorder.emit };
-    var source = @import("../testing/streams.zig").SliceSource.init("body");
+    var source = @import("test_support").streams.SliceSource.init("body");
     const object = try objects.put("event-types", "form.txt", source.interface(), .{ .creation_event = .post });
     defer object.deinit(a);
     try std.testing.expectEqualStrings("ObjectCreated:Post", recorder.names[0]);

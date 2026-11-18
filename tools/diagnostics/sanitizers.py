@@ -19,7 +19,7 @@ def run(output, compiler='clang'):
     compiler=shutil.which(compiler)
     if not compiler: raise RuntimeError('C compiler unavailable')
     resource.setrlimit(resource.RLIMIT_CORE,(0,0))
-    source=pathlib.Path(__file__).resolve().parents[2]/'zigfs/src/testing/sanitizer_probe.c'
+    source=pathlib.Path(__file__).resolve().parents[2]/'zigfs/tools/sanitizer_probe.c'
     version=execute([compiler,'--version'],output/'compiler.log')
     suites=[]
     for name,(flag,cases) in SUITES.items():

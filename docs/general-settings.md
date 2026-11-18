@@ -1,5 +1,9 @@
 # 常规设置
 
+> 存储说明：`<namespace>:config/...` 表示 metadata-engine 的业务命名空间及记录键，
+> 实际数据位于 `data/.zigfs.sys/`；这些名称不是文件路径，不能单独移动或编辑。
+> BFF 自身的配置、日志正文、证书及密钥文件仍独立保存。
+
 入口：**System Setting → General**。本页是常规设置的统一使用与运维入口，涵盖实例信息、S3 Region、会话与请求认证、显示偏好。当前页面中的可编辑配置均已通过 Admin BFF 接入 ZigFS；实例 ID、启动时间、运行时长来自后端，只读展示。
 
 ## 配置与生效总表
@@ -8,12 +12,12 @@
 
 | 页面配置 | 是否可编辑 | 保存位置 / 数据来源 | 生效方式 | 详细文档 |
 |---|---|---|---|---|
-| 服务名称、实例描述 | 是 | `.zigfs/config/instance.json` | 保存后立即生效 | [实例信息](instance-settings.md) |
+| 服务名称、实例描述 | 是 | `settings:config/instance.json` | 保存后立即生效 | [实例信息](instance-settings.md) |
 | 实例 ID | 否 | `.zigfs/format.meta` 中的持久化 UUID | 同一数据目录重启后不变 | [实例信息](instance-settings.md) |
 | 启动时间、运行时长 | 否 | ZigFS 实际启动时间、运行秒数 | 点击刷新配置获取新快照 | [实例信息](instance-settings.md) |
-| 默认区域 Region | 是 | `.zigfs/config/region.json` | 重启 ZigFS 后生效 | [S3 Region](region-settings.md) |
-| 管理会话有效期、签名时间偏差 | 是 | `.zigfs/config/authentication.json` | 重启 ZigFS 后生效 | [会话与请求认证](authentication-settings.md) |
-| 显示时区、日期格式 | 是 | `.zigfs/config/display.json` | 当前会话保存后立即生效；其他会话刷新页面获取 | [显示偏好](display-settings.md) |
+| 默认区域 Region | 是 | `settings:config/region.json` | 重启 ZigFS 后生效 | [S3 Region](region-settings.md) |
+| 管理会话有效期、签名时间偏差 | 是 | `settings:config/authentication.json` | 重启 ZigFS 后生效 | [会话与请求认证](authentication-settings.md) |
+| 显示时区、日期格式 | 是 | `settings:config/display.json` | 当前会话保存后立即生效；其他会话刷新页面获取 | [显示偏好](display-settings.md) |
 
 ## 使用流程
 
@@ -29,7 +33,7 @@
 
 四组设置的 GET/PUT 接口均要求管理会话及 `admin:*` 管理权限；未登录或无权限的请求被拒绝。普通已登录用户仅通过 `/auth/session` 获取无敏感信息的 `display_preferences`，用于统一显示，不因此获得设置接口权限。
 
-ZigFS 负责校验、原子保存和读取配置，Admin BFF 只转发接口，不直接操作数据目录。Region/认证持久化文件在启动时覆盖对应 `.env` 值；取消待生效变更仍会保留显式配置，不恢复为跟随 `.env`。文件缺失使用默认值或启动配置。故障处理差异见下表。
+ZigFS 负责校验、原子保存和读取配置，Admin BFF 只转发接口，不直接操作数据目录。Region/认证持久化记录在启动时覆盖对应 `.env` 值；取消待生效变更仍会保留显式配置，不恢复为跟随 `.env`。文件缺失使用默认值或启动配置。故障处理差异见下表。
 
 | 故障 | 行为 |
 |---|---|
@@ -37,7 +41,7 @@ ZigFS 负责校验、原子保存和读取配置，Admin BFF 只转发接口，�
 | Region / 认证配置无法读取、解析或校验 | 相应设置 GET 返回 503；下次 ZigFS 启动失败，需先修复配置 |
 | 显示配置无法读取或校验 | 设置接口返回 503；会话认证仍可用，显示偏好为 null，控制台提示并使用默认显示 |
 
-备份时应包含上述配置文件及 `.zigfs/format.meta`。不要通过修改实例 ID 文件来“重命名”实例；名称应在页面中修改。通用备份流程见 [备份与恢复](backup-and-recovery.md)。
+备份时应包含元数据引擎目录及 `.zigfs/format.meta`。不要通过修改实例 ID 文件来“重命名”实例；名称应在页面中修改。通用备份流程见 [备份与恢复](backup-and-recovery.md)。
 
 ## 接口与审计
 
@@ -78,7 +82,7 @@ node --test scripts/i18n.test.mjs scripts/date-time.test.mjs
 
 回归覆盖如下：
 
-- Zig：配置默认值、校验范围、非法更新保留旧值、持久化与配置文件错误。
+- Zig：配置默认值、校验范围、非法更新保留旧值、持久化与配置记录错误。
 - Go：接口转发、认证字段与错误码保留，现有路由和服务测试。
 - 隔离 ZigFS 实测：管理员与只读用户权限、四组配置重启保留、实例 ID 稳定、启动时间变化、待生效变更取消、真实 S3 签名与会话有效期、普通会话显示偏好传递、八个审计操作。
 - Web：TypeScript / Vite 构建、中英文目录、跨时区日期变化、夏令时、午夜和语言切换。

@@ -300,7 +300,7 @@ pnpm run dev
 ./conformance/run.sh
 
 # Small/Large Object、并发、Multipart、Range 和 CRUD 基准
-node benchmarks/run.mjs
+node zigfs/bench/run.mjs
 ```
 
 兼容性报告不包含凭证。完整范围、环境要求和未实现边界见：
@@ -316,21 +316,25 @@ node benchmarks/run.mjs
 .
 ├── zigfs/                 # ZigFS 数据面
 │   ├── build.zig
+│   ├── bench/             # S3 基准与持续压测
+│   ├── resources/         # 内置策略、时区资源
+│   ├── tests/             # 测试辅助与仓库契约
+│   ├── tools/             # 独立诊断探针
 │   └── src/
 │       ├── application/   # 应用服务
 │       ├── auth/           # SigV4、策略和管理会话
 │       ├── backend/        # 本地数据存储
 │       ├── domain/         # Bucket、Object、Multipart、Credential
-│       ├── metadata/       # Metadata Engine、Journal、Recovery
+│       ├── metadata/       # 引擎适配、业务编码与索引重建
 │       ├── ports/          # 存储与事务接口
 │       └── transport/      # S3、Management、Health、Metrics
+├── pkg/metadata-engine/    # 独立 WAL/快照引擎，运行数据在 data/.zigfs.sys/
 ├── zigfs-admin/
 │   ├── server/             # Go + Gin BFF
 │   └── web/                # React Admin Web
 ├── docs/                   # API、运维、SDK、发布文档
 ├── compatibility/          # AWS CLI、mc、rclone 兼容性 Runner
 ├── conformance/            # TypeScript/Web、Swift/iOS 一致性验证
-├── benchmarks/             # 可复现基准工具
 ├── docker-compose.dev.yml  # 开发 Compose
 ├── start.sh                # 本地服务交互式菜单
 ├── docker.sh               # Docker 构建、Compose 与镜像推送菜单

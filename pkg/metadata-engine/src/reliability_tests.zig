@@ -13,7 +13,7 @@ test "96 record cross namespace transaction rejects last conflict and preserves 
     var mutations: [96]metadata.Mutation = undefined;
     for (&mutations, &keys, 0..) |*mutation, *buffer, index| {
         mutation.* = .{
-            .record_type = @fromBackingInt(@intCast(index % 6 + 1)),
+            .record_type = @fromBackingInt(@intCast(index % metadata.namespace_count + 1)),
             .key = try std.fmt.bufPrint(buffer, "batch-{d:0>4}", .{index}),
             .expected = .missing,
             .payload = "old",
@@ -146,7 +146,7 @@ test "cross namespace transaction remains atomic across short write disk full an
         defer tmp.cleanup();
         var engine = try metadata.Engine.open(a, io, tmp.dir);
         _ = try engine.interface().put(a, .object, "acknowledged", .missing, "old");
-        var mutations: [6]metadata.Mutation = undefined;
+        var mutations: [metadata.namespace_count]metadata.Mutation = undefined;
         for (&mutations, 1..) |*mutation, namespace| {
             mutation.* = .{ .record_type = @fromBackingInt(@intCast(namespace)), .key = "new", .payload = "atomic" };
         }
@@ -165,8 +165,8 @@ test "cross namespace transaction remains atomic across short write disk full an
                 count += 1;
             } else |err| try std.testing.expectEqual(error.NotFound, err);
         }
-        try std.testing.expect(count == 0 or count == 6);
-        if (fault == .after_sync) try std.testing.expectEqual(@as(usize, 6), count);
+        try std.testing.expect(count == 0 or count == metadata.namespace_count);
+        if (fault == .after_sync) try std.testing.expectEqual(@as(usize, metadata.namespace_count), count);
         const old = try reopened.interface().get(a, .object, "acknowledged");
         defer old.deinit(a);
         try std.testing.expectEqualStrings("old", old.payload);

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Isolated real-process reclamation benchmark, not upload throughput.
 
-Seeds valid committed multipart tombstones and intent/commit journal pairs.
+Seeds a v3 engine snapshot of committed tombstones and an empty matching WAL.
 Never accepts an existing data directory. All fixtures live in a temporary root.
 """
 import argparse
@@ -19,62 +19,60 @@ import time
 import urllib.request
 import uuid
 
-RECORD_DIRS = {
-    1: '.zigfs/system/configuration/records',
-    2: 'metadata/buckets',
-    3: 'metadata/objects',
-    4: 'metadata/multipart',
-    5: '.zigfs/system/credentials',
-    6: 'metadata/directories',
-}
-
-
 def checksummed(value):
     return value + hashlib.sha256(value).digest()
 
 
+def engine_header(magic, identity, generation, count=0, epoch=0):
+    return checksummed(magic + struct.pack('<H', 3) + epoch.to_bytes(6, 'little')
+                       + struct.pack('<QQ', generation, count) + identity)
+
+
 def seed(root, count, all_types=False):
-    journal = root / '.zigfs/journal'
-    multipart = root / 'metadata/multipart'
-    configuration = root / '.zigfs/system/configuration'
-    for directory in (journal, multipart, configuration, *(root / path for path in RECORD_DIRS.values())):
-        directory.mkdir(parents=True, exist_ok=True)
+    database = root / '.zigfs.sys'
+    database.mkdir(parents=True)
+    (root / '.zigfs').mkdir()
     instance = uuid.uuid4().bytes
     (root / '.zigfs/format.meta').write_bytes(checksummed(
-        struct.pack('<8sHHHH16sq', b'ZIGFSFMT', 1, 0, 72, 0, instance, int(time.time()))))
-    (configuration / 'generation.meta').write_bytes(checksummed(
-        struct.pack('<8sHHIQ', b'ZFSGEN01', 1, 0, 0, count)))
+        struct.pack('<8sHHHH16sq', b'ZIGFSFMT', 3, 0, 72, 0, instance, int(time.time()))))
+    identity = uuid.uuid4().bytes
+    entries = []
     for generation in range(1, count + 1):
-        kind = (generation - 1) % 6 + 1 if all_types else 4
-        key = uuid.uuid4().hex.encode()
-        key_hash = hashlib.sha256(key).digest()
-        payload = struct.pack('<4sHH', b'ZFMP', len(key), 1) + key
-        record = struct.pack('<4sHHBBHQQI', b'ZFRD', 1, 0, kind, 0, 32, generation, len(payload), 0)
-        (root / RECORD_DIRS[kind] / (key_hash.hex() + '.record')).write_bytes(checksummed(record + payload))
-        transaction = uuid.uuid4()
-        for state in (1, 2):
-            entry = struct.pack('<4sHHBBHQQ16s32sI', b'ZFJN', 1, 0, state, kind, 0,
-                                generation, 0, transaction.bytes, key_hash, 0)
-            name = f'{generation:020}-{transaction.hex}-{state}.journal'
-            (journal / name).write_bytes(checksummed(entry))
+        kind = (generation - 1) % 19 + 1 if all_types else 4
+        key = f'reclaimed-{generation:012}'.encode()
+        entry = struct.pack('<BBHII', kind, 1, 0, len(key), 0) + key
+        header = checksummed(struct.pack('<8sHHIQII', b'ZFMETAW1', 1, 0,
+                                         64 + len(entry) + 32, generation, 1, 0))
+        entries.append((kind, key, checksummed(header + entry)))
+    entries.sort(key=lambda item: (item[0], item[1]))
+    with (database / 'snapshot').open('wb') as snapshot:
+        snapshot.write(engine_header(b'ZFMESNP1', identity, count, count))
+        for _, _, frame in entries:
+            snapshot.write(frame)
+    (database / 'wal').write_bytes(engine_header(b'ZFMELOG1', identity, count))
+    (database / 'LOCK').touch()
 
 
 def usage(root):
     result = {'files': 0, 'bytes': 0, 'allocated_bytes': 0}
-    for directory in (root / '.zigfs/journal', *(root / path for path in RECORD_DIRS.values())):
-        for path in directory.iterdir():
+    for path in (root / '.zigfs.sys').iterdir():
+        if path.is_file():
             stat = path.stat()
-            if path.is_file():
-                result['files'] += 1
-                result['bytes'] += stat.st_size
-                result['allocated_bytes'] += stat.st_blocks * 512
+            result['files'] += 1
+            result['bytes'] += stat.st_size
+            result['allocated_bytes'] += stat.st_blocks * 512
     return result
 
 
+def reclaimed(root):
+    snapshot = (root / '.zigfs.sys/snapshot').read_bytes()
+    count = struct.unpack_from('<Q', snapshot, 24)[0]
+    epoch = int.from_bytes(snapshot[10:16], 'little')
+    return count == 0 and epoch == 1
+
+
 def crash_at_atomic_write(probe, root):
-    targets = ['.zigfs/format.meta', '.zigfs/system/configuration/generation.meta',
-               '.zigfs/journal/checkpoint.meta', '.zigfs/journal/probe.journal',
-               '.zigfs/config/log_config.json']
+    targets = ['.zigfs/format.meta', '.zigfs/system/credential-master.key']
     for target in targets:
         destination = root / target
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -114,7 +112,6 @@ ZIGFS_API_ADDRESS=127.0.0.1:{port}
 ZIGFS_METRICS_ENABLED=false
 ZIGFS_DATA_ROOT={root}
 ZIGFS_METADATA_MAINTENANCE_INTERVAL_SECONDS=1
-ZIGFS_METADATA_MAINTENANCE_BATCH_SIZE=10000
 ZIGFS_ROOT_USER=maintenance-test
 ZIGFS_ROOT_PASSWORD=isolated-maintenance-password
 ZIGFS_ADMIN_SESSION_SECRET=isolated-maintenance-secret-0000000000000000
@@ -156,8 +153,7 @@ ZIGFS_ADMIN_SESSION_SECRET=isolated-maintenance-secret-0000000000000000
                 while time.monotonic() - began < timeout:
                     if process.poll() is not None:
                         raise AssertionError(console_path.read_text())
-                    if not any((root / '.zigfs/journal').glob('*.journal')) and not any(
-                            any((root / directory).glob('*.record')) for directory in RECORD_DIRS.values()):
+                    if reclaimed(root):
                         break
                     time.sleep(.2)
                 else:
@@ -165,12 +161,19 @@ ZIGFS_ADMIN_SESSION_SECRET=isolated-maintenance-secret-0000000000000000
                 elapsed = time.monotonic() - began
                 stop()
                 after = usage(root)
-                assert after['files'] == 1, after  # The single checkpoint remains.
-                assert struct.unpack_from('<H', (root / '.zigfs/format.meta').read_bytes(), 14)[0] == 1
+                assert after['files'] == 3, after  # snapshot, WAL and LOCK.
+                assert reclaimed(root)
                 restart = start(console)
                 stop()
-                assert usage(root) == after
-                result = {'tasks': count, 'all_types': all_types, 'killed_atomic_writers': len(leftovers), 'before': before, 'after': after,
+                # Startup may persist default policies or session cleanup in the WAL.
+                # Verify reclaimed fixtures stay absent rather than requiring no writes.
+                after_restart = usage(root)
+                assert after_restart['files'] == 3, after_restart
+                snapshot = (root / '.zigfs.sys/snapshot').read_bytes()
+                assert int.from_bytes(snapshot[10:16], 'little') >= 1
+                for name in ('snapshot', 'wal'):
+                    assert b'reclaimed-' not in (root / '.zigfs.sys' / name).read_bytes(), name
+                result = {'tasks': count, 'all_types': all_types, 'killed_atomic_writers': len(leftovers), 'before': before, 'after': after, 'after_restart': after_restart,
                           'first_ready_seconds': round(readiness, 3),
                           'drained_seconds': round(elapsed, 3),
                           'restart_ready_seconds': round(restart, 3)}
@@ -186,7 +189,7 @@ if __name__ == '__main__':
     parser.add_argument('--tasks', type=int, nargs='+', default=[1000])
     parser.add_argument('--timeout', type=int, default=600)
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--all-types', action='store_true', help='spread tombstones over all six metadata types')
+    parser.add_argument('--all-types', action='store_true', help='spread tombstones over all 19 metadata namespaces')
     parser.add_argument('--crash-probe', type=Path, help='compiled metadata_atomic_crash.zig helper')
     args = parser.parse_args()
     if any(count < 1 for count in args.tasks):

@@ -547,7 +547,7 @@ fn mapStreamingError(err: streaming.Error) data_store_port.Error {
 }
 
 test "local multipart data paths are opaque and stream ranges" {
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDirPath(std.testing.io, ".zigfs/tmp");
@@ -583,7 +583,7 @@ test "local multipart data paths are opaque and stream ranges" {
 }
 
 test "encrypted multipart data hides plaintext supports cross frame ranges and rejects tampering" {
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDirPath(std.testing.io, ".zigfs/tmp");

@@ -7,7 +7,7 @@ const Entry = struct {
     value: u64 = 0,
     tombstone: bool = false,
 };
-const Model = [6][]Entry;
+const Model = [metadata.namespace_count][]Entry;
 
 /// One foreground actor owns the reference model; Runtime writer and maintenance
 /// run concurrently. No engine reopen occurs until the timed workload is over.
@@ -38,7 +38,7 @@ pub fn main(init: std.process.Init) !void {
         .max_wal_bytes = 65536,
     } else .{
         .segment_bytes = 1024 * 1024,
-        .max_wal_bytes = @max(8 * 1024 * 1024, slots * 6 * payload_size * 2),
+        .max_wal_bytes = @max(8 * 1024 * 1024, slots * metadata.namespace_count * payload_size * 2),
     };
     var engine = try metadata.Engine.openWithOptions(tracker.allocator(), init.io, directory, options);
     var opened = true;
@@ -61,7 +61,7 @@ pub fn main(init: std.process.Init) !void {
     const start = std.Io.Clock.awake.now(init.io);
     var last_sample_ms: i64 = -1000;
     while (start.durationTo(std.Io.Clock.awake.now(init.io)).toMilliseconds() < @as(i64, seconds) * 1000) {
-        const namespace = random.random().uintLessThan(usize, 6);
+        const namespace = random.random().uintLessThan(usize, metadata.namespace_count);
         const slot = random.random().uintLessThan(usize, slots);
         const kind: metadata.Type = @fromBackingInt(@intCast(namespace + 1));
         const entry = model[namespace][slot];
@@ -152,12 +152,12 @@ pub fn main(init: std.process.Init) !void {
     const remaining = tracker.live.load(.monotonic);
     if (remaining != 0) return error.EngineAllocationLeak;
     std.debug.print(
-        "{{\"transactions\":{d},\"batches\":{d},\"tombstones\":{d},\"conflicts\":{d}," ++
+        "{{\"namespace_count\":{d},\"transactions\":{d},\"batches\":{d},\"tombstones\":{d},\"conflicts\":{d}," ++
             "\"quota_retries\":{d},\"model_validations\":{d},\"checkpoints\":{d}," ++
             "\"rotations\":{d},\"elapsed_ms\":{d},\"reopen_verified\":true," ++
             "\"slots_per_namespace\":{d},\"payload_bytes\":{d},\"records\":{d}," ++
             "\"engine_live_after_close\":{d},\"engine_peak\":{d},\"wal_quota_bytes\":{d}}}\n",
-        .{ transactions, batches, deletes, conflicts, retries, validations + 2, stats.checkpoints, stats.rotations, duration, slots, payload_size, stats.records, remaining, tracker.peak.load(.monotonic), options.max_wal_bytes },
+        .{ metadata.namespace_count, transactions, batches, deletes, conflicts, retries, validations + 2, stats.checkpoints, stats.rotations, duration, slots, payload_size, stats.records, remaining, tracker.peak.load(.monotonic), options.max_wal_bytes },
     );
 }
 

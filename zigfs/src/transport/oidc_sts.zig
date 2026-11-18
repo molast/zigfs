@@ -129,7 +129,7 @@ fn sessionPolicy(a: std.mem.Allocator, app: *Application, form: *std.StringHashM
     if (inline_policy.len > 0) try appendStatements(a, &statements, inline_policy);
     app.policy_mutex.lockUncancelable(app.io.?);
     defer app.policy_mutex.unlock(app.io.?);
-    const policies = try @import("../application/policy_store.zig").load(app.data_root.?, app.io.?, a);
+    const policies = try @import("../application/policy_store.zig").load(app.systemStore(), app.io.?, a);
     var gap = false;
     var used = std.StringHashMap(void).init(a);
     for (1..11) |i| {

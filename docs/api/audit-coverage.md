@@ -1,5 +1,9 @@
 # ZigFS 审计覆盖清单（V1）
 
+> 存储说明：`<namespace>:config/...` 表示 metadata-engine 的业务命名空间及记录键，
+> 实际数据位于 `data/.zigfs.sys/`；这些名称不是文件路径，不能单独移动或编辑。
+> BFF 自身的配置、日志正文、证书及密钥文件仍独立保存。
+
 以 [RustFS Audit Event Schema V1.0](../plans/rustfs-audit-log-schema-v1.md) 为结构依据，具体 ZigFS 落地约定见 [审计结构与查询接口](audit-schema-v1.md)。本文是当前实现清单，不把规范中的未来能力描述成已实现。
 
 ## 当前审计种类
@@ -186,7 +190,7 @@
 
 ## 保存和兼容
 
-审计数据默认位于 `data/audit-logs/audit-*.log`，文件权限 0600。写入级别、格式、目录、轮转、保留时间、下载权限及默认查询范围由独立的 `data/.zigfs/config/audit_log_config.json` 控制；输出固定为文件。旧的 `data/.zigfs/system/audit-events.json` 和 `audit-archive/` 在首次启动时幂等导入，原文件作为只读迁移备份保留，不再写入或参与查询。系统日志配置不控制审计。
+审计数据默认位于 `data/audit-logs/audit-*.log`，文件权限 0600。写入级别、格式、目录、轮转、保留时间、下载权限及默认查询范围由独立的 `audit_settings:config/audit_log_config.json` 控制；输出固定为文件。旧的 `data/.zigfs/system/audit-events.json` 和 `audit-archive/` 在首次启动时幂等导入，原文件作为只读迁移备份保留，不再写入或参与查询。系统日志配置不控制审计。
 
 旧记录读取时转换为 V1，并设置 `metadata.legacy=true`；旧记录没有采集的真实身份 ID、认证类型、来源 IP、耗时、HTTP 错误码不补造。历史事件 ID 按原始记录确定性生成，重启后保持不变。六个原有平铺字段暂时保留，用于 Bucket 事件客户端兼容。
 

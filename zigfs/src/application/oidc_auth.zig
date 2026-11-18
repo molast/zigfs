@@ -129,7 +129,7 @@ fn prune(a: std.mem.Allocator, snapshot: *store.Snapshot, now: i64) !void {
 }
 pub const Start = struct { authorization_url: []const u8, state: []const u8 };
 pub fn start(a: std.mem.Allocator, app: *Application, id: []const u8) !Start {
-    const root = app.data_root orelse return error.Unavailable;
+    const root = app.systemStore();
     const io = app.io orelse return error.Unavailable;
     const key = app.master_key.?.bytes;
     var p: store.Provider = undefined;
@@ -335,7 +335,7 @@ fn profile(claims: Value, path: []const u8) ![]const u8 {
 }
 pub fn callback(a: std.mem.Allocator, app: *Application, state: []const u8, code: []const u8) !Login {
     if (state.len != 64 or code.len == 0 or code.len > 8192) return error.InvalidState;
-    const root = app.data_root.?;
+    const root = app.systemStore();
     const io = app.io.?;
     const key = app.master_key.?.bytes;
     const now = std.Io.Clock.real.now(io).toSeconds();
@@ -367,7 +367,7 @@ pub fn callback(a: std.mem.Allocator, app: *Application, state: []const u8, code
     return issue(a, app, p, flow.fingerprint, config.issuer, claims, try string(token, "id_token"), string(token, "refresh_token") catch "");
 }
 fn issue(a: std.mem.Allocator, app: *Application, p: store.Provider, stamp: []const u8, issuer: []const u8, claims: Value, id_token: []const u8, refresh_token: []const u8) !Login {
-    const root = app.data_root.?;
+    const root = app.systemStore();
     const io = app.io.?;
     const key = app.master_key.?.bytes;
     const now = std.Io.Clock.real.now(io).toSeconds();
@@ -400,7 +400,7 @@ fn issue(a: std.mem.Allocator, app: *Application, p: store.Provider, stamp: []co
     return result;
 }
 // Caller holds policy_mutex. Every authorization rechecks current provider and policy state.
-pub fn resolve(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, key: @import("../auth/secret_box.zig").Key, hash: []const u8, now: i64) !?store.Session {
+pub fn resolve(a: std.mem.Allocator, root: @import("../metadata/system_store.zig").SystemStore, io: std.Io, key: @import("../auth/secret_box.zig").Key, hash: []const u8, now: i64) !?store.Session {
     const loaded = try store.load(root, io, a, key);
     for (loaded.value.sessions) |session| {
         if (!std.mem.eql(u8, session.token_hash, hash) or session.expires_at <= now) continue;
@@ -410,7 +410,7 @@ pub fn resolve(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, key: @import(
     }
     return null;
 }
-pub fn documents(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, session: store.Session) ![][]u8 {
+pub fn documents(a: std.mem.Allocator, root: @import("../metadata/system_store.zig").SystemStore, io: std.Io, session: store.Session) ![][]u8 {
     const policies = try @import("policy_store.zig").load(root, io, a);
     defer policies.deinit();
     var docs: std.ArrayList([]u8) = .empty;
@@ -421,7 +421,7 @@ pub fn documents(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, session: st
 }
 
 pub fn webIdentity(a: std.mem.Allocator, app: *Application, id: []const u8, token: []const u8) !Login {
-    const root = app.data_root.?;
+    const root = app.systemStore();
     const io = app.io.?;
     var p: store.Provider = undefined;
     {
@@ -439,7 +439,7 @@ pub fn webIdentity(a: std.mem.Allocator, app: *Application, id: []const u8, toke
 pub fn logout(a: std.mem.Allocator, app: *Application, token: []const u8) !void {
     if (!std.mem.startsWith(u8, token, "o1.") or token.len != 67) return;
     const hash = try digest(a, token);
-    const root = app.data_root.?;
+    const root = app.systemStore();
     const io = app.io.?;
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
@@ -520,7 +520,7 @@ fn sessionLogin(token: []const u8, session: store.Session) Login {
 pub fn refresh(a: std.mem.Allocator, app: *Application, token: []const u8) !Login {
     if (token.len != 67 or !std.mem.startsWith(u8, token, "o1.")) return error.InvalidToken;
     const hash = try digest(a, token);
-    const root = app.data_root.?;
+    const root = app.systemStore();
     const io = app.io.?;
     const key = app.master_key.?.bytes;
     const now = std.Io.Clock.real.now(io).toSeconds();
@@ -600,7 +600,7 @@ pub fn endSession(a: std.mem.Allocator, app: *Application, token: []const u8) ![
     {
         app.policy_mutex.lockUncancelable(io);
         defer app.policy_mutex.unlock(io);
-        const loaded = try store.load(app.data_root.?, io, a, app.master_key.?.bytes);
+        const loaded = try store.load(app.systemStore(), io, a, app.master_key.?.bytes);
         const hash = try digest(a, token);
         for (loaded.value.sessions) |entry| if (std.mem.eql(u8, entry.token_hash, hash)) {
             provider = findProvider(loaded.value, entry.provider_id) catch null;
@@ -615,7 +615,7 @@ pub fn endSession(a: std.mem.Allocator, app: *Application, token: []const u8) ![
 }
 
 pub fn backchannelLogout(a: std.mem.Allocator, app: *Application, provider_id: []const u8, token: []const u8) !void {
-    const root = app.data_root.?;
+    const root = app.systemStore();
     const io = app.io.?;
     const key = app.master_key.?.bytes;
     var p: store.Provider = undefined;

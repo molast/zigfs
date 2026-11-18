@@ -1,5 +1,9 @@
 # 时区与日期显示偏好
 
+> 存储说明：`<namespace>:config/...` 表示 metadata-engine 的业务命名空间及记录键，
+> 实际数据位于 `data/.zigfs.sys/`；这些名称不是文件路径，不能单独移动或编辑。
+> BFF 自身的配置、日志正文、证书及密钥文件仍独立保存。
+
 入口：**System Setting → General → 显示偏好**。这是实例级配置，由管理员保存；普通控制台用户也使用同一实例的显示偏好。
 
 | 设置 | 默认值 | 选项 |
@@ -13,7 +17,7 @@
 
 选择后先在预览中查看效果，点击保存后立即更新当前页面及后续页面的时间显示，无需重启。修改尚未保存时只影响预览；保存失败保留草稿，不修改已经生效的显示偏好。其他已打开会话刷新页面后获取更新。
 
-ZigFS 原子保存到 `storage.data_root/.zigfs/config/display.json`。文件不存在时使用 `browser` / `locale`，重启后读取已保存值。BFF 只转发接口，不访问数据目录。可用时区目录在 `zigfs/src/application/display_timezones.txt` 中，接口提供 `supported_timezones`；页面只显示当前浏览器可识别的选项，不依赖宿主机时区文件。旧浏览器无法识别已保存时区时，格式化回退到 UTC。
+ZigFS 原子保存到 `settings:config/display.json`。记录不存在时使用 `browser` / `locale`，重启后读取已保存值。BFF 只转发接口，不访问数据目录。可用时区目录在 `zigfs/resources/display_timezones.txt` 中，接口提供 `supported_timezones`；页面只显示当前浏览器可识别的选项，不依赖宿主机时区文件。旧浏览器无法识别已保存时区时，格式化回退到 UTC。
 
 配置读取失败时，设置接口返回 503；会话仍能验证，但 `display_preferences` 为 null，控制台提示加载失败并采用默认显示，避免显示配置损坏阻止登录。
 

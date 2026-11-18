@@ -133,11 +133,11 @@ source locations are guessed. ASLR slide applies only to raw runtime addresses.
 
 ## Sustained integrity and resource test
 
-Use the single-target JSON format from `tools/monitoring/benchmark.py`; credentials
+Use the single-target JSON format from `zigfs/bench/benchmark.py`; credentials
 come from named environment variables. Prefer an isolated test instance.
 
 ```sh
-python3 tools/diagnostics/stress.py --targets /tmp/zigfs-target.json --output /tmp/stress-new --seconds 1800 --concurrency 4 --size 65536
+python3 zigfs/bench/stress.py --targets /tmp/zigfs-target.json --output /tmp/stress-new --seconds 1800 --concurrency 4 --size 65536
 ```
 
 The default 30-minute workload continuously PUT/GET/HEAD/DELETEs one isolated key

@@ -4,7 +4,7 @@ const durable = @import("durable.zig");
 
 pub const path = ".zigfs/format.meta";
 pub const magic = [8]u8{ 'Z', 'I', 'G', 'F', 'S', 'F', 'M', 'T' };
-pub const major_version: u16 = 1;
+pub const major_version: u16 = 3;
 pub const minor_version: u16 = 0;
 pub const encoded_length: usize = 72;
 
@@ -13,9 +13,9 @@ const flags_offset: usize = 14;
 
 pub const Metadata = struct {
     instance_id: id.Uuid,
+    /// In-memory initialization result; never encoded on disk.
+    newly_created: bool = false,
     created_at_unix_seconds: i64,
-    // Old binaries reject this required feature as UnsupportedFlags.
-    checkpoints: bool = false,
 };
 
 pub const DecodeError = error{
@@ -28,7 +28,7 @@ pub const DecodeError = error{
     ChecksumMismatch,
 };
 
-pub const Error = DecodeError ||
+pub const Error = DecodeError || durable.SyncParentError ||
     std.Io.Dir.ReadFileError ||
     std.Io.Dir.CreateFileAtomicError ||
     std.Io.File.Writer.Error ||
@@ -51,7 +51,7 @@ pub fn encode(metadata: Metadata) [encoded_length]u8 {
     std.mem.writeInt(u16, bytes[8..10], major_version, .little);
     std.mem.writeInt(u16, bytes[10..12], minor_version, .little);
     std.mem.writeInt(u16, bytes[12..14], encoded_length, .little);
-    std.mem.writeInt(u16, bytes[flags_offset..16], @intFromBool(metadata.checkpoints), .little);
+    std.mem.writeInt(u16, bytes[flags_offset..16], 0, .little);
     @memcpy(bytes[16..32], &metadata.instance_id);
     std.mem.writeInt(i64, bytes[32..checksum_offset], metadata.created_at_unix_seconds, .little);
     writeChecksum(&bytes);
@@ -68,7 +68,7 @@ pub fn decode(bytes: []const u8) DecodeError!Metadata {
         return error.InvalidHeaderLength;
     }
     const flags = std.mem.readInt(u16, bytes[flags_offset..16], .little);
-    if (flags & ~@as(u16, 1) != 0) {
+    if (flags != 0) {
         return error.UnsupportedFlags;
     }
 
@@ -85,29 +85,13 @@ pub fn decode(bytes: []const u8) DecodeError!Metadata {
     return .{
         .instance_id = instance_id,
         .created_at_unix_seconds = std.mem.readInt(i64, bytes[32..checksum_offset], .little),
-        .checkpoints = flags & 1 != 0,
     };
-}
-
-// Call only after the first checkpoint is durable, and before any reclamation.
-pub fn enableCheckpoints(dir: std.Io.Dir, io: std.Io) !void {
-    var buffer: [encoded_length + 1]u8 = undefined;
-    var metadata = try decode(try dir.readFile(io, path, &buffer));
-    if (!metadata.checkpoints) {
-        metadata.checkpoints = true;
-        var file = try dir.createFileAtomic(io, path, .{ .replace = true });
-        defer file.deinit(io);
-        try file.file.writeStreamingAll(io, &encode(metadata));
-        try file.file.sync(io);
-        try file.replace(io);
-    }
-    // Also stabilize a rename left by an earlier failed directory sync.
-    try durable.syncParent(dir, io, path);
 }
 
 fn create(dir: std.Io.Dir, io: std.Io) Error!Metadata {
     const metadata: Metadata = .{
         .instance_id = try id.randomV4(io),
+        .newly_created = true,
         .created_at_unix_seconds = std.Io.Clock.real.now(io).toSeconds(),
     };
     const bytes = encode(metadata);
@@ -117,6 +101,7 @@ fn create(dir: std.Io.Dir, io: std.Io) Error!Metadata {
     try atomic_file.file.writeStreamingAll(io, &bytes);
     try atomic_file.file.sync(io);
     try atomic_file.link(io);
+    try durable.syncParent(dir, io, path);
     return metadata;
 }
 

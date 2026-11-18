@@ -5,6 +5,22 @@
 ZigFS data-plane service. This project owns the S3 API, object data, metadata,
 transaction journal, indexes, recovery, and storage backends.
 
+## Project structure
+
+```text
+zigfs/
+├── bench/       # S3 benchmarks and sustained stress workloads
+├── src/         # Production code and colocated unit tests
+├── tests/       # Test helpers, contract tests and integration fixtures
+├── tools/       # Independently built diagnostics and conformance probes
+└── resources/   # Built-in IAM policies and supported timezones
+```
+
+Built-in resources are embedded at compile time, included in package exports and Docker
+build contexts. Runtime policy/configuration changes live in metadata-engine, not here.
+Cross-component integration suites remain in the repository's `conformance/` directory.
+See each directory's README for existing entry points and placement conventions.
+
 ## Docker build
 
 Published Linux images compile with `-Dcpu=baseline` for both AMD64 and ARM64.

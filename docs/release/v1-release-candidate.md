@@ -1,5 +1,10 @@
 # ZigFS 0.1 Release Candidate
 
+> 历史版本运行手册：2026-11-18 起，开发版已切换到 `data/.zigfs.sys/` 的独立元数据引擎，
+> 数据根格式主版本为 3，不兼容本文描述的旧 `.record`/journal 数据。
+> 当前开发切换需停机清空专用旧数据根后重建，不按本文执行原地升级。
+> 当前布局和恢复要求见 [备份与恢复](../backup-and-recovery.md)。
+
 ## 发布身份
 
 | 项目 | 值 |
@@ -56,7 +61,7 @@ cd ../..
 Benchmark 只用于记录当前环境基线，不作为脱离硬件、构建模式和并发度的性能承诺：
 
 ```bash
-node benchmarks/run.mjs --profile smoke --output /tmp/zigfs-v0.1.0-rc.1-benchmark.json
+node zigfs/bench/run.mjs --profile smoke --output /tmp/zigfs-v0.1.0-rc.1-benchmark.json
 ```
 
 所有输出报告都应检查是否包含凭证，并将报告写入发布目录之外的临时路径。

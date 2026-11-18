@@ -4,6 +4,7 @@ const codec = @import("codec.zig");
 const durable = @import("durable.zig");
 const port = @import("repository.zig");
 const Type = @import("types.zig").Type;
+const namespace_count = @import("types.zig").namespace_count;
 const ordered = @import("ordered_index.zig");
 const segments = @import("segments.zig");
 const Options = @import("options.zig").Options;
@@ -82,8 +83,8 @@ pub const Engine = struct {
     root: std.Io.Dir,
     lock: std.Io.File,
     wal: std.Io.File,
-    maps: [6]Map = @splat(.empty),
-    indexes: [6]ordered.Index = @splat(.{}),
+    maps: [namespace_count]Map = @splat(.empty),
+    indexes: [namespace_count]ordered.Index = @splat(.{}),
     options: Options = .{},
     counters: Stats = .{},
     checkpoint_mutex: std.Io.Mutex = .init,
@@ -458,7 +459,7 @@ pub const Engine = struct {
         const next_epoch = std.math.add(u48, self.gc_epoch, 1) catch return error.GenerationExhausted;
         const entries = try self.allocator.alloc(SnapshotEntry, live_count);
         defer self.allocator.free(entries);
-        var replacements: [6]Map = @splat(.empty);
+        var replacements: [namespace_count]Map = @splat(.empty);
         defer for (&replacements) |*map| map.deinit(self.allocator);
         var position: usize = 0;
         for (self.indexes, 0..) |index, namespace| {
@@ -836,7 +837,7 @@ pub const Engine = struct {
         defer frames.deinit();
         var decoder: codec.ViewDecoder = .{};
         defer decoder.deinit(self.allocator);
-        var counts: [6]u32 = @splat(0);
+        var counts: [namespace_count]u32 = @splat(0);
         var live_bytes: usize = 0;
         var offset: u64 = 80;
         for (0..count) |_| {
@@ -857,9 +858,9 @@ pub const Engine = struct {
         frames.offset = 80;
         const nodes = try self.allocator.alloc(*ordered.Node, @intCast(count));
         defer self.allocator.free(nodes);
-        var starts: [6]usize = @splat(0);
-        for (1..6) |index| starts[index] = starts[index - 1] + counts[index - 1];
-        var loaded: [6]usize = @splat(0);
+        var starts: [namespace_count]usize = @splat(0);
+        for (1..namespace_count) |index| starts[index] = starts[index - 1] + counts[index - 1];
+        var loaded: [namespace_count]usize = @splat(0);
         for (0..count) |_| {
             const bytes = (try frames.next()) orelse return error.CorruptRecord;
             const views = try decoder.decode(self.allocator, bytes);
@@ -925,7 +926,7 @@ pub const Engine = struct {
     }
 
     fn reserve(self: *Engine, entries: []const codec.Entry) ![]?*ordered.Node {
-        var counts = @as([6]u32, @splat(0));
+        var counts = @as([namespace_count]u32, @splat(0));
         var record_count = self.counters.records;
         var live_bytes = self.counters.live_bytes;
         for (entries) |entry| {
@@ -994,6 +995,7 @@ pub const Engine = struct {
         self.lockState();
         defer self.unlockState();
         var result = self.counters;
+        for (self.maps, 0..) |map, index| result.namespace_records[index] = map.count();
         result.generation = self.generation;
         result.gc_epoch = self.gc_epoch;
         result.active_wal_bytes = self.wal_length;

@@ -78,7 +78,8 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
-          context: ./${{ matrix.image }}
+          context: ${{ matrix.image == 'zigfs' && '.' || './zigfs-admin' }}
+          file: ./${{ matrix.image }}/Dockerfile
           platforms: linux/${{ matrix.arch }}
           # Publish only the two runnable platform manifests, without
           # attestation manifests displayed as unknown/unknown by registries.

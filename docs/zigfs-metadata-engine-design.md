@@ -2,7 +2,7 @@
 
 - 位置：[`pkg/metadata-engine`](../pkg/metadata-engine/README.md)
 - 工具链：Zig 0.17.0；package 版本 0.3.0；WAL / Snapshot 统一 v3，不兼容旧格式
-- 状态：独立引擎核心能力已实现；运行维护收尾与验收缺口见第 12 节，尚未接入 ZigFS
+- 状态：已于 2026-11-18 接入 ZigFS，旧元数据存储已移除；目标平台验证仍待完成
 - 本文描述实际实现与待办；部署级验收仍需目标 NAS/Linux、磁盘空间故障和断电验证
 - 开发阶段决策：不做历史数据迁移，以空数据根切换并重建测试数据；本次核对不执行删除
 
@@ -12,8 +12,9 @@
 遵循当前 MetadataRepository 的条件写入、类型隔离、结果所有权和排序语义，增加
 批量事务、有界查询、FIFO 提交、Group Commit、分段 WAL 与后台快照。
 
-当前 ZigFS 继续使用原 `.record` 仓库。未修改 `Application.initialize`、S3/Management API、
-Admin BFF、业务 Store、对象文件路径或 `zigfs/build.zig.zon` 依赖。
+ZigFS 已通过 `metadata/engine_repository.zig` 接入独立引擎，数据直接保存到
+`ZIGFS_DATA_ROOT/.zigfs.sys/`（默认 `data/.zigfs.sys/`）。旧 `.record` 和独立 journal
+存储、旧恢复器与 generation 文件已删除。业务 payload、查询索引和对象内容职责保留。
 
 | 现有项目模块 | 关系 |
 | --- | --- |
@@ -26,11 +27,12 @@ Admin BFF、业务 Store、对象文件路径或 `zigfs/build.zig.zon` 依赖。
 | `application/object_gc.zig` | 继续负责对象引用及数据 generation 回收 |
 
 必须覆盖 system、bucket、object、multipart、credential、directory 六个记录域。
-当前对象历史版本聚合在单个记录中，标签、策略、配置及部分上传信息还有 sidecar。
+当前对象历史版本聚合在单个记录中；身份、角色、策略、标签和系统配置已进入引擎的 13 个业务命名空间。
+实时监控仅使用内存，历史监控采用每 60 秒批量保存的独立文件；详见接入记录。
 替换 repository 不会自动统一这些数据，也不会自动消除长版本历史的重写成本。
 
 参考：[原接口](../zigfs/src/ports/metadata_repository.zig)、
-[原契约](../zigfs/src/ports/metadata_repository_contract.zig)、
+[原契约](../zigfs/tests/metadata_repository_contract.zig)、
 [对象历史编码](../zigfs/src/metadata/object_history_payload.zig)、
 [现有备份规则](backup-and-recovery.md)。
 
@@ -425,12 +427,12 @@ SIGKILL 边界通过（详见第 15 节）；新增持续混合模型、真实�
 - S3 业务模型、delimiter/版本列表适配、对象 GC 及事务 Outbox：属于项目接入或业务层
   后续工作，不在不透明 payload 存储包中重复建设；第 13 节保留对应的接入边界。
 
-本轮 F1/F2/T1/T2 收尾已完成；项目接入另行进行，V1/P1 按目标环境继续验证。
+本轮 F1/F2/T1/T2 收尾及项目接入已完成，V1/P1 按目标环境继续验证。
 
-## 13. 后续接入验收
+## 13. 接入与后续验收
 
-当前仍保持独立包、不接入 ZigFS。后续接入采用开发阶段的空库切换，不建设历史数据迁移链路。
-接入前和接入过程中需要完成：
+已完成原项目适配、生命周期与后台任务接线，采用开发阶段空库切换，不建设历史数据迁移链路。
+下列清单中第 3、5、6、7 项已落地；第 1、2 项仍是环境/性能验证，第 4 项聚合 payload 拆分为后续业务模型工作：
 
 1. 在目标 NAS/Linux 验证 fsync、目录同步、原子替换及真正断电行为，运行更长混合负载。
 2. 同等持久化要求对比旧仓库与 SQLite WAL，记录内存、容量、启动时间和尾延迟。
@@ -664,3 +666,21 @@ bbolt 测试中止。这些状态是后续计划的依据，不因本节列出�
 发布故障和新增 7 个 SIGKILL 边界。详细命令与结果见
 [维护功能验证](../pkg/metadata-engine/bench/MAINTENANCE-VALIDATION.md)。
 此前四轮报告是当时实现的历史记录；其中“无物理 GC”“仅停机备份”由本节更新。
+
+
+## 16. ZigFS 接入（2026-11-18）
+
+- 构建添加本地 metadata_engine 依赖，Docker 构建上下文改为仓库根以包含 pkg。
+- Application 持有适配器和 Runtime，启动恢复引擎后重建业务索引；停机排空 Runtime 再关闭引擎。
+- 唯一元数据目录为数据根下 `.zigfs.sys/`，没有额外 metadata 子目录。数据根格式主版本升为 3，
+  引擎格式为 v3；不兼容旧库、不迁移、不自动删除损坏或未知格式。
+- 删除旧 LocalMetadataRepository、LocalTransactionJournal、LocalRecoveryStore、record envelope、
+  generation/检查点/扫描游标实现及仅用于这些实现的端口。保留业务 payload 和对象引用 GC。身份、角色/会话、策略、标签与系统配置按业务进入 13 个独立命名空间。
+- 物理回收与业务 read/CAS 共用 state_mutex，适配器在此约束下把 missing 转为当前 missing_at。
+  所有新增业务调用者必须遵守这一串行化规则；独立引擎的旧世代拒绝规则不变。
+- 提供应用内 backupMetadata 导出在线元数据备份；引擎备份包含系统配置；完整 ZigFS 备份仍需对象、密钥、日志、事件队列和监控历史。
+- 运行中不确定引擎写入使健康状态变成 Not Ready；恢复失败不静默重建空库。
+
+运维与恢复步骤以 [备份与恢复](backup-and-recovery.md) 为准；前述四轮章节与报告保留当时历史状态。
+
+本次接入的测试与实测记录见 [接入验证](metadata-engine-integration.md)。

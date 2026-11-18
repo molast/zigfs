@@ -1,5 +1,9 @@
 # Bucket 事件订阅与投递
 
+> 存储说明：`<namespace>:config/...` 表示 metadata-engine 的业务命名空间及记录键，
+> 实际数据位于 `data/.zigfs.sys/`；这些名称不是文件路径，不能单独移动或编辑。
+> BFF 自身的配置、日志正文、证书及密钥文件仍独立保存。
+
 事件页支持订阅列表、新增、编辑、删除和刷新。每条订阅选择一个已配置的 Webhook 或 MQTT 目标，至少选择一种事件，并可设置对象 key 的前缀和后缀。匹配使用原始 key、区分大小写，前后缀同时满足才投递；同一次操作命中同一目标的多条规则时只投递一次，`configurationId` 使用首条匹配规则的 ID。投递过程不区分协议，由统一 Sender 适配器发送。
 
 与完整 63 项 EventName 的逐项差异见[事件推送覆盖核对](event-notification-coverage.md)。
@@ -47,7 +51,7 @@ ILM 仅用于生命周期过期删除。对象列表、失败操作、条件 GET
 
 PUT 整体替换列表；清空发送 `{"items":[]}`。最多 100 条，ID 唯一且为 1–64 个字母、数字或连字符，事件不得重复。前后缀各最多 1024 UTF-8 字节，不能包含 NUL。新增订阅必须指定现有目标，否则返回 `InvalidEventDestination`（400）。历史无目标的规则可读取和保留，但不投递；在编辑弹窗中绑定目标即可启用。并发修改以最后一次成功保存为准。
 
-配置位于 `data/.zigfs/config/bucket-subscriptions/<bucket UUID>.json`，原子写入，重启保留。同名 Bucket 删除重建后不继承旧规则。删除订阅不撤销已经进入队列的事件。被订阅引用的目标不可删除，返回 `EventDestinationInUse`（409）。BFF 不直接访问数据目录。
+配置位于 `bucket_subscription:config/bucket-subscriptions/<bucket UUID>.json`，原子写入，重启保留。同名 Bucket 删除重建后不继承旧规则。删除订阅不撤销已经进入队列的事件。被订阅引用的目标不可删除，返回 `EventDestinationInUse`（409）。BFF 不直接访问数据目录。
 
 ## 消息格式
 

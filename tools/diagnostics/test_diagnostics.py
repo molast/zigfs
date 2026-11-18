@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import pathlib
 import tempfile
@@ -7,8 +8,15 @@ from unittest import mock
 import dump
 import report
 import snapshot
-import stress
 import symbolize
+
+
+stress_spec = importlib.util.spec_from_file_location(
+    'zigfs_stress',
+    pathlib.Path(__file__).resolve().parents[2] / 'zigfs/bench/stress.py',
+)
+stress = importlib.util.module_from_spec(stress_spec)
+stress_spec.loader.exec_module(stress)
 
 
 class DiagnosticTests(unittest.TestCase):

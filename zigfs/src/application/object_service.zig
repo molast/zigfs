@@ -1510,13 +1510,13 @@ test "retention cutoff uses UTC epoch seconds and expires at the boundary" {
 }
 
 test "object retention blocks deletes and only governance permits bypass" {
-    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MemoryMetadataRepository = @import("test_support").memory_metadata_repository.MemoryMetadataRepository;
     const MetadataBucketStore = @import("../metadata/bucket_store.zig").MetadataBucketStore;
     const MetadataObjectStore = @import("../metadata/object_store.zig").MetadataObjectStore;
     const LocalObjectDataStore = @import("../backend/local_object_data.zig").LocalObjectDataStore;
     const BucketService = @import("bucket_service.zig").BucketService;
     const streaming = @import("../common/streaming.zig");
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1809,13 +1809,13 @@ fn mapExistingMultipartDataError(err: multipart_data_store_port.Error) Error {
 }
 
 test "object service puts gets overwrites and tombstones objects" {
-    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MemoryMetadataRepository = @import("test_support").memory_metadata_repository.MemoryMetadataRepository;
     const MetadataBucketStore = @import("../metadata/bucket_store.zig").MetadataBucketStore;
     const MetadataObjectStore = @import("../metadata/object_store.zig").MetadataObjectStore;
     const LocalObjectDataStore = @import("../backend/local_object_data.zig").LocalObjectDataStore;
     const BucketService = @import("bucket_service.zig").BucketService;
     const streaming = @import("../common/streaming.zig");
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1985,13 +1985,13 @@ test "object service puts gets overwrites and tombstones objects" {
 }
 
 test "object service rejects missing buckets bad checksums and failed sources" {
-    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MemoryMetadataRepository = @import("test_support").memory_metadata_repository.MemoryMetadataRepository;
     const MetadataBucketStore = @import("../metadata/bucket_store.zig").MetadataBucketStore;
     const MetadataObjectStore = @import("../metadata/object_store.zig").MetadataObjectStore;
     const LocalObjectDataStore = @import("../backend/local_object_data.zig").LocalObjectDataStore;
     const BucketService = @import("bucket_service.zig").BucketService;
     const streaming = @import("../common/streaming.zig");
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2061,13 +2061,13 @@ test "object service rejects missing buckets bad checksums and failed sources" {
 }
 
 test "object service preserves version history delete markers and suspended null versions" {
-    const MemoryMetadataRepository = @import("../testing/memory_metadata_repository.zig").MemoryMetadataRepository;
+    const MemoryMetadataRepository = @import("test_support").memory_metadata_repository.MemoryMetadataRepository;
     const MetadataBucketStore = @import("../metadata/bucket_store.zig").MetadataBucketStore;
     const MetadataObjectStore = @import("../metadata/object_store.zig").MetadataObjectStore;
     const LocalObjectDataStore = @import("../backend/local_object_data.zig").LocalObjectDataStore;
     const BucketService = @import("bucket_service.zig").BucketService;
     const streaming = @import("../common/streaming.zig");
-    const test_streams = @import("../testing/streams.zig");
+    const test_streams = @import("test_support").streams;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

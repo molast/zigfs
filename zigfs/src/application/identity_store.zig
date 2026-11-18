@@ -1,5 +1,5 @@
+const SystemStore = @import("../metadata/system_store.zig").SystemStore;
 const std = @import("std");
-const durable = @import("../metadata/durable.zig");
 const policy_store = @import("policy_store.zig");
 
 pub const User = struct {
@@ -103,7 +103,7 @@ pub const Snapshot = struct {
     users: []const User = &.{},
     groups: []const Group = &.{},
 };
-pub const path = ".zigfs/system/identities.json";
+pub const path = "system/identities.json";
 
 pub fn newId(a: std.mem.Allocator, io: std.Io) ![]const u8 {
     const uuid = try @import("../common/id.zig").randomV4(io);
@@ -164,22 +164,17 @@ pub fn policyInUse(snapshot: Snapshot, name: []const u8) bool {
 }
 
 // The caller holds Application.policy_mutex for both stores, including reference checks.
-pub fn save(root: std.Io.Dir, io: std.Io, allocator: std.mem.Allocator, snapshot: Snapshot) !void {
+pub fn save(root: SystemStore, io: std.Io, allocator: std.mem.Allocator, snapshot: Snapshot) !void {
+    _ = io;
     if (snapshot.users.len > 10000 or snapshot.groups.len > 10000) return error.IdentityLimit;
     const bytes = try std.json.Stringify.valueAlloc(allocator, snapshot, .{});
     defer allocator.free(bytes);
     if (bytes.len > 16 * 1024 * 1024) return error.IdentityLimit;
-    try root.createDirPath(io, ".zigfs/system");
-    var atomic = try root.createFileAtomic(io, path, .{ .replace = true });
-    defer atomic.deinit(io);
-    try atomic.file.writeStreamingAll(io, bytes);
-    try atomic.file.sync(io);
-    try atomic.replace(io);
-    try durable.syncParent(root, io, path);
+    try root.put(allocator, path, bytes);
 }
-pub fn load(root: std.Io.Dir, io: std.Io, allocator: std.mem.Allocator) !std.json.Parsed(Snapshot) {
-    const bytes = root.readFileAlloc(io, path, allocator, .limited(16 * 1024 * 1024)) catch |err| switch (err) {
-        error.FileNotFound => return std.json.parseFromSlice(Snapshot, allocator, "{}", .{ .allocate = .alloc_always }),
+pub fn load(root: SystemStore, io: std.Io, allocator: std.mem.Allocator) !std.json.Parsed(Snapshot) {
+    const bytes = root.read(allocator, path, 16 * 1024 * 1024) catch |err| switch (err) {
+        error.NotFound => return std.json.parseFromSlice(Snapshot, allocator, "{}", .{ .allocate = .alloc_always }),
         else => return err,
     };
     defer allocator.free(bytes);
@@ -230,7 +225,10 @@ test "identities persist membership and policy references with atomic user clean
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const empty = try load(tmp.dir, std.testing.io, a);
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata = SystemStore{ .repository = repository.interface() };
+    const empty = try load(metadata, std.testing.io, a);
     defer empty.deinit();
     try std.testing.expectEqual(@as(usize, 0), empty.value.users.len);
     const user = User{ .name = "alice", .policies = &.{"readonly"} };
@@ -238,8 +236,8 @@ test "identities persist membership and policy references with atomic user clean
     const snapshot = Snapshot{ .users = &.{user}, .groups = &.{group} };
     try validate(user, snapshot, &policy_store.defaults);
     try validate(group, snapshot, &policy_store.defaults);
-    try save(tmp.dir, std.testing.io, a, snapshot);
-    const loaded = try load(tmp.dir, std.testing.io, a);
+    try save(metadata, std.testing.io, a, snapshot);
+    const loaded = try load(metadata, std.testing.io, a);
     defer loaded.deinit();
     try std.testing.expectEqualStrings("alice", loaded.value.groups[0].members[0]);
     try std.testing.expect(policyInUse(loaded.value, "readonly"));
@@ -247,8 +245,8 @@ test "identities persist membership and policy references with atomic user clean
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const deleted = try withoutUser(arena.allocator(), loaded.value, "alice");
-    try save(tmp.dir, std.testing.io, a, deleted);
-    const reloaded = try load(tmp.dir, std.testing.io, a);
+    try save(metadata, std.testing.io, a, deleted);
+    const reloaded = try load(metadata, std.testing.io, a);
     defer reloaded.deinit();
     try std.testing.expectEqual(@as(usize, 0), reloaded.value.users.len);
     try std.testing.expectEqual(@as(usize, 0), reloaded.value.groups[0].members.len);
@@ -257,8 +255,8 @@ test "identities persist membership and policy references with atomic user clean
     try std.testing.expectError(error.InvalidIdentity, validate(User{ .name = "a", .policies = &.{ "readonly", "readonly" } }, snapshot, &policy_store.defaults));
     try std.testing.expectError(error.PolicyNotFound, validate(User{ .name = "a", .policies = &.{"missing"} }, snapshot, &policy_store.defaults));
     try std.testing.expectError(error.UserNotFound, validate(Group{ .name = "g", .members = &.{"missing"} }, snapshot, &policy_store.defaults));
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = path, .data = "broken" });
-    try std.testing.expectError(error.SyntaxError, load(tmp.dir, std.testing.io, a));
+    try metadata.put(std.testing.allocator, path, "broken");
+    try std.testing.expectError(error.SyntaxError, load(metadata, std.testing.io, a));
 }
 
 test "user passwords stay hashed and user groups commit together" {
@@ -284,10 +282,13 @@ test "user passwords stay hashed and user groups commit together" {
     try std.testing.expectEqualStrings("team", public.groups[0]);
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try save(tmp.dir, io, a, snapshot);
-    const bytes = try tmp.dir.readFileAlloc(io, path, a, .limited(10000));
+    var repository = try @import("../metadata/engine_repository.zig").EngineRepository.open(std.testing.allocator, tmp.dir, std.testing.io);
+    defer repository.deinit();
+    const metadata = SystemStore{ .repository = repository.interface() };
+    try save(metadata, io, a, snapshot);
+    const bytes = try metadata.read(a, path, 10000);
     try std.testing.expect(std.mem.indexOf(u8, bytes, "test-password-only") == null);
-    const loaded = try load(tmp.dir, io, a);
+    const loaded = try load(metadata, io, a);
     try std.testing.expectEqualStrings(user.password_hash, loaded.value.users[0].password_hash);
     try std.testing.expectError(error.GroupNotFound, assignGroups(a, &snapshot, "alice", &.{"missing"}, 789));
     try std.testing.expectEqualStrings("alice", snapshot.groups[0].members[0]);

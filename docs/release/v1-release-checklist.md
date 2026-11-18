@@ -17,7 +17,7 @@
 - [x] `cd zigfs-admin/web && pnpm run build`（pnpm）
 - [x] `./conformance/run.sh`：TypeScript/Web 与 Swift/iOS 均通过。
 - [x] `./compatibility/run.sh`：AWS CLI、mc、rclone、Ruby aws-sdk-s3 和原生 HTTP 矩阵通过；不支持项有记录。
-- [x] `node benchmarks/run.mjs --profile smoke --output <temporary-report>` 完成；报告命令字段已脱敏，`benchmarks/report.test.mjs` 通过。
+- [x] `node zigfs/bench/run.mjs --profile smoke --output <temporary-report>` 完成；报告命令字段已脱敏，`zigfs/bench/report.test.mjs` 通过。
 
 ## 数据目录与恢复
 
