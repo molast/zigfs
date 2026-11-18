@@ -659,13 +659,16 @@ a crash/lost response during Create may leave an unknown pending upload;
 a lost Complete response may mean the final object already exists.
 Neither is blindly retried. Inspect multipart list/parts and stat/get (with a
 trusted expected SHA256) to resolve the outcome. Successful completion retains
-the `completed` checkpoint. A new upload without `--resume` can atomically replace
-that default sidecar for the same source, so deleting a remote object and uploading
-it again does not require manual checkpoint cleanup. This creates a new UploadId;
-it does not retry the old completion or permit overwriting an existing remote object.
-Explicit `--state-file` files and unfinished/uncertain checkpoints are preserved.
-Conflicts report `CHECKPOINT_EXISTS` (a local checkpoint, not a remote object);
-use `--resume` only for an uploading checkpoint, or choose a new `--state-file`.
+the `completed` checkpoint. Without `--resume`, a new invocation always starts a
+new upload from byte zero, regardless of the old checkpoint phase. Existing default
+and explicit checkpoint files are first backed up as `STATE.previous-RANDOM`, then
+atomically replaced with the new task. This does not retry or abort the previous
+remote upload; its recovery information remains in the backup. Ordinary file,
+permission and lock checks still apply. Existing remote objects retain conditional
+write protection: overwriting requires `--overwrite --yes`.
+
+Only `--resume` reuses confirmed parts and validates the existing checkpoint.
+Use multipart list/abort to inspect or clean up abandoned remote uploads.
 
 Failures report `MULTIPART_INCOMPLETE`, phase, known UploadId, checkpoint path and
 a sanitized cause. UploadPart, Create, Complete and Abort are not automatically

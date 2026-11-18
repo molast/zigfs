@@ -418,7 +418,7 @@ pub fn autoUpload(a: A, ctx: aliases.Context, source: ?[]const u8, remote_path: 
     defer if (lock) |f| f.close(ctx.io);
     var state: V = .{ .object = .{} };
     var exists = false;
-    var replace_completed = false;
+    var replace_checkpoint = false;
     const conn = try aliases.connection(a, ctx, config, r.alias, .{ .endpoint = values.get("--endpoint"), .region = values.get("--region") });
     const source_info = if (path) |p| try sourceInfo(a, ctx.io, p, part_size, length) else null;
     const digest = if (source_info) |info| info.hash else "";
@@ -459,25 +459,23 @@ pub fn autoUpload(a: A, ctx: aliases.Context, source: ?[]const u8, remote_path: 
             if (stat.kind != .file or stat.size > 4 * mib) return error.InvalidInput;
             const bytes = try a.alloc(u8, @intCast(stat.size));
             if (try f.readPositionalAll(ctx.io, bytes, 0) != bytes.len) return error.InvalidInput;
-            state = (std.json.parseFromSlice(V, a, bytes, .{}) catch return error.InvalidInput).value;
-            if (try numeric(state, "schema_version") != 1) return error.InvalidInput;
             if (!flags.contains("--resume")) {
-                const previous_identity = state.object.get("identity") orelse V.null;
-                const previous_parts = state.object.get("parts") orelse V.null;
-                const reusable = !values.contains("--state-file") and
-                    eq(str(state, "phase") orelse "", "completed") and
-                    eq(str(previous_identity, "source") orelse "", path.?) and
-                    str(state, "upload_id") != null and previous_parts == .array;
-                if (!reusable) {
-                    return fail(a, json, "CHECKPOINT_EXISTS", "local multipart checkpoint already exists, not the remote object; use --resume for an uploading checkpoint or --state-file NEW_PATH for a new transfer", 6);
-                }
-                // Completion was acknowledged and durably recorded. Start a new
-                // upload under the same lock, atomically replacing only this
-                // default sidecar. Unknown outcomes and explicit files stay intact.
+                // Preserve the old recovery information before atomically publishing
+                // a fresh task. Never retry or abort an uncertain old upload here.
+                var random: [16]u8 = undefined;
+                ctx.io.random(&random);
+                const backup_path = try std.fmt.allocPrint(a, "{s}.previous-{s}", .{ p, std.fmt.bytesToHex(random, .lower) });
+                var backup = try Io.Dir.cwd().createFileAtomic(ctx.io, backup_path, .{ .permissions = private_mode, .replace = false });
+                defer backup.deinit(ctx.io);
+                try backup.file.writeStreamingAll(ctx.io, bytes);
+                try backup.file.sync(ctx.io);
+                try backup.link(ctx.io);
                 state = .{ .object = .{} };
                 exists = false;
-                replace_completed = true;
+                replace_checkpoint = true;
             } else {
+                state = (std.json.parseFromSlice(V, a, bytes, .{}) catch return error.InvalidInput).value;
+                if (try numeric(state, "schema_version") != 1) return error.InvalidInput;
                 if (!eq(str(state, "fingerprint") orelse "", fingerprint)) return error.ResumeMismatch;
                 if (!eq(str(state, "phase") orelse "", "uploading")) return fail(a, json, "RESUME_UNSAFE", "checkpoint is creating/completing/completed; inspect remote outcome instead of automatically retrying", 6);
                 if (str(state, "upload_id") == null or state.object.get("parts") == null or state.object.get("parts").? != .array) return error.InvalidInput;
@@ -490,7 +488,7 @@ pub fn autoUpload(a: A, ctx: aliases.Context, source: ?[]const u8, remote_path: 
         try state.object.put(a, "identity", identity);
         try put(a, &state, "phase", "creating");
         try state.object.put(a, "parts", .{ .array = std.array_list.Managed(V).init(a) });
-        if (state_path) |p| try save(a, ctx.io, p, state, replace_completed);
+        if (state_path) |p| try save(a, ctx.io, p, state, replace_checkpoint);
         const created = request(a, ctx, "create-multipart-upload", wire.items, config, create, .{}) catch return pending(a, json, state, state_path, null, "create");
         if (created == .failed) return pending(a, json, state, state_path, created.failed, "create");
         try put(a, &state, "upload_id", str(created.ok.object.get("result").?, "UploadId") orelse return error.InvalidResponse);
@@ -675,8 +673,8 @@ pub const help =
     \\Checkpoint defaults to SOURCE.zc-upload.json; keep it for resume/unknown outcomes.
     \\Resume checks file SHA256, layout, endpoint/identity/options and remote ETags/sizes.
     \\Resume never retries creating/completing/completed checkpoints.
-    \\A new upload may replace a completed default checkpoint for the same source.
-    \\Explicit --state-file and unfinished checkpoints are preserved; use a new path.
+    \\Without --resume, start a new upload and back up any existing checkpoint.
+    \\Backups use STATE.previous-RANDOM; old remote uploads are not automatically aborted.
     \\Listings follow all pages up to 16MiB/10000 pages; excess fails without stdout.
     \\--dry-run validates locally; other connection options match s3api.
     \\Advanced encryption/tagging/checksum/copy-part options await later steps.

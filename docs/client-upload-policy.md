@@ -49,6 +49,8 @@ zc cp ./video.mp4 zigfs/molast/videos/video.mp4 --resume
 zc cp ./video.mp4 zigfs/molast/videos/video.mp4 --part-size 32MiB --part-concurrency 2
 ```
 
+CLI 不带 `--resume` 时总是新建 UploadId、从头上传；已有默认或显式检查点先备份为 `STATE.previous-随机值`，再原子写入新任务。备份保留旧任务信息，不会自动中止旧远端分片任务；可通过 multipart list/abort 管理。损坏的检查点也可以备份后重新上传，但文件权限、锁和普通文件安全检查仍保留。远端完整对象的防覆盖规则独立，覆盖仍须 `--overwrite --yes`。
+
 CLI `--resume` 未指定 `--part-size` 时读取旧检查点的大小；指定时必须与旧任务一致。Admin 优先使用持久化任务的 `partSize`，其次由远端已有非末尾分片推断。新默认值不能重新切割正在续传的旧任务。CLI 继续检查源文件摘要、上传身份、布局和远端已确认片；不确定的创建/合并结果仍禁止盲目恢复。
 
 CLI 标准输入 `pipe` 不知道完整大小，采用 8 MiB 默认分片、串行上传；可显式设置 `--part-size`，不能断点续传。Admin 小于 16 MiB 的新文件直接通过预签名 PUT 上传；失败保留文件供重新上传，没有分片续传。

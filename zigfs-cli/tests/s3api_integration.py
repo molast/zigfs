@@ -434,19 +434,24 @@ ZIGFS_SECRET_KEY={SK}
         cli(repeat_args, code=6)
         assert json.loads(repeat_state.read_text())['phase'] == 'completing'
         assert cli(['cat', repeat_remote], raw=True) == repeat_source.read_bytes()
-        for phase in ('creating', 'uploading', 'completing'):
-            protected_state = dict(repeated, phase=phase)
-            repeat_state.write_text(json.dumps(protected_state))
+        for phase in ('creating', 'uploading', 'completing', 'completed'):
+            cli(['--json', 'rm', repeat_remote, '--yes'])
+            repeat_state.write_text(json.dumps(dict(repeated, phase=phase)))
             before = repeat_state.read_bytes()
-            blocked = cli(repeat_args, code=6)
-            assert blocked['error']['code'] == 'CHECKPOINT_EXISTS'
-            assert 'local multipart checkpoint' in blocked['error']['message']
-            assert repeat_state.read_bytes() == before
-        # An explicit checkpoint remains user-owned even after completion.
+            old_backups = set(root.glob('repeat-upload.bin.zc-upload.json.previous-*'))
+            cli(repeat_args)
+            current = json.loads(repeat_state.read_text())
+            assert current['phase'] == 'completed' and current['upload_id'] != repeated['upload_id']
+            backups = set(root.glob('repeat-upload.bin.zc-upload.json.previous-*')) - old_backups
+            assert len(backups) == 1 and backups.pop().read_bytes() == before
+            assert cli(['cat', repeat_remote], raw=True) == repeat_source.read_bytes()
+        # Explicit checkpoint paths also start fresh without --resume.
         before = auto_state.read_bytes()
-        blocked = cli(['--json', 'put', str(body), f'real/{bucket}/auto', '--part-size', '5MiB',
-                       '--state-file', str(auto_state)], code=6)
-        assert blocked['error']['code'] == 'CHECKPOINT_EXISTS' and auto_state.read_bytes() == before
+        cli(['--json', 'rm', f'real/{bucket}/auto', '--yes'])
+        cli(['--json', 'put', str(body), f'real/{bucket}/auto', '--part-size', '5MiB',
+             '--state-file', str(auto_state)])
+        assert any(item.read_bytes() == before for item in root.glob('auto.json.previous-*'))
+        assert json.loads(auto_state.read_text())['phase'] == 'completed'
 
         zero_source = root / 'auto-zero-source'
         zero_source.write_bytes(b'')
