@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/molast/zigfs/blob/HEAD/docs/README.md
+    about: Configuration, deployment, API contracts, and operations guides.
+  - name: Known limitations
+    url: https://github.com/molast/zigfs/blob/HEAD/docs/known-limitations.md
+    about: Review current support boundaries and known limitations before filing an issue.
+  - name: S3 API coverage
+    url: https://github.com/molast/zigfs/blob/HEAD/docs/api/s3-api-coverage.md
+    about: Check supported S3 operations and compatibility boundaries.

@@ -1,0 +1,83 @@
+name: Performance issue
+description: >-
+  Report reduced throughput, increased latency, memory growth, or abnormal resource usage.
+title: '[Performance] '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Provide a reproducible workload and measured results.
+        Debug and diagnostic builds affect performance. Record the actual build mode; ReleaseSafe is recommended for normal baselines.
+        Keep hardware, configuration, and workload consistent when comparing versions. Remove credentials and private data before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: >-
+        Include ZigFS and related component versions, commits, or image tags / digests. For
+        regressions, note the last working version.
+    validations:
+      required: true
+  - type: dropdown
+    id: build-mode
+    attributes:
+      label: ZigFS build mode
+      description: Note any diagnostic allocator or sanitizer settings in the environment section.
+      options:
+        - ReleaseSafe
+        - ReleaseFast
+        - ReleaseSmall
+        - Debug
+        - Unsure (provide the image or binary source)
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Hardware and deployment environment
+      placeholder: |
+        Operating system, CPU model / architecture / core count, and memory:
+        Disk type (HDD / SSD / NVMe), filesystem, and free space:
+        Deployment method and container CPU / memory limits:
+        Client location, network bandwidth, TLS / reverse proxy:
+        Relevant configuration, build flags, and diagnostic settings (redacted):
+    validations:
+      required: true
+  - type: textarea
+    id: workload
+    attributes:
+      label: Workload and reproduction steps
+      description: >-
+        Include tools and versions plus complete test commands or scripts. See zigfs/bench/README.md
+        for the repository benchmark tools.
+      placeholder: |
+        Affected component and operations (PUT / GET / LIST / Multipart / Admin, etc.):
+        Tools, versions, commands, or scripts (redacted):
+        Object size distribution, object / version count, and total data size:
+        Concurrency, part size, and multipart concurrency:
+        Warm-up procedure, test duration, and number of repetitions:
+        Relevant bucket settings (versioning / encryption / lifecycle, etc.):
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Measured results and expected baseline
+      description: >-
+        Include relevant metrics and units. Distinguish measurements from expectations; note if no
+        baseline is available and omit unrelated metrics.
+      placeholder: |
+        Throughput (MiB/s) and request rate (req/s):
+        Latency p50 / p95 / p99 (ms):
+        Error rate, timeouts, or failed requests:
+        CPU, RSS, disk I/O, and network usage:
+        Expected values or comparison results and measurement conditions:
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Reports, monitoring, and additional context
+      description: >-
+        Attach redacted benchmark JSON, monitoring charts, or logs. For memory growth, include
+        uptime and measurements over time. Do not upload unreviewed memory dumps.

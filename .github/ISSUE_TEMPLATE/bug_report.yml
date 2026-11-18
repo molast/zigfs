@@ -1,0 +1,89 @@
+name: Bug report
+description: Report errors, crashes, or unexpected behavior in ZigFS, Admin, or the CLI.
+title: '[Bug] '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve ZigFS! Search existing issues and review the documented known limitations first.
+        For S3 client compatibility or performance problems, use the dedicated forms.
+        Remove access keys, secrets, tokens, cookies, presigned URL signatures, and private data from logs, screenshots, and configuration.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected components
+      multiple: true
+      options:
+        - ZigFS S3/Data API
+        - ZigFS Management API / Authentication and permissions
+        - Object storage / Metadata / Recovery / GC
+        - Admin Web
+        - Admin Server (BFF)
+        - ZigFS CLI (zc)
+        - Build / Docker / Deployment scripts
+        - Documentation
+        - Other / Unsure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: >-
+        Provide versions or commits for affected components. For Docker, include image tags and
+        digests if available.
+      placeholder: 'ZigFS: ...; Admin / zc (if relevant): ...'
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: >-
+        Include OS, CPU architecture, and deployment method. For source builds, specify toolchain
+        and build mode; for UI issues, include browser version.
+      placeholder: |
+        Operating system and architecture:
+        Deployment method (native / Docker / other):
+        Toolchain and build mode (if applicable):
+        Browser and version (if applicable):
+        Relevant configuration or proxy settings (redacted):
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Problem description and steps to reproduce
+      description: >-
+        Describe prerequisites and provide minimal commands, requests, or steps to reproduce.
+        Include how often the issue occurs.
+      placeholder: |
+        Problem description:
+        Prerequisites:
+        1.
+        2.
+        Frequency:
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: >-
+        Include full error messages, HTTP status codes, or visible symptoms. Describe any impact on
+        data integrity or service availability.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs, screenshots, and additional context
+      description: >-
+        Include redacted logs, timestamps with time zones, request IDs, or screenshots. For
+        regressions, note the last working version and any workaround.

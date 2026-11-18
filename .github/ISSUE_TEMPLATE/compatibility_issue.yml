@@ -1,0 +1,80 @@
+name: S3 compatibility issue
+description: Report incompatibilities between ZigFS and S3 clients, SDKs, or protocol behavior.
+title: '[Compatibility] '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Review docs/api/s3-api-coverage.md and docs/known-limitations.md first.
+        You do not need to run AWS S3 or use paid services to submit a report.
+        Remove access keys, secrets, Authorization headers, tokens, cookies, SSE-C keys, and presigned URL signatures.
+  - type: input
+    id: server-version
+    attributes:
+      label: ZigFS version or commit
+      description: For Docker deployments, include the image tag and digest if available.
+    validations:
+      required: true
+  - type: input
+    id: client-version
+    attributes:
+      label: Client / SDK and version
+      placeholder: 'AWS CLI, mc, rclone, boto3, AWS SDK for JavaScript, zc, or another client (include version)'
+    validations:
+      required: true
+  - type: input
+    id: operation
+    attributes:
+      label: Affected S3 operations
+      placeholder: 'For example, PutObject, ListObjectsV2, UploadPart, or presigned GET'
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and connection settings
+      description: >-
+        Preserve the endpoint URL structure but replace private hostnames. Do not include
+        credentials.
+      placeholder: |
+        Server deployment method, operating system, and architecture:
+        Client operating system and language / runtime version:
+        Endpoint structure, region, HTTP / HTTPS, and reverse proxy:
+        Addressing style (path-style / virtual-hosted-style / unsure):
+        Signing method and checksum / streaming / chunked settings (if applicable):
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: >-
+        Include redacted commands or code, bucket configuration, object sizes, and prerequisites.
+        Preserve relevant special characters in object keys.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected protocol behavior
+      description: >-
+        Describe the expected result. Link S3 documentation or existing comparisons with AWS S3 or
+        other implementations, including their versions.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual response and client errors
+      description: >-
+        Include the HTTP status, S3 error code, response body, relevant response headers, and
+        request ID if available.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Debug logs and compatibility reports
+      description: >-
+        Attach redacted client debug logs, server logs, or compatibility/run.sh reports. See
+        compatibility/README.md for instructions; running the full matrix is optional.

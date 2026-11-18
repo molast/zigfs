@@ -1,0 +1,65 @@
+name: Feature request
+description: >-
+  Suggest new capabilities, improvements to existing behavior, or developer experience enhancements.
+title: '[Feature] '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first to avoid duplicate requests.
+        Describe your needs through a concrete use case. A technical design is not required.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected areas
+      multiple: true
+      options:
+        - S3/Data API / Client compatibility
+        - Management API / Authentication and permissions
+        - Storage / Metadata / Data reliability
+        - Admin Web / BFF
+        - ZigFS CLI (zc)
+        - Deployment / Operations / Monitoring
+        - Documentation / Developer tools
+        - Other / Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Use case and current problem
+      description: >-
+        Who encounters this limitation, and in what situation? How do you handle it today, and what
+        is the impact?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed feature or behavior
+      description: >-
+        Describe the desired workflow, inputs, and results. Include command, API, or UI examples if
+        useful.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: >-
+        Describe configurations, existing features, or other approaches you have tried and why they
+        are insufficient.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: >-
+        What observable behavior would demonstrate that this need is met? Include any compatibility
+        or upgrade constraints.
+  - type: textarea
+    id: references
+    attributes:
+      label: Additional context
+      description: >-
+        Link related issues, S3 specifications, reference implementations, mockups, or
+        documentation. Do not include credentials or private data.
