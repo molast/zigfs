@@ -2,6 +2,8 @@
 
 Contributions are welcome: bug reports, documentation, tests, compatibility fixes, performance
 improvements, and code changes. Keep discussions respectful, constructive, and focused on the work.
+Follow the [Code of Conduct](CODE_OF_CONDUCT.md) in project spaces, and consult the
+[accessibility guidelines](ACCESSIBILITY.md) when contributing user-facing changes.
 
 ## Before you start
 
@@ -166,6 +168,15 @@ which checks were not run and why. Documentation-only changes generally need lin
 verification rather than a full application build.
 
 ## Commits and pull requests
+
+Choose the PR template that fits your change:
+[bug fix](PULL_REQUEST_TEMPLATE/bugfix.md), [feature](PULL_REQUEST_TEMPLATE/feature.md),
+[documentation](PULL_REQUEST_TEMPLATE/documentation.md), or
+[performance](PULL_REQUEST_TEMPLATE/performance.md).
+GitHub selects these named templates through the `template` query parameter on a PR creation URL,
+for example `&template=bugfix.md` when the URL already has a query string, or `?template=bugfix.md`
+otherwise. Alternatively, copy the relevant template into the PR description. These templates do
+not create an automatic template chooser or a default PR body.
 
 Use concise [Conventional Commit](https://www.conventionalcommits.org/) subjects, for example:
 
