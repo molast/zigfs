@@ -240,7 +240,7 @@ test('small and multipart files enter tasks; multipart creation failures stay re
   const completed = []
   let failed = []
   const context = {
-    ...exports, ...policy, Date, crypto: { randomUUID: () => 'single' }, bucket: 'test',
+    ...exports, ...policy, Date, randomId: () => 'single', bucket: 'test',
     joinObjectPath: (_prefix, name) => name,
     startLoading: () => () => {},
     setCompletedUploads: update => completed.push(...update([])),

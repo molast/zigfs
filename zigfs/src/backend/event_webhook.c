@@ -1,9 +1,19 @@
 #include <curl/curl.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK initialize(PINIT_ONCE ignored, PVOID parameter, PVOID *context) {
+    (void)ignored;
+    (void)parameter;
+    (void)context;
+    return curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK;
+}
+#else
 #include <pthread.h>
-
 static pthread_once_t once = PTHREAD_ONCE_INIT;
 static void initialize(void) { curl_global_init(CURL_GLOBAL_DEFAULT); }
+#endif
 struct response { char *data; size_t capacity, used; };
 static size_t receive(char *data, size_t size, size_t count, void *context) {
     if (size && count > (size_t)-1 / size) return 0;
@@ -17,7 +27,11 @@ int zigfs_event_webhook(const char *url, const char *body, size_t body_length,
     const char *authorization, const char *event_header, const char *ca,
     const char *certificate, const char *key, int insecure, long timeout,
     char *buffer, size_t capacity, size_t *length, long *status) {
+#ifdef _WIN32
+    if (!InitOnceExecuteOnce(&once, initialize, NULL, NULL)) return CURLE_FAILED_INIT;
+#else
     pthread_once(&once, initialize);
+#endif
     CURL *client = curl_easy_init();
     if (!client) return CURLE_OUT_OF_MEMORY;
     struct curl_slist *headers = NULL;

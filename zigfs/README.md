@@ -77,6 +77,22 @@ zig build run -- --env-file ../.env
 
 Zig 0.17.0 or newer is required.
 
+On Windows, install the libcurl development package with vcpkg and point the
+build at its installed triplet directory:
+
+```powershell
+vcpkg install 'curl[schannel]:x64-windows'
+$env:ZIGFS_CURL_ROOT = Join-Path $env:VCPKG_ROOT 'installed/x64-windows'
+$env:PATH = "$(Join-Path $env:ZIGFS_CURL_ROOT 'bin');$env:PATH"
+zig build -Dcurl-root=$env:ZIGFS_CURL_ROOT
+zig build test -Dcurl-root=$env:ZIGFS_CURL_ROOT
+```
+
+`start.ps1` uses `ZIGFS_CURL_ROOT`, or `VCPKG_ROOT/installed/x64-windows` if
+`ZIGFS_CURL_ROOT` is unset. Keep `bin/libcurl.dll` available on `PATH` when
+running the executable outside the script. The Windows system `curl.exe` does
+not provide the development library needed by the build.
+
 ZigFS loads built-in defaults first and then applies `.env`. Use
 `--env-file <path>` to select another file. Command-line address and data-root
 flags override process environment and `.env` values.

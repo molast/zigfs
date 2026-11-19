@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useState } from 'react'
 import { Plus, Pencil, Trash2, RefreshCw } from 'lucide-react'
 import type { ApiClient } from '@/api/client'
 import { t } from '@/locales'
+import { randomId } from '@/lib/randomId'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { OptionSelect } from '@/components/ui/OptionSelect'
@@ -51,6 +52,18 @@ export function AnonymousAccess({ api, bucketName }: { api: ApiClient; bucketNam
     } catch { toast(t('anonymousAccess.saveFailed'), 'error') }
     finally { setBusy(false) }
   }
+
+  function submitRule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (new TextEncoder().encode(prefix).length > 1024 || /[\u0000*?]/.test(prefix)) {
+      toast(t('anonymousAccess.invalidPrefix'), 'error')
+      return
+    }
+
+    const id = editing ?? randomId().replaceAll('-', '')
+    void save(id, { id: editing ?? '', prefix, access })
+  }
+
   return <div className="flex flex-col gap-6">
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div><h3>{t('buckets.anonymousAccess')}</h3><p className="text-sm text-muted-foreground">{t('bucketEvents.bucket', { name: bucketName })}</p></div>
@@ -67,7 +80,7 @@ export function AnonymousAccess({ api, bucketName }: { api: ApiClient; bucketNam
     </Table></div>
     <Dialog open={open} onOpenChange={value => { if (!busy) setOpen(value) }}><DialogContent layout="form" onInteractOutside={event => event.preventDefault()}>
       <DialogHeader><DialogTitle>{t(editing ? 'anonymousAccess.edit' : 'anonymousAccess.add')}</DialogTitle></DialogHeader>
-      <form onSubmit={event => { event.preventDefault(); if (new TextEncoder().encode(prefix).length > 1024 || /[\u0000*?]/.test(prefix)) { toast(t('anonymousAccess.invalidPrefix'), 'error'); return }; void save(editing ?? crypto.randomUUID().replaceAll('-', ''), { id: editing ?? '', prefix, access }) }}>
+      <form onSubmit={submitRule}>
         <FieldGroup data-density="compact"><Field><FieldLabel htmlFor="anonymous-prefix">{t('anonymousAccess.prefix')}</FieldLabel><Input id="anonymous-prefix" value={prefix} onChange={event => setPrefix(event.target.value)} disabled={busy} placeholder={t('anonymousAccess.prefixPlaceholder')} /><FieldDescription>{t('anonymousAccess.prefixHelp')}</FieldDescription></Field>
           <Field><FieldLabel htmlFor="anonymous-access">{t('anonymousAccess.access')}</FieldLabel><OptionSelect id="anonymous-access" value={access} onValueChange={value => setAccess(value as Access)} disabled={busy} options={['readonly', 'writeonly', 'readwrite'].map(value => ({ value, label: value }))} /></Field></FieldGroup>
         <div className="ui-dialog-footer"><Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => setOpen(false)}>{t('common.cancel')}</Button><Button type="submit" size="sm" disabled={busy}>{t('buckets.savePolicy')}</Button></div>

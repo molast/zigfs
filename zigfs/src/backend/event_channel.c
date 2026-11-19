@@ -1,18 +1,43 @@
 #define _POSIX_C_SOURCE 200809L
+#ifdef _WIN32
+#include <winsock2.h>
+#include <windows.h>
+#endif
 #include <curl/curl.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#define CHANNEL_POLL_IN POLLRDNORM
+#define CHANNEL_POLL_OUT POLLWRNORM
+static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK initialize(PINIT_ONCE ignored, PVOID parameter, PVOID *context) {
+    (void)ignored;
+    (void)parameter;
+    (void)context;
+    return curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK;
+}
+static long long now_ms(void) {
+    return (long long)GetTickCount64();
+}
+#else
 #include <poll.h>
 #include <pthread.h>
 #include <time.h>
-
-struct channel { CURL *curl; long long deadline; };
+#define CHANNEL_POLL_IN POLLIN
+#define CHANNEL_POLL_OUT POLLOUT
 static pthread_once_t once = PTHREAD_ONCE_INIT;
 static void initialize(void) { curl_global_init(CURL_GLOBAL_DEFAULT); }
 static long long now_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000; }
+#endif
+
+struct channel { CURL *curl; long long deadline; };
 int zigfs_event_channel_open(const char *url, const char *ca, const char *cert, const char *key,
     int policy, int trust_leaf, long timeout, void **out) {
     *out = NULL;
+#ifdef _WIN32
+    if (!InitOnceExecuteOnce(&once, initialize, NULL, NULL)) return CURLE_FAILED_INIT;
+#else
     pthread_once(&once, initialize);
+#endif
     struct channel *channel = calloc(1, sizeof(*channel));
     if (!channel) return CURLE_OUT_OF_MEMORY;
     channel->curl = curl_easy_init();
@@ -43,8 +68,13 @@ static int wait_ready(struct channel *c, short events) {
     curl_socket_t socket;
     CURLcode result = curl_easy_getinfo(c->curl, CURLINFO_ACTIVESOCKET, &socket);
     if (result) return result;
+#ifdef _WIN32
+    WSAPOLLFD fd = {socket, events, 0};
+    int rc = WSAPoll(&fd, 1, (int)remaining);
+#else
     struct pollfd fd = {(int)socket, events, 0};
     int rc = poll(&fd, 1, (int)remaining);
+#endif
     if (rc == 0) return CURLE_OPERATION_TIMEDOUT;
     if (rc < 0) return CURLE_RECV_ERROR;
     return CURLE_OK;
@@ -55,7 +85,8 @@ int zigfs_event_channel_read(void *ctx, char *buffer, size_t length, size_t *use
         if (now_ms() >= c->deadline) return CURLE_OPERATION_TIMEDOUT;
         CURLcode result = curl_easy_recv(c->curl, buffer, length, used);
         if (result != CURLE_AGAIN) return result ? result : (*used ? CURLE_OK : CURLE_GOT_NOTHING);
-        int rc = wait_ready(c, POLLIN); if (rc) return rc;
+        int rc = wait_ready(c, CHANNEL_POLL_IN);
+        if (rc) return rc;
     }
 }
 int zigfs_event_channel_write(void *ctx, const char *data, size_t length) {
@@ -65,7 +96,11 @@ int zigfs_event_channel_write(void *ctx, const char *data, size_t length) {
         if (now_ms() >= c->deadline) return CURLE_OPERATION_TIMEDOUT;
         size_t sent = 0;
         CURLcode result = curl_easy_send(c->curl, data + offset, length - offset, &sent);
-        if (result == CURLE_AGAIN) { int rc = wait_ready(c, POLLOUT); if (rc) return rc; continue; }
+        if (result == CURLE_AGAIN) {
+            int rc = wait_ready(c, CHANNEL_POLL_OUT);
+            if (rc) return rc;
+            continue;
+        }
         if (result) return result;
         if (!sent) return CURLE_SEND_ERROR;
         offset += sent;

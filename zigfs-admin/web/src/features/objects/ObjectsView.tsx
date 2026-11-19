@@ -1,5 +1,6 @@
 import { ObjectDetailsSheet } from './ObjectDetailsSheet'
 import { formatDate, formatDateTime } from '@/lib/dateTime'
+import { randomId } from '@/lib/randomId'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/Tabs'
 import { Progress } from '../../components/ui/progress'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '../../components/ui/sheet'
@@ -586,7 +587,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         const plan = chooseUploadPlan(file.size)
         const created = plan.multipart
           ? await api.createMultipartUpload(bucket, key, file.type || 'application/octet-stream')
-          : { upload_id: crypto.randomUUID(), initiated_at: new Date().toISOString() }
+          : { upload_id: randomId(), initiated_at: new Date().toISOString() }
         tasks.push({
           singleRequest: !plan.multipart,
           uploadId: created.upload_id,
@@ -988,7 +989,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   }
 
   async function trackDeletion(key: string, directory: boolean, operation: () => Promise<void>) {
-    const id = crypto.randomUUID()
+    const id = randomId()
     setDeleteTasks(current => [
       ...current,
       { id, key, directory, initiatedAt: new Date().toISOString(), status: 'processing' },
