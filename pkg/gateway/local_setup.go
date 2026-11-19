@@ -89,6 +89,7 @@ else
 fi
 sudo /usr/bin/dscacheutil -flushcache
 sudo /usr/bin/killall -HUP mDNSResponder
+echo 'Gateway domain target: %s (served by the local ZigFS DNS).'
 echo 'Completed. Restart your browser, then verify HTTPS in ZigFS settings.'
-`, base64.StdEncoding.EncodeToString([]byte(m.state.CA.Certificate)), resolverContents), nil
+`, base64.StdEncoding.EncodeToString([]byte(m.state.CA.Certificate)), resolverContents, deployment.Config.DNSAddress()), nil
 }

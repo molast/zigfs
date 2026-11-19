@@ -16,6 +16,7 @@ import (
 var ErrConflict = errors.New("gateway configuration changed; refresh and retry")
 
 type Config struct {
+	ResolutionIP    string `json:"resolution_ip,omitempty"`
 	ListenAddress   string `json:"listen_address"`
 	AdminDomain     string `json:"admin_domain"`
 	S3Domain        string `json:"s3_domain"`
@@ -23,7 +24,19 @@ type Config struct {
 	CertificateMode string `json:"certificate_mode"`
 }
 
+// DNSAddress preserves loopback resolution for configurations saved before this field existed.
+func (c Config) DNSAddress() string {
+	if c.ResolutionIP == "" {
+		return "127.0.0.1"
+	}
+	return c.ResolutionIP
+}
+
 func (c Config) Validate() error {
+	ip := net.ParseIP(c.DNSAddress())
+	if ip == nil || strings.Contains(c.DNSAddress(), ":") || ip.To4() == nil || ip.IsUnspecified() || ip.IsMulticast() || ip.Equal(net.IPv4bcast) {
+		return errors.New("resolution target must be a unicast IPv4 address")
+	}
 	if err := validateListenAddress(c.ListenAddress); err != nil {
 		return err
 	}

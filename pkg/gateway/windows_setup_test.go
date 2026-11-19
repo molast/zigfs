@@ -24,7 +24,7 @@ func windowsSetupFixture(t *testing.T) (*Manager, string) {
 		t.Fatal(err)
 	}
 	m.state.CA = ca
-	m.state.Candidate = &Deployment{Config: Config{AdminDomain: "admin.zigfs.home.arpa", S3Domain: "s3.zigfs.home.arpa", CertificateMode: "local"}}
+	m.state.Candidate = &Deployment{Config: Config{ListenAddress: ":443", ExternalPort: 443, AdminDomain: "admin.zigfs.home.arpa", S3Domain: "s3.zigfs.home.arpa", CertificateMode: "local"}}
 	script, err := m.WindowsSetup()
 	if err != nil {
 		t.Fatal(err)
@@ -202,5 +202,26 @@ func TestWindowsHelperInstallAndUninstall(t *testing.T) {
 	assertTrusted(false)
 	if string(read()) != conflict {
 		t.Fatal("overwrote preexisting conflicting entry")
+	}
+}
+
+func TestWindowsHelperUsesConfiguredResolutionTarget(t *testing.T) {
+	m, _ := windowsSetupFixture(t)
+	m.state.Candidate.Config.ResolutionIP = "192.168.1.20"
+	script, err := m.WindowsSetup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(script, "192.168.1.20 admin.zigfs.home.arpa") || strings.Contains(script, "__TARGET_IP__") {
+		t.Fatal("helper did not use configured IP")
+	}
+	block, _ := pem.Decode([]byte(m.state.CA.Certificate))
+	hosts := "# BEGIN ZigFS Local HTTPS\n# CA SHA-256: " + strings.ToUpper(fingerprint(block.Bytes)) + "\n192.168.1.20 admin.zigfs.home.arpa\n192.168.1.20 s3.zigfs.home.arpa\n# END ZigFS Local HTTPS"
+	if !windowsHostsConfigured([]byte(hosts), m.state.Candidate.Config, m.state.CA.Certificate) {
+		t.Fatal("configured target not detected")
+	}
+	m.state.Candidate.Config.ResolutionIP = "192.168.1.21"
+	if windowsHostsConfigured([]byte(hosts), m.state.Candidate.Config, m.state.CA.Certificate) {
+		t.Fatal("stale hosts target accepted")
 	}
 }

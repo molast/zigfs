@@ -2432,6 +2432,8 @@
     "windowsSetupHelp": "先使用 zigfs.home.arpa 下的域名准备 HTTPS，再在运行 Admin 的这台 Windows 电脑上执行下载的 PowerShell 助手。通过 UAC 授权后，助手会添加带标记的 hosts 记录并信任此 CA，不覆盖已有冲突记录。Windows 此处使用 hosts，无需 macOS 本地 DNS 服务。完成后重启浏览器并验证 HTTPS。",
     "downloadWindowsSetup": "下载 Windows 配置助手",
     "windowsInstallShell": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$env:USERPROFILE\\Downloads\\zigfs-local-setup.ps1\" -Action install",
-    "windowsUninstallShell": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$env:USERPROFILE\\Downloads\\zigfs-local-setup.ps1\" -Action uninstall"
+    "windowsUninstallShell": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$env:USERPROFILE\\Downloads\\zigfs-local-setup.ps1\" -Action uninstall",
+    "resolutionIP": "域名解析目标 IP",
+    "resolutionIPHelp": "填写 HTTPS 网关的 IPv4 地址。本机访问用 127.0.0.1，局域网访问可填网关所在机器的地址，例如 192.168.1.20。此项修改本地 DNS 回答及 Windows 助手的 hosts 记录，不修改 ZigFS 上游。保存并准备后验证，再启用。其他设备仍需配置解析和 CA 信任；内置 DNS 仅监听本机。"
   }
 }

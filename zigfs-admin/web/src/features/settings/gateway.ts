@@ -1,4 +1,5 @@
 export interface GatewayConfig {
+  resolution_ip?: string
   listen_address: string
   admin_domain: string
   s3_domain: string

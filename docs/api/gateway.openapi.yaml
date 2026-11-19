@@ -182,6 +182,7 @@ components:
       type: object
       required: [listen_address, admin_domain, s3_domain, external_port, certificate_mode]
       properties:
+        resolution_ip: { type: string, default: '127.0.0.1', description: Unicast IPv4 address returned by local DNS and written by the Windows hosts helper; not the upstream endpoint }
         listen_address: { type: string, example: ':8443' }
         admin_domain: { type: string, example: admin.zigfs.home.arpa }
         s3_domain: { type: string, example: s3.zigfs.home.arpa }

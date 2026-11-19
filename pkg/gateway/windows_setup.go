@@ -29,6 +29,9 @@ func (m *Manager) WindowsSetup() (string, error) {
 	if !localDomain(deployment.Config.AdminDomain) || !localDomain(deployment.Config.S3Domain) {
 		return "", errors.New("local setup requires both names beneath zigfs.home.arpa")
 	}
+	if err := deployment.Config.Validate(); err != nil {
+		return "", err
+	}
 	block, _ := pem.Decode([]byte(m.state.CA.Certificate))
 	if block == nil {
 		return "", errors.New("invalid local CA certificate")
@@ -40,6 +43,7 @@ func (m *Manager) WindowsSetup() (string, error) {
 	return strings.NewReplacer(
 		"__CA_DER__", base64.StdEncoding.EncodeToString(certificate.Raw),
 		"__ADMIN_DOMAIN__", deployment.Config.AdminDomain,
+		"__TARGET_IP__", deployment.Config.DNSAddress(),
 		"__S3_DOMAIN__", deployment.Config.S3Domain,
 	).Replace(windowsSetupTemplate), nil
 }
@@ -72,6 +76,6 @@ func windowsHostsConfigured(data []byte, config Config, ca string) bool {
 		return false
 	}
 	expected := begin + "\n# CA SHA-256: " + strings.ToUpper(fingerprint(block.Bytes)) +
-		"\n127.0.0.1 " + config.AdminDomain + "\n127.0.0.1 " + config.S3Domain + "\n" + end
+		"\n" + config.DNSAddress() + " " + config.AdminDomain + "\n" + config.DNSAddress() + " " + config.S3Domain + "\n" + end
 	return strings.Contains("\n"+text+"\n", "\n"+expected+"\n")
 }

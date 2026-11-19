@@ -115,3 +115,37 @@ func TestLocalDNSTransports(t *testing.T) {
 		t.Fatal("DNS did not stop")
 	}
 }
+
+func TestDNSResolutionTargetAndCandidatePrecedence(t *testing.T) {
+	m := New(t.TempDir(), func() string { return "http://127.0.0.1:9000" })
+	config := Config{ListenAddress: ":443", ExternalPort: 443, AdminDomain: "admin.zigfs.home.arpa", S3Domain: "s3.zigfs.home.arpa", CertificateMode: "local"}
+	m.state.Active = &Deployment{Config: config}
+	candidate := config
+	candidate.ResolutionIP = "192.168.1.20"
+	m.state.Candidate = &Deployment{Config: candidate}
+	for _, name := range []string{config.AdminDomain, config.S3Domain} {
+		var reply dnsmessage.Message
+		if err := reply.Unpack(m.dnsReply(dnsQuery(name+".", dnsmessage.TypeA))); err != nil {
+			t.Fatal(err)
+		}
+		if got := reply.Answers[0].Body.(*dnsmessage.AResource).A; got != [4]byte{192, 168, 1, 20} {
+			t.Fatalf("candidate target: %v", got)
+		}
+	}
+	m.state.Candidate = nil
+	var reply dnsmessage.Message
+	reply.Unpack(m.dnsReply(dnsQuery(config.AdminDomain+".", dnsmessage.TypeA)))
+	if reply.Answers[0].Body.(*dnsmessage.AResource).A != [4]byte{127, 0, 0, 1} {
+		t.Fatal("legacy fallback changed")
+	}
+	for _, invalid := range []string{"0.0.0.0", "255.255.255.255", "224.0.0.1", "::1", "example.com", "1.2.3.4';exit"} {
+		candidate.ResolutionIP = invalid
+		if candidate.Validate() == nil {
+			t.Fatalf("invalid target accepted: %s", invalid)
+		}
+	}
+	candidate.ResolutionIP = "192.168.1.20"
+	if err := candidate.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

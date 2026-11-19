@@ -116,10 +116,16 @@ func (m *Manager) dnsReply(packet []byte) []byte {
 	question := request.Questions[0]
 	name := strings.ToLower(strings.TrimSuffix(question.Name.String(), "."))
 	known := false
+	var answer [4]byte
 	m.mu.Lock()
-	for _, deployment := range []*Deployment{m.state.Active, m.state.Candidate} {
+	for _, deployment := range []*Deployment{m.state.Candidate, m.state.Active} {
 		if deployment != nil && localDomain(name) && (name == deployment.Config.AdminDomain || name == deployment.Config.S3Domain) {
-			known = true
+			target := net.ParseIP(deployment.Config.DNSAddress()).To4()
+			if target != nil {
+				copy(answer[:], target)
+				known = true
+			}
+			break
 		}
 	}
 	m.mu.Unlock()
@@ -127,7 +133,7 @@ func (m *Manager) dnsReply(packet []byte) []byte {
 	if !known || question.Class != dnsmessage.ClassINET {
 		response.RCode = dnsmessage.RCodeNameError
 	} else if question.Type == dnsmessage.TypeA {
-		response.Answers = []dnsmessage.Resource{{Header: dnsmessage.ResourceHeader{Name: question.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 5}, Body: &dnsmessage.AResource{A: [4]byte{127, 0, 0, 1}}}}
+		response.Answers = []dnsmessage.Resource{{Header: dnsmessage.ResourceHeader{Name: question.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 5}, Body: &dnsmessage.AResource{A: answer}}}
 	}
 	// AAAA returns NODATA: the HTTPS listener may be IPv4-only.
 	result, err := response.Pack()

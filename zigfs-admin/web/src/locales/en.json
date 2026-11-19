@@ -2432,6 +2432,8 @@
     "windowsSetupHelp": "Prepare HTTPS with names beneath zigfs.home.arpa, then run the downloaded PowerShell helper on the Windows PC hosting Admin. Approve UAC to add managed hosts entries and trust this CA. Existing conflicting entries are not overwritten. Windows uses hosts here, not the macOS local DNS service. Restart the browser and verify HTTPS afterward.",
     "downloadWindowsSetup": "Download Windows setup helper",
     "windowsInstallShell": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$env:USERPROFILE\\Downloads\\zigfs-local-setup.ps1\" -Action install",
-    "windowsUninstallShell": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$env:USERPROFILE\\Downloads\\zigfs-local-setup.ps1\" -Action uninstall"
+    "windowsUninstallShell": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$env:USERPROFILE\\Downloads\\zigfs-local-setup.ps1\" -Action uninstall",
+    "resolutionIP": "Domain resolution target IP",
+    "resolutionIPHelp": "IPv4 address of the HTTPS gateway. Use 127.0.0.1 for this computer or its LAN address (for example 192.168.1.20). This changes local DNS answers and Windows helper hosts entries, not the ZigFS upstream. Save and prepare, then verify before enabling. Other devices still need DNS configuration and CA trust; the built-in DNS listens on this computer only."
   }
 }

@@ -14,6 +14,7 @@ import { useConfirm } from '@/components/ConfirmProvider'
 import { verifyGatewayFromBrowser, type GatewayConfig, type GatewayStatus } from './gateway'
 
 const defaults: GatewayConfig = {
+  resolution_ip: '127.0.0.1',
   listen_address: ':8443',
   admin_domain: 'admin.zigfs.home.arpa',
   s3_domain: 's3.zigfs.home.arpa',
@@ -38,7 +39,7 @@ export function NetworkGateway({ api, onSaved }: { api: ApiClient; onSaved: () =
     api.gatewayStatus().then(value => {
       if (disposed) return
       setStatus(value)
-      setDraft(value.candidate?.config ?? value.active?.config ?? defaults)
+      setDraft({ ...defaults, ...(value.candidate?.config ?? value.active?.config) })
     }).catch(reason => {
       if (!disposed) errorToast((reason as Error).message)
     })
@@ -64,6 +65,7 @@ export function NetworkGateway({ api, onSaved }: { api: ApiClient; onSaved: () =
     await perform(async () => {
       const next = await api.prepareGateway(status.revision, draft, certificate, privateKey)
       setStatus(next)
+      setDraft({ ...defaults, ...next.candidate?.config })
       setVerified('')
       setCertificate('')
       setPrivateKey('')
@@ -107,7 +109,7 @@ export function NetworkGateway({ api, onSaved }: { api: ApiClient; onSaved: () =
   const windowsSetup = status?.local_dns?.platform === 'windows'
   const displayed = status?.candidate ?? status?.active
   const draftChanged = displayed != null
-    && (JSON.stringify(draft) !== JSON.stringify(displayed.config)
+    && (JSON.stringify({ ...defaults, ...draft }) !== JSON.stringify({ ...defaults, ...displayed.config })
       || certificate.length > 0 || privateKey.length > 0)
   const expiresSoon = displayed != null
     && Date.parse(displayed.expires_at) - Date.now() < 30 * 24 * 60 * 60 * 1000
@@ -158,6 +160,17 @@ export function NetworkGateway({ api, onSaved }: { api: ApiClient; onSaved: () =
             <FieldLabel htmlFor="gateway-s3">{t('gateway.s3Domain')}</FieldLabel>
             <Input id="gateway-s3" value={draft.s3_domain} disabled={busy || !status || status.pending}
               onChange={event => setDraft({ ...draft, s3_domain: event.target.value })} />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="gateway-resolution-ip">{t('gateway.resolutionIP')}</FieldLabel>
+            <Input
+              id="gateway-resolution-ip"
+              value={draft.resolution_ip ?? '127.0.0.1'}
+              placeholder="192.168.1.20"
+              disabled={busy || !status || status.pending}
+              onChange={event => setDraft({ ...draft, resolution_ip: event.target.value })}
+            />
+            <FieldDescription>{t('gateway.resolutionIPHelp')}</FieldDescription>
           </Field>
           <Field>
             <FieldLabel htmlFor="gateway-port">{t('gateway.externalPort')}</FieldLabel>
@@ -276,8 +289,12 @@ export function NetworkGateway({ api, onSaved }: { api: ApiClient; onSaved: () =
           </div>}
           {status?.active && !status.pending && <Field>
             <FieldLabel htmlFor="gateway-fallback">{t('gateway.fallback')}</FieldLabel>
-            <Input id="gateway-fallback" value={fallback} disabled={busy}
-              onChange={event => setFallback(event.target.value)} placeholder="http://192.168.1.11:9000" />
+            <Input
+              id="gateway-fallback"
+              value={fallback}
+              disabled={busy}
+              onChange={event => setFallback(event.target.value)}
+            />
             <FieldDescription>{t('gateway.fallbackHelp')}</FieldDescription>
             <Button variant="outline" disabled={busy || !fallback.trim()} onClick={() => void apply(true)}>
               {t('gateway.disable')}
