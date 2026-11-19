@@ -56,7 +56,7 @@ FROM debian:bookworm-slim AS runtime
 
 LABEL org.opencontainers.image.title="ZigFS Admin" \
       org.opencontainers.image.version="0.1.0" \
-      org.opencontainers.image.licenses="Apache-2.0"
+      org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gosu \

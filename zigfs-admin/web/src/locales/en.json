@@ -1440,7 +1440,7 @@
     "memoryUsage": "Memory usage",
     "cpuUsage": "CPU usage",
     "license": "License",
-    "zigfsIsReleasedUnderTheApacheLicense20": "ZigFS is released under the Apache License 2.0.",
+    "zigfsIsReleasedUnderTheMitLicense": "ZigFS is released under the MIT License.",
     "seeTheLicenseFileInTheProjectRepositoryFor": "See the LICENSE file in the project repository for full terms.",
     "relatedLinks": "Related links",
     "projectRepository": "Project repository",

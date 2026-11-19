@@ -75,7 +75,7 @@ export function SettingsPanels({ api, onSaved, category, settings, system, stora
   </div>
 
   if (category === 'about') return <div className="settings-detail-stack">
-    <div className="settings-about-brand"><img src="/zigfs-logo.svg" alt="ZigFS" /><div><h3>ZigFS</h3><p>{t('settings.lightweightS3CompatibleObjectStorage')}</p><div><Badge>{system?.version ?? t('settings.versionUnavailable')}</Badge><Badge>{t('settings.s3Compatible')}</Badge><Badge>Apache 2.0</Badge></div></div></div>
+    <div className="settings-about-brand"><img src="/zigfs-logo.svg" alt="ZigFS" /><div><h3>ZigFS</h3><p>{t('settings.lightweightS3CompatibleObjectStorage')}</p><div><Badge>{system?.version ?? t('settings.versionUnavailable')}</Badge><Badge>{t('settings.s3Compatible')}</Badge><Badge>MIT</Badge></div></div></div>
     <SettingsModuleTabs
       label={t('settings.aboutZigfs')}
       modules={[
@@ -97,7 +97,7 @@ export function SettingsPanels({ api, onSaved, category, settings, system, stora
           value: 'license',
           label: t('settings.license'),
           content: (
-      <Section icon={Scale} title={t('settings.license')}><p>{t('settings.zigfsIsReleasedUnderTheApacheLicense20')}</p><p>{t('settings.seeTheLicenseFileInTheProjectRepositoryFor')}</p><Badge>Apache License 2.0</Badge></Section>
+      <Section icon={Scale} title={t('settings.license')}><p>{t('settings.zigfsIsReleasedUnderTheMitLicense')}</p><p>{t('settings.seeTheLicenseFileInTheProjectRepositoryFor')}</p><Badge>MIT License</Badge></Section>
           ),
         },
         {

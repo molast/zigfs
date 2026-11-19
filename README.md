@@ -338,7 +338,7 @@ node zigfs/bench/run.mjs
 ├── docker-compose.dev.yml  # 开发 Compose
 ├── start.sh                # 本地服务交互式菜单
 ├── docker.sh               # Docker 构建、Compose 与镜像推送菜单
-└── LICENSE                 # Apache License 2.0
+└── LICENSE                 # MIT License
 ```
 
 ## 📚 进一步阅读
@@ -358,4 +358,4 @@ node zigfs/bench/run.mjs
 
 ## 📄 开源协议
 
-本项目基于 [Apache License 2.0](LICENSE) 开源。
+本项目基于 [MIT License](LICENSE) 开源。

@@ -69,7 +69,7 @@ FROM alpine:latest AS runtime
 
 LABEL org.opencontainers.image.title="ZigFS" \
       org.opencontainers.image.version="0.1.0" \
-      org.opencontainers.image.licenses="Apache-2.0"
+      org.opencontainers.image.licenses="MIT"
 
 RUN apk add --no-cache libcurl ca-certificates su-exec
 

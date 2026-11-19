@@ -36,7 +36,7 @@
 - [x] 日志、兼容性报告、Benchmark 和构建产物不含 AK/SK、Session Token 或密码。
 - [x] 发布包不含 SQLite、数据库文件、`.zigfs` 测试目录或真实用户对象。
 - [x] Admin 仍只是 Web/BFF，ZigFS 是 S3、Management、Metadata 和 Credential 唯一事实来源。
-- [x] Apache License 2.0 的 `LICENSE` 文件随发布包提供。
+- [x] MIT License 的 `LICENSE` 文件随发布包提供。
 
 ## 记录
 

@@ -59,7 +59,7 @@ test('English and Chinese catalogs have matching keys and placeholders', () => {
 
 test('Source references exist; user-facing JSX and Chinese copy stay in catalogs', () => {
   const catalog = flatten(readCatalog('en'))
-  const protocolText = new Set(['ZigFS', 'ZigFS v0.1.0', 'ZigFS Admin v0.1.0', 'GOVERNANCE', 'COMPLIANCE', 'ETag', 'Apache 2.0', 'Apache License 2.0'])
+  const protocolText = new Set(['ZigFS', 'ZigFS v0.1.0', 'ZigFS Admin v0.1.0', 'GOVERNANCE', 'COMPLIANCE', 'ETag', 'MIT', 'MIT License'])
   for (const file of sourceFiles()) {
     const source = fs.readFileSync(file, 'utf8')
     const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)

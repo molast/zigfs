@@ -1440,7 +1440,7 @@
     "memoryUsage": "内存使用",
     "cpuUsage": "CPU 使用",
     "license": "许可证",
-    "zigfsIsReleasedUnderTheApacheLicense20": "ZigFS 基于 Apache License 2.0 发布。",
+    "zigfsIsReleasedUnderTheMitLicense": "ZigFS 基于 MIT License 发布。",
     "seeTheLicenseFileInTheProjectRepositoryFor": "完整条款见项目仓库中的 LICENSE 文件。",
     "relatedLinks": "相关链接",
     "projectRepository": "项目仓库",
