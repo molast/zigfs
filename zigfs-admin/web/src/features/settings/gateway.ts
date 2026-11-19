@@ -1,3 +1,5 @@
+import { checkEndpointFromBrowser } from './networkProbe'
+
 export interface GatewayConfig {
   resolution_ip?: string
   listen_address: string
@@ -39,14 +41,6 @@ export interface GatewayStatus {
 // not just connectivity from the server running the gateway.
 export async function verifyGatewayFromBrowser(deployment: GatewayDeployment) {
   for (const origin of [deployment.admin_url, deployment.s3_url]) {
-    const response = await fetch(`${origin}/_gateway/probe`, {
-      credentials: 'omit',
-      redirect: 'error',
-      cache: 'no-store',
-      signal: AbortSignal.timeout(15_000),
-    })
-    if (!response.ok || await response.text() !== deployment.id) {
-      throw new Error('Gateway probe did not match the prepared configuration')
-    }
+    await checkEndpointFromBrowser(origin, new AbortController().signal, deployment.id)
   }
 }

@@ -1068,6 +1068,13 @@
     "revoke": "Revoke"
   },
   "settings": {
+    "endpointCheck": "Check",
+    "endpointChecking": "Checking…",
+    "checkEndpoint": "Check endpoint {endpoint}",
+    "endpointReachable": "Reachable from this browser",
+    "endpointUnreachable": "Unreachable from this browser",
+    "endpointCheckFailed": "This browser could not connect. Check the address, network, DNS, and certificate trust. Browsers may also block HTTP addresses from an HTTPS page.",
+    "endpointCheckHelp": "Checks connectivity from this browser only.",
     "regionSaveHelp": "Save, then restart ZigFS to apply the Region consistently to S3 signatures and bucket location responses. Update client Region settings and obtain new signed URLs after restart.",
     "regionFormatHelp": "1–63 lowercase letters, digits or hyphens. A hyphen cannot be the first or last character. Custom Region names are supported.",
     "currentRegion": "Current Region",
@@ -1361,8 +1368,8 @@
     "theApiDoesNotReportTheAdminProcessListen": "The API does not report the Admin process listen configuration.",
     "publicAccess": "Public access",
     "publicDomainNameOrUrl": "Public domain name or URL.",
-    "publicUrl": "Public URL",
-    "publicS3EndpointForAReverseProxyOrDomain": "Public S3 endpoint for a reverse proxy or domain name.",
+    "publicUrl": "S3 endpoint",
+    "publicS3EndpointForAReverseProxyOrDomain": "For S3 clients and presigned links, not the Admin console.",
     "virtualHostedAddressing": "Virtual-hosted addressing",
     "trustedProxies": "Trusted proxies",
     "proxyServersAndAccessBoundaries": "Proxy servers and access boundaries.",
@@ -2364,7 +2371,7 @@
     "infoObjects": "Object count reported by this ZigFS instance, indicating object population rather than total bytes."
   },
   "gateway": {
-    "title": "HTTPS gateway",
+    "title": "LAN gateway",
     "description": "Serve Admin and S3 over HTTPS without a separate reverse proxy.",
     "pending": "Application pending",
     "enabled": "Enabled",
@@ -2382,7 +2389,7 @@
     "certificatePEM": "Certificate chain (PEM)",
     "privateKeyPEM": "Private key (PEM)",
     "keyHelp": "Use a certificate covering both domains and its matching unencrypted key. The key is stored privately and cannot be downloaded.",
-    "prepare": "Save and prepare HTTPS",
+    "prepare": "Save and prepare LAN gateway",
     "prepared": "HTTPS candidate prepared. Configure DNS and trust before applying.",
     "trustHelp": "Download the CA certificate and verify its fingerprint through a trusted channel. macOS: import into the System keychain and trust for SSL. Windows: import into Trusted Root Certification Authorities. Mobile devices and CLI tools may need separate CA configuration. Never disable TLS verification.",
     "fingerprint": "CA SHA-256: {value}",

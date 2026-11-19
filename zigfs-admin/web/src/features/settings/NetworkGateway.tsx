@@ -11,6 +11,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Badge } from '@/components/ui/Badge'
 import { useErrorToast, useToast } from '@/components/ToastProvider'
 import { useConfirm } from '@/components/ConfirmProvider'
+import { EndpointCheck } from './EndpointCheck'
 import { verifyGatewayFromBrowser, type GatewayConfig, type GatewayStatus } from './gateway'
 
 const defaults: GatewayConfig = {
@@ -249,8 +250,18 @@ export function NetworkGateway({ api, onSaved }: { api: ApiClient; onSaved: () =
           {displayed && <>
             <FieldDescription>{t('gateway.previewHelp')}</FieldDescription>
             <div className="flex flex-col gap-2">
-              <a href={displayed.admin_url} target="_blank" rel="noreferrer">{displayed.admin_url}</a>
-              <span>{displayed.s3_url}</span>
+              {[displayed.admin_url, displayed.s3_url].map(endpoint => (
+                <div key={endpoint} className="flex flex-wrap items-center gap-2">
+                  <a href={endpoint} target="_blank" rel="noreferrer" className="break-all">
+                    {endpoint}
+                  </a>
+                  <EndpointCheck
+                    endpoint={endpoint}
+                    deploymentId={displayed.id}
+                    disabled={busy}
+                  />
+                </div>
+              ))}
               <FieldDescription>{t('gateway.expires', { value: formatDateTime(displayed.expires_at) })}</FieldDescription>
               {displayed.dns_names && (
                 <FieldDescription>

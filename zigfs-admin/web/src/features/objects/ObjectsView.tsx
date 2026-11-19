@@ -132,7 +132,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null)
   const cancelledUploadIds = useRef(new Set<string>())
   const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([])
-  const [taskTab, setTaskTab] = useState<string | null>(null)
+  const [taskTab, setTaskTab] = useState('processing')
   const [cancelledUploads, setCancelledUploads] = useState<{ uploadId: string; key: string; fileSize: number; initiatedAt: string }[]>([])
   const [deleteTasks, setDeleteTasks] = useState<{ id: string; key: string; directory: boolean; initiatedAt: string; status: 'processing' | 'completed' | 'failed'; error?: string }[]>([])
   const [completedUploads, setCompletedUploads] = useState<CompletedUpload[]>([])
@@ -566,7 +566,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     }
     setStartingUploads(true)
     setUploadDialogOpen(false)
-    setTaskTab(null)
     setUploadsPanelOpen(true)
     try {
       await beginUploads([...pendingFiles], directory)
@@ -839,12 +838,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   }
 
   async function abortUpload(task: UploadTask) {
-    if (!await confirm({
-      title: t('objects.cancelMultipartUpload'),
-      message: t('objects.cancelUploadValueAndDeleteItsUploadedParts', { '0': task.key }),
-      confirmLabel: t('objects.cancelUpload'),
-      danger: true,
-    })) return
     const control = uploadControl.current
     if (control?.uploadId === task.uploadId && control.completing) {
       showToast(t('objects.completingValue', { '0': displayFileName(task.key) }))
@@ -862,7 +855,15 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       }
       cancelledUploadIds.current.add(task.uploadId)
       setUploadTasks((current) => current.filter((item) => item.uploadId !== task.uploadId))
-      setCancelledUploads(current => [...current.filter(item => item.uploadId !== task.uploadId), { uploadId: task.uploadId, key: task.key, fileSize: task.fileSize, initiatedAt: task.initiatedAt }])
+      setCancelledUploads(current => [
+        ...current.filter(item => item.uploadId !== task.uploadId),
+        {
+          uploadId: task.uploadId,
+          key: task.key,
+          fileSize: task.fileSize,
+          initiatedAt: task.initiatedAt,
+        },
+      ])
       showToast(t('objects.cancelledValue', { '0': displayFileName(task.key) }))
     } catch (reason) {
       const message = (reason as Error).message
@@ -992,7 +993,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       ...current,
       { id, key, directory, initiatedAt: new Date().toISOString(), status: 'processing' },
     ])
-    setTaskTab(null)
     setUploadsPanelOpen(true)
     try {
       await operation()
@@ -1480,7 +1480,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     failed: uploadTasks.filter(task => task.status === 'failed').length + deleteTasks.filter(task => task.status === 'failed').length,
     cancelled: cancelledUploads.length,
   }
-  const activeTaskTab = taskTab ?? (taskCounts.processing ? 'processing' : taskCounts.failed ? 'failed' : taskCounts.pending ? 'pending' : taskCounts.completed ? 'completed' : 'cancelled')
   const totalUploadCount = uploadTasks.length + completedUploads.length + deleteTasks.length
   const overallUploadProgress = totalUploadCount === 0 ? 0 : 100 * (
     taskCounts.completed + uploadTasks.reduce((sum, task) => {
@@ -1490,12 +1489,20 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       return sum + (task.fileSize > 0 ? Math.min(0.99, Math.max(0, loaded / task.fileSize)) : 0)
     }, 0)
   ) / totalUploadCount
-  const filteredTasks = uploadTasks.filter(task => activeTaskTab === 'processing' ? task.status === 'uploading' || task.status === 'completing' : activeTaskTab === 'pending' ? task.status === 'paused' : activeTaskTab === 'failed' && task.status === 'failed')
+  const filteredTasks = uploadTasks.filter(task => {
+    if (taskTab === 'processing') {
+      return task.status === 'uploading' || task.status === 'completing'
+    }
+    if (taskTab === 'pending') {
+      return task.status === 'paused'
+    }
+    return taskTab === 'failed' && task.status === 'failed'
+  })
   const visibleTasks = [
     ...filteredTasks.map(task => ({ kind: 'upload' as const, task })),
-    ...deleteTasks.filter(task => task.status === activeTaskTab).map(task => ({ kind: 'delete' as const, task })),
-    ...(activeTaskTab === 'completed' ? completedUploads.map(task => ({ kind: 'completed' as const, task })) : []),
-    ...(activeTaskTab === 'cancelled' ? cancelledUploads.map(task => ({ kind: 'cancelled' as const, task })) : []),
+    ...deleteTasks.filter(task => task.status === taskTab).map(task => ({ kind: 'delete' as const, task })),
+    ...(taskTab === 'completed' ? completedUploads.map(task => ({ kind: 'completed' as const, task })) : []),
+    ...(taskTab === 'cancelled' ? cancelledUploads.map(task => ({ kind: 'cancelled' as const, task })) : []),
   ].sort((left, right) => Date.parse(left.task.initiatedAt) - Date.parse(right.task.initiatedAt))
   function toggleSort(field: 'key' | 'size' | 'last_modified') { setSortDirection(sortField === field ? -sortDirection : 1); setSortField(field) }
 
@@ -1555,7 +1562,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
           </div>}
           <input ref={fileInput} className="hidden-file-input" type="file" multiple onChange={selectFile} disabled={uploading} />
           <input ref={folderInput} className="hidden-file-input" type="file" multiple {...{ webkitdirectory: '' }} onChange={selectFile} disabled={uploading} />
-          {(uploadTasks.length > 0 || completedUploads.length > 0 || cancelledUploads.length > 0 || deleteTasks.length > 0 || startingUploads) && <Button variant="outline" size="sm" onClick={() => { setTaskTab(null); setUploadsPanelOpen(true) }} aria-haspopup="dialog" aria-expanded={uploadsPanelOpen}>
+          {(uploadTasks.length > 0 || completedUploads.length > 0 || cancelledUploads.length > 0 || deleteTasks.length > 0 || startingUploads) && <Button variant="outline" size="sm" onClick={() => setUploadsPanelOpen(true)} aria-haspopup="dialog" aria-expanded={uploadsPanelOpen}>
             {uploadTasks.length === 0 && taskCounts.processing === 0 && taskCounts.failed === 0 && taskCounts.completed > 0 ? <CheckCircle2 /> : <List />}
             {uploadTasks.length === 0 && taskCounts.processing === 0 && taskCounts.failed === 0 && taskCounts.completed > 0 ? t('objects.taskCompleted') : t('objects.taskManagement')}
           </Button>}
@@ -1661,7 +1668,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
             <div className="upload-tasks-summary-header"><span>{taskCounts.completed} / {totalUploadCount}</span><Button variant="ghost" size="sm" disabled={!completedUploads.length && !cancelledUploads.length && !deleteTasks.some(task => task.status !== 'processing')} onClick={() => { setCompletedUploads([]); setCancelledUploads([]); setDeleteTasks(current => current.filter(task => task.status === 'processing')) }}>{t('objects.clearTaskRecords')}</Button></div>
             <Progress className="h-1" value={overallUploadProgress} aria-label={t('objects.overallUploadProgress')} />
           </div>
-          <Tabs className="upload-task-tabs" value={activeTaskTab} onValueChange={setTaskTab}>
+          <Tabs className="upload-task-tabs" value={taskTab} onValueChange={setTaskTab}>
             <TabsList aria-label={t('objects.taskManagement')}>
               <TabsTrigger value="pending">{t('objects.tasksPending')} ({taskCounts.pending})</TabsTrigger>
               <TabsTrigger value="processing">{t('objects.tasksProcessing')} ({taskCounts.processing})</TabsTrigger>
@@ -1669,10 +1676,10 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
               <TabsTrigger value="failed">{t('objects.failed')} ({taskCounts.failed})</TabsTrigger>
               <TabsTrigger value="cancelled">{t('objects.tasksCancelled')} ({taskCounts.cancelled})</TabsTrigger>
             </TabsList>
-            <TabsContent value={activeTaskTab} className="upload-task-tab-content">
+            <TabsContent value={taskTab} className="upload-task-tab-content">
           <div className="uploads-drawer-body" aria-live="polite">
             {uploadsLoading && <p className="uploads-drawer-status">{t('objects.syncingMultipartUploads')}</p>}
-            {!uploadsLoading && taskCounts[activeTaskTab as keyof typeof taskCounts] === 0 && <p className="uploads-drawer-status">{t('objects.noActiveUploads')}</p>}
+            {!uploadsLoading && taskCounts[taskTab as keyof typeof taskCounts] === 0 && <p className="uploads-drawer-status">{t('objects.noActiveUploads')}</p>}
             {visibleTasks.map(record => {
               if (record.kind === 'upload') {
               const task = record.task

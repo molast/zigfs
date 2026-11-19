@@ -1068,6 +1068,13 @@
     "revoke": "撤销"
   },
   "settings": {
+    "endpointCheck": "检测",
+    "endpointChecking": "检测中…",
+    "checkEndpoint": "检测地址 {endpoint}",
+    "endpointReachable": "当前浏览器可连接",
+    "endpointUnreachable": "当前浏览器无法连接",
+    "endpointCheckFailed": "无法从当前浏览器连接此地址。请检查地址、网络、DNS 和证书信任；HTTPS 页面访问 HTTP 地址也可能被浏览器拦截。",
+    "endpointCheckHelp": "检测仅确认当前浏览器能否连接。",
     "regionSaveHelp": "保存后重启 ZigFS，统一应用于 S3 签名和 Bucket 位置响应。重启后请同步客户端 Region 配置，并重新获取预签名链接。",
     "regionFormatHelp": "1–63 个小写字母、数字或连字符，不能以连字符开头或结尾，支持自定义 Region 名称。",
     "currentRegion": "当前生效 Region",
@@ -1361,8 +1368,8 @@
     "theApiDoesNotReportTheAdminProcessListen": "当前接口未提供 Admin 进程的监听配置",
     "publicAccess": "公网访问",
     "publicDomainNameOrUrl": "对外访问的域名或地址",
-    "publicUrl": "外部地址",
-    "publicS3EndpointForAReverseProxyOrDomain": "反向代理或域名对应的 S3 公开服务入口",
+    "publicUrl": "S3 访问地址",
+    "publicS3EndpointForAReverseProxyOrDomain": "用于 S3 客户端和预签名链接，不是管理后台地址。",
     "virtualHostedAddressing": "虚拟主机寻址",
     "trustedProxies": "可信代理",
     "proxyServersAndAccessBoundaries": "代理服务器与访问边界",
@@ -2364,7 +2371,7 @@
     "infoObjects": "当前 ZigFS 实例上报的对象数量，用于观察对象规模，不代表对象总字节数。"
   },
   "gateway": {
-    "title": "HTTPS 网关",
+    "title": "局域网网关",
     "description": "通过内置网关为后台和 S3 提供 HTTPS，无需单独部署反向代理。",
     "pending": "配置应用待完成",
     "enabled": "已启用",
@@ -2382,7 +2389,7 @@
     "certificatePEM": "证书链（PEM）",
     "privateKeyPEM": "私钥（PEM）",
     "keyHelp": "证书须覆盖两个域名，并提供匹配的未加密私钥。私钥仅在服务端私密保存，不提供下载。",
-    "prepare": "保存并准备 HTTPS",
+    "prepare": "保存并准备局域网网关",
     "prepared": "HTTPS 候选入口已准备，请完成 DNS 和证书信任后应用。",
     "trustHelp": "下载 CA 证书，并通过可信渠道核对指纹。macOS：导入系统钥匙串并设为 SSL 信任。Windows：导入“受信任的根证书颁发机构”。手机及 CLI 工具可能需要单独配置信任。不要关闭 TLS 校验。",
     "fingerprint": "CA SHA-256：{value}",
