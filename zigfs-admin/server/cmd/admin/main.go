@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/molast/zigfs/pkg/gateway"
 	"zigfs-admin/server/internal/config"
 	"zigfs-admin/server/internal/handler"
 	"zigfs-admin/server/internal/router"
@@ -37,9 +38,22 @@ func main() {
 	systemHandler := handler.NewSystem(systemService)
 	managementHandler := handler.NewManagement(managementService)
 
+	edge := gateway.New(cfg.GatewayDirectory, client.Endpoint)
+	managementHandler.Gateway = edge
+	managementHandler.GatewayAudit = client.ReportGatewayEvent
+	routes := router.New(authHandler, systemHandler, managementHandler, cfg.WebRoot)
+	edge.Start(routes)
+	if status := edge.Status(); status.Error != "" {
+		slog.Error("HTTPS gateway unavailable; HTTP recovery remains available", "error", status.Error)
+	}
+	maintenanceContext, stopMaintenance := context.WithCancel(context.Background())
+	defer stopMaintenance()
+	go edge.Maintain(maintenanceContext)
+	go edge.RunLocalDNS(maintenanceContext)
+
 	server := &http.Server{
 		Addr:              cfg.ListenAddress,
-		Handler:           router.New(authHandler, systemHandler, managementHandler, cfg.WebRoot),
+		Handler:           routes,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      cfg.UpstreamTimeout + 30*time.Second,
@@ -68,6 +82,8 @@ func main() {
 
 	shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	stopMaintenance()
+	edge.Shutdown(shutdownContext)
 	if err = server.Shutdown(shutdownContext); err != nil {
 		slog.Error("graceful shutdown", "error", err)
 		os.Exit(1)

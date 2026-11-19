@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/molast/zigfs/pkg/gateway"
 	"zigfs-admin/server/internal/contract"
 )
 
@@ -106,7 +107,9 @@ type ManagementService interface {
 }
 
 type Management struct {
-	service ManagementService
+	GatewayAudit func(context.Context, string, string) error
+	Gateway      *gateway.Manager
+	service      ManagementService
 }
 
 func NewManagement(service ManagementService) *Management {

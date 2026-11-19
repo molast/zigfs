@@ -35,7 +35,7 @@ func (handler *Auth) STSLogin(ctx *gin.Context) {
 		}
 		var denied *port.StatusError
 		if errors.As(err, &denied) && denied.StatusCode == http.StatusForbidden && denied.Code == "ConsoleAccessDenied" {
-			ctx.SetCookie(middleware.AdminSessionCookie, "", -1, "/api", "", false, true)
+			ctx.SetCookie(middleware.AdminSessionCookie, "", -1, "/api", "", ctx.Request.TLS != nil, true)
 			writeError(ctx, http.StatusForbidden, "ConsoleAccessDenied", "current identity has no console page permissions")
 			return
 		}
@@ -48,7 +48,7 @@ func (handler *Auth) STSLogin(ctx *gin.Context) {
 		return
 	}
 	ctx.SetSameSite(http.SameSiteStrictMode)
-	ctx.SetCookie(middleware.AdminSessionCookie, response.Token, maxAge, "/api", "", false, true)
+	ctx.SetCookie(middleware.AdminSessionCookie, response.Token, maxAge, "/api", "", ctx.Request.TLS != nil, true)
 	ctx.JSON(http.StatusOK, contract.SessionResponse{Authenticated: true, SubjectID: response.SubjectID, IsRoot: response.IsRoot, Username: response.Username, ExpiresAt: response.ExpiresAt})
 }
 
@@ -77,7 +77,7 @@ func (handler *Auth) Login(ctx *gin.Context) {
 		}
 		var denied *port.StatusError
 		if errors.As(err, &denied) && denied.StatusCode == http.StatusForbidden && denied.Code == "ConsoleAccessDenied" {
-			ctx.SetCookie(middleware.AdminSessionCookie, "", -1, "/api", "", false, true)
+			ctx.SetCookie(middleware.AdminSessionCookie, "", -1, "/api", "", ctx.Request.TLS != nil, true)
 			writeError(ctx, http.StatusForbidden, "ConsoleAccessDenied", "current identity has no console page permissions")
 			return
 		}
@@ -91,7 +91,7 @@ func (handler *Auth) Login(ctx *gin.Context) {
 		return
 	}
 	ctx.SetSameSite(http.SameSiteStrictMode)
-	ctx.SetCookie(middleware.AdminSessionCookie, response.Token, maxAge, "/api", "", false, true)
+	ctx.SetCookie(middleware.AdminSessionCookie, response.Token, maxAge, "/api", "", ctx.Request.TLS != nil, true)
 	ctx.JSON(http.StatusOK, contract.SessionResponse{
 		Authenticated: true,
 		SubjectID:     response.SubjectID,
@@ -108,7 +108,7 @@ func (handler *Auth) Logout(ctx *gin.Context) {
 	}
 	ctx.Header("Cache-Control", "no-store")
 	ctx.SetSameSite(http.SameSiteStrictMode)
-	ctx.SetCookie(middleware.AdminSessionCookie, "", -1, "/api", "", false, true)
+	ctx.SetCookie(middleware.AdminSessionCookie, "", -1, "/api", "", ctx.Request.TLS != nil, true)
 	ctx.Status(http.StatusNoContent)
 }
 
@@ -123,7 +123,7 @@ func (handler *Auth) Session(ctx *gin.Context) {
 		}
 		var denied *port.StatusError
 		if errors.As(err, &denied) && denied.StatusCode == http.StatusForbidden && denied.Code == "ConsoleAccessDenied" {
-			ctx.SetCookie(middleware.AdminSessionCookie, "", -1, "/api", "", false, true)
+			ctx.SetCookie(middleware.AdminSessionCookie, "", -1, "/api", "", ctx.Request.TLS != nil, true)
 			writeError(ctx, http.StatusForbidden, "ConsoleAccessDenied", "current identity has no console page permissions")
 			return
 		}

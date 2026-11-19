@@ -25,7 +25,7 @@ Example PUT body (omitted properties use defaults, rather than patching):
 {
   "level": "info",
   "format": "json",
-  "output": "both",
+  "output": "file",
   "directory": "logs",
   "retention": "7",
   "maxSize": "100",
@@ -36,7 +36,7 @@ Example PUT body (omitted properties use defaults, rather than patching):
 }
 ```
 
-Defaults match this example except `output`, which defaults to `console`.
+Defaults match this example: system logs are written to files under `logs` by default. Existing saved output settings remain effective.
 See the OpenAPI `LogConfig` schema for all options. UI labels KB/MB/GB correspond
 to binary KiB/MiB/GiB (1024-based). Fractional positive sizes are supported,
 with a converted range of 1 byte through 1 TiB.

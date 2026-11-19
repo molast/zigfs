@@ -121,3 +121,7 @@ Presigned URL 的最大有效期遵循 S3 Signature V4 标准，固定为 604800
 
 管理员身份属于 ZigFS，不属于 Go Admin。Go Admin 只配置自身监听地址、ZigFS Endpoint
 和静态资源路径。对外部署前必须修改默认密码和 Session Secret，并限制配置文件权限。
+
+## HTTPS 网关部署配置
+
+`ZIGFS_GATEWAY_CONFIG_DIR` 指定 Admin 独立网关状态与密钥目录，默认位于 Admin listener 配置文件同级的 `gateway/`。`ZIGFS_GATEWAY_PORT` 是 Compose 的宿主机端口映射变量，默认 8443，不会自动启用网关。详见 [网关配置](gateway.md)。

@@ -1,0 +1,21 @@
+# Admin builds from the repository root to include the independent gateway module.
+**
+!pkg/
+!pkg/gateway/
+!pkg/gateway/**
+!zigfs-admin/
+!zigfs-admin/docker-entrypoint.sh
+!zigfs-admin/server/
+!zigfs-admin/server/**
+!zigfs-admin/web/
+!zigfs-admin/web/**
+zigfs-admin/server/bin
+zigfs-admin/server/tmp
+zigfs-admin/server/data
+zigfs-admin/server/config
+zigfs-admin/web/node_modules
+zigfs-admin/web/.vite
+**/.DS_Store
+**/*.log
+**/.env
+**/.env.*

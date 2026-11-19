@@ -686,3 +686,15 @@ func TestMonitoringRequiresSession(t *testing.T) {
 func (managementService) MonitoringDiagnostics(context.Context, string, json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(`{}`), nil
 }
+
+func TestHTTPSLoginUsesSecureSessionCookie(t *testing.T) {
+	engine := testEngine(true)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "https://admin.zigfs.home.arpa/api/v1/auth/login", strings.NewReader(`{"username":"admin","password":"zigfs-admin"}`))
+	request.Header.Set("Content-Type", "application/json")
+	engine.ServeHTTP(recorder, request)
+	cookies := recorder.Result().Cookies()
+	if recorder.Code != http.StatusOK || len(cookies) != 1 || !cookies[0].Secure || !cookies[0].HttpOnly {
+		t.Fatalf("HTTPS session cookie was not secured: %d %+v", recorder.Code, cookies)
+	}
+}

@@ -47,8 +47,8 @@ go run ./cmd/admin
 
 The Admin Web is only a presentation layer, and this server is only its static
 host and API forwarder. ZigFS is the sole backend and owns all user identities,
-authentication, authorization, storage state, and business rules. Object bytes
-never pass through Admin. This server only relays ZigFS-issued short-lived tokens
+authentication, authorization, storage state, and business rules. Object bytes bypass BFF business handlers. When the optional HTTPS gateway is enabled,
+its separate listener streams S3 bytes directly to ZigFS. See [gateway setup](../../docs/gateway.md). This server only relays ZigFS-issued short-lived tokens
 in HttpOnly cookies.
 
 The BFF forwards Bucket, Object view, Presign, Access Key, Storage, System,
@@ -63,3 +63,10 @@ API session; the browser cannot choose or override the tenant owner.
 When creating a Bucket, the BFF also omits the owner field. ZigFS binds the
 Bucket to the current administrator username, so the Admin Web does not expose
 an Owner / tenant input.
+
+The HTTPS gateway is an independent Go module in `../../pkg/gateway`.
+The repository `go.work` uses its source directly during local development.
+To test the gateway itself, run `go test -race ./...` in `pkg/gateway`;
+`go test ./...` here tests the Admin adapter and its authorization boundaries.
+Admin Docker builds now use the repository root as context:
+`docker build -f zigfs-admin/Dockerfile -t zigfs-admin:local .`.

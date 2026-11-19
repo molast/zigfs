@@ -52,3 +52,5 @@ Swift/iOS Adapter 通过共享向量及隔离 ZigFS 端到端文件操作 Gate�
 SDK 一致性契约和 OpenAPI Operation 描述为准。
 Phase 11 已加入 Bucket Versioning、DeleteMarker、指定版本操作、ListObjectVersions 与声明的
 Lifecycle 子集；配置和历史仍由 ZigFS Management API 提供，Admin BFF 不保存第二事实来源。
+
+- [HTTPS 网关 OpenAPI](gateway.openapi.yaml)：Admin 部署配置、证书与网关操作审计报告。

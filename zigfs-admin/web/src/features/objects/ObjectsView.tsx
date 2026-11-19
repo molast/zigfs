@@ -130,6 +130,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null)
+  const cancelledUploadIds = useRef(new Set<string>())
   const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([])
   const [taskTab, setTaskTab] = useState<string | null>(null)
   const [cancelledUploads, setCancelledUploads] = useState<{ uploadId: string; key: string; fileSize: number; initiatedAt: string }[]>([])
@@ -199,12 +200,14 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       })
   }, [api, bucket, withLoading])
 
-  async function load(reset: boolean, requestedPrefix = prefix, requestedShowDeleted = showDeleted) {
+  async function load(reset: boolean, requestedPrefix = prefix, requestedShowDeleted = showDeleted, background = false) {
     if (!bucket) return
     if (!reset && (listLoading.current || !nextToken || viewMode !== 'current' || requestedShowDeleted)) return
     const requestId = ++listRequestId.current
     listLoading.current = true
-    const stopLoading = startLoading(t('objects.loadingValue', { '0': viewMode === 'versions' ? t('objects.objectVersion') : t('common.objects') }))
+    const stopLoading = background
+      ? () => {}
+      : startLoading(t('objects.loadingValue', { '0': viewMode === 'versions' ? t('objects.objectVersion') : t('common.objects') }))
     try {
       if (reset) {
         setSelectedObjectKeys(new Set())
@@ -562,8 +565,14 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       return
     }
     setStartingUploads(true)
-    try { await beginUploads([...pendingFiles], directory) }
-    finally { setStartingUploads(false) }
+    setUploadDialogOpen(false)
+    setTaskTab(null)
+    setUploadsPanelOpen(true)
+    try {
+      await beginUploads([...pendingFiles], directory)
+    } finally {
+      setStartingUploads(false)
+    }
   }
 
   async function beginUploads(files: File[], destinationPrefix: string) {
@@ -576,26 +585,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       const key = joinObjectPath(destinationPrefix, file.webkitRelativePath || file.name)
       try {
         const plan = chooseUploadPlan(file.size)
-        if (!plan.multipart) {
-          const stopLoading = startLoading(file.name)
-          try {
-            const presigned = await api.presignObject('', bucket, key, 'PUT', 900)
-            await putPart(presigned.url, file, file.type, () => {}, () => {})
-            setCompletedUploads((current) => [{
-              uploadId: crypto.randomUUID(),
-              key,
-              fileName: file.name,
-              fileSize: file.size,
-              initiatedAt: new Date().toISOString(),
-              completedAt: new Date().toISOString(),
-            }, ...current])
-          } finally {
-            stopLoading()
-          }
-          continue
-        }
-        const created = await api.createMultipartUpload(bucket, key, file.type || 'application/octet-stream')
+        const created = plan.multipart
+          ? await api.createMultipartUpload(bucket, key, file.type || 'application/octet-stream')
+          : { upload_id: crypto.randomUUID(), initiated_at: new Date().toISOString() }
         tasks.push({
+          singleRequest: !plan.multipart,
           uploadId: created.upload_id,
           bucket,
           key,
@@ -615,9 +609,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         failures.push(`${file.name}: ${(reason as Error).message}`)
       }
     }
-    await load(true)
     setPendingFiles(failedFiles)
-    if (failedFiles.length === 0) { setUploadDialogOpen(false); setTaskTab(null); setUploadsPanelOpen(true) }
     if (tasks.length > 0) setUploadTasks((current) => [...tasks, ...current])
     if (failures.length > 0) notifyError(t('objects.unableToCreateUploadsForValue', { '0': failures.join('；') }))
     for (const task of tasks) {
@@ -653,7 +645,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
   }
 
   async function runUpload(task: UploadTask, selectedFile: File) {
-    if (uploadControl.current) return
+    if (uploadControl.current || cancelledUploadIds.current.has(task.uploadId)) return
     const control = {
       uploadId: task.uploadId,
       paused: false,
@@ -679,108 +671,126 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     let committedBytes = task.uploadedBytes
     let committedParts = task.completedParts
     try {
-      const serverUpload = await api.getMultipartUpload(task.uploadId, task.bucket, task.key)
-      const partSize = inferPartSize(serverUpload, selectedFile.size, task.partSize)
-      validateResumeFile(task, serverUpload, selectedFile, partSize)
-      const completed = new Map(serverUpload.parts.map((part) => [part.part_number, part]))
-      committedBytes = serverUpload.parts.reduce((sum, part) => sum + part.size, 0)
-      committedParts = completed.size
-      const partCount = Math.max(1, Math.ceil(selectedFile.size / partSize))
-      updateUploadTask(task.uploadId, {
-        file: selectedFile,
-        fileName: selectedFile.name,
-        fileSize: selectedFile.size,
-        lastModified: selectedFile.lastModified,
-        contentType: selectedFile.type || task.contentType || 'application/octet-stream',
-        partSize,
-        uploadedBytes: committedBytes,
-        completedParts: completed.size,
-        status: 'uploading',
-        error: undefined,
-      })
-      reportUploadProgress(committedBytes, selectedFile.size)
-
-      const inFlight = new Map<number, number>()
-      const reportProgress = () => {
-        const totalLoaded = Math.min(selectedFile.size, committedBytes + [...inFlight.values()].reduce((sum, bytes) => sum + bytes, 0))
-        reportUploadProgress(totalLoaded, selectedFile.size)
-        updateUploadTask(task.uploadId, { uploadedBytes: totalLoaded, completedParts: committedParts })
-      }
-      const pendingParts = Array.from({ length: partCount }, (_, index) => index + 1).filter(number => !completed.has(number))
-      await uploadPartsConcurrently(pendingParts, chooseUploadConcurrency(selectedFile.size), async (partNumber) => {
-        if (control.paused || control.stopped) throw abortError()
-        const start = (partNumber - 1) * partSize
-        const body = selectedFile.slice(start, Math.min(start + partSize, selectedFile.size))
-        let etag = ''
-        let lastError: Error | null = null
-        for (let attempt = 1; attempt <= 3; attempt += 1) {
-          if (control.paused || control.stopped) throw abortError()
-          let activeRequest: XMLHttpRequest | undefined
-          try {
-            const presigned = await api.presignObject('', task.bucket, task.key, 'PUT', 900, {
-              uploadId: task.uploadId,
-              partNumber,
-            })
-            if (control.paused || control.stopped) throw abortError()
-            let attemptLoaded = 0
-            etag = await putPart(
-              presigned.url,
-              body,
-              task.contentType,
-              ({ loaded }) => {
-                transferredBytes += Math.max(0, loaded - attemptLoaded)
-                attemptLoaded = loaded
-                inFlight.set(partNumber, loaded)
-                reportProgress()
-              },
-              (request) => {
-                activeRequest = request
-                control.requests.add(request)
-              },
-            )
-            break
-          } catch (reason) {
-            inFlight.delete(partNumber)
-            reportProgress()
-            if (control.paused || control.stopped || (reason instanceof Error && reason.name === 'AbortError')) throw abortError()
-            lastError = reason as Error
-            if (attempt < 3) await delay(attempt * 300)
-          } finally {
-            if (activeRequest) control.requests.delete(activeRequest)
-          }
-        }
-        if (!etag) throw lastError ?? new Error(t('objects.partValueFailedToUpload', { '0': partNumber }))
-        completed.set(partNumber, {
-          part_number: partNumber,
-          size: body.size,
-          etag,
-          last_modified: new Date().toISOString(),
-        })
-        inFlight.delete(partNumber)
-        committedBytes += body.size
+      updateUploadTask(task.uploadId, { status: 'uploading', error: undefined })
+      reportUploadProgress(0, selectedFile.size)
+      if (task.singleRequest) {
+        const presigned = await api.presignObject('', task.bucket, task.key, 'PUT', 900)
+        if (control.paused || control.cancelled) throw abortError()
+        await putPart(
+          presigned.url,
+          selectedFile,
+          task.contentType,
+          ({ loaded, total }) => {
+            transferredBytes = loaded
+            reportUploadProgress(loaded, total)
+            updateUploadTask(task.uploadId, { uploadedBytes: loaded })
+          },
+          request => control.requests.add(request),
+        )
+      } else {
+        const serverUpload = await api.getMultipartUpload(task.uploadId, task.bucket, task.key)
+        const partSize = inferPartSize(serverUpload, selectedFile.size, task.partSize)
+        validateResumeFile(task, serverUpload, selectedFile, partSize)
+        const completed = new Map(serverUpload.parts.map((part) => [part.part_number, part]))
+        committedBytes = serverUpload.parts.reduce((sum, part) => sum + part.size, 0)
         committedParts = completed.size
-        reportProgress()
-      }, () => {
-        control.stopped = true
-        control.requests.forEach(request => request.abort())
-      })
-      if (control.paused) throw abortError()
-      control.completing = true
-      updateUploadTask(task.uploadId, {
-        uploadedBytes: selectedFile.size,
-        completedParts: completed.size,
-        status: 'completing',
-        error: undefined,
-      })
-      const completionParts = [...completed.values()]
-        .sort((left, right) => left.part_number - right.part_number)
-        .map((part) => ({ part_number: part.part_number, etag: part.etag }))
-      try {
-        await api.completeMultipartUpload(task.uploadId, task.bucket, task.key, completionParts)
-      } catch (reason) {
-        // The response can be lost after ZigFS has committed the Object. Do
-        // not leave a false failed task when the UploadId is already gone.
-        if (!(await completionPublished(task))) throw reason
+        const partCount = Math.max(1, Math.ceil(selectedFile.size / partSize))
+        updateUploadTask(task.uploadId, {
+          file: selectedFile,
+          fileName: selectedFile.name,
+          fileSize: selectedFile.size,
+          lastModified: selectedFile.lastModified,
+          contentType: selectedFile.type || task.contentType || 'application/octet-stream',
+          partSize,
+          uploadedBytes: committedBytes,
+          completedParts: completed.size,
+          status: 'uploading',
+          error: undefined,
+        })
+        reportUploadProgress(committedBytes, selectedFile.size)
+
+        const inFlight = new Map<number, number>()
+        const reportProgress = () => {
+          const totalLoaded = Math.min(selectedFile.size, committedBytes + [...inFlight.values()].reduce((sum, bytes) => sum + bytes, 0))
+          reportUploadProgress(totalLoaded, selectedFile.size)
+          updateUploadTask(task.uploadId, { uploadedBytes: totalLoaded, completedParts: committedParts })
+        }
+        const pendingParts = Array.from({ length: partCount }, (_, index) => index + 1).filter(number => !completed.has(number))
+        await uploadPartsConcurrently(pendingParts, chooseUploadConcurrency(selectedFile.size), async (partNumber) => {
+          if (control.paused || control.stopped) throw abortError()
+          const start = (partNumber - 1) * partSize
+          const body = selectedFile.slice(start, Math.min(start + partSize, selectedFile.size))
+          let etag = ''
+          let lastError: Error | null = null
+          for (let attempt = 1; attempt <= 3; attempt += 1) {
+            if (control.paused || control.stopped) throw abortError()
+            let activeRequest: XMLHttpRequest | undefined
+            try {
+              const presigned = await api.presignObject('', task.bucket, task.key, 'PUT', 900, {
+                uploadId: task.uploadId,
+                partNumber,
+              })
+              if (control.paused || control.stopped) throw abortError()
+              let attemptLoaded = 0
+              etag = await putPart(
+                presigned.url,
+                body,
+                task.contentType,
+                ({ loaded }) => {
+                  transferredBytes += Math.max(0, loaded - attemptLoaded)
+                  attemptLoaded = loaded
+                  inFlight.set(partNumber, loaded)
+                  reportProgress()
+                },
+                (request) => {
+                  activeRequest = request
+                  control.requests.add(request)
+                },
+              )
+              break
+            } catch (reason) {
+              inFlight.delete(partNumber)
+              reportProgress()
+              if (control.paused || control.stopped || (reason instanceof Error && reason.name === 'AbortError')) throw abortError()
+              lastError = reason as Error
+              if (attempt < 3) await delay(attempt * 300)
+            } finally {
+              if (activeRequest) control.requests.delete(activeRequest)
+            }
+          }
+          if (!etag) throw lastError ?? new Error(t('objects.partValueFailedToUpload', { '0': partNumber }))
+          completed.set(partNumber, {
+            part_number: partNumber,
+            size: body.size,
+            etag,
+            last_modified: new Date().toISOString(),
+          })
+          inFlight.delete(partNumber)
+          committedBytes += body.size
+          committedParts = completed.size
+          reportProgress()
+        }, () => {
+          control.stopped = true
+          control.requests.forEach(request => request.abort())
+        })
+        if (control.paused) throw abortError()
+        control.completing = true
+        updateUploadTask(task.uploadId, {
+          uploadedBytes: selectedFile.size,
+          completedParts: completed.size,
+          status: 'completing',
+          error: undefined,
+        })
+        const completionParts = [...completed.values()]
+          .sort((left, right) => left.part_number - right.part_number)
+          .map((part) => ({ part_number: part.part_number, etag: part.etag }))
+        try {
+          await api.completeMultipartUpload(task.uploadId, task.bucket, task.key, completionParts)
+        } catch (reason) {
+          // The response can be lost after ZigFS has committed the Object. Do
+          // not leave a false failed task when the UploadId is already gone.
+          if (!(await completionPublished(task))) throw reason
+        }
       }
       setCompletedUploads((current) => [
         {
@@ -794,7 +804,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
         ...current,
       ])
       setUploadTasks((current) => current.filter((item) => item.uploadId !== task.uploadId))
-      await load(true)
+      await load(true, prefix, showDeleted, true)
     } catch (reason) {
       if (control.cancelled) {
         return
@@ -847,7 +857,10 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
     }
     const stopLoading = startLoading(t('objects.cancellingMultipartUpload'))
     try {
-      await api.abortMultipartUpload(task.uploadId, task.bucket, task.key)
+      if (!task.singleRequest) {
+        await api.abortMultipartUpload(task.uploadId, task.bucket, task.key)
+      }
+      cancelledUploadIds.current.add(task.uploadId)
       setUploadTasks((current) => current.filter((item) => item.uploadId !== task.uploadId))
       setCancelledUploads(current => [...current.filter(item => item.uploadId !== task.uploadId), { uploadId: task.uploadId, key: task.key, fileSize: task.fileSize, initiatedAt: task.initiatedAt }])
       showToast(t('objects.cancelledValue', { '0': displayFileName(task.key) }))
@@ -975,14 +988,23 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
 
   async function trackDeletion(key: string, directory: boolean, operation: () => Promise<void>) {
     const id = crypto.randomUUID()
-    setDeleteTasks(current => [...current, { id, key, directory, initiatedAt: new Date().toISOString(), status: 'processing' }])
+    setDeleteTasks(current => [
+      ...current,
+      { id, key, directory, initiatedAt: new Date().toISOString(), status: 'processing' },
+    ])
+    setTaskTab(null)
+    setUploadsPanelOpen(true)
     try {
       await operation()
-      setDeleteTasks(current => current.map(task => task.id === id ? { ...task, status: 'completed' } : task))
-      setTaskTab('completed')
-      setUploadsPanelOpen(true)
+      setDeleteTasks(current => current.map(task =>
+        task.id === id ? { ...task, status: 'completed' } : task,
+      ))
     } catch (reason) {
-      setDeleteTasks(current => current.map(task => task.id === id ? { ...task, status: 'failed', error: (reason as Error).message } : task))
+      setDeleteTasks(current => current.map(task =>
+        task.id === id
+          ? { ...task, status: 'failed', error: (reason as Error).message }
+          : task,
+      ))
       throw reason
     }
   }
@@ -1073,17 +1095,15 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       danger: true,
     })) return
     const identity = versionIdentity(version)
-    const stopLoading = startLoading(t('objects.permanentlyDeletingObjects'))
     try {
       setDeletingVersion(identity)
       await trackDeletion(version.key, false, () => purgeObject(version.key))
       showToast(t('objects.permanentlyDeletedValue', { '0': displayFileName(version.key) }))
-      await load(true)
+      await load(true, prefix, showDeleted, true)
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
       setDeletingVersion('')
-      stopLoading()
     }
   }
 
@@ -1130,10 +1150,11 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       confirmLabel: permanent ? t('objects.permanentlyDelete') : t('objects.delete'),
       danger: true,
     })) return
-    const stopLoading = startLoading(permanent ? t('objects.permanentlyDeletingObjectVersions') : t('objects.deletingObjects'))
     try {
       if (purgingDeletedObjects) {
-        for (const key of new Set(deleteMarkers.map((item) => item.version.key))) await trackDeletion(key, false, () => purgeObject(key))
+        for (const key of new Set(deleteMarkers.map((item) => item.version.key))) {
+          await trackDeletion(key, false, () => purgeObject(key))
+        }
       } else {
         for (const item of items) {
           const key = item.kind === 'current' ? item.object.key : item.version.key
@@ -1145,11 +1166,9 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       setSelectedDeletedIds(new Set())
       setSelectedVersionIds(new Set())
       showToast(t('objects.processedValueObjects', { '0': items.length }))
-      await load(true)
+      await load(true, prefix, showDeleted, true)
     } catch (reason) {
       notifyError((reason as Error).message)
-    } finally {
-      stopLoading()
     }
   }
 
@@ -1291,7 +1310,6 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       checkbox: { label: t('objects.deleteAllVersions'), onCheckedChange: checked => { allVersions = checked } },
       confirmLabel: t('common.confirm'),
     })) return
-    const stopLoading = startLoading(t('objects.deletingDirectory'))
     try {
       setDeletingKey(object.key)
       await trackDeletion(object.key, true, () => api.deleteDirectory(bucket, object.key, allVersions))
@@ -1300,8 +1318,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       notifyError((reason as Error).message)
     } finally {
       setDeletingKey('')
-      stopLoading()
-      await load(true)
+      await load(true, prefix, showDeleted, true)
     }
   }
 
@@ -1318,18 +1335,16 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       confirmLabel: t('objects.delete'),
       danger: true,
     })) return
-    const stopLoading = startLoading(t('objects.deletingObjects'))
     try {
       setDeletingKey(object.key)
       await trackDeletion(object.key, false, () => deleteObjectKey(object.key))
       if (detail?.key === object.key) closeDetail()
       showToast(t('objects.deletedValue', { '0': displayFileName(object.key) }))
-      await load(true)
+      await load(true, prefix, showDeleted, true)
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
       setDeletingKey('')
-      stopLoading()
     }
   }
 
@@ -1343,18 +1358,16 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
       confirmLabel: t('objects.permanentlyDelete'),
       danger: true,
     })) return
-    const stopLoading = startLoading(t('objects.permanentlyDeletingObjectVersions'))
     const identity = `${version.key}\u0000${version.version_id}`
     try {
       setDeletingVersion(identity)
       await trackDeletion(version.key, false, () => deleteObjectKey(version.key, version.version_id))
       showToast(t('objects.permanentlyDeletedValueValueOfValue', { '0': displayFileName(version.key), '1': target, '2': shortVersionId(version.version_id) }))
-      await load(true)
+      await load(true, prefix, showDeleted, true)
     } catch (reason) {
       notifyError((reason as Error).message)
     } finally {
       setDeletingVersion('')
-      stopLoading()
     }
   }
 
@@ -1664,7 +1677,7 @@ export function ObjectsView({ api, initialBucket = '', initialPrefix = '', onNav
               if (record.kind === 'upload') {
               const task = record.task
               const active = task.status === 'uploading' || task.status === 'completing'
-              const taskProgress = active && uploadProgress
+              const taskProgress = active && uploadControl.current?.uploadId === task.uploadId && uploadProgress
                 ? uploadProgress
                 : {
                     loaded: task.uploadedBytes,

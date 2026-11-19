@@ -117,6 +117,7 @@ pub const routes = [_]Route{
     .{ .method = .put, .path = "/_admin/v1/settings/region" },
     .{ .method = .get, .path = "/_admin/v1/settings/instance" },
     .{ .method = .put, .path = "/_admin/v1/settings/instance" },
+    .{ .method = .post, .path = "/_admin/v1/settings/gateway-events" },
     .{ .method = .put, .path = "/_admin/v1/settings/network" },
     .{ .method = .put, .path = "/_admin/v1/settings/listener" },
     .{ .method = .get, .path = "/_admin/v1/settings/logs" },
@@ -379,6 +380,9 @@ pub fn serveRequest(
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/display")) return serveDisplaySettings(request, application, request_id);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/region")) return serveRegionSettings(request, application, request_id);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/instance")) return serveInstanceSettings(request, application, request_id);
+    if (std.mem.eql(u8, path, api_prefix ++ "/settings/gateway-events")) {
+        return serveGatewayEvent(request, application, request_id, audit_context);
+    }
     if (std.mem.eql(u8, path, api_prefix ++ "/settings/network")) return serveNetworkSettings(request, application, request_id);
     if (std.mem.eql(u8, path, api_prefix ++ "/settings")) {
         if (request.head.method != .GET) return respondMethodNotAllowed(request, request_id, "GET");
@@ -3412,13 +3416,30 @@ fn serveNetworkSettings(request: *std.http.Server.Request, app: *Application, re
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const input = try parseJsonBody(store.Settings, request, a, request_id) orelse return .bad_request;
-    store.validate(input.value) catch |err| return respondError(request, request_id, .bad_request, @errorName(err), "invalid network configuration");
+    const Input = struct {
+        s3_public_endpoint: []const u8,
+        s3_virtual_hosted_style: bool,
+        trusted_proxies: []const []const u8 = &.{},
+        expected_network: ?store.Settings = null,
+    };
+    const input = try parseJsonBody(Input, request, a, request_id) orelse return .bad_request;
+    const next: store.Settings = .{
+        .s3_public_endpoint = input.value.s3_public_endpoint,
+        .s3_virtual_hosted_style = input.value.s3_virtual_hosted_style,
+        .trusted_proxies = input.value.trusted_proxies,
+    };
+    store.validate(next) catch |err| return respondError(request, request_id, .bad_request, @errorName(err), "invalid network configuration");
     const io = app.io orelse return respondNotReady(request, request_id);
     app.policy_mutex.lockUncancelable(io);
     defer app.policy_mutex.unlock(io);
-    store.save(a, app.systemStore(), io, input.value) catch return respondError(request, request_id, .service_unavailable, "NetworkSettingsUnavailable", "cannot persist network configuration");
-    return respondJson(request, request_id, .ok, input.value);
+    if (input.value.expected_network) |expected| {
+        const current = store.load(a, app.systemStore(), io, app.config) catch return respondError(request, request_id, .service_unavailable, "NetworkSettingsUnavailable", "cannot read network configuration");
+        if (!store.equal(current, expected)) {
+            return respondError(request, request_id, .conflict, "NetworkSettingsConflict", "network configuration changed; refresh before retrying");
+        }
+    }
+    store.save(a, app.systemStore(), io, next) catch return respondError(request, request_id, .service_unavailable, "NetworkSettingsUnavailable", "cannot persist network configuration");
+    return respondJson(request, request_id, .ok, next);
 }
 
 fn serveListenerSettings(request: *std.http.Server.Request, app: *Application, request_id: []const u8) !std.http.Status {
@@ -3755,4 +3776,17 @@ fn serveMonitoringDiagnostics(request: *std.http.Server.Request, app: *Applicati
         .untracked_allocations = if (a) |v| v.untracked_allocations.load(.monotonic) else 0,
         .build_commit = @import("build_info").git_commit,
     });
+}
+
+// Gateway deployment state belongs to Admin. ZigFS authenticates the reporting
+// administrator and records bounded operation reports, never certificate bodies.
+fn serveGatewayEvent(request: *std.http.Server.Request, app: *Application, request_id: []const u8, audit_context: *AuditContext) !std.http.Status {
+    if (request.head.method != .POST) return respondMethodNotAllowed(request, request_id, "POST");
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const Input = struct { operation: enum { prepare, apply, rollback }, phase: enum { requested, succeeded, failed } };
+    const input = try parseJsonBody(Input, request, arena.allocator(), request_id) orelse return .bad_request;
+    const action = try std.fmt.allocPrint(arena.allocator(), "gateway.{s}.{s}", .{ @tagName(input.value.operation), @tagName(input.value.phase) });
+    try audit_context.operation(action, "/_admin/v1/settings/gateway-events");
+    return respondJson(request, request_id, .ok, .{ .recorded = true });
 }

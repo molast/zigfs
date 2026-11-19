@@ -3,6 +3,7 @@
 !zigfs/
 !zigfs/build.zig
 !zigfs/build.zig.zon
+!zigfs/docker-entrypoint.sh
 !zigfs/src/
 !zigfs/src/**
 !zigfs/resources/

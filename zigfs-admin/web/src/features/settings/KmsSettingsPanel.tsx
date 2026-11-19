@@ -1,3 +1,4 @@
+import { SettingsModuleTabs } from './SettingsModuleTabs'
 import { KmsKeysPanel } from './KmsKeysPanel'
 import type { ApiClient, KmsStatus } from '@/api/client'
 import { Play, RefreshCw } from 'lucide-react'
@@ -131,11 +132,7 @@ export function KmsSettingsPanel({ api, status, setStatus, draft, setDraft }: {
     </Field>
   )
 
-  return <div className="settings-detail-stack kms-settings">
-    <div className="kms-heading">
-      <h3>{t('settings.sseConfiguration')}</h3>
-      <p>{t('settings.sseConfigurationDescription')}</p>
-    </div>
+  const statusPanel = (
     <Card>
       <CardHeader>
         <div className="kms-status-heading"><CardTitle>{t('settings.kmsStatusOverview')}</CardTitle><Badge variant={hasServiceError ? 'destructive' : 'default'}>{stateLabel.toLocaleUpperCase()}</Badge>
@@ -170,6 +167,9 @@ export function KmsSettingsPanel({ api, status, setStatus, draft, setDraft }: {
         </DropdownMenu>
       </CardFooter>
     </Card>
+  )
+
+  const configurationPanel = (
     <Card>
       <CardHeader><CardTitle>{t('settings.kmsConfiguration')}</CardTitle><CardDescription>{t('settings.kmsConfigurationDescription')}</CardDescription></CardHeader>
       <CardContent>
@@ -271,12 +271,30 @@ export function KmsSettingsPanel({ api, status, setStatus, draft, setDraft }: {
         </div>
       </CardFooter>
     </Card>
-    {running && <KmsKeysPanel api={api} onDefaultChanged={async () => {
-      const saved = await api.kmsSettings()
-      setStatus(saved)
-      setDraft(current => ({ ...current, defaultKey: saved.config.defaultKey }))
-    }} />}
-  </div>
+  )
+
+  return (
+    <div className="settings-detail-stack kms-settings">
+      <SettingsModuleTabs
+        label={t('settings.sseConfiguration')}
+        modules={[
+          { value: 'status', label: t('settings.kmsStatusOverview'), content: statusPanel },
+          { value: 'configuration', label: t('settings.kmsConfiguration'), content: configurationPanel },
+          ...(running ? [{
+            value: 'keys',
+            label: t('settings.kmsKeysManagement'),
+            content: (
+              <KmsKeysPanel api={api} onDefaultChanged={async () => {
+                const saved = await api.kmsSettings()
+                setStatus(saved)
+                setDraft(current => ({ ...current, defaultKey: saved.config.defaultKey }))
+              }} />
+            ),
+          }] : []),
+        ]}
+      />
+    </div>
+  )
 }
 
 function AdvancedSection({ title, description, children, open, onOpenChange }: { title: string; description: string; children: ReactNode; open: boolean; onOpenChange: (open: boolean) => void }) {

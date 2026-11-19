@@ -36,3 +36,37 @@ IAM conditions (identity, IP, time, HTTPS, prefix, numeric limits, missing keys)
 conditional Deny, policy variables, spoofed forwarded headers/query parameters,
 and condition evaluation when consuming presigned URLs. It shuts down
 both services and removes their temporary data when finished.
+
+## Built-in HTTPS gateway
+
+Build both services, then run the isolated standard-library-only suite:
+
+```sh
+(cd zigfs && zig build)
+(cd zigfs-admin/server && go build -o /tmp/zigfs-admin-gateway ./cmd/admin)
+python3 conformance/gateway_https.py --admin /tmp/zigfs-admin-gateway
+```
+
+The suite does not change hosts, system DNS, or CA trust. It connects to loopback
+while preserving the configured TLS server name and HTTP Host. Unknown private
+CA trust must fail; supplying that instance's public CA must succeed. It exercises
+both HTTPS hosts, default and bucket-specific CORS, signed Unicode/encoded paths,
+zero-byte objects, Range, conditional requests, HEAD, copy, multipart completion,
+version-specific deletion, imported chains, invalid SAN rejection, candidate
+rollback, persistent CA across restart, and disabling back to the HTTP endpoint.
+All services and storage are temporary and cleaned up on completion.
+
+The gateway module separately tests stream flushing, cancellation, certificate
+renewal during downloads, and final-commit failure recovery with `go test -race`.
+
+For an existing local Linux Admin image (Docker Desktop/OrbStack with
+`host.docker.internal`), replace `--admin` with:
+
+```sh
+python3 conformance/gateway_https.py --admin-image zigfs-admin:local
+```
+
+This runs the actual gateway inside a Linux container, maps only loopback ports,
+and recreates that container against the same temporary configuration mount.
+ZigFS runs as an isolated native process on the host. The image must already be
+present; the suite never pulls, publishes, or changes existing containers.

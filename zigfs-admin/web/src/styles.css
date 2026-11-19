@@ -1635,9 +1635,27 @@ html[data-theme="dark"], .dark {
 .settings-field-pair[data-slot=field-group] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
 .settings-detail-note { margin-top: 14px; }
 .settings-detail-stack > .settings-detail-note { margin-top: 0; }
-.settings-log-tabs > .ui-tabs-list { margin-bottom: 14px; flex-wrap: wrap; }
-.settings-log-tabs .ui-tabs-trigger { display: flex; align-items: center; gap: 8px; }
-.settings-log-tabs .ui-tabs-trigger svg { width: 16px; height: 16px; }
+.settings-module-tabs {
+  min-width: 0;
+}
+.settings-module-tabs > .ui-tabs-list {
+  margin-bottom: 16px;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+.settings-module-tabs > .ui-tabs-list > .ui-tabs-trigger {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.settings-module-tabs > .ui-tabs-content[hidden] {
+  display: none;
+}
+.settings-module-tabs [data-slot=field-group] > [data-slot=button],
+.settings-module-tabs [data-slot=field] > [data-slot=button] {
+  align-self: flex-start;
+  width: auto;
+}
 .settings-storage-overview { display: grid; grid-template-columns: 126px minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 24px; }
 .settings-capacity-ring { width: 126px; height: 126px; border-radius: 50%; display: grid; place-items: center; }
 .settings-capacity-ring > div { width: 102px; height: 102px; border-radius: 50%; background: var(--card); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; }

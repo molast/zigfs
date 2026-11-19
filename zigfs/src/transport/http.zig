@@ -2049,6 +2049,40 @@ test "ZigFS Management API directly serves the Phase 6 contract" {
     try std.testing.expect(std.mem.indexOf(u8, settings.body, "session_secret") == null);
     try std.testing.expect(std.mem.indexOf(u8, settings.body, "admin_password") == null);
 
+    const gateway_event = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .POST,
+        "/_admin/v1/settings/gateway-events",
+        token,
+        "{\"operation\":\"prepare\",\"phase\":\"succeeded\"}",
+    );
+    defer gateway_event.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.ok, gateway_event.status);
+    const invalid_gateway_event = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .POST,
+        "/_admin/v1/settings/gateway-events",
+        token,
+        "{\"operation\":\"arbitrary\",\"phase\":\"succeeded\"}",
+    );
+    defer invalid_gateway_event.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.bad_request, invalid_gateway_event.status);
+    const conflicting_network = try sendTestManagementRequest(
+        std.testing.allocator,
+        std.testing.io,
+        address,
+        .PUT,
+        "/_admin/v1/settings/network",
+        token,
+        "{\"s3_public_endpoint\":\"https://new.example.com\",\"s3_virtual_hosted_style\":false,\"expected_network\":{\"s3_public_endpoint\":\"https://stale.example.com\",\"s3_virtual_hosted_style\":false}}",
+    );
+    defer conflicting_network.deinit(std.testing.allocator);
+    try std.testing.expectEqual(std.http.Status.conflict, conflicting_network.status);
+
     const disable_target = try std.fmt.allocPrint(
         std.testing.allocator,
         "/_admin/v1/access-keys/{s}",

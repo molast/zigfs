@@ -113,6 +113,16 @@ pub const operations = [_]Spec{
     .{ .name = "UpdateRegionSettings", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false, .method = "PUT", .path = "/_admin/v1/settings/region" },
     .{ .name = "GetInstanceSettings", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = true, .method = "GET", .path = "/_admin/v1/settings/instance" },
     .{ .name = "UpdateInstanceSettings", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false, .method = "PUT", .path = "/_admin/v1/settings/instance" },
+    .{ .name = "GatewayPrepareRequested", .alias = "gateway.prepare.requested", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false },
+    .{ .name = "GatewayPrepareSucceeded", .alias = "gateway.prepare.succeeded", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false },
+    .{ .name = "GatewayPrepareFailed", .alias = "gateway.prepare.failed", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false },
+    .{ .name = "GatewayApplyRequested", .alias = "gateway.apply.requested", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false },
+    .{ .name = "GatewayApplySucceeded", .alias = "gateway.apply.succeeded", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false },
+    .{ .name = "GatewayApplyFailed", .alias = "gateway.apply.failed", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false },
+    .{ .name = "GatewayRollbackRequested", .alias = "gateway.rollback.requested", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false },
+    .{ .name = "GatewayRollbackSucceeded", .alias = "gateway.rollback.succeeded", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false },
+    .{ .name = "GatewayRollbackFailed", .alias = "gateway.rollback.failed", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false },
+    .{ .name = "ReportGatewayOperation", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false, .method = "POST", .path = "/_admin/v1/settings/gateway-events" },
     .{ .name = "UpdateNetworkConfiguration", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false, .method = "PUT", .path = "/_admin/v1/settings/network" },
     .{ .name = "ListEventDestinations", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = true, .method = "GET", .path = "/_admin/v1/event-destinations" },
     .{ .name = "CreateEventDestination", .category = "system_management", .resource_type = "system", .service = "admin", .is_read_only = false, .method = "POST", .path = "/_admin/v1/event-destinations" },
@@ -397,4 +407,11 @@ test "monitoring audit routes have explicit operations and preserve read write s
     try std.testing.expectEqualStrings("UpdateMonitoringDiagnostics", update.name);
     try std.testing.expect(!update.is_read_only);
     try std.testing.expectEqualStrings("UnknownOperation", classify("", "DELETE", "/_admin/v1/monitoring").name);
+}
+
+test "gateway reports classify bounded deployment outcomes" {
+    const report = classify("gateway.prepare.failed", "POST", "/_admin/v1/settings/gateway-events");
+    try std.testing.expectEqualStrings("GatewayPrepareFailed", report.name);
+    try std.testing.expectEqualStrings("system_management", report.category);
+    try std.testing.expect(!report.is_read_only);
 }

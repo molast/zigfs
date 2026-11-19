@@ -778,3 +778,11 @@ func (client *Client) MonitoringDiagnostics(ctx context.Context, method string, 
 	err := client.requestJSON(ctx, method, "/_admin/v1/monitoring/diagnostics", body, &result)
 	return result, err
 }
+
+// ReportGatewayEvent submits a bounded deployment operation report to ZigFS's
+// existing authenticated audit pipeline. Certificate bodies are never sent.
+func (client *Client) ReportGatewayEvent(ctx context.Context, operation, phase string) error {
+	return client.requestJSON(ctx, http.MethodPost, "/_admin/v1/settings/gateway-events", map[string]string{
+		"operation": operation, "phase": phase,
+	}, nil)
+}

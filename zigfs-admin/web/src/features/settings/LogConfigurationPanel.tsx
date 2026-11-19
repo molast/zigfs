@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/Input'
 import { OptionSelect } from '@/components/ui/OptionSelect'
 
 const initialDraft = {
-  level: 'info', format: 'json', output: 'console', directory: '',
+  level: 'info', format: 'json', output: 'file', directory: 'logs',
   retention: '7', maxSize: '100', sizeUnit: 'MiB', cleanup: 'enabled', downloads: 'enabled', range: '24h',
 }
 

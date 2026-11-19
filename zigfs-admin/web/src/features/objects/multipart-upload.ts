@@ -9,6 +9,8 @@ const STORAGE_KEY = 'zigfs.multipart-uploads.v1'
 export type UploadTaskStatus = 'paused' | 'uploading' | 'completing' | 'failed'
 
 export interface UploadTask {
+  // Single PUT tasks exist only in this browser session; pausing restarts the file.
+  singleRequest?: boolean
   uploadId: string
   bucket: string
   key: string
@@ -182,7 +184,9 @@ export function loadPersistedTasks() {
 
 export function persistTasks(tasks: UploadTask[], bucket?: string) {
   try {
-    const persisted: PersistedUploadTask[] = tasks.map(({ file: _file, status: _status, error: _error, ...task }) => task)
+    const persisted: PersistedUploadTask[] = tasks
+      .filter(task => !task.singleRequest)
+      .map(({ file: _file, status: _status, error: _error, ...task }) => task)
     const retained = bucket
       ? [...loadPersistedTasks().values()].filter((task) => task.bucket !== bucket)
       : []

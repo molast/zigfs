@@ -228,3 +228,7 @@
 | DeleteEventDestination | DELETE /_admin/v1/event-destinations/:name | system_management（写入） |
 
 审计记录不包含配置请求体或 Auth Token。
+
+## HTTPS 网关报告
+
+`POST /_admin/v1/settings/gateway-events` 要求 `admin:*`，只接受 prepare / apply / rollback 与 requested / succeeded / failed 枚举。操作名为 `GatewayPrepareRequested`、`GatewayPrepareSucceeded`、`GatewayPrepareFailed`，Apply / Rollback 同理，分类为 system_management。HTTP 成功表示报告被接收，部署操作结果以报告操作名为准；网关状态不由 ZigFS 直接观测。Prepare 包含本地 CA 签发和证书导入，报告不携带私钥或配置正文。

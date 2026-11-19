@@ -1,3 +1,5 @@
+import { SettingsModuleTabs } from './SettingsModuleTabs'
+import { NetworkGateway } from './NetworkGateway'
 import { AboutRuntime, AboutUpdates } from './AboutTelemetry'
 import { formatDateTime } from '@/lib/dateTime'
 import { NetworkListeners } from './NetworkListeners'
@@ -53,10 +55,18 @@ export function SettingsPanels({ api, onSaved, category, settings, system, stora
   const scanState = !scanner ? t('settings.unavailable') : scanner.running ? t('settings.scanning') : scanner.last_attempt_succeeded === false ? t('settings.lastScanFailed') : scanner.last_scan ? t('settings.scanCompleted') : t('settings.notScannedYet')
   const capacity = <><dl className="settings-facts"><div><dt>{t('settings.usedSpace')}</dt><dd>{bytes(storage?.physical_used)}</dd></div><div><dt>{t('settings.availableSpace')}</dt><dd>{bytes(storage?.available)}</dd></div><div><dt>{t('settings.totalCapacity')}</dt><dd>{bytes(storage?.total)}</dd></div></dl>{percentage != null && <Progress value={percentage} aria-label={t('settings.diskUsageValue', { '0': percentage.toFixed(1) })} />}</>
 
-  if (category === 'network') return <div className="settings-detail-stack">
-    <NetworkListeners api={api} settings={settings} onSaved={onSaved} />
-    <NetworkPublicAccess api={api} settings={settings} onSaved={onSaved} />
-  </div>
+  if (category === 'network') {
+    return (
+      <SettingsModuleTabs
+        label={t('settings.network')}
+        modules={[
+          { value: 'listeners', label: t('settings.listenerConfiguration'), content: <NetworkListeners api={api} settings={settings} onSaved={onSaved} /> },
+          { value: 'public', label: t('settings.publicAccess'), content: <NetworkPublicAccess api={api} settings={settings} onSaved={onSaved} /> },
+          { value: 'gateway', label: t('gateway.title'), content: <NetworkGateway api={api} onSaved={onSaved} /> },
+        ]}
+      />
+    )
+  }
 
   if (category === 'storage') return <div className="settings-detail-stack">
     <Section icon={Database} title={t('settings.storageOverview')} description={t('settings.actualCapacityOfTheInstanceFilesystem')}><div className="settings-storage-overview"><div className="settings-capacity-ring" role="img" aria-label={percentage == null ? t('settings.capacityNotReported') : t('settings.valueUsed', { '0': percentage.toFixed(1) })} style={{ background: percentage == null ? 'var(--border)' : `conic-gradient(var(--accent) ${percentage}%, var(--border) 0)` }}><div><strong>{percentage == null ? '—' : `${percentage.toFixed(1)}%`}</strong><span>{t('settings.used')}</span></div></div><div>{capacity}</div><div className="settings-storage-status"><span>{t('settings.storageReadiness')}</span><Badge>{!health ? t('settings.unavailable') : ready ? t('settings.ready') : t('settings.needsAttention')}</Badge><span>{t('settings.scanStatus')}{scanState}</span><span>{t('settings.lastSuccessfulScan')}</span><strong>{scanner?.last_completed_at ? formatDateTime(scanner.last_completed_at * 1000) : t('settings.noRecordsYet')}</strong></div></div></Section>
@@ -66,12 +76,40 @@ export function SettingsPanels({ api, onSaved, category, settings, system, stora
 
   if (category === 'about') return <div className="settings-detail-stack">
     <div className="settings-about-brand"><img src="/zigfs-logo.svg" alt="ZigFS" /><div><h3>ZigFS</h3><p>{t('settings.lightweightS3CompatibleObjectStorage')}</p><div><Badge>{system?.version ?? t('settings.versionUnavailable')}</Badge><Badge>{t('settings.s3Compatible')}</Badge><Badge>Apache 2.0</Badge></div></div></div>
-    <div className="settings-about-grid">
+    <SettingsModuleTabs
+      label={t('settings.aboutZigfs')}
+      modules={[
+        {
+          value: 'versionInformation',
+          label: t('settings.versionInformation'),
+          content: (
       <Section icon={Info} title={t('settings.versionInformation')}><dl className="settings-facts">{[[t('settings.version'), system?.version ?? t('settings.unavailable')], [t('settings.buildDate'), system?.build?.built_at ? formatDateTime(system.build.built_at * 1000) : t('settings.unavailable')], [t('common.gitCommit'), system?.build?.git_commit || t('settings.unavailable')], [t('settings.zigVersion'), system?.build?.zig_version || t('settings.unavailable')], [t('settings.operatingSystem'), system?.build ? `${system.build.operating_system} / ${system.build.architecture}` : t('settings.unavailable')], [t('settings.buildMode'), system?.build?.mode || t('settings.unavailable')]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></Section>
+          ),
+        },
+        {
+          value: 'systemInformation',
+          label: t('settings.systemInformation'),
+          content: (
       <Section icon={Monitor} title={t('settings.systemInformation')}><dl className="settings-facts"><div><dt>{t('settings.uptime')}</dt><dd>{system ? t('settings.valueDaysValueHoursValueMinutes', { '0': Math.floor(system.uptime / 86400), '1': Math.floor(system.uptime % 86400 / 3600), '2': Math.floor(system.uptime % 3600 / 60) }) : t('settings.unavailable')}</dd></div></dl><AboutRuntime api={api} />{capacity}</Section>
+          ),
+        },
+        {
+          value: 'license',
+          label: t('settings.license'),
+          content: (
       <Section icon={Scale} title={t('settings.license')}><p>{t('settings.zigfsIsReleasedUnderTheApacheLicense20')}</p><p>{t('settings.seeTheLicenseFileInTheProjectRepositoryFor')}</p><Badge>Apache License 2.0</Badge></Section>
+          ),
+        },
+        {
+          value: 'relatedLinks',
+          label: t('settings.relatedLinks'),
+          content: (
       <Section icon={Link} title={t('settings.relatedLinks')}><dl className="settings-facts"><div><dt>{t('settings.projectRepository')}</dt><dd><a href="https://github.com/molast/zigfs" target="_blank" rel="noreferrer">{t('settings.viewRepository')}</a></dd></div><div><dt>{t('settings.documentation')}</dt><dd>{t('settings.repositoryReadmeAndDocs')}</dd></div></dl><AboutUpdates api={api} /></Section>
-    </div><Note>{t('settings.zigfsProvidesSimpleReliableObjectStorageThankYouFor')}</Note>
+          ),
+        },
+      ]}
+    />
+    <Note>{t('settings.zigfsProvidesSimpleReliableObjectStorageThankYouFor')}</Note>
   </div>
   return null
 }

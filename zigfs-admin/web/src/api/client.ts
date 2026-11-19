@@ -1,3 +1,4 @@
+import type { GatewayConfig, GatewayStatus } from '@/features/settings/gateway'
 import type { DisplayPreferences } from '../lib/dateTime'
 import type { AuditOptions, AuditQuery, AuditPage } from '@/types/api'
 export interface LogConfig { level: string; format: string; output: string; directory: string; retention: string; maxSize: string; sizeUnit: string; cleanup: string; downloads: string; range: string }
@@ -200,6 +201,16 @@ export function createApiClient() {
     saveLogSettings: (config: LogConfig) => request<LogConfig>('/api/v1/settings/logs', { method: 'PUT', body: JSON.stringify(config) }),
     queryLogs: (download = false, range?: { from: number; to: number }) => request<LogQuery>(`/api/v1/settings/logs/${download ? 'download' : 'query'}${range ? `?from=${range.from}&to=${range.to}` : ''}`),
     saveListeners: (value: { api_address: string; admin_listen_address: string; upstream_endpoint: string }) => request<void>('/api/v1/settings/listeners', { method: 'PUT', body: JSON.stringify(value) }),
+    gatewayStatus: () => request<GatewayStatus>('/api/v1/settings/gateway'),
+    prepareGateway: (revision: number, config: GatewayConfig, certificate_pem: string, private_key_pem: string) =>
+      request<GatewayStatus>('/api/v1/settings/gateway', {
+        method: 'PUT', body: JSON.stringify({ revision, config, certificate_pem, private_key_pem }),
+      }),
+    gatewayAction: (action: 'check' | 'apply' | 'rollback', input: {
+      revision: number; client_verified?: boolean; disable?: boolean; fallback_endpoint?: string
+    }) => request<GatewayStatus>(`/api/v1/settings/gateway/${action}`, {
+      method: 'POST', body: JSON.stringify(input),
+    }),
     saveNetworkSettings: (value: { s3_public_endpoint: string; s3_virtual_hosted_style: boolean; trusted_proxies: string[] }) => request('/api/v1/settings/network', { method: 'PUT', body: JSON.stringify(value) }),
     authenticationSettings: () => request<AuthenticationSettings>('/api/v1/settings/authentication'),
     saveAuthenticationSettings: (value: AuthenticationValues) => request<AuthenticationSettings>('/api/v1/settings/authentication', { method: 'PUT', body: JSON.stringify(value) }),

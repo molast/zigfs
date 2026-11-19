@@ -79,3 +79,28 @@ test "trusted proxy settings reject malformed and oversized lists" {
     }
     try validate(.{ .s3_public_endpoint = "http://localhost:9000", .s3_virtual_hosted_style = false, .trusted_proxies = &.{ "127.0.0.1", "::1/128", "10.0.0.0/24" } });
 }
+
+// Used under policy_mutex for conditional deployment changes from the gateway.
+pub fn equal(left: Settings, right: Settings) bool {
+    if (!std.mem.eql(u8, left.s3_public_endpoint, right.s3_public_endpoint) or
+        left.s3_virtual_hosted_style != right.s3_virtual_hosted_style or
+        left.trusted_proxies.len != right.trusted_proxies.len) return false;
+    for (left.trusted_proxies, right.trusted_proxies) |a, b| {
+        if (!std.mem.eql(u8, a, b)) return false;
+    }
+    return true;
+}
+
+test "conditional network comparison includes endpoint addressing and trusted proxies" {
+    const value: Settings = .{ .s3_public_endpoint = "https://s3.example.com", .s3_virtual_hosted_style = false, .trusted_proxies = &.{"127.0.0.1"} };
+    try std.testing.expect(equal(value, value));
+    var changed = value;
+    changed.s3_public_endpoint = "https://other.example.com";
+    try std.testing.expect(!equal(value, changed));
+    changed = value;
+    changed.s3_virtual_hosted_style = true;
+    try std.testing.expect(!equal(value, changed));
+    changed = value;
+    changed.trusted_proxies = &.{"10.0.0.1"};
+    try std.testing.expect(!equal(value, changed));
+}

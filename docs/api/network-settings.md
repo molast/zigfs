@@ -153,3 +153,7 @@ Authorization: Bearer <management-session-token>
 | Web 构建与 i18n 测试 | 类型检查、构建、语言键及插值一致性 |
 
 这些验证记录对应实现能力，不代替实际部署的 DNS、TLS 和外部代理验收。
+
+## 网关条件更新
+
+网络设置 PUT 可携带可选 `expected_network`（Public URL、寻址模式、可信代理列表）。ZigFS 在网络配置锁内比较当前值，不匹配时返回 `409 NetworkSettingsConflict`，不写入。内置 HTTPS 网关用它避免跨进程应用或回滚覆盖并发修改。原有不携带该字段的请求保持原行为。

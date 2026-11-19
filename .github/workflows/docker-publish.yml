@@ -9,6 +9,7 @@ on:
       - '.github/workflows/docker-publish.yml'
       - 'zigfs/**'
       - 'zigfs-admin/**'
+      - 'pkg/**'
   workflow_dispatch:
 
 permissions:
@@ -78,7 +79,7 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
-          context: ${{ matrix.image == 'zigfs' && '.' || './zigfs-admin' }}
+          context: .
           file: ./${{ matrix.image }}/Dockerfile
           platforms: linux/${{ matrix.arch }}
           # Publish only the two runnable platform manifests, without

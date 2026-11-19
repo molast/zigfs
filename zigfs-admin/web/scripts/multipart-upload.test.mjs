@@ -133,6 +133,8 @@ function uploadViewFixture() {
     chooseUploadConcurrency: () => 3,
     window: { setInterval: () => 1, clearInterval() {} },
     uploadControl: { current: null },
+    cancelledUploadIds: { current: new Set() },
+    prefix: '', showDeleted: false,
     setUploadSpeed() {}, setUploading() {}, setUploadProgress() {},
     setCompletedUploads() {}, setUploadTasks() {}, load: async () => {},
     updateUploadTask: (_id, value) => updates.push(value),
@@ -230,7 +232,7 @@ test('view aborts sibling requests after retries are exhausted and reports the o
   assert.equal(control.requests.size, 0)
 })
 
-test('small files use single PUT; threshold files create multipart tasks; failures stay retryable', async () => {
+test('small and multipart files enter tasks; multipart creation failures stay retryable', async () => {
   const view = readFileSync(new URL('../src/features/objects/ObjectsView.tsx', import.meta.url), 'utf8')
   const start = view.indexOf('  async function beginUploads(')
   const end = view.indexOf('  async function createPath(', start)
@@ -254,12 +256,12 @@ test('small files use single PUT; threshold files create multipart tasks; failur
   }
   vm.runInNewContext(ts.transpile(view.slice(start, end), { target: ts.ScriptTarget.ES2022 }), context)
   await context.beginUploads([{ name: 'small', size: 16 * MiB - 1 }, { name: 'large', size: 16 * MiB }], '')
-  assert.deepEqual(calls.map(call => call[0]), ['presign', 'put', 'multipart', 'run'])
+  assert.deepEqual(calls.map(call => call[0]), ['multipart', 'run', 'run'])
   assert.equal(calls.at(-1)[1], 8 * MiB)
-  assert.equal(completed.length, 1)
+  assert.equal(completed.length, 0)
   assert.equal(failed.length, 0)
-  context.putPart = async () => { throw new Error('upload denied') }
-  await context.beginUploads([{ name: 'failed', size: 1 }], '')
+  context.api.createMultipartUpload = async () => { throw new Error('upload denied') }
+  await context.beginUploads([{ name: 'failed', size: 16 * MiB }], '')
   assert.equal(failed[0].name, 'failed')
-  assert.equal(completed.length, 1)
+  assert.equal(completed.length, 0)
 })

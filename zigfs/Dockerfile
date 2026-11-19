@@ -71,7 +71,7 @@ LABEL org.opencontainers.image.title="ZigFS" \
       org.opencontainers.image.version="0.1.0" \
       org.opencontainers.image.licenses="Apache-2.0"
 
-RUN apk add --no-cache libcurl ca-certificates
+RUN apk add --no-cache libcurl ca-certificates su-exec
 
 RUN addgroup -S -g 10001 zigfs \
     && adduser -S -D -H -u 10001 -G zigfs zigfs \
@@ -79,13 +79,14 @@ RUN addgroup -S -g 10001 zigfs \
     && chown -R zigfs:zigfs /var/lib/zigfs
 
 COPY --from=builder /out/bin/zigfs /usr/local/bin/zigfs
+COPY --chmod=755 zigfs/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 ENV ZIGFS_DATA_ROOT=/var/lib/zigfs ZIGFS_API_ADDRESS=0.0.0.0:9000 ZIGFS_METRICS_ADDRESS=0.0.0.0:9090
 
-USER zigfs:zigfs
 WORKDIR /var/lib/zigfs
 
 VOLUME ["/var/lib/zigfs"]
 EXPOSE 9000 9090
 STOPSIGNAL SIGTERM
 
-ENTRYPOINT ["/usr/local/bin/zigfs"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["/usr/local/bin/zigfs"]

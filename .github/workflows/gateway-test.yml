@@ -1,0 +1,67 @@
+name: Gateway checks
+on:
+  pull_request:
+    paths:
+      - 'pkg/gateway/**'
+      - 'zigfs-admin/server/**'
+      - 'go.work'
+      - 'conformance/gateway_https.py'
+      - 'zigfs/src/**'
+      - 'pkg/metadata-engine/**'
+      - '.github/workflows/gateway-test.yml'
+  push:
+    paths:
+      - 'pkg/gateway/**'
+      - 'zigfs-admin/server/**'
+      - 'go.work'
+      - 'conformance/gateway_https.py'
+      - 'zigfs/src/**'
+      - 'pkg/metadata-engine/**'
+      - '.github/workflows/gateway-test.yml'
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: pkg/gateway/go.mod
+          cache-dependency-path: |
+            pkg/gateway/go.sum
+            zigfs-admin/server/go.sum
+      - name: Independent gateway module
+        working-directory: pkg/gateway
+        run: GOWORK=off go test -race ./...
+      - name: Admin integration
+        working-directory: zigfs-admin/server
+        run: go test ./...
+
+  https-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: zigfs-admin/server/go.mod
+          cache-dependency-path: |
+            pkg/gateway/go.sum
+            zigfs-admin/server/go.sum
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Install ZigFS system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev pkg-config
+      - name: Build isolated test services
+        run: |
+          cd zigfs
+          zig build
+          cd ../zigfs-admin/server
+          go build -o /tmp/zigfs-admin-gateway ./cmd/admin
+      - name: Strict TLS and S3 conformance
+        run: python3 conformance/gateway_https.py --admin /tmp/zigfs-admin-gateway

@@ -13,7 +13,7 @@ fn ConfigType(comptime audit_log: bool) type {
     return struct {
         level: []const u8 = "info",
         format: []const u8 = "json",
-        output: []const u8 = if (audit_log) "file" else "console",
+        output: []const u8 = "file",
         directory: []const u8 = if (audit_log) "audit-logs" else "logs",
         retention: []const u8 = if (audit_log) "forever" else "7",
         maxSize: []const u8 = "100",

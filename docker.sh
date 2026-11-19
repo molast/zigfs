@@ -85,7 +85,7 @@ build_fs_image() {
 build_admin_image() {
   build_admin_web_assets
   printf '正在构建 ZigFS Admin Docker 镜像 zigfs-admin:%s...\n' "${LOCAL_IMAGE_TAG}"
-  docker build --tag "zigfs-admin:${LOCAL_IMAGE_TAG}" "${ROOT_DIR}/zigfs-admin"
+  docker build --file "${ROOT_DIR}/zigfs-admin/Dockerfile" --tag "zigfs-admin:${LOCAL_IMAGE_TAG}" "${ROOT_DIR}"
 }
 
 

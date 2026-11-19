@@ -10,6 +10,7 @@ import (
 )
 
 type Config struct {
+	GatewayDirectory   string
 	ListenerFile       string
 	EndpointCandidates []string
 	ListenAddress      string
@@ -50,6 +51,7 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	config.ListenerFile = envOrDefault("ZIGFS_ADMIN_CONFIG", filepath.Join(dir, "zigfs-admin", "listener.json"))
+	config.GatewayDirectory = envOrDefault("ZIGFS_GATEWAY_CONFIG_DIR", filepath.Join(filepath.Dir(config.ListenerFile), "gateway"))
 	config.EndpointCandidates = []string{config.ZigEndpoint}
 	if saved, err := ReadListenerState(config.ListenerFile); err == nil {
 		config.ListenAddress = saved.AdminListenAddress

@@ -9,6 +9,8 @@ Network 页面用于设置 ZigFS 的访问地址、S3 寻址方式、可信代�
 
 本页描述当前已实现的功能。部署示例见 [网络部署](deployment/network.md)，接口字段和错误码见 [网络配置 API](api/network-settings.md)。
 
+HTTPS 网关设置与证书信任指引见 [内置 HTTPS 网关](gateway.md)。该功能独立于原 HTTP 监听设置，默认关闭。
+
 ## 先区分四种地址
 
 | 地址 | 谁使用 | 示例 |

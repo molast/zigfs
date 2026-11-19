@@ -1,3 +1,4 @@
+import { SettingsModuleTabs } from './SettingsModuleTabs'
 import { KmsAccessPanel } from './KmsAccessPanel'
 import type { AdminSession } from '../../types/api'
 import { DisplaySettingsPanel } from './DisplaySettingsPanel'
@@ -90,7 +91,40 @@ function AdminSettingsView({ api }: { api: ApiClient }) {
         <Card className="system-settings-editor">
           {categories.map(item => <TabsContent key={item.id} value={item.id} data-settings-category={item.id} className="system-settings-tab">
             <CardHeader><div className="system-settings-section-heading"><item.icon aria-hidden="true" /><div><CardTitle>{item.label}</CardTitle><CardDescription>{item.description}</CardDescription></div>{item.id !== 'security' && item.id !== 'logs' && item.id !== 'network' && item.id !== 'general' && <Badge>{busy ? t('settings.loading') : settings ? t('settings.effectiveReadOnly') : t('settings.configurationUnavailable')}</Badge>}</div></CardHeader>
-            <CardContent className="system-settings-scroll"><div className="settings-detail-stack">{item.id === 'security' ? <KmsSettingsPanel api={api} status={kmsStatus} setStatus={setKmsStatus} draft={kmsDraft} setDraft={setKmsDraft} /> : item.id === 'logs' ? <LogSettingsTabs api={api} /> : item.id === 'general' ? <><InstanceSettingsPanel api={api} observedAt={observedAt} /><RegionSettingsPanel api={api} observedAt={observedAt} /><AuthenticationSettingsPanel api={api} observedAt={observedAt} /><DisplaySettingsPanel api={api} observedAt={observedAt} /></> : <SettingsPanels api={api} onSaved={refresh} category={item.id} settings={settings} system={system} storage={storage} scanner={null} health={health} />}</div></CardContent>
+            <CardContent className="system-settings-scroll">
+              {item.id === 'security' ? (
+                <KmsSettingsPanel
+                  api={api}
+                  status={kmsStatus}
+                  setStatus={setKmsStatus}
+                  draft={kmsDraft}
+                  setDraft={setKmsDraft}
+                />
+              ) : item.id === 'logs' ? (
+                <LogSettingsTabs api={api} />
+              ) : item.id === 'general' ? (
+                <SettingsModuleTabs
+                  label={t('settings.general')}
+                  modules={[
+                    { value: 'instance', label: t('settings.instanceInformation'), content: <InstanceSettingsPanel api={api} observedAt={observedAt} /> },
+                    { value: 'region', label: t('settings.defaultRegion'), content: <RegionSettingsPanel api={api} observedAt={observedAt} /> },
+                    { value: 'authentication', label: t('settings.authenticationSettings'), content: <AuthenticationSettingsPanel api={api} observedAt={observedAt} /> },
+                    { value: 'display', label: t('settings.displayPreferences'), content: <DisplaySettingsPanel api={api} observedAt={observedAt} /> },
+                  ]}
+                />
+              ) : (
+                <SettingsPanels
+                  api={api}
+                  onSaved={refresh}
+                  category={item.id}
+                  settings={settings}
+                  system={system}
+                  storage={storage}
+                  scanner={null}
+                  health={health}
+                />
+              )}
+            </CardContent>
           </TabsContent>)}
           {category !== 'security' && category !== 'logs' && category !== 'network' && <footer className="system-settings-actions"><span>{t(category === 'general' ? 'settings.instanceOtherSettingsReadOnly' : 'settings.configurationIsReadOnlyRestartZigfsAfterChangingService')}</span><Button size="sm" variant="outline" disabled={busy} onClick={() => void refresh()}><RefreshCw data-icon="inline-start" />{busy ? t('settings.loadingProgress') : t('settings.refreshConfiguration')}</Button></footer>}
         </Card>
@@ -105,12 +139,13 @@ function AdminSettingsView({ api }: { api: ApiClient }) {
 }
 
 function LogSettingsTabs({ api }: { api: ApiClient }) {
-  return <Tabs defaultValue="system" className="settings-log-tabs">
-    <TabsList aria-label={t('settings.logs')}>
-      <TabsTrigger value="system">{t('navigation.systemLogs')}</TabsTrigger>
-      <TabsTrigger value="audit">{t('settings.auditLogs')}</TabsTrigger>
-    </TabsList>
-    <TabsContent value="system"><LogConfigurationPanel api={api} kind="system" /></TabsContent>
-    <TabsContent value="audit"><LogConfigurationPanel api={api} kind="audit" /></TabsContent>
-  </Tabs>
+  return (
+    <SettingsModuleTabs
+      label={t('settings.logs')}
+      modules={[
+        { value: 'system', label: t('navigation.systemLogs'), content: <LogConfigurationPanel api={api} kind="system" /> },
+        { value: 'audit', label: t('settings.auditLogs'), content: <LogConfigurationPanel api={api} kind="audit" /> },
+      ]}
+    />
+  )
 }

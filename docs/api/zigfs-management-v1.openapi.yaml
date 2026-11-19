@@ -11,6 +11,8 @@ servers:
 security:
   - managementBearer: []
 paths:
+  /_admin/v1/settings/gateway-events:
+    $ref: './gateway.openapi.yaml#/paths/~1_admin~1v1~1settings~1gateway-events'
   /_admin/v1/role-sessions/{access_key}:
     delete:
       summary: Delete a revoked role session record
@@ -1612,6 +1614,16 @@ paths:
               type: object
               required: [s3_public_endpoint, s3_virtual_hosted_style]
               properties:
+                expected_network:
+                  type: object
+                  description: Optional compare-and-set guard, evaluated under the ZigFS network settings lock.
+                  required: [s3_public_endpoint, s3_virtual_hosted_style]
+                  properties:
+                    s3_public_endpoint: { type: string }
+                    s3_virtual_hosted_style: { type: boolean }
+                    trusted_proxies:
+                      type: array
+                      items: { type: string }
                 s3_public_endpoint:
                   type: string
                   format: uri
@@ -1632,6 +1644,8 @@ paths:
           description: InvalidPublicEndpoint, InvalidVirtualHostedEndpoint or InvalidTrustedProxy
         '403':
           description: Management policy does not authorize this operation
+        '409':
+          description: NetworkSettingsConflict; expected state no longer matches
         '503':
           description: Configuration could not be persisted
   /_admin/v1/settings:
@@ -2216,7 +2230,7 @@ components:
       properties:
         level: { type: string, enum: [trace, debug, info, warn, error, 'off'], default: info }
         format: { type: string, enum: [json, text], default: json }
-        output: { type: string, enum: [console, file, both], default: console }
+        output: { type: string, enum: [console, file, both], default: file }
         directory: { type: string, default: logs, description: Relative directory under data root. Empty input normalizes to logs. }
         retention: { type: string, enum: [forever, '1', '3', '7', '14', '30', '90'], default: '7', description: Retention in days or forever. }
         maxSize: { type: string, default: '100', description: Positive finite size; converted size must be between 1 byte and 1 TiB. }

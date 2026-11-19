@@ -2,7 +2,12 @@ module zigfs-admin/server
 
 go 1.27.0
 
-require github.com/gin-gonic/gin v1.12.0
+require (
+	github.com/gin-gonic/gin v1.12.0
+	github.com/molast/zigfs/pkg/gateway v0.0.0
+)
+
+replace github.com/molast/zigfs/pkg/gateway => ../../pkg/gateway
 
 require (
 	github.com/bytedance/gopkg v0.1.3 // indirect

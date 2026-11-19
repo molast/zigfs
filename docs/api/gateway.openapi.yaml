@@ -1,0 +1,227 @@
+openapi: 3.0.3
+info:
+  title: ZigFS Admin HTTPS Gateway
+  version: '1.0'
+  description: >-
+    Deployment settings owned by Admin. All operations require a valid ZigFS
+    administrator session and admin:* authorization. Mutations require a matching
+    Origin authority and application/json. Certificates and private keys never
+    appear in status responses. Requires newly built Admin and ZigFS versions.
+security:
+  - AdminSession: []
+paths:
+  /api/v1/settings/gateway:
+    get:
+      summary: Read active and candidate gateway state
+      responses:
+        '200':
+          description: Current state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '403': { description: ZigFS rejected admin authorization }
+    put:
+      summary: Prepare a candidate HTTPS listener without changing the S3 Public URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, config]
+              properties:
+                revision: { type: integer, minimum: 0 }
+                config: { $ref: '#/components/schemas/Config' }
+                certificate_pem: { type: string, writeOnly: true, description: Required for imported certificates; at most 128 KiB }
+                private_key_pem: { type: string, writeOnly: true, description: Matching unencrypted PEM key; at most 32 KiB }
+      responses:
+        '200':
+          description: Candidate ready; install CA trust and verify from the client
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '400': { description: Invalid certificate, hostname, port, unavailable listener or pending transition }
+        '403': { description: Invalid origin or unauthorized administrator }
+        '409': { description: Stale revision }
+        '503': { description: ZigFS audit authorization/report unavailable; no local mutation performed }
+  /api/v1/settings/gateway/local-setup.ps1:
+    get:
+      summary: Download the Windows hosts and CA trust install/uninstall helper
+      description: Requires a prepared local CA gateway with both names under zigfs.home.arpa. Contains only the public CA. Run on the Windows PC hosting Admin; UAC authorization is requested by the helper.
+      responses:
+        '200':
+          description: Reviewable PowerShell script; run with -Action install or uninstall
+          content:
+            text/plain:
+              schema: { type: string }
+        '400': { description: Unsupported gateway configuration or invalid CA }
+        '403': { description: Unauthorized administrator }
+  /api/v1/settings/gateway/local-setup.sh:
+    get:
+      summary: Download a macOS local DNS and CA trust install/uninstall helper
+      description: Requires a prepared local CA gateway with both names under zigfs.home.arpa. Contains only the public CA. Does not execute privileged operations on the server.
+      responses:
+        '200':
+          description: Reviewable shell script; run manually with install or uninstall
+          content:
+            text/plain:
+              schema: { type: string }
+        '400': { description: Unsupported platform or gateway configuration }
+        '403': { description: Unauthorized administrator }
+  /api/v1/settings/gateway/ca.crt:
+    get:
+      summary: Download the public local CA certificate
+      responses:
+        '200':
+          description: Public certificate, never the CA private key
+          content:
+            application/x-pem-file:
+              schema: { type: string }
+        '400': { description: No local CA exists }
+  /api/v1/settings/gateway/check:
+    post:
+      summary: Check the local TLS listener and configured ZigFS upstream
+      description: Does not test client DNS or client trust; accepts no arbitrary target URLs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: Local TLS and upstream checks succeeded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '400': { description: Listener, certificate verification or upstream check failed }
+  /api/v1/settings/gateway/apply:
+    post:
+      summary: Journal and apply the S3 endpoint switch, or disable the gateway
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision]
+              properties:
+                revision: { type: integer, minimum: 0 }
+                client_verified: { type: boolean, description: Required true when enabling; UI verifies both public probe endpoints first }
+                disable: { type: boolean, default: false }
+                fallback_endpoint: { type: string, description: Required when disabling; must not refer to the stopped gateway }
+      responses:
+        '200':
+          description: Applied and persisted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '400': { description: Application failed; reread state for pending journal and new revision before retrying }
+        '409': { description: Stale revision }
+  /api/v1/settings/gateway/rollback:
+    post:
+      summary: Discard candidate and conditionally revert a pending endpoint switch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision]
+              properties:
+                revision: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: Candidate removed and pending transition reverted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Status' }
+        '400': { description: Network state diverged or upstream unavailable; no blind overwrite }
+        '409': { description: Stale revision }
+  /_gateway/probe:
+    get:
+      security: []
+      summary: Credential-free HTTPS reachability probe on configured gateway hosts
+      responses:
+        '200':
+          description: Deployment ID with Access-Control-Allow-Origin '*' and no-store
+          content:
+            text/plain:
+              schema: { type: string }
+        '421': { description: Unknown Host or mismatched TLS SNI }
+  /_admin/v1/settings/gateway-events:
+    post:
+      security:
+        - ManagementBearer: []
+      summary: Submit a bounded gateway operation report to ZigFS audit
+      description: Requires admin:*; outcome is reported by Admin, not independently observed by ZigFS.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operation, phase]
+              properties:
+                operation: { type: string, enum: [prepare, apply, rollback] }
+                phase: { type: string, enum: [requested, succeeded, failed] }
+      responses:
+        '200': { description: Report accepted into the existing audit pipeline }
+        '400': { description: Invalid operation report }
+        '403': { description: Administrator permission required }
+components:
+  securitySchemes:
+    AdminSession:
+      type: apiKey
+      in: cookie
+      name: zigfs_admin_session
+    ManagementBearer:
+      type: http
+      scheme: bearer
+  schemas:
+    Config:
+      type: object
+      required: [listen_address, admin_domain, s3_domain, external_port, certificate_mode]
+      properties:
+        listen_address: { type: string, example: ':8443' }
+        admin_domain: { type: string, example: admin.zigfs.home.arpa }
+        s3_domain: { type: string, example: s3.zigfs.home.arpa }
+        external_port: { type: integer, minimum: 1, maximum: 65535, example: 8443 }
+        certificate_mode: { type: string, enum: [local, import] }
+    Deployment:
+      type: object
+      required: [id, config, admin_url, s3_url, expires_at, fingerprint]
+      properties:
+        id: { type: string }
+        config: { $ref: '#/components/schemas/Config' }
+        admin_url: { type: string }
+        s3_url: { type: string }
+        expires_at: { type: string, format: date-time }
+        fingerprint: { type: string, description: SHA-256 fingerprint of leaf certificate }
+        dns_names:
+          type: array
+          description: Actual DNS SAN entries parsed from the leaf certificate
+          items: { type: string }
+    Status:
+      type: object
+      required: [revision, active, candidate, pending]
+      properties:
+        local_dns:
+          type: object
+          properties:
+            platform: { type: string, description: Operating system hosting Admin, example: windows }
+            supported: { type: boolean, description: Local setup helper supported on this host }
+            running: { type: boolean }
+            resolver_installed: { type: boolean, description: Resolver file matches the managed configuration; does not attest client CA trust }
+            address: { type: string, example: '127.0.0.1:15353' }
+            error: { type: string }
+        revision: { type: integer, minimum: 0 }
+        active:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/Deployment' }]
+        candidate:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/Deployment' }]
+        pending: { type: boolean }
+        error: { type: string }
+        ca_fingerprint: { type: string }
+        ca_expires_at: { type: string, format: date-time }

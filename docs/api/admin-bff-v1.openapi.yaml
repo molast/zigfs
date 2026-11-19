@@ -11,6 +11,16 @@ servers:
 security:
   - zigfsSessionCookie: []
 paths:
+  /api/v1/settings/gateway:
+    $ref: './gateway.openapi.yaml#/paths/~1api~1v1~1settings~1gateway'
+  /api/v1/settings/gateway/ca.crt:
+    $ref: './gateway.openapi.yaml#/paths/~1api~1v1~1settings~1gateway~1ca.crt'
+  /api/v1/settings/gateway/check:
+    $ref: './gateway.openapi.yaml#/paths/~1api~1v1~1settings~1gateway~1check'
+  /api/v1/settings/gateway/apply:
+    $ref: './gateway.openapi.yaml#/paths/~1api~1v1~1settings~1gateway~1apply'
+  /api/v1/settings/gateway/rollback:
+    $ref: './gateway.openapi.yaml#/paths/~1api~1v1~1settings~1gateway~1rollback'
   /api/v1/role-sessions/{access_key}:
     delete:
       summary: Delete a revoked role session record
@@ -1222,6 +1232,16 @@ paths:
               type: object
               required: [s3_public_endpoint, s3_virtual_hosted_style]
               properties:
+                expected_network:
+                  type: object
+                  description: Optional compare-and-set guard, evaluated under the ZigFS network settings lock.
+                  required: [s3_public_endpoint, s3_virtual_hosted_style]
+                  properties:
+                    s3_public_endpoint: { type: string }
+                    s3_virtual_hosted_style: { type: boolean }
+                    trusted_proxies:
+                      type: array
+                      items: { type: string }
                 s3_public_endpoint:
                   type: string
                   format: uri
@@ -1242,6 +1262,8 @@ paths:
           description: InvalidPublicEndpoint, InvalidVirtualHostedEndpoint or InvalidTrustedProxy
         '403':
           description: Management policy does not authorize this operation
+        '409':
+          description: NetworkSettingsConflict; expected state no longer matches
         '503':
           description: Configuration could not be persisted
   /api/v1/settings:

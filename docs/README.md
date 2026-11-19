@@ -24,6 +24,7 @@
 - [会话与请求认证](authentication-settings.md)：会话有效期、签名时间偏差。
 - [时区与日期显示偏好](display-settings.md)：实例级显示配置与输入时区。
 - [配置参考](configuration.md)：启动配置、默认值和持久化覆盖优先级。
+- [内置 HTTPS 网关](gateway.md)：证书、域名、Admin 设置、Docker 部署和恢复流程。
 - [网络配置](network-settings.md)：Network 页面字段、操作步骤、生效方式与故障排查。
 - [AK/SK 凭证导出](credentials-export.md)：credentials.json 字段及 Endpoint、签名和寻址规则。
 - [OpenID 登录](oidc-login.md)：外部身份接入。
@@ -46,6 +47,10 @@
 - [ZigFS Management OpenAPI](api/zigfs-management-v1.openapi.yaml)。
 - [Admin BFF OpenAPI](api/admin-bff-v1.openapi.yaml)。
 - [SDK 设计](sdk/design.md) 与 [一致性验证](sdk/conformance.md)。
+
+## 设计与实施计划
+
+- [内置 HTTPS 网关](plans/builtin-https-gateway.md)：设计与实施记录；本地证书、域名路由、Admin 设置、Docker 部署与验收计划。
 
 ## 发布
 

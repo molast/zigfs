@@ -32,6 +32,7 @@ compatibility/reports/
 /pkg/metadata-engine/bench/results/
 
 # Local configuration and secrets
+/.script/
 .env
 .env.*
 !.env.example

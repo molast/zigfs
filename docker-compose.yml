@@ -63,14 +63,19 @@ services:
         condition: service_healthy
     ports:
       - "${ZIGFS_ADMIN_PORT:-9001}:9001"
+      - "${ZIGFS_GATEWAY_PORT:-8443}:8443"
+    volumes:
+      - zigfs-admin-config:/app/config
     environment:
       # Use Docker DNS; localhost would refer to the Admin container itself.
       ZIGFS_ADMIN_LISTEN: ":9001"
       ZIGFS_ENDPOINT: http://zigfs:9000
       ZIGFS_WEB_ROOT: /app/web
       ZIGFS_UPSTREAM_TIMEOUT: "${ZIGFS_UPSTREAM_TIMEOUT:-15m}"
-      # Writable by image UID 10001; survives restart, not container recreation.
+      # Persist deployment settings and the gateway CA across container recreation.
       ZIGFS_ADMIN_CONFIG: /app/config/listener.json
+      ZIGFS_GATEWAY_CONFIG_DIR: /app/config/gateway
 
 volumes:
   zigfs-data:
+  zigfs-admin-config:
