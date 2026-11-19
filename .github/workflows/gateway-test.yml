@@ -1,25 +1,13 @@
 name: Gateway checks
 on:
-  pull_request:
-    paths:
-      - 'pkg/gateway/**'
-      - 'zigfs-admin/server/**'
-      - 'go.work'
-      - 'conformance/gateway_https.py'
-      - 'zigfs/src/**'
-      - 'pkg/metadata-engine/**'
-      - '.github/workflows/gateway-test.yml'
   push:
-    paths:
-      - 'pkg/gateway/**'
-      - 'zigfs-admin/server/**'
-      - 'go.work'
-      - 'conformance/gateway_https.py'
-      - 'zigfs/src/**'
-      - 'pkg/metadata-engine/**'
-      - '.github/workflows/gateway-test.yml'
+    tags:
+      - '**'
+
 jobs:
   test:
+    # Only execute for newly created tags, not tag updates or deletions.
+    if: github.event.created == true && github.event.deleted == false
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -43,6 +31,8 @@ jobs:
         run: go test ./...
 
   https-conformance:
+    # Only execute for newly created tags, not tag updates or deletions.
+    if: github.event.created == true && github.event.deleted == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
