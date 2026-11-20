@@ -930,6 +930,7 @@ ZIGFS_SECRET_KEY={SK}
         call('get-object', {'Bucket':'test-bucket','Key':'test'}, name='fixture', options=('--output',partial,'--retry-attempts','2'), code=3)
         assert not partial.exists() and Fixture.calls == 2
         assert Fixture.verified > 5
+        exec(Path(__file__).with_name('native_transport_checks.py').read_text(), globals())
         print('PASS HTTP fixture: independent SigV4, retries, timeout, redirect refusal, limits, partial cleanup, redaction.')
     finally:
         fixture.shutdown(); fixture.server_close()

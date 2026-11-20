@@ -664,7 +664,7 @@ fn saveVerificationError(config: Config, err: anyerror) anyerror {
     };
 }
 fn vaultRequestError(rc: c_int, status_code: c_long) anyerror {
-    // libcurl error numbers are stable ABI. Never forward provider bodies or credentials.
+    // Transport error numbers are defined by pkg/net-transport/bridge.h. Never forward provider bodies or credentials.
     return switch (rc) {
         0 => switch (status_code) {
             400 => error.KmsVaultRequestRejected,

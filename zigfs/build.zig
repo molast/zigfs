@@ -66,12 +66,9 @@ pub fn build(b: *std.Build) void {
     mod.addCSourceFile(.{ .file = b.path("src/backend/kms_http.c"), .flags = &.{"-std=c99"} });
     mod.addCSourceFile(.{ .file = b.path("src/backend/event_webhook.c"), .flags = &.{"-std=c99"} });
     mod.addCSourceFile(.{ .file = b.path("src/backend/event_channel.c"), .flags = &.{"-std=c99"} });
-    if (b.option([]const u8, "curl-root", "Directory containing libcurl include, lib, and bin directories")) |curl_root| {
-        mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ curl_root, "include" }) });
-        mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ curl_root, "lib" }) });
-    }
-    mod.linkSystemLibrary(if (target.result.os.tag == .windows) "libcurl" else "curl", .{});
-    if (target.result.os.tag == .windows) mod.linkSystemLibrary("ws2_32", .{});
+    const network = b.dependency("net_transport", .{ .target = target, .optimize = optimize });
+    mod.addIncludePath(network.path("."));
+    mod.linkLibrary(network.artifact("zigfs_net"));
 
     const exe = b.addExecutable(.{
         .name = "zigfs",

@@ -7,7 +7,7 @@ ARG TARGETARCH
 ARG ZIG_DOWNLOAD_BASE_URL=https://ziglang.org/download
 ARG ZIG_TOOLCHAIN_SHA256=
 
-RUN apk add --no-cache curl-dev pkgconf
+RUN apk add --no-cache ca-certificates git xz
 
 WORKDIR /src
 RUN --mount=type=cache,id=zigfs-toolchains,target=/var/cache/zig-toolchains,sharing=locked \
@@ -60,6 +60,11 @@ COPY zigfs/resources ./resources
 COPY zigfs/tools ./tools
 COPY zigfs/tests ./tests
 COPY pkg/metadata-engine /src/pkg/metadata-engine
+COPY pkg/net-transport/build.zig pkg/net-transport/build.zig.zon \
+     pkg/net-transport/transport.zig pkg/net-transport/tls.c \
+     pkg/net-transport/mbedtls-sources.zig \
+     pkg/net-transport/threading_alt.h pkg/net-transport/bridge.h /src/pkg/net-transport/
+COPY pkg/net-transport/tests /src/pkg/net-transport/tests
 # Published images must not inherit the builder/QEMU CPU extensions (e.g. ARM SVE).
 RUN --mount=type=cache,id=zigfs-global-${TARGETARCH}-${ZIG_VERSION},target=/root/.cache/zig,sharing=locked \
     --mount=type=cache,id=zigfs-local-${TARGETARCH}-${ZIG_VERSION},target=/src/zigfs/.zig-cache,sharing=locked \
@@ -71,7 +76,7 @@ LABEL org.opencontainers.image.title="ZigFS" \
       org.opencontainers.image.version="0.1.0" \
       org.opencontainers.image.licenses="MIT"
 
-RUN apk add --no-cache libcurl ca-certificates su-exec
+RUN apk add --no-cache ca-certificates su-exec
 
 RUN addgroup -S -g 10001 zigfs \
     && adduser -S -D -H -u 10001 -G zigfs zigfs \
@@ -79,6 +84,7 @@ RUN addgroup -S -g 10001 zigfs \
     && chown -R zigfs:zigfs /var/lib/zigfs
 
 COPY --from=builder /out/bin/zigfs /usr/local/bin/zigfs
+COPY pkg/net-transport/THIRD_PARTY_NOTICES.md pkg/net-transport/MBEDTLS-LICENSE /usr/share/licenses/zigfs/
 COPY --chmod=755 zigfs/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 ENV ZIGFS_DATA_ROOT=/var/lib/zigfs ZIGFS_API_ADDRESS=0.0.0.0:9000 ZIGFS_METRICS_ADDRESS=0.0.0.0:9090
 

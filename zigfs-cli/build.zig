@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
     cli_module.addImport("utc_time", time_module);
 
     cli_module.addCSourceFile(.{ .file = b.path("src/http_transport.c"), .flags = &.{"-std=c99"} });
-    cli_module.linkSystemLibrary("curl", .{});
+    cli_module.addIncludePath(b.path("src"));
 
     const exe = b.addExecutable(.{
         .name = "zc",

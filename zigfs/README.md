@@ -75,23 +75,20 @@ cp ../.env.example ../.env
 zig build run -- --env-file ../.env
 ```
 
-Zig 0.17.0 or newer is required.
+Zig 0.17.0 is required to build the data-plane server. The shared
+[network transport](../pkg/net-transport/README.md) is compiled into the executable.
+HTTP/TCP uses Zig; Mbed TLS 3.6.8 is statically linked for TLS/mTLS.
+No Go toolchain/runtime, libcurl, external TLS library or helper process is required.
+The first build downloads hash-pinned TLS sources; subsequent cached builds work offline.
+HTTPS uses the system trust store unless a custom CA is configured; Linux images
+must include CA certificates.
 
-On Windows, install the libcurl development package with vcpkg and point the
-build at its installed triplet directory:
-
-```powershell
-vcpkg install 'curl[schannel]:x64-windows'
-$env:ZIGFS_CURL_ROOT = Join-Path $env:VCPKG_ROOT 'installed/x64-windows'
-$env:PATH = "$(Join-Path $env:ZIGFS_CURL_ROOT 'bin');$env:PATH"
-zig build -Dcurl-root=$env:ZIGFS_CURL_ROOT
-zig build test -Dcurl-root=$env:ZIGFS_CURL_ROOT
-```
-
-`start.ps1` uses `ZIGFS_CURL_ROOT`, or `VCPKG_ROOT/installed/x64-windows` if
-`ZIGFS_CURL_ROOT` is unset. Keep `bin/libcurl.dll` available on `PATH` when
-running the executable outside the script. The Windows system `curl.exe` does
-not provide the development library needed by the build.
+On Windows, the transport build requires Zig on PATH.
+The build uses Zig's C compiler for the embedded transport; no vcpkg package,
+`ZIGFS_CURL_ROOT`, or transport DLL is required.
+The transport passes Windows x86_64 cross-link checks, but the complete server
+currently has separate Windows build blockers in `host_metrics.c`
+(`sys/resource.h`) and `application/logging.zig` (file permissions).
 
 ZigFS loads built-in defaults first and then applies `.env`. Use
 `--env-file <path>` to select another file. Command-line address and data-root

@@ -1,68 +1,48 @@
-#include <curl/curl.h>
+#include "bridge.h"
 #include <string.h>
-#ifdef _WIN32
-#include <windows.h>
-static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
-static BOOL CALLBACK initialize(PINIT_ONCE ignored, PVOID parameter, PVOID *context) {
-    (void)ignored;
-    (void)parameter;
-    (void)context;
-    return curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK;
+
+struct payload {
+    const unsigned char *data;
+    size_t length;
+};
+
+static size_t read_payload(void *context, unsigned char *buffer, size_t capacity) {
+    struct payload *payload = context;
+    size_t count = payload->length < capacity ? payload->length : capacity;
+    if (count) memcpy(buffer, payload->data, count);
+    payload->data += count;
+    payload->length -= count;
+    return count;
 }
-#else
-#include <pthread.h>
-static pthread_once_t once = PTHREAD_ONCE_INIT;
-static void initialize(void) { curl_global_init(CURL_GLOBAL_DEFAULT); }
-#endif
-struct response { char *data; size_t capacity, used; };
-static size_t receive(char *data, size_t size, size_t count, void *context) {
-    if (size && count > (size_t)-1 / size) return 0;
-    size_t total = size * count;
-    struct response *out = context;
-    size_t copied = total < out->capacity - out->used ? total : out->capacity - out->used;
-    memcpy(out->data + out->used, data, copied); out->used += copied;
-    return total; /* Bound captured diagnostics without misclassifying a large successful response. */
-}
+
 int zigfs_event_webhook(const char *url, const char *body, size_t body_length,
     const char *authorization, const char *event_header, const char *ca,
     const char *certificate, const char *key, int insecure, long timeout,
     char *buffer, size_t capacity, size_t *length, long *status) {
-#ifdef _WIN32
-    if (!InitOnceExecuteOnce(&once, initialize, NULL, NULL)) return CURLE_FAILED_INIT;
-#else
-    pthread_once(&once, initialize);
-#endif
-    CURL *client = curl_easy_init();
-    if (!client) return CURLE_OUT_OF_MEMORY;
-    struct curl_slist *headers = NULL;
-    struct response out = {buffer, capacity, 0};
-    const char *values[] = {"Content-Type: application/json", "Expect:", authorization, event_header};
-    for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
-        if (!*values[i]) continue;
-        struct curl_slist *next = curl_slist_append(headers, values[i]);
-        if (!next) { curl_slist_free_all(headers); curl_easy_cleanup(client); return CURLE_OUT_OF_MEMORY; }
-        headers = next;
-    }
-    curl_easy_setopt(client, CURLOPT_URL, url);
-    curl_easy_setopt(client, CURLOPT_POST, 1L);
-    curl_easy_setopt(client, CURLOPT_POSTFIELDS, body);
-    curl_easy_setopt(client, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_length);
-    curl_easy_setopt(client, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(client, CURLOPT_PROTOCOLS_STR, "http,https");
-    curl_easy_setopt(client, CURLOPT_FOLLOWLOCATION, 0L);
-    curl_easy_setopt(client, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(client, CURLOPT_TIMEOUT, timeout);
-    curl_easy_setopt(client, CURLOPT_CONNECTTIMEOUT, timeout);
-    curl_easy_setopt(client, CURLOPT_SSL_VERIFYPEER, insecure ? 0L : 1L);
-    curl_easy_setopt(client, CURLOPT_SSL_VERIFYHOST, insecure ? 0L : 2L);
-    if (*ca) curl_easy_setopt(client, CURLOPT_CAINFO, ca);
-    if (*certificate) curl_easy_setopt(client, CURLOPT_SSLCERT, certificate);
-    if (*key) curl_easy_setopt(client, CURLOPT_SSLKEY, key);
-    curl_easy_setopt(client, CURLOPT_WRITEFUNCTION, receive);
-    curl_easy_setopt(client, CURLOPT_WRITEDATA, &out);
-    CURLcode result = curl_easy_perform(client);
-    curl_easy_getinfo(client, CURLINFO_RESPONSE_CODE, status);
-    *length = out.used;
-    curl_slist_free_all(headers); curl_easy_cleanup(client);
+    const char *headers[] = {"Content-Type: application/json", authorization, event_header};
+    struct payload payload = {(const unsigned char *)body, body_length};
+    znet_request request = {
+        .url = url,
+        .method = "POST",
+        .headers = headers,
+        .header_count = 3,
+        .ca = ca,
+        .certificate = certificate,
+        .key = key,
+        .insecure = insecure,
+        .connect_ms = timeout * 1000,
+        .timeout_ms = timeout * 1000,
+        .has_body = 1,
+        .body_size = (int64_t)body_length,
+        .read = read_payload,
+        .context = &payload,
+        .response_body = (unsigned char *)buffer,
+        .body_capacity = capacity,
+        // Keep bounded diagnostics without rejecting large successful responses.
+        .truncate_response = 1,
+    };
+    int result = znet_http(&request);
+    *length = request.body_length;
+    *status = request.status;
     return result;
 }

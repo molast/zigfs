@@ -2,7 +2,7 @@ const std = @import("std");
 const delivery = @import("../ports/event_delivery.zig");
 
 /// Enforce CA:TRUE on configured trust anchors unless leaf trust was explicit.
-/// This keeps the setting consistent across libcurl TLS backends.
+/// This enforces the configured trust policy before opening the TLS connection.
 pub fn requireCaCertificates(a: std.mem.Allocator, root: std.Io.Dir, io: std.Io, path: []const u8) delivery.Error!void {
     if (path.len == 0) return;
     const bytes = root.readFileAlloc(io, path, a, .limited(1024 * 1024)) catch return error.InvalidConfiguration;

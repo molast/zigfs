@@ -14,8 +14,8 @@ and install/update `/opt/homebrew/bin/zc`, so `zc` is available on PATH.
 To use another existing writable directory, run
 `ZC_INSTALL_DIR="$HOME/.local/bin" ./build.sh` and ensure that directory is on PATH.
 The script can be invoked from any working directory. The native build requires
-libcurl development headers/library (the same dependency used by ZigFS). This
-step is verified on macOS with Zig 0.17.0 and libcurl 8.7.1.
+Zig 0.17.0. HTTP, TLS and streaming transfers use the Zig standard library;
+the CLI requires no Go toolchain, Go runtime, libcurl or OpenSSL library.
 
 ```sh
 ./build.sh
@@ -302,9 +302,11 @@ Neither canonical requests nor authorization values are printed, including in
 `--debug`. Server error messages are redacted; recognized error codes and sanitized
 request IDs remain available for troubleshooting.
 
-Transport uses linked libcurl, never a shell command or a credential-bearing curl
-process. System certificate verification is enabled by default; `--ca-cert FILE`
-loads a custom PEM trust source and `--insecure` is an explicit opt-out. Redirects
+Transport uses native Zig HTTP/1.1 and TLS with bounded streaming buffers and
+connection reuse, without launching a shell or helper process. System certificate verification is enabled by default; `--ca-cert FILE`
+loads a custom PEM trust source and `--insecure` is an explicit opt-out.
+Zig 0.17 disables SNI along with hostname verification in insecure mode; endpoints
+requiring SNI should use their hostname and a trusted CA (or `--ca-cert`). Redirects
 are never followed, and ambient proxy variables are ignored in this step.
 `--connect-timeout` limits connection setup; `--timeout` bounds HTTP transfer,
 retries and backoff together (local input/hash preparation precedes this deadline).

@@ -259,7 +259,7 @@ ZIGFS_ADMIN_SESSION_SECRET=phase7-isolated-session-secret-000000000000
                     assert b'isolated-vault-token' not in data
                     assert base64.b64encode(b'K'*32) not in data
                     assert b'local-confidential-data!' not in data
-            # Exercise libcurl's CA validation and client certificate authentication.
+            # Exercise the transport's CA validation and client certificate authentication.
             def openssl(*args):
                 subprocess.run(['openssl', *map(str,args)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             openssl('req','-x509','-newkey','rsa:2048','-nodes','-days','1','-keyout',root/'ca.key','-out',root/'ca.pem','-subj','/CN=KMS Test CA')

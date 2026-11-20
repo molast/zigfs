@@ -1,0 +1,13 @@
+.{
+    .name = .net_transport,
+    .fingerprint = 0xcdd64240d3f1cea1,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .mbedtls = .{
+            .url = "git+https://github.com/Mbed-TLS/mbedtls.git#82e69999f91126589a28b70dd75b69fbcabe2711",
+            .hash = "N-V-__8AAJiVmgK8m52FlgB-3nQfNv4JiOPOA4rdnbtfFuq8",
+        },
+    },
+    .paths = .{ "build.zig", "mbedtls-sources.zig", "build.zig.zon", "tests", "transport.zig", "tls.c", "threading_alt.h", "bridge.h", "README.md", "THIRD_PARTY_NOTICES.md", "MBEDTLS-LICENSE" },
+}

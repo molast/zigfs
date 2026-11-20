@@ -44,7 +44,9 @@ editing. The Admin UI has [additional guidance](../zigfs-admin/web/AGENTS.md).
 ## Development setup
 
 Use the toolchain versions documented in the [README](../README.md) and component configuration.
-The current README lists Zig 0.17.0 or newer, Go 1.27 or newer, and Node.js 24 or a compatible version.
+The data-plane server and CLI require Zig 0.17.0. The Admin BFF/gateway require
+Go 1.27 or newer; the web UI requires Node.js 24 or a compatible version.
+The data-plane build statically links hash-pinned Mbed TLS and does not require Go.
 Use the pnpm version declared in `zigfs-admin/web/package.json`. Docker is optional for native development.
 
 Fork and clone the repository, then create a focused branch, such as `fix/metadata-recovery` or
@@ -104,7 +106,7 @@ zig build test
 zig build
 ```
 
-The CLI links against libcurl. See the [CLI guide](../zigfs-cli/README.md) for platform prerequisites
+The CLI uses native Zig HTTP/TLS and requires only Zig to build. See the [CLI guide](../zigfs-cli/README.md) for platform prerequisites
 and integration validation instructions.
 
 ### Compatibility, conformance, and performance

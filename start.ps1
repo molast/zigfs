@@ -30,22 +30,8 @@ function Start-Fs([string]$BuildMode) {
     if ($buildMode -cnotin @('Debug', 'ReleaseSafe', 'ReleaseFast', 'ReleaseSmall')) {
         throw "Invalid ZIGFS_BUILD_MODE: $buildMode"
     }
-    if (-not $env:ZIGFS_CURL_ROOT -and $env:VCPKG_ROOT) {
-        $env:ZIGFS_CURL_ROOT = Join-Path $env:VCPKG_ROOT 'installed/x64-windows'
-    }
-    if (-not $env:ZIGFS_CURL_ROOT) {
-        throw 'Windows requires libcurl. Install curl[schannel]:x64-windows with vcpkg and set ZIGFS_CURL_ROOT to its installed/x64-windows directory.'
-    }
     Write-Host "Starting local ZigFS ($buildMode)..."
     $buildArgs = @('build', 'run', '--watch', "-Doptimize=$buildMode")
-    $curlRoot = $env:ZIGFS_CURL_ROOT
-    if (-not (Test-Path (Join-Path $curlRoot 'include/curl/curl.h')) -or
-        -not (Test-Path (Join-Path $curlRoot 'lib/libcurl.lib')) -or
-        -not (Test-Path (Join-Path $curlRoot 'bin/libcurl.dll'))) {
-        throw 'ZIGFS_CURL_ROOT must contain include/curl/curl.h, lib/libcurl.lib, and bin/libcurl.dll.'
-    }
-    $env:PATH = "$(Join-Path $curlRoot 'bin');$env:PATH"
-    $buildArgs += "-Dcurl-root=$curlRoot"
     Invoke-InDirectory (Join-Path $rootDir 'zigfs') {
         & zig @buildArgs
         if ($LASTEXITCODE -ne 0) { throw "ZigFS exited with code $LASTEXITCODE" }

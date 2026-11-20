@@ -32,7 +32,7 @@ pub const Webhook = struct {
         var length: usize = 0;
         var status: c_long = 0;
         const result = zigfs_event_webhook(url, body.ptr, event.payload.len, authorization, event_header, ca, cert, key, @intFromBool(self.config.skip_tls_verify), self.timeout_seconds, &buffer, buffer.len, &length, &status);
-        if (result != 0) return curlError(result);
+        if (result != 0) return transportError(result);
         if (status >= 200 and status < 300) return;
         return statusError(status);
     }
@@ -61,7 +61,7 @@ pub fn statusError(status: c_long) delivery.Error {
         else => error.Rejected,
     };
 }
-pub fn curlError(code: c_int) delivery.Error {
+pub fn transportError(code: c_int) delivery.Error {
     return switch (code) {
         28 => error.Timeout,
         2, 3, 4, 43, 58, 60, 77, 82, 83, 90, 91 => error.InvalidConfiguration,
@@ -77,5 +77,5 @@ test "webhook status failures preserve retry classification" {
     try std.testing.expectEqual(error.RateLimited, statusError(429));
     try std.testing.expectEqual(error.Rejected, statusError(302));
     try std.testing.expect(delivery.retryable(statusError(503)));
-    try std.testing.expect(!delivery.retryable(curlError(60)));
+    try std.testing.expect(!delivery.retryable(transportError(60)));
 }

@@ -127,9 +127,11 @@ version 2 stores the selected profile/key. Existing object versions 0–5 and
 multipart versions 0–1 remain readable. Older binaries cannot read new metadata;
 back up data before upgrading and do not downgrade after new writes.
 
-Native builds now require libcurl development headers/library (`brew install curl`
-or the platform's libcurl development package). The ZigFS Docker builder installs
-`curl-dev`/`pkgconf`; the runtime installs libcurl and CA certificates.
+Native builds require Zig 0.17.0. `pkg/net-transport` implements HTTP/TCP in Zig
+and statically links Mbed TLS 3.6.8 for TLS 1.2/1.3 and client certificates.
+Neither the Docker builder nor the data-plane runtime needs Go or libcurl.
+The first build downloads hash-pinned sources. Runtime HTTPS trust requires
+system CA certificates unless a custom CA is configured.
 
 ## Verification
 

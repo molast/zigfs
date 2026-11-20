@@ -1,4 +1,4 @@
-name: Gateway checks
+name: Network and gateway checks
 on:
   push:
     tags:
@@ -26,6 +26,24 @@ jobs:
       - name: Independent gateway module
         working-directory: pkg/gateway
         run: GOWORK=off go test -race ./...
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Native Zig / Mbed TLS transport C ABI
+        working-directory: pkg/net-transport
+        run: zig build test
+      - name: Native transport HTTP and TLS regressions
+        if: runner.os != 'Windows'
+        working-directory: pkg/net-transport
+        run: |
+          zig build http-probe
+          python3 tests/http_tls.py
+      - name: Native CLI unit tests and build
+        if: runner.os != 'Windows'
+        working-directory: zigfs-cli
+        run: |
+          zig build test
+          zig build
       - name: Admin integration
         working-directory: zigfs-admin/server
         run: go test ./...
@@ -45,13 +63,21 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
-      - name: Install ZigFS system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev pkg-config
       - name: Build isolated test services
         run: |
           cd zigfs
           zig build
+          zig build event-delivery-probe
           cd ../zigfs-admin/server
           go build -o /tmp/zigfs-admin-gateway ./cmd/admin
+      - name: Native CLI protocol conformance
+        working-directory: zigfs-cli
+        run: |
+          zig build
+          python3 tests/cli_smoke.py zig-out/bin/zc
+          python3 tests/alias_smoke.py zig-out/bin/zc
+          python3 tests/s3api_integration.py zig-out/bin/zc ../zigfs/zig-out/bin/zigfs
       - name: Strict TLS and S3 conformance
         run: python3 conformance/gateway_https.py --admin /tmp/zigfs-admin-gateway
+      - name: Outbound HTTP and MQTT conformance
+        run: python3 conformance/event_delivery.py

@@ -1,3 +1,7 @@
+comptime {
+    _ = @import("http_transport.zig");
+}
+
 const std = @import("std");
 const aliases = @import("alias.zig");
 const management = @import("management.zig");
@@ -508,6 +512,10 @@ fn executeWithContext(allocator: std.mem.Allocator, args: []const []const u8, co
 }
 
 pub fn run(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8, env: *const std.process.Environ.Map) !u8 {
+    const transport = @import("http_transport.zig");
+    transport.init(io);
+    defer transport.deinit();
+
     const progress = @import("progress.zig");
     const invocation = parse(args) catch null;
     const enabled = if (invocation) |value|

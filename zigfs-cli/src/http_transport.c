@@ -1,6 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 /* HTTP transport and terminal rendering. Zig controls signing and output policy. */
-#include <curl/curl.h>
+#include "cli_transport.h"
 #include <stdint.h>
 #include <string.h>
 #include <pthread.h>
@@ -211,37 +211,6 @@ void zc_progress_finish(int code) {
     pthread_mutex_unlock(&progress_mutex);
 }
 
-static pthread_once_t once = PTHREAD_ONCE_INIT;
-static int init_result;
-static pthread_mutex_t pool_mutex = PTHREAD_MUTEX_INITIALIZER;
-static CURL *connection_pool[32];
-static size_t pool_count;
-
-static void close_connection_pool(void) {
-    for (size_t i = 0; i < pool_count; i++) curl_easy_cleanup(connection_pool[i]);
-}
-static void init_curl(void) {
-    init_result = curl_global_init(CURL_GLOBAL_DEFAULT);
-    if (init_result == CURLE_OK) atexit(close_connection_pool);
-}
-static CURL *acquire_connection(void) {
-    pthread_mutex_lock(&pool_mutex);
-    CURL *connection = pool_count ? connection_pool[--pool_count] : NULL;
-    pthread_mutex_unlock(&pool_mutex);
-    return connection ? connection : curl_easy_init();
-}
-static void release_connection(CURL *connection) {
-    /* Reset request-specific headers, callbacks, credentials and TLS options. */
-    curl_easy_reset(connection);
-    pthread_mutex_lock(&pool_mutex);
-    if (pool_count < sizeof(connection_pool) / sizeof(connection_pool[0])) {
-        connection_pool[pool_count++] = connection;
-        connection = NULL;
-    }
-    pthread_mutex_unlock(&pool_mutex);
-    if (connection) curl_easy_cleanup(connection);
-}
-
 static volatile sig_atomic_t interrupted = 0;
 static struct sigaction prior_int;
 void zc_bulk_begin(void) {
@@ -258,11 +227,13 @@ void zc_bulk_listen(void) {
 }
 void zc_bulk_end(void) { sigaction(SIGINT, &prior_int, NULL); interrupted = 0; }
 int zc_interrupted(void) { return interrupted; }
-static int progress(void *ctx, curl_off_t total_down, curl_off_t down, curl_off_t total_up, curl_off_t up) {
+static int progress(void *ctx, int64_t total_down, int64_t down, int64_t total_up, int64_t up) {
     (void)ctx;
     if (display.active) {
         if (strcmp(display.label, "Uploading") == 0) {
-            if (total_up > 0) display.total = (uint64_t)total_up;
+            if (total_up > 0) {
+                display.total = (uint64_t)total_up;
+            }
             display.done = up > 0 ? (uint64_t)up : 0;
             pthread_mutex_lock(&progress_mutex);
             if (current_object && current_part > 0 && current_part <= current_object->parts) {
@@ -275,99 +246,25 @@ static int progress(void *ctx, curl_off_t total_down, curl_off_t down, curl_off_
             render_progress_locked(0, -1);
             pthread_mutex_unlock(&progress_mutex);
         } else if (strcmp(display.label, "Downloading") == 0) {
-            if (total_down > 0) display.total = (uint64_t)total_down;
+            if (total_down > 0) {
+                display.total = (uint64_t)total_down;
+            }
             zc_progress_update(down > 0 ? (uint64_t)down : 0);
-        } else render_progress(0, -1);
+        } else {
+            render_progress(0, -1);
+        }
     }
     return interrupted ? 1 : 0;
 }
 typedef size_t (*read_fn)(void *, unsigned char *, size_t);
 typedef int (*write_fn)(void *, const unsigned char *, size_t);
-struct response {
-    CURL *curl;
-    unsigned char *headers, *body;
-    size_t header_cap, header_len, body_cap, body_len;
-    void *context;
-    read_fn read;
-    write_fn write;
-    int overflow;
-};
-static size_t read_body(char *p, size_t size, size_t count, void *opaque) {
-    struct response *r = opaque;
-    if (size && count > SIZE_MAX / size) return CURL_READFUNC_ABORT;
-    size_t n = r->read(r->context, (unsigned char *)p, size * count);
-    return n == SIZE_MAX ? CURL_READFUNC_ABORT : n;
-}
-static size_t receive_header(char *p, size_t size, size_t count, void *opaque) {
-    struct response *r = opaque;
-    if (size && count > (r->header_cap - r->header_len) / size) { r->overflow = 1; return 0; }
-    size_t n = size * count;
-    memcpy(r->headers + r->header_len, p, n); r->header_len += n;
-    return n;
-}
-static size_t receive_body(char *p, size_t size, size_t count, void *opaque) {
-    struct response *r = opaque;
-    if (size && count > SIZE_MAX / size) return 0;
-    size_t n = size * count;
-    long status = 0;
-    curl_easy_getinfo(r->curl, CURLINFO_RESPONSE_CODE, &status);
-    if (status >= 200 && status < 300 && r->write)
-        return r->write(r->context, (const unsigned char *)p, n) ? 0 : n;
-    if (n > r->body_cap - r->body_len) { r->overflow = 1; return 0; }
-    memcpy(r->body + r->body_len, p, n); r->body_len += n;
-    return n;
-}
-int zc_http(const char *url, const char *method, const char **header_values, size_t header_count,
-    const char *ca, int insecure, long connect_ms, long total_ms,
-    int64_t rate_limit, int has_body, int64_t body_size, read_fn reader, write_fn writer, void *context,
-    unsigned char *headers, size_t header_cap, size_t *header_len,
-    unsigned char *body, size_t body_cap, size_t *body_len, long *status) {
+int zc_http(const char *url, const char *method, const char **header_values,
+    size_t header_count, const char *ca, int insecure, long connect_ms, long total_ms,
+    int64_t rate_limit, int has_body, int64_t body_size, read_fn reader,
+    write_fn writer, void *context, unsigned char *headers, size_t header_cap,
+    size_t *header_len, unsigned char *body, size_t body_cap, size_t *body_len,
+    long *status) {
     if (interrupted) return 42;
-    pthread_once(&once, init_curl);
-    if (init_result != CURLE_OK) return -1;
-    CURL *c = acquire_connection();
-    if (!c) return -1;
-    struct response r = { .curl=c, .headers=headers, .header_cap=header_cap,
-        .body=body, .body_cap=body_cap, .context=context, .read=reader, .write=writer };
-    struct curl_slist *list = NULL;
-    int result = 0;
-    for (size_t i = 0; i < header_count; ++i) {
-        struct curl_slist *next = curl_slist_append(list, header_values[i]);
-        if (!next) { result = -1; goto cleanup; }
-        list = next;
-    }
-#define SET(option, value) do { CURLcode e = curl_easy_setopt(c, option, value); if (e != CURLE_OK) { result = e; goto cleanup; } } while (0)
-    SET(CURLOPT_URL, url);
-    SET(CURLOPT_NOPROGRESS, 0L);
-    SET(CURLOPT_XFERINFOFUNCTION, progress);
-    if (rate_limit > 0) {
-        SET(CURLOPT_MAX_SEND_SPEED_LARGE, (curl_off_t)rate_limit);
-        SET(CURLOPT_MAX_RECV_SPEED_LARGE, (curl_off_t)rate_limit);
-    }
-    SET(CURLOPT_PROTOCOLS_STR, "http,https");
-    SET(CURLOPT_PROXY, ""); /* Do not silently route credentials through ambient proxies. */
-    SET(CURLOPT_FOLLOWLOCATION, 0L);
-    SET(CURLOPT_PATH_AS_IS, 1L); /* S3 keys must not undergo dot-segment normalization. */
-    SET(CURLOPT_NOSIGNAL, 1L);
-    SET(CURLOPT_CONNECTTIMEOUT_MS, connect_ms);
-    SET(CURLOPT_TIMEOUT_MS, total_ms);
-    SET(CURLOPT_SSL_VERIFYPEER, insecure ? 0L : 1L);
-    SET(CURLOPT_SSL_VERIFYHOST, insecure ? 0L : 2L);
-    if (*ca) SET(CURLOPT_CAINFO, ca);
-    SET(CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-    SET(CURLOPT_HTTPHEADER, list);
-    SET(CURLOPT_HEADERFUNCTION, receive_header);
-    SET(CURLOPT_HEADERDATA, &r);
-    SET(CURLOPT_WRITEFUNCTION, receive_body);
-    SET(CURLOPT_WRITEDATA, &r);
-    if (has_body) {
-        SET(CURLOPT_UPLOAD, 1L);
-        SET(CURLOPT_INFILESIZE_LARGE, (curl_off_t)body_size);
-        SET(CURLOPT_READFUNCTION, read_body);
-        SET(CURLOPT_READDATA, &r);
-    }
-    if (strcmp(method, "HEAD") == 0) SET(CURLOPT_NOBODY, 1L);
-    SET(CURLOPT_CUSTOMREQUEST, method);
     int uploading = has_body && (strcmp(method, "PUT") == 0 || body_size > 65536);
     const char *phase = "Request";
     if (uploading) {
@@ -378,21 +275,40 @@ int zc_http(const char *url, const char *method, const char **header_values, siz
         phase = "Completing upload";
     }
     zc_progress_stage(phase, uploading ? (uint64_t)body_size : 0);
-    result = (int)curl_easy_perform(c);
+    zc_transport_request request = {
+        .url = url,
+        .method = method,
+        .headers = header_values,
+        .header_count = header_count,
+        .ca = ca,
+        .insecure = insecure,
+        .connect_ms = connect_ms,
+        .timeout_ms = total_ms,
+        .rate_limit = rate_limit,
+        .has_body = has_body,
+        .body_size = body_size,
+        .read = reader,
+        .write = writer,
+        .progress = progress,
+        .context = context,
+        .response_headers = headers,
+        .header_capacity = header_cap,
+        .response_body = body,
+        .body_capacity = body_cap,
+    };
+    int result = zc_native_http(&request);
     render_progress(1, -1);
-    curl_off_t sent = 0, received = 0;
-    curl_easy_getinfo(c, CURLINFO_SIZE_UPLOAD_T, &sent);
-    curl_easy_getinfo(c, CURLINFO_SIZE_DOWNLOAD_T, &received);
     pthread_mutex_lock(&progress_mutex);
-    if (uploading && sent > 0) progress_uploaded += (uint64_t)sent;
-    if (writer && received > 0) progress_downloaded += (uint64_t)received;
+    if (uploading && request.uploaded > 0) {
+        progress_uploaded += (uint64_t)request.uploaded;
+    }
+    if (writer && request.downloaded > 0) {
+        progress_downloaded += (uint64_t)request.downloaded;
+    }
     pthread_mutex_unlock(&progress_mutex);
-    if (r.overflow) result = -2;
-    curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, status);
-cleanup:
-    *header_len = r.header_len; *body_len = r.body_len;
-    curl_slist_free_all(list);
-    release_connection(c);
+    *header_len = request.header_length;
+    *body_len = request.body_length;
+    *status = request.status;
     return result;
 }
 

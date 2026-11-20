@@ -7,7 +7,7 @@ pub const Channel = struct {
     pub fn open(url: [:0]const u8, ca: [:0]const u8, cert: [:0]const u8, key: [:0]const u8, policy: c_int, trust_leaf: bool, timeout: c_long) delivery.Error!Channel {
         var ctx: ?*anyopaque = null;
         const code = zigfs_event_channel_open(url, ca, cert, key, policy, @intFromBool(trust_leaf), timeout, &ctx);
-        if (code != 0) return webhook.curlError(code);
+        if (code != 0) return webhook.transportError(code);
         return .{ .context = ctx orelse return error.Unavailable };
     }
     pub fn close(self: Channel) void {
@@ -15,14 +15,14 @@ pub const Channel = struct {
     }
     pub fn writeAll(self: Channel, bytes: []const u8) delivery.Error!void {
         const code = zigfs_event_channel_write(self.context, bytes.ptr, bytes.len);
-        if (code != 0) return webhook.curlError(code);
+        if (code != 0) return webhook.transportError(code);
     }
     pub fn readAll(self: Channel, bytes: []u8) delivery.Error!void {
         var offset: usize = 0;
         while (offset < bytes.len) {
             var used: usize = 0;
             const code = zigfs_event_channel_read(self.context, bytes[offset..].ptr, bytes.len - offset, &used);
-            if (code != 0) return webhook.curlError(code);
+            if (code != 0) return webhook.transportError(code);
             offset += used;
         }
     }

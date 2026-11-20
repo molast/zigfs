@@ -43,7 +43,7 @@ ZigFS 使用部署主密钥通过 AES-256-GCM 加密整个配置，并原子写�
 - Broker 和 Topic 必填。Broker 支持 `tcp://`、`tls://`、`ssl://`、`mqtt://`、`mqtts://`、`ws://`、`wss://`；禁止 URL 中的账号密码或 fragment。发布 Topic 不允许 `+`、`#` 通配符。
 - QoS 为 0、1、2，留空默认 0。新增数值/间隔输入不预填；队列上限留空使用 100000，重连间隔留空使用 `5s`，保活间隔留空使用 `15s`。
 - 间隔为整数加 `ms`、`s`、`m` 或 `h`，例如 `30s`；重连须大于零，保活允许 `0s`。MQTT CONNECT 会带上保活秒数（毫秒向上取整，上限 65535 秒）；重连间隔作为统一重试策略提供。当前适配器每次发送建立一次有期限的短会话，不在后台维持连接。
-- TLS Policy：空值或 `strict` 验证证书链及主机名、最低 TLS 1.2；`compat` 验证证书并使用 TLS 库默认协议范围；`insecure` 显式跳过证书及主机名验证。发送时拒绝其他策略。Trust Leaf As CA 默认 false，配置的 CA 文件必须具有 CA:TRUE；设为 true 允许将叶证书作为显式信任锚（必须提供 CA 文件）。
+- TLS Policy：空值或 `strict` 验证证书链及主机名、最低 TLS 1.2；`compat` 验证证书并使用 TLS 库默认协议范围（Mbed TLS 3.6：TLS 1.2/1.3，不再支持 TLS 1.0/1.1）；`insecure` 显式跳过证书及主机名验证。发送时拒绝其他策略。Trust Leaf As CA 默认 false，配置的 CA 文件必须具有 CA:TRUE；设为 true 允许将叶证书作为显式信任锚（必须提供 CA 文件）。
 - 证书/密钥须成对填写，所有本地目录和证书文件均相对 data；保存时不读取文件。WebSocket Path Allowlist 使用逗号分隔的 `/` 开头路径，例如 `/mqtt,/ws`。
 - MQTT 密码随整个配置加密保存。返回 `password=""` 和 `has_password`；编辑保留、替换及清除行为与 Webhook Token 一致。
 - Webhook/MQTT 共享列表及 CRUD 接口。保存一种类型时不改动另一种类型的配置。

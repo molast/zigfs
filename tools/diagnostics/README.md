@@ -63,7 +63,7 @@ host/process/filesystem telemetry bridges concurrently, followed by known faults
 | SafeAllocator | Zig Application allocations; four isolated fault controls | Passed | Ubuntu 24.04 ARM64 passed |
 | ASan | C telemetry bridge plus UAF, double-free, buffer-overflow controls | Passed | Ubuntu 24.04 ARM64 passed |
 | UBSan | C telemetry bridge plus signed-overflow control | Passed | Ubuntu 24.04 ARM64 passed |
-| Zig C `sanitize-c=full` | C sources compiled by Zig; prebuilt curl excluded | Diagnostic server build and S3 integration passed | Ubuntu 24.04 ARM64 build and S3 integration passed |
+| Zig C `sanitize-c=full` | C sources compiled by Zig; TLS dependency instrumentation must be checked separately | Diagnostic server build and S3 integration passed | Ubuntu 24.04 ARM64 build and S3 integration passed |
 | TSan (Clang) | C bridge concurrency and deliberate C data race | Passed | Ubuntu 24.04 ARM64 passed |
 | TSan (Zig) | Locked/racy Zig counters, plus full-server instrumented build | Controls and real S3 integration passed | Ubuntu 24.04 ARM64 controls and S3 integration passed |
 
@@ -224,7 +224,7 @@ Ubuntu dependencies (install Zig 0.17 separately, verifying its archive hash):
 apt-get update
 apt-get install -y --no-install-recommends \
   ca-certificates curl xz-utils python3 clang libclang-rt-18-dev llvm-18 \
-  lldb python3-lldb-18 gdb linux-tools-generic libcurl4-openssl-dev pkg-config
+  lldb python3-lldb-18 gdb linux-tools-generic golang-go
 export DEBUGINFOD_URLS=
 ```
 
